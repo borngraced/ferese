@@ -1,31 +1,36 @@
 #![allow(irrefutable_let_patterns)]
 
+mod backends;
 mod grabs;
 mod handlers;
 mod input;
 mod state;
 mod winit;
 
-use std::{error::Error, process::Command};
+use std::{error::Error, io, process::Command};
 
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 pub use state::Ferese;
 use tracing::{info, warn};
 
+use crate::backends::LaunchConfig;
+
 fn main() -> Result<(), Box<dyn Error>> {
     init_logging();
 
+    let launch = LaunchConfig::from_environment()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let mut event_loop = EventLoop::try_new()?;
     let display = Display::new()?;
     let mut state = Ferese::new(&mut event_loop, display)?;
-    winit::init(&mut event_loop, &mut state)?;
+    backends::init(launch.backend, &mut event_loop, &mut state)?;
 
     // SAFETY: the backend has already read the host display and Ferese is
     // single-threaded before the event loop and optional child start.
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
 
-    info!(socket = ?state.socket_name, "Ferese is accepting Wayland clients");
-    spawn_client_from_args();
+    info!(socket = ?state.socket_name, backend = ?launch.backend, "Ferese is accepting Wayland clients");
+    spawn_client(launch.client);
     event_loop.run(None, &mut state, |_| {})?;
     Ok(())
 }
@@ -36,12 +41,12 @@ fn init_logging() {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
-fn spawn_client_from_args() {
-    let mut args = std::env::args_os().skip(1);
-    let Some(program) = args.next() else {
+fn spawn_client(mut args: Vec<std::ffi::OsString>) {
+    if args.is_empty() {
         info!("no client requested; pass one after `--`, for example `-- foot`");
         return;
-    };
+    }
+    let program = args.remove(0);
 
     match Command::new(&program).args(args).spawn() {
         Ok(child) => info!(program = ?program, pid = child.id(), "spawned nested client"),

@@ -11,6 +11,7 @@ use ferese_core::{WindowPlacement, WorkspaceSet};
 use ferese_layout::{Axis, Direction, GapConfig, LayoutResult, Rect, SizeConstraints, WindowId};
 
 use smithay::{
+    backend::session::libseat::LibSeatSession,
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
     input::{Seat, SeatState},
     reexports::{
@@ -51,6 +52,8 @@ pub struct Ferese {
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
     pub focused_window: Option<WindowId>,
     pub intercepted_keys: HashSet<smithay::input::keyboard::Keycode>,
+    pub direct_session: Option<LibSeatSession>,
+    pub session_active: bool,
     next_window_id: u64,
     last_animation_tick: Instant,
     pub popups: PopupManager,
@@ -110,6 +113,8 @@ impl Ferese {
             window_geometry: HashMap::new(),
             focused_window: None,
             intercepted_keys: HashSet::new(),
+            direct_session: None,
+            session_active: true,
             next_window_id: 1,
             last_animation_tick: start_time,
             popups: PopupManager::default(),
