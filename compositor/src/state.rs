@@ -7,7 +7,7 @@ use std::{
 };
 
 use ferese_core::{WindowPlacement, WorkspaceSet};
-use ferese_layout::{Axis, Direction, GapConfig, Rect, WindowId};
+use ferese_layout::{Axis, Direction, GapConfig, LayoutResult, Rect, SizeConstraints, WindowId};
 
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
@@ -23,15 +23,15 @@ use smithay::{
     },
     utils::{Logical, Point, Size},
     wayland::{
-        compositor::{CompositorClientState, CompositorState},
+        compositor::{CompositorClientState, CompositorState, with_states},
         fractional_scale::FractionalScaleManagerState,
         output::OutputManagerState,
         pointer_constraints::PointerConstraintsState,
         presentation::PresentationState,
         relative_pointer::RelativePointerManagerState,
         selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
-        shell::xdg::XdgShellState,
         shell::xdg::decoration::XdgDecorationState,
+        shell::xdg::{SurfaceCachedState, XdgShellState},
         shm::ShmState,
         socket::ListeningSocketSource,
         viewporter::ViewporterState,
@@ -242,18 +242,24 @@ impl Ferese {
         let Some(bounds) = self.output_bounds() else {
             return;
         };
-        let tiled_geometry = match self
-            .workspaces
-            .active()
-            .layout
-            .geometry_with_gaps(bounds, GapConfig::default())
-        {
-            Ok(geometry) => geometry,
+        let layout = match self.tiled_layout(bounds) {
+            Ok(layout) => layout,
             Err(error) => {
                 tracing::error!(%error, "failed to compute tiled geometry");
                 return;
             }
         };
+        let tiled_geometry = layout.geometry;
+
+        for warning in layout.warnings {
+            tracing::warn!(
+                window = ?warning.window,
+                kind = ?warning.kind,
+                requested = warning.requested,
+                assigned = warning.assigned,
+                "window size constraint could not be satisfied exactly"
+            );
+        }
         let active = self.workspaces.active_id();
         let fullscreen = self.workspaces.active().fullscreen;
         let hidden = self
@@ -419,12 +425,9 @@ impl Ferese {
         };
         let floating_rect = match self.workspaces.placement(window) {
             Some(WindowPlacement::Tiled) => self
-                .workspaces
-                .active()
-                .layout
-                .geometry_with_gaps(bounds, GapConfig::default())
+                .tiled_layout(bounds)
                 .ok()
-                .and_then(|geometry| geometry.get(&window).copied())
+                .and_then(|layout| layout.geometry.get(&window).copied())
                 .unwrap_or_else(|| centered_floating_rect(bounds)),
             Some(WindowPlacement::Floating { rect }) => rect,
             None => return,
@@ -580,12 +583,51 @@ impl Ferese {
         match self.workspaces.placement(window)? {
             WindowPlacement::Tiled => workspace
                 .layout
-                .geometry_with_gaps(bounds, GapConfig::default())
+                .geometry_with_constraints(
+                    bounds,
+                    GapConfig::default(),
+                    &self.window_constraints(),
+                    self.focused_window,
+                )
                 .ok()?
+                .geometry
                 .get(&window)
                 .copied(),
             WindowPlacement::Floating { rect } => Some(rect),
         }
+    }
+
+    fn tiled_layout(&self, bounds: Rect) -> Result<LayoutResult, ferese_layout::LayoutError> {
+        self.workspaces.active().layout.geometry_with_constraints(
+            bounds,
+            GapConfig::default(),
+            &self.window_constraints(),
+            self.focused_window,
+        )
+    }
+
+    fn window_constraints(&self) -> HashMap<WindowId, SizeConstraints> {
+        self.window_ids
+            .iter()
+            .filter_map(|(window, id)| {
+                let toplevel = window.toplevel()?;
+                let (minimum, maximum) = with_states(toplevel.wl_surface(), |states| {
+                    let mut cached = states.cached_state.get::<SurfaceCachedState>();
+                    let state = cached.current();
+                    (state.min_size, state.max_size)
+                });
+
+                Some((
+                    *id,
+                    SizeConstraints {
+                        min_width: minimum.w.max(1) as f64,
+                        min_height: minimum.h.max(1) as f64,
+                        max_width: (maximum.w > 0).then_some(maximum.w as f64),
+                        max_height: (maximum.h > 0).then_some(maximum.h as f64),
+                    },
+                ))
+            })
+            .collect()
     }
 }
 

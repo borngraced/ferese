@@ -70,6 +70,47 @@ pub struct GapConfig {
     pub smart: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SizeConstraints {
+    pub min_width: f64,
+    pub min_height: f64,
+    pub max_width: Option<f64>,
+    pub max_height: Option<f64>,
+}
+
+impl Default for SizeConstraints {
+    fn default() -> Self {
+        Self {
+            min_width: 1.0,
+            min_height: 1.0,
+            max_width: None,
+            max_height: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConstraintKind {
+    MinimumWidth,
+    MinimumHeight,
+    MaximumWidth,
+    MaximumHeight,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ConstraintWarning {
+    pub window: WindowId,
+    pub kind: ConstraintKind,
+    pub requested: f64,
+    pub assigned: f64,
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct LayoutResult {
+    pub geometry: HashMap<WindowId, Rect>,
+    pub warnings: Vec<ConstraintWarning>,
+}
+
 impl Default for GapConfig {
     fn default() -> Self {
         Self {
@@ -314,44 +355,67 @@ impl LayoutTree {
         gaps: GapConfig,
     ) -> Result<HashMap<WindowId, Rect>, LayoutError> {
         let mut geometry = self.geometry(bounds)?;
-        let outer = if gaps.smart && geometry.len() == 1 {
-            0.0
-        } else {
-            valid_gap(gaps.outer)
-        };
-        let half_inner = valid_gap(gaps.inner) / 2.0;
-        let right = bounds.x + bounds.width;
-        let bottom = bounds.y + bounds.height;
-
-        for rect in geometry.values_mut() {
-            let left_inset = if nearly_equal(rect.x, bounds.x) {
-                outer
-            } else {
-                half_inner
-            };
-            let top_inset = if nearly_equal(rect.y, bounds.y) {
-                outer
-            } else {
-                half_inner
-            };
-            let right_inset = if nearly_equal(rect.x + rect.width, right) {
-                outer
-            } else {
-                half_inner
-            };
-            let bottom_inset = if nearly_equal(rect.y + rect.height, bottom) {
-                outer
-            } else {
-                half_inner
-            };
-
-            rect.x += left_inset;
-            rect.y += top_inset;
-            rect.width = (rect.width - left_inset - right_inset).max(1.0);
-            rect.height = (rect.height - top_inset - bottom_inset).max(1.0);
-        }
+        apply_gaps(&mut geometry, bounds, gaps);
 
         Ok(geometry)
+    }
+
+    pub fn geometry_with_constraints(
+        &self,
+        bounds: Rect,
+        gaps: GapConfig,
+        constraints: &HashMap<WindowId, SizeConstraints>,
+        focused: Option<WindowId>,
+    ) -> Result<LayoutResult, LayoutError> {
+        let mut result = LayoutResult::default();
+
+        if let Some(root) = self.root {
+            self.layout_node_constrained(root, bounds, constraints, focused, &mut result.geometry)?;
+        }
+
+        apply_gaps(&mut result.geometry, bounds, gaps);
+
+        for (window, rect) in &mut result.geometry {
+            let constraint = constraints.get(window).copied().unwrap_or_default();
+            let constraint = normalized_constraints(constraint);
+
+            record_minimum_warnings(*window, *rect, constraint, &mut result.warnings);
+
+            if let Some(maximum) = constraint.max_width
+                && rect.width > maximum
+            {
+                result.warnings.push(ConstraintWarning {
+                    window: *window,
+                    kind: ConstraintKind::MaximumWidth,
+                    requested: maximum,
+                    assigned: rect.width,
+                });
+                rect.width = maximum;
+            }
+            if let Some(maximum) = constraint.max_height
+                && rect.height > maximum
+            {
+                result.warnings.push(ConstraintWarning {
+                    window: *window,
+                    kind: ConstraintKind::MaximumHeight,
+                    requested: maximum,
+                    assigned: rect.height,
+                });
+                rect.height = maximum;
+            }
+        }
+
+        result.warnings.sort_by_key(|warning| {
+            let kind = match warning.kind {
+                ConstraintKind::MinimumWidth => 0,
+                ConstraintKind::MinimumHeight => 1,
+                ConstraintKind::MaximumWidth => 2,
+                ConstraintKind::MaximumHeight => 3,
+            };
+            (warning.window.0, kind)
+        });
+
+        Ok(result)
     }
 
     pub fn automatic_axis(
@@ -665,6 +729,128 @@ impl LayoutTree {
         Ok(())
     }
 
+    fn layout_node_constrained(
+        &self,
+        node: NodeId,
+        bounds: Rect,
+        constraints: &HashMap<WindowId, SizeConstraints>,
+        focused: Option<WindowId>,
+        geometry: &mut HashMap<WindowId, Rect>,
+    ) -> Result<(), LayoutError> {
+        match self.nodes.get(&node) {
+            Some(Node::Window(window)) => {
+                geometry.insert(*window, bounds);
+            }
+            Some(Node::Split {
+                axis,
+                ratio,
+                first,
+                second,
+            }) => {
+                let first_minimum = self.minimum_size(*first, constraints)?;
+                let second_minimum = self.minimum_size(*second, constraints)?;
+                let available = match axis {
+                    Axis::Horizontal => bounds.width,
+                    Axis::Vertical => bounds.height,
+                }
+                .max(0.0);
+                let first_required = match axis {
+                    Axis::Horizontal => first_minimum.0,
+                    Axis::Vertical => first_minimum.1,
+                };
+                let second_required = match axis {
+                    Axis::Horizontal => second_minimum.0,
+                    Axis::Vertical => second_minimum.1,
+                };
+                let desired = available * ratio;
+                let first_extent = if first_required + second_required <= available {
+                    desired.clamp(first_required, available - second_required)
+                } else if focused.is_some_and(|window| self.contains_window(*first, window)) {
+                    first_required.min(available)
+                } else {
+                    (available - second_required).max(0.0)
+                };
+                let adjusted_ratio = if available > 0.0 {
+                    first_extent / available
+                } else {
+                    0.5
+                };
+                let (first_bounds, second_bounds) = split_rect(bounds, *axis, adjusted_ratio);
+
+                self.layout_node_constrained(*first, first_bounds, constraints, focused, geometry)?;
+                self.layout_node_constrained(
+                    *second,
+                    second_bounds,
+                    constraints,
+                    focused,
+                    geometry,
+                )?;
+            }
+            Some(Node::Stack { children, active }) => {
+                let child = children
+                    .get(*active)
+                    .ok_or(LayoutError::InvalidTree("stack active index is invalid"))?;
+                self.layout_node_constrained(*child, bounds, constraints, focused, geometry)?;
+            }
+            None => return Err(LayoutError::InvalidTree("node is missing")),
+        }
+
+        Ok(())
+    }
+
+    fn minimum_size(
+        &self,
+        node: NodeId,
+        constraints: &HashMap<WindowId, SizeConstraints>,
+    ) -> Result<(f64, f64), LayoutError> {
+        match self.nodes.get(&node) {
+            Some(Node::Window(window)) => {
+                let constraint = constraints.get(window).copied().unwrap_or_default();
+                let constraint = normalized_constraints(constraint);
+                Ok((constraint.min_width, constraint.min_height))
+            }
+            Some(Node::Split {
+                axis,
+                first,
+                second,
+                ..
+            }) => {
+                let first = self.minimum_size(*first, constraints)?;
+                let second = self.minimum_size(*second, constraints)?;
+
+                Ok(match axis {
+                    Axis::Horizontal => (first.0 + second.0, first.1.max(second.1)),
+                    Axis::Vertical => (first.0.max(second.0), first.1 + second.1),
+                })
+            }
+            Some(Node::Stack { children, .. }) => {
+                let mut minimum = (1.0_f64, 1.0_f64);
+
+                for child in children {
+                    let child = self.minimum_size(*child, constraints)?;
+                    minimum.0 = minimum.0.max(child.0);
+                    minimum.1 = minimum.1.max(child.1);
+                }
+
+                Ok(minimum)
+            }
+            None => Err(LayoutError::InvalidTree("node is missing")),
+        }
+    }
+
+    fn contains_window(&self, node: NodeId, window: WindowId) -> bool {
+        match self.nodes.get(&node) {
+            Some(Node::Window(candidate)) => *candidate == window,
+            Some(Node::Split { first, second, .. }) => {
+                self.contains_window(*first, window) || self.contains_window(*second, window)
+            }
+            Some(Node::Stack { children, .. }) => children
+                .iter()
+                .any(|child| self.contains_window(*child, window)),
+            None => false,
+        }
+    }
+
     fn validate_node(
         &self,
         node: NodeId,
@@ -733,6 +919,93 @@ fn valid_resize_amount(amount: f64) -> f64 {
         amount.abs()
     } else {
         0.0
+    }
+}
+
+fn normalized_constraints(constraints: SizeConstraints) -> SizeConstraints {
+    let min_width = finite_positive(constraints.min_width).unwrap_or(1.0);
+    let min_height = finite_positive(constraints.min_height).unwrap_or(1.0);
+    let max_width = constraints
+        .max_width
+        .and_then(finite_positive)
+        .map(|maximum| maximum.max(min_width));
+    let max_height = constraints
+        .max_height
+        .and_then(finite_positive)
+        .map(|maximum| maximum.max(min_height));
+
+    SizeConstraints {
+        min_width,
+        min_height,
+        max_width,
+        max_height,
+    }
+}
+
+fn finite_positive(value: f64) -> Option<f64> {
+    (value.is_finite() && value > 0.0).then_some(value)
+}
+
+fn record_minimum_warnings(
+    window: WindowId,
+    rect: Rect,
+    constraints: SizeConstraints,
+    warnings: &mut Vec<ConstraintWarning>,
+) {
+    if rect.width < constraints.min_width {
+        warnings.push(ConstraintWarning {
+            window,
+            kind: ConstraintKind::MinimumWidth,
+            requested: constraints.min_width,
+            assigned: rect.width,
+        });
+    }
+    if rect.height < constraints.min_height {
+        warnings.push(ConstraintWarning {
+            window,
+            kind: ConstraintKind::MinimumHeight,
+            requested: constraints.min_height,
+            assigned: rect.height,
+        });
+    }
+}
+
+fn apply_gaps(geometry: &mut HashMap<WindowId, Rect>, bounds: Rect, gaps: GapConfig) {
+    let outer = if gaps.smart && geometry.len() == 1 {
+        0.0
+    } else {
+        valid_gap(gaps.outer)
+    };
+    let half_inner = valid_gap(gaps.inner) / 2.0;
+    let right = bounds.x + bounds.width;
+    let bottom = bounds.y + bounds.height;
+
+    for rect in geometry.values_mut() {
+        let left_inset = if nearly_equal(rect.x, bounds.x) {
+            outer
+        } else {
+            half_inner
+        };
+        let top_inset = if nearly_equal(rect.y, bounds.y) {
+            outer
+        } else {
+            half_inner
+        };
+        let right_inset = if nearly_equal(rect.x + rect.width, right) {
+            outer
+        } else {
+            half_inner
+        };
+        let bottom_inset = if nearly_equal(rect.y + rect.height, bottom) {
+            outer
+        } else {
+            half_inner
+        };
+
+        rect.x += left_inset;
+        rect.y += top_inset;
+        rect.width = (rect.width - left_inset - right_inset).max(1.0);
+        rect.height = (rect.height - top_inset - bottom_inset).max(1.0);
     }
 }
 
@@ -1153,6 +1426,119 @@ mod tests {
 
             assert!(tree.validate().is_ok());
         }
+    }
+
+    #[test]
+    fn constraints_adjust_split_boundaries_when_space_is_available() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.2)
+            .unwrap();
+        tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.2)
+            .unwrap();
+        let constraints = HashMap::from([
+            (
+                WindowId(1),
+                SizeConstraints {
+                    min_width: 40.0,
+                    ..SizeConstraints::default()
+                },
+            ),
+            (
+                WindowId(2),
+                SizeConstraints {
+                    min_width: 30.0,
+                    ..SizeConstraints::default()
+                },
+            ),
+        ]);
+        let result = tree
+            .geometry_with_constraints(
+                Rect::new(0.0, 0.0, 100.0, 80.0),
+                GapConfig {
+                    inner: 0.0,
+                    outer: 0.0,
+                    smart: false,
+                },
+                &constraints,
+                Some(WindowId(1)),
+            )
+            .unwrap();
+
+        assert_eq!(result.geometry[&WindowId(1)].width, 40.0);
+        assert_eq!(result.geometry[&WindowId(2)].width, 60.0);
+        assert!(result.warnings.is_empty());
+    }
+
+    #[test]
+    fn focused_window_wins_an_impossible_minimum_constraint_conflict() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
+            .unwrap();
+        let constraints = HashMap::from([
+            (
+                WindowId(1),
+                SizeConstraints {
+                    min_width: 80.0,
+                    ..SizeConstraints::default()
+                },
+            ),
+            (
+                WindowId(2),
+                SizeConstraints {
+                    min_width: 80.0,
+                    ..SizeConstraints::default()
+                },
+            ),
+        ]);
+        let result = tree
+            .geometry_with_constraints(
+                Rect::new(0.0, 0.0, 100.0, 80.0),
+                GapConfig {
+                    inner: 0.0,
+                    outer: 0.0,
+                    smart: false,
+                },
+                &constraints,
+                Some(WindowId(1)),
+            )
+            .unwrap();
+
+        assert_eq!(result.geometry[&WindowId(1)].width, 80.0);
+        assert_eq!(result.geometry[&WindowId(2)].width, 20.0);
+        assert_eq!(result.warnings.len(), 1);
+        assert_eq!(result.warnings[0].window, WindowId(2));
+        assert_eq!(result.warnings[0].kind, ConstraintKind::MinimumWidth);
+    }
+
+    #[test]
+    fn maximum_constraints_clip_without_overlapping_neighbors() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+        let constraints = HashMap::from([(
+            WindowId(1),
+            SizeConstraints {
+                max_width: Some(60.0),
+                max_height: Some(40.0),
+                ..SizeConstraints::default()
+            },
+        )]);
+        let result = tree
+            .geometry_with_constraints(
+                Rect::new(0.0, 0.0, 100.0, 80.0),
+                GapConfig::default(),
+                &constraints,
+                Some(WindowId(1)),
+            )
+            .unwrap();
+
+        assert_eq!(
+            result.geometry[&WindowId(1)],
+            Rect::new(0.0, 0.0, 60.0, 40.0)
+        );
+        assert_eq!(result.warnings.len(), 2);
     }
 
     fn choose_window(windows: &[WindowId], random: u64) -> Option<WindowId> {
