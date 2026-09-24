@@ -368,11 +368,19 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 name = "ferese"
 version = "0.1.0"
 dependencies = [
+ "ferese-core",
  "ferese-layout",
  "libc",
  "smithay",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ferese-core"
+version = "0.1.0"
+dependencies = [
+ "ferese-layout",
 ]
 
 [[package]]

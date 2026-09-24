@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ferese-core = { path = "../crates/ferese-core" }
 ferese-layout = { path = "../crates/ferese-layout" }
 libc.workspace = true
 smithay.workspace = true

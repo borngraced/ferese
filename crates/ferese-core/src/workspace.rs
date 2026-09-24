@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
-use crate::{Axis, LayoutError, LayoutTree, WindowId};
+use ferese_layout::{Axis, LayoutError, LayoutTree, WindowId};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct WorkspaceId(pub u64);

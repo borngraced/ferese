@@ -6,7 +6,8 @@ use std::{
     time::Instant,
 };
 
-use ferese_layout::{Axis, Direction, GapConfig, Rect, WindowId, WorkspaceSet};
+use ferese_core::WorkspaceSet;
+use ferese_layout::{Axis, Direction, GapConfig, Rect, WindowId};
 
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
