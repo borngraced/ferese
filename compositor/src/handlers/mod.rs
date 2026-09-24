@@ -13,6 +13,8 @@ use smithay::{
     wayland::{
         compositor::{TraversalAction, with_states, with_surface_tree_downward},
         fractional_scale::{FractionalScaleHandler, with_fractional_scale},
+        idle_inhibit::IdleInhibitHandler,
+        idle_notify::{IdleNotifierHandler, IdleNotifierState},
         output::OutputHandler,
         pointer_constraints::{
             PointerConstraint, PointerConstraintsHandler, with_pointer_constraint,
@@ -70,6 +72,31 @@ impl FractionalScaleHandler for Ferese {
                 surface_scale.set_preferred_scale(scale);
             });
         });
+    }
+}
+
+impl IdleNotifierHandler for Ferese {
+    fn idle_notifier_state(&mut self) -> &mut IdleNotifierState<Self> {
+        &mut self.idle_notifier_state
+    }
+}
+
+impl IdleInhibitHandler for Ferese {
+    fn inhibit(&mut self, surface: WlSurface) {
+        let count = self.idle_inhibitors.entry(surface).or_default();
+        *count = count.saturating_add(1);
+        self.idle_notifier_state.set_is_inhibited(true);
+    }
+
+    fn uninhibit(&mut self, surface: WlSurface) {
+        if let Some(count) = self.idle_inhibitors.get_mut(&surface) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.idle_inhibitors.remove(&surface);
+            }
+        }
+        self.idle_notifier_state
+            .set_is_inhibited(!self.idle_inhibitors.is_empty());
     }
 }
 
@@ -160,6 +187,8 @@ impl XdgForeignHandler for Ferese {
 smithay::delegate_compositor!(Ferese);
 smithay::delegate_data_device!(Ferese);
 smithay::delegate_fractional_scale!(Ferese);
+smithay::delegate_idle_inhibit!(Ferese);
+smithay::delegate_idle_notify!(Ferese);
 smithay::delegate_layer_shell!(Ferese);
 smithay::delegate_output!(Ferese);
 smithay::delegate_pointer_constraints!(Ferese);

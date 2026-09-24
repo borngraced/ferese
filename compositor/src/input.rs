@@ -17,6 +17,9 @@ use ferese_layout::Direction;
 
 impl Ferese {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
+        let seat = self.seat.clone();
+        self.idle_notifier_state.notify_activity(&seat);
+
         match event {
             InputEvent::Keyboard { event, .. } => {
                 let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");

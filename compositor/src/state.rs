@@ -31,6 +31,8 @@ use smithay::{
     wayland::{
         compositor::{CompositorClientState, CompositorState, with_states},
         fractional_scale::FractionalScaleManagerState,
+        idle_inhibit::IdleInhibitManagerState,
+        idle_notify::IdleNotifierState,
         output::OutputManagerState,
         pointer_constraints::PointerConstraintsState,
         presentation::PresentationState,
@@ -61,6 +63,7 @@ pub struct Ferese {
     pub focused_window: Option<WindowId>,
     pub cursor_status: CursorImageStatus,
     pub intercepted_keys: HashSet<smithay::input::keyboard::Keycode>,
+    pub idle_inhibitors: HashMap<WlSurface, usize>,
     pub direct_backend: Option<crate::backends::direct::DirectBackendState>,
     next_window_id: u64,
     last_animation_tick: Instant,
@@ -70,6 +73,8 @@ pub struct Ferese {
     pub data_device_state: DataDeviceState,
     pub decoration_state: XdgDecorationState,
     pub fractional_scale_state: FractionalScaleManagerState,
+    pub idle_inhibit_state: IdleInhibitManagerState,
+    pub idle_notifier_state: IdleNotifierState<Self>,
     pub output_manager_state: OutputManagerState,
     pub pointer_constraints_state: PointerConstraintsState,
     pub presentation_state: PresentationState,
@@ -87,7 +92,7 @@ pub struct Ferese {
 
 impl Ferese {
     pub fn new(
-        event_loop: &mut EventLoop<Self>,
+        event_loop: &mut EventLoop<'static, Self>,
         display: Display<Self>,
     ) -> Result<Self, Box<dyn Error>> {
         let display_handle = display.handle();
@@ -95,6 +100,8 @@ impl Ferese {
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&display_handle);
+        let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&display_handle);
+        let idle_notifier_state = IdleNotifierState::new(&display_handle, event_loop.handle());
         let shm_state = ShmState::new::<Self>(&display_handle, Vec::new());
         let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&display_handle);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
@@ -128,6 +135,7 @@ impl Ferese {
             focused_window: None,
             cursor_status: CursorImageStatus::default_named(),
             intercepted_keys: HashSet::new(),
+            idle_inhibitors: HashMap::new(),
             direct_backend: None,
             next_window_id: 1,
             last_animation_tick: start_time,
@@ -137,6 +145,8 @@ impl Ferese {
             data_device_state,
             decoration_state,
             fractional_scale_state,
+            idle_inhibit_state,
+            idle_notifier_state,
             output_manager_state,
             pointer_constraints_state,
             presentation_state,
@@ -155,7 +165,7 @@ impl Ferese {
 
     fn init_wayland_listener(
         display: Display<Self>,
-        event_loop: &mut EventLoop<Self>,
+        event_loop: &mut EventLoop<'static, Self>,
     ) -> Result<OsString, Box<dyn Error>> {
         let listening_socket = ListeningSocketSource::new_auto()?;
         let socket_name = listening_socket.socket_name().to_os_string();

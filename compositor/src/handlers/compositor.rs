@@ -56,6 +56,18 @@ impl CompositorHandler for Ferese {
         xdg_shell::handle_commit(&mut self.popups, &mut self.space, surface);
         crate::backends::direct::render_all(self);
     }
+
+    fn destroyed(&mut self, surface: &WlSurface) {
+        if self.idle_inhibitors.remove(surface).is_some() {
+            self.idle_notifier_state
+                .set_is_inhibited(!self.idle_inhibitors.is_empty());
+        }
+        if matches!(&self.cursor_status, smithay::input::pointer::CursorImageStatus::Surface(cursor) if cursor == surface)
+        {
+            self.cursor_status = smithay::input::pointer::CursorImageStatus::default_named();
+            crate::backends::direct::render_all(self);
+        }
+    }
 }
 
 impl BufferHandler for Ferese {
