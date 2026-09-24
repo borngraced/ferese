@@ -29,6 +29,7 @@ use smithay::{
                 PrimarySelectionHandler, PrimarySelectionState, set_primary_focus,
             },
         },
+        tablet_manager::TabletSeatHandler,
         xdg_foreign::{XdgForeignHandler, XdgForeignState},
     },
 };
@@ -170,6 +171,7 @@ impl SelectionHandler for Ferese {
 
 impl ClientDndGrabHandler for Ferese {}
 impl ServerDndGrabHandler for Ferese {}
+impl TabletSeatHandler for Ferese {}
 
 impl DataDeviceHandler for Ferese {
     fn data_device_state(&self) -> &DataDeviceState {
@@ -190,6 +192,7 @@ impl XdgForeignHandler for Ferese {
 }
 
 smithay::delegate_compositor!(Ferese);
+smithay::delegate_cursor_shape!(Ferese);
 smithay::delegate_data_device!(Ferese);
 smithay::delegate_fractional_scale!(Ferese);
 smithay::delegate_idle_inhibit!(Ferese);

@@ -33,6 +33,7 @@ use smithay::{
     utils::{Logical, Point, Size},
     wayland::{
         compositor::{CompositorClientState, CompositorState, with_states},
+        cursor_shape::CursorShapeManagerState,
         fractional_scale::FractionalScaleManagerState,
         idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
@@ -75,6 +76,7 @@ pub struct Ferese {
     pub popups: PopupManager,
     pub seat: Seat<Self>,
     pub compositor_state: CompositorState,
+    pub cursor_shape_state: CursorShapeManagerState,
     pub data_device_state: DataDeviceState,
     pub decoration_state: XdgDecorationState,
     pub fractional_scale_state: FractionalScaleManagerState,
@@ -102,6 +104,7 @@ impl Ferese {
     ) -> Result<Self, Box<dyn Error>> {
         let display_handle = display.handle();
         let compositor_state = CompositorState::new::<Self>(&display_handle);
+        let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&display_handle);
@@ -152,6 +155,7 @@ impl Ferese {
             popups: PopupManager::default(),
             seat,
             compositor_state,
+            cursor_shape_state,
             data_device_state,
             decoration_state,
             fractional_scale_state,
