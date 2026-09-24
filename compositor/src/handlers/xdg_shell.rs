@@ -2,10 +2,12 @@ use smithay::{
     desktop::{
         PopupKind, PopupManager, Space, Window, find_popup_root_surface, get_popup_toplevel_coords,
     },
+    reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
     reexports::wayland_server::protocol::{wl_seat, wl_surface::WlSurface},
     utils::Serial,
     wayland::{
         compositor::with_states,
+        shell::xdg::decoration::XdgDecorationHandler,
         shell::xdg::{
             PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
             XdgToplevelSurfaceData,
@@ -58,6 +60,31 @@ impl XdgShellHandler for Ferese {
     }
 
     fn grab(&mut self, _: PopupSurface, _: wl_seat::WlSeat, _: Serial) {}
+}
+
+impl XdgDecorationHandler for Ferese {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        set_decoration_mode(&toplevel, Mode::ClientSide);
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: Mode) {
+        // Phase 1 negotiates decorations but does not yet draw a server frame.
+        // Honor CSD and safely fall back to CSD for premature SSD requests.
+        let mode = match mode {
+            Mode::ClientSide | Mode::ServerSide => Mode::ClientSide,
+            _ => Mode::ClientSide,
+        };
+        set_decoration_mode(&toplevel, mode);
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        set_decoration_mode(&toplevel, Mode::ClientSide);
+    }
+}
+
+fn set_decoration_mode(toplevel: &ToplevelSurface, mode: Mode) {
+    toplevel.with_pending_state(|state| state.decoration_mode = Some(mode));
+    toplevel.send_pending_configure();
 }
 
 pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: &WlSurface) {

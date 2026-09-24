@@ -15,7 +15,9 @@ use smithay::{
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         output::OutputManagerState,
+        selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
         shell::xdg::XdgShellState,
+        shell::xdg::decoration::XdgDecorationState,
         shm::ShmState,
         socket::ListeningSocketSource,
     },
@@ -30,7 +32,10 @@ pub struct Ferese {
     pub popups: PopupManager,
     pub seat: Seat<Self>,
     pub compositor_state: CompositorState,
+    pub data_device_state: DataDeviceState,
+    pub decoration_state: XdgDecorationState,
     pub output_manager_state: OutputManagerState,
+    pub primary_selection_state: PrimarySelectionState,
     pub seat_state: SeatState<Self>,
     pub shm_state: ShmState,
     pub xdg_shell_state: XdgShellState,
@@ -44,8 +49,11 @@ impl Ferese {
         let display_handle = display.handle();
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        let decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, Vec::new());
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
+        let data_device_state = DataDeviceState::new::<Self>(&display_handle);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&display_handle, "ferese-winit");
         seat.add_keyboard(Default::default(), 200, 25)?;
@@ -61,7 +69,10 @@ impl Ferese {
             popups: PopupManager::default(),
             seat,
             compositor_state,
+            data_device_state,
+            decoration_state,
             output_manager_state,
+            primary_selection_state,
             seat_state,
             shm_state,
             xdg_shell_state,
