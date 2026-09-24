@@ -2,7 +2,8 @@
 
 Ferese is an experimental Wayland tiling compositor written in Rust with
 Smithay. The nested compositor is complete and development currently targets
-the M1 native protocol and interaction milestone in [spec.md](spec.md).
+the M2 tiling and workspaces milestone in the
+[window-manager specification](docs/ferese-window-manager-spec.md).
 
 ## Development
 

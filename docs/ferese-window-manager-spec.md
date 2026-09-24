@@ -9,7 +9,7 @@ Display protocol: Wayland
 
 Ferese is a Wayland tiling compositor for a conventional, keyboard-friendly
 desktop. It combines predictable window management with compositor-owned rounded
-geometry, shadows, animation, transparency, and semantic glass materials.
+geometry, shadows, animation, transparency, and semantic surface materials.
 
 This document is the implementation source of truth for Ferese v0 and records
 the gated desktop-tier roadmap. The terms **MUST**, **MUST NOT**, **SHOULD**,
@@ -25,6 +25,24 @@ the gated desktop-tier roadmap. The terms **MUST**, **MUST NOT**, **SHOULD**,
 6. Effects degrade gracefully when performance requires it.
 7. The nested compositor is the primary development environment.
 8. Security-sensitive operations are unavailable to untrusted clients.
+
+### 2.1 Companion specification ownership
+
+Ferese uses three normative documents with non-overlapping ownership:
+
+| Concern | Normative owner |
+| --- | --- |
+| compositor mechanism, Wayland policy, focus, layout, rendering, IPC, security | this document |
+| shell interaction, visibility, launcher, notifications, DND, shell focus | `ferese-shell-design.md` |
+| colors, semantic surface tokens, typography, icons, and exact shell component geometry | `ferese-theme-ui-spec.md` |
+
+The shell specification MUST reference visual tokens instead of duplicating
+pixel, radius, color, shadow, blur, or typography values. The theme/UI
+specification MUST NOT redefine focus, fullscreen, workspace, launcher,
+notification, or security behavior.
+
+If companion documents conflict, the owner in this table is authoritative for
+that concern.
 
 ## 3. Scope
 
@@ -58,8 +76,8 @@ for basic window management or application launching.
 
 The desktop tier builds on the v0 core and includes:
 
-- backdrop blur and semantic glass materials;
-- the Ferese overview, launcher UI, workspace strip, OSD, and notifications;
+- semantic surface materials with glass, translucent, and solid rendering;
+- the Ferese top bar, overview, launcher UI, workspace UI, OSD, and notifications;
 - the graphical settings application;
 - portal-backed screenshots and screen sharing; and
 - X11 compatibility through `xwayland-satellite` unless an architectural
@@ -73,8 +91,8 @@ terminating the compositor or invalidating managed-window state.
 The following are outside v0:
 
 - a file manager, display manager, or lock screen;
-- network, Bluetooth, or package-management UI;
-- a general plugin, scripting, or theme system;
+- network, Bluetooth, or package-management UI in v0 or the initial desktop-tier shell;
+- a general plugin or scripting system, or arbitrary CSS/component-replacement theme engine;
 - desktop widgets;
 - advanced dynamic layout algorithms;
 - exhaustive support for every Wayland protocol or toolkit edge case; and
@@ -90,7 +108,7 @@ daemon is not part of v0.
 | Executable | Responsibility |
 | --- | --- |
 | `ferese` | Compositing, policy, input, scene construction, and rendering |
-| `ferese-shell` | Overview controls, launcher, workspace UI, notifications, and OSD |
+| `ferese-shell` | Top bar, overview controls, launcher, workspace UI, notifications, and OSD |
 | `ferese-settings` | Graphical configuration editor |
 | `feresectl` | Command-line IPC client |
 
@@ -372,6 +390,40 @@ set initial workspace, floating state, dimensions, or fullscreen state. Rules
 MUST be evaluated deterministically before insertion. Title matching SHOULD be
 avoided when a stable `app_id` exists.
 
+### 5.5 Application identity and launch association
+
+Ferese exposes normalized application identity to trusted shell clients without
+making application identity part of layout policy.
+
+```rust
+pub struct ApplicationIdentity {
+    pub desktop_id: Option<String>,
+    pub app_id: Option<String>,
+    pub startup_wm_class: Option<String>,
+}
+
+pub struct LaunchAssociation {
+    pub id: LaunchId,
+    pub desktop_id: Option<String>,
+    pub activation_token: Option<String>,
+    pub child_pid: Option<u32>,
+    pub started_at: Instant,
+}
+```
+
+Application identity resolution MUST prefer explicit desktop-entry association,
+then normalized Wayland `app_id`, then `StartupWMClass`/X11 class metadata when
+available. Ferese MUST NOT guess that unrelated strings are equivalent merely
+because they are similar. Case and an optional `.desktop` suffix MAY be
+normalized only where desktop-entry semantics make that comparison unambiguous.
+
+A shell-initiated launch MUST be tracked until the resulting window is
+associated or the launch expires. XDG activation information is the preferred
+association; process ancestry and normalized application identity MAY be used as
+fallbacks. The association exists to drive shell state such as `launching`,
+`running`, and focus. It MUST NOT bypass ordinary window rules or workspace
+policy.
+
 ## 6. Layout
 
 ```rust
@@ -617,149 +669,256 @@ intermediates rather than full-resolution per-frame blur.
 
 ## 10. Material system
 
-This section specifies the desktop-tier material system. It is not a v0 release
-gate.
+This section specifies compositor support for desktop-tier semantic surfaces. It
+is not a v0 release gate. Theme token values and exact component geometry belong
+to `ferese-theme-ui-spec.md`.
 
-Initial semantic materials are:
+Initial semantic surface roles are:
 
 ```text
-normal
-glass.panel
-glass.popover
-glass.menu
-glass.hud
+surface.panel
+surface.panel_elevated
+surface.popover
+surface.menu
+surface.notification
+surface.hud
+surface.modal
 ```
 
-The compositor maps semantic names to theme-controlled parameters. Clients
-SHOULD request names rather than shader values.
+Clients request semantic roles rather than raw shader values.
+
+The compositor resolves each role through the active material style:
+
+```rust
+pub enum MaterialStyle {
+    Glass,
+    Translucent,
+    Solid,
+}
+```
 
 `ferese-effects-v1` is private to trusted Ferese components. It MAY set or clear
-a semantic surface material. It MUST NOT expose shader code, unrestricted
-capture, or unbounded effect values. Its global MUST be advertised only to
-Wayland clients granted the `effects` capability by the private-client mechanism
-in Section 13.
+a semantic surface role. It MUST NOT expose shader code, unrestricted capture,
+arbitrary renderer state, or unbounded effect values. Its global MUST be
+advertised only to Wayland clients granted the `effects` capability by the
+private-client mechanism in Section 13.
 
-Glass renders as:
+For `Glass`, the compositor-owned rendering pipeline is:
 
 ```text
 lower scene content
   -> capture expanded region
   -> downsample
-  -> dual Kawase blur
+  -> blur
   -> upsample
   -> saturation and brightness
-  -> tint and noise
-  -> glass foreground
+  -> tint and optional noise
+  -> semantic surface foreground
 ```
 
-Blur MUST exclude the glass surface and all content above it. Sampling bounds
-MUST include the kernel radius.
+Blur MUST exclude the requesting surface and all content above it. Sampling
+bounds MUST include the kernel radius.
+
+For `Translucent`, the compositor applies semantic tint and alpha without
+backdrop capture. For `Solid`, the compositor uses an opaque semantic surface
+color. Changing material style MUST NOT change component geometry, focus, input
+regions, layer-shell roles, or shell behavior.
 
 A blur cache entry MUST identify its output and scale, visible and sample
-regions, material parameters, contributing lower-layer generations, and result
-texture. Changes to content, stacking, geometry, scale, transform, material,
-workspace, or output MUST invalidate affected entries. A global generation MAY
-be used initially; region-aware invalidation SHOULD replace it before performance
-tuning is complete.
+regions, semantic role and resolved material parameters, contributing
+lower-layer generations, and result texture. Changes to content, stacking,
+geometry, scale, transform, resolved material, workspace, or output MUST
+invalidate affected entries. A global generation MAY be used initially;
+region-aware invalidation SHOULD replace it before performance tuning is
+complete.
 
 ### 10.1 Built-in visual profile
 
-The desktop tier provides one restrained dark profile rather than a theme
-engine. Its defaults are a subtle blue focus accent, 14 logical-pixel window
-radius, 10 logical-pixel tiling gaps, soft shadows, 24 logical-pixel backdrop
-blur, and mildly increased glass saturation. Focused and foreground content MUST remain distinguishable
-without requiring transparency. Blur, glow, borders, and shadows SHOULD establish
-hierarchy rather than compete for attention. Settings, overview, notifications,
-launcher, and OSD MUST use the same semantic materials and spacing system.
+The desktop tier provides one restrained Ferese visual language with glass,
+translucent, and solid profiles. Exact values for colors, radii, shadows,
+typography, spacing, and material parameters are normative only in
+`ferese-theme-ui-spec.md`.
+
+Focused and foreground content MUST remain distinguishable without transparency.
+Blur, borders, and shadows SHOULD establish hierarchy rather than compete for
+attention. Settings, top bar, overview chrome, notifications, launcher, popovers,
+and OSD MUST consume the same semantic surface and spacing tokens.
 
 ## 11. Shell and overview
 
-This section specifies desktop-tier behavior. `ferese-shell` owns overview
-controls, launcher, workspace strip, notifications, and volume and brightness
-OSD. Screenshot UI MAY be added after capture policy and implementation are
-complete. The shell uses a capability-scoped private Wayland connection plus
-authenticated IPC.
+This section specifies compositor-facing desktop-tier shell behavior. Detailed
+interaction is normative in `ferese-shell-design.md`; visual tokens and exact
+component geometry are normative in `ferese-theme-ui-spec.md`.
+
+`ferese-shell` owns the top bar, overview controls, launcher, workspace UI,
+notifications, and volume and brightness OSD. Screenshot UI MAY be added after
+capture policy and implementation are complete. The shell uses a
+capability-scoped private Wayland connection plus authenticated IPC.
+
+Ferese deliberately has no persistent dock or bottom application bar.
 
 Overview MUST NOT require copying each managed window into the shell process.
 The compositor owns the live window presentation and enters an overview scene
 mode in which existing window scene nodes receive temporary visual transforms.
-`ferese-shell` supplies controls such as labels, selection affordances, workspace
-UI, and later search.
+`ferese-shell` supplies controls such as labels, selection affordances,
+workspace UI, and later search.
 
 The overview binding is `Super+Tab`. Entering overview MUST animate windows from
 their current visible geometry into overview geometry. Pointer and keyboard
-selection MUST target the compositor-owned live window nodes. Dismissing overview
-MUST animate those same nodes back to the current layout targets. Workspace
-switching from overview MUST obey Section 5.4. Search MAY wait for the launcher
-milestone.
+selection MUST target the compositor-owned live window nodes. Dismissing
+overview MUST animate those same nodes back to the current layout targets.
+Workspace switching from overview MUST obey Section 5.4.
 
-### 11.1 Shell surfaces
+### 11.1 Public layer-shell
 
-`ferese-shell` MUST use standard layer-shell for launcher, workspace UI,
-notifications, and OSD surfaces. Such a surface is not a managed application
-window and MUST NOT enter tiling, workspace focus history, or normal application
-task switching. Ferese MAY use a minimal private `ferese-shell-v1` protocol for
-overview control and compositor-owned live-window selection, but it MUST NOT
-duplicate the standard layer-shell role or geometry model.
+`ferese-shell` MUST use standard layer-shell for the top bar, launcher,
+workspace UI, notifications, popovers, and OSD surfaces. Such surfaces are not
+managed application windows and MUST NOT enter tiling, workspace focus history,
+or normal application task switching.
 
-Initial semantic roles are:
+Layer-shell is a public standard role and remains available to ordinary
+third-party panels, launchers, notification daemons, and wallpapers under
+Section 8 policy. Binding layer-shell MUST NOT grant Ferese-specific metadata,
+overview control, capture, virtual input, or semantic-surface capability.
+
+The compositor enforces layer, exclusive-zone, keyboard-interactivity,
+input-region, namespace, and output policy.
+
+### 11.2 Top bar, fullscreen, and reservation
+
+The Ferese top bar is the only persistent Ferese shell surface that reserves
+workspace space.
+
+Fullscreen is a presentation state over the preserved underlying workspace
+layout. Entering fullscreen MUST hide the Ferese top bar visually without
+changing the underlying workspace usable layout region. Leaving fullscreen MUST
+restore the bar without reconfiguring hidden tiled windows merely because the
+bar reappears.
+
+A temporary top-bar reveal over fullscreen MUST use overlay presentation and
+`exclusive_zone = 0`. It MUST NOT resize the fullscreen client or alter the
+underlying workspace layout.
+
+If `ferese-shell` disconnects unexpectedly, the compositor SHOULD retain the
+last valid Ferese-owned top-bar reservation for a short bounded grace period.
+If the shell reconnects with a compatible reservation before the lease expires,
+tiled windows MUST NOT reflow. If the grace period expires, Ferese removes the
+reservation and performs at most one ordinary layout reflow.
+
+### 11.3 Private shell control protocol
+
+`ferese-shell-v1` is a private control and metadata protocol. It MUST NOT
+duplicate layer-shell roles, exclusive zones, or general surface placement.
+
+Its initial responsibilities are limited to:
 
 ```text
-launcher
-overview-controls
-workspace-ui
-notification
-osd
+managed-window list and lifecycle
+application identity metadata
+focused and urgent state
+activate managed window
+request close
+enter / exit overview
+select overview window / workspace
 ```
 
-The compositor enforces layer, exclusive-zone, focus, input-region, and output
-policy. The shell provides content and requests a standard layer-shell role; it
-MUST NOT receive unrestricted arbitrary z-order or geometry authority.
-Interactive shell surfaces MAY receive keyboard/pointer focus while active, but
-Ferese MUST restore the prior managed-window focus when the interaction ends.
-Destroying or disconnecting the shell client MUST remove its shell surfaces
-without changing managed-window state.
+The protocol requires the `shell-control` capability from Section 13. Requests
+MUST be validated against current stable identifiers and flow through the same
+domain operations as keyboard, pointer, and IPC actions.
 
-### 11.2 Application launching and notifications
+### 11.4 Launcher and application launching
 
-The launcher MUST execute configured argument vectors directly and MUST NOT pass
-them through a shell. Before launch, it MUST obtain an xdg-activation token tied
-to the triggering user interaction and make the token available to the child.
-The child receives the public Wayland display and normal session environment.
-It MUST NOT inherit a private Wayland descriptor, IPC capability, or bearer
-secret. A private descriptor deliberately inherited when the compositor starts a
-trusted component is the sole exception during that component's initial exec;
-the component MUST mark it close-on-exec before it can launch any child.
+The initial Ferese launcher is apps-only. Its default binding is `Super+Space`.
+It discovers XDG desktop applications, searches application names and normalized
+application identity, and launches selected applications.
+
+The initial search placeholder is:
+
+```text
+Search apps…
+```
+
+Files, recents, settings, and command providers MAY be added later. The shell
+MUST NOT display dead tabs for unavailable providers.
+
+Before launch, the shell MUST obtain an xdg-activation token tied to the
+triggering user interaction and make the token available to the child. The child
+receives the public Wayland display and normal session environment. It MUST NOT
+inherit a private Wayland descriptor, IPC capability, or bearer secret.
+
+A private descriptor deliberately inherited when the compositor starts a trusted
+component is the sole exception during that component's initial exec; the
+component MUST mark it close-on-exec before it can launch any child.
+
+### 11.5 Shell focus and modals
+
+Interactive shell surfaces MAY receive `FocusTarget::Shell`. The persistent top
+bar SHOULD remain non-keyboard-interactive during ordinary use.
+
+The launcher receives keyboard focus while open and MUST restore the previous
+valid managed-window focus on dismissal where possible. Interactive popovers and
+modals follow the same restoration rule.
+
+A shell modal is appropriate only for destructive confirmation,
+security-sensitive confirmation, or an irreversible shell action. While a modal
+is active, the compositor presents a scrim and directs keyboard focus to the
+modal. Input outside the modal is consumed by the scrim and MUST NOT reach
+managed applications.
+
+Destroying a shell surface or disconnecting the shell MUST never leave a dead
+`FocusTarget::Shell`.
+
+Ferese does not ship a polkit authentication agent in the initial desktop tier.
+System authentication requiring polkit uses an external agent until a separate
+authentication-agent security specification exists.
+
+### 11.6 Notifications and Do Not Disturb
 
 `ferese-shell` MUST implement the standard `org.freedesktop.Notifications` D-Bus
 service for basic notifications. The desktop tier MUST support summary, body,
-icon metadata, expiry, replacement, close, and actions. Notification content is untrusted:
-markup, image paths, and action identifiers MUST be parsed and rendered without
-command execution. If the shell restarts, it MUST reacquire the service and
-continue without affecting managed windows.
+icon metadata, expiry, replacement, close, actions, and urgency metadata.
+
+Notification content is untrusted: markup, image paths, and action identifiers
+MUST be parsed and rendered without command execution.
+
+When Do Not Disturb is disabled, eligible notifications MAY create transient
+toasts and enter notification history. When Do Not Disturb is enabled, normal
+transient toasts are suppressed but notifications still enter history and
+unread state still updates. A future explicitly defined critical-urgency policy
+MAY bypass DND; application-name heuristics MUST NOT.
+
+Network and Bluetooth control UI are outside the initial desktop-tier shell and
+MUST NOT appear as required or placeholder controls.
+
+If the shell restarts, it MUST reacquire the notification service and reconstruct
+shell state without affecting managed windows.
 
 ## 12. Configuration
 
 The primary file is `$XDG_CONFIG_HOME/ferese/config.toml`, falling back to
 `~/.config/ferese/config.toml`.
 
+Configuration has one authoritative representation. Namespace ownership is:
+
+```text
+[theme.*]         visual tokens/material mapping   ferese-theme-ui-spec.md
+[shell.*]         shell behavior                   ferese-shell-design.md
+
+[animations]      compositor animation policy      this document
+[tiling]          layout policy                    this document
+[input]           input policy                     this document
+[commands]        launch command vectors           this document
+[[bindings]]      compositor bindings              this document
+[[window_rules]]  window placement rules           this document
+```
+
+There is no separate legacy visual namespace. Blur, opacity, radii, shadows,
+surface colors, typography, and shell component geometry belong only to
+`[theme.*]`.
+
+Representative core configuration:
+
 ```toml
-[appearance]
-glass = true
-blur_radius = 24.0
-glass_opacity = 0.82
-corner_radius = 14.0
-
-[appearance.shadow]
-enabled = true
-radius = 32.0
-offset_y = 8.0
-opacity = 0.28
-
-[appearance.active_border]
-style = "subtle"
-width = 2.0
-
 [animations]
 enabled = true
 reduced_motion = false
@@ -828,16 +987,27 @@ floating = true
 Command values are argument arrays, never shell command strings. Binding records
 use a normalized key chord, match mode, action, and optional argument. `keysym`
 matching is the default and follows the active XKB layout. `physical` matching
-uses XKB physical key names and is independent of the selected layout. The
-complete built-in set is listed in Section 14; when a user supplies a record for
-the same chord and match mode it replaces that default. A record with
+uses XKB physical key names and is independent of the selected layout.
+
+The complete built-in set is listed in Section 14; when a user supplies a record
+for the same chord and match mode it replaces that default. A record with
 `disabled = true` and no action explicitly unbinds the matching default.
+
 Duplicate normalized bindings, unknown actions, invalid arguments, and
 references to missing commands MUST fail validation. Every built-in binding
 MUST be expressible, replaceable, and removable through this schema.
 
-Unknown fields SHOULD warn. Invalid types, non-finite values, negative sizes,
-and out-of-range opacity MUST fail validation.
+`ferese-config` MUST assemble all enabled namespace schemas and validate the
+entire candidate configuration before applying any part of it. No companion
+component may maintain an independent competing copy of visual or shell
+configuration.
+
+The launcher and overview actions are desktop-tier defaults and MUST be installed
+only when their shell features are available. Their absence from a v0-only
+installation is not a validation error.
+
+Unknown fields SHOULD warn. Invalid types and invalid domain values MUST fail the
+owning schema's validation.
 
 Reload MUST debounce duplicate events, read the entire file, parse, validate,
 construct, and apply the difference as one transaction. Invalid input MUST NOT
@@ -861,8 +1031,7 @@ capabilities are:
 
 ```text
 effects
-overview-control
-global-metadata
+shell-control
 capture
 virtual-input
 ```
@@ -874,21 +1043,26 @@ client, and passes the client end only through an inherited descriptor such as
 arguments, environment secrets, or a discoverable private socket path.
 
 The compositor associates an explicit capability set with each private Wayland
-client and filters private globals and requests against that set. In particular,
-`ferese-effects-v1` requires `effects` and the private overview requests in
-`ferese-shell-v1` require `overview-control`. `ferese-shell` receives only the
-capabilities required by enabled shell features.
-`ferese-settings` receives `effects` when spawned as a trusted Ferese component;
-its configuration changes still use the normal validated IPC path.
+client and filters private globals and requests against that set.
 
-The private `capture` capability permits unattended capture only for a trusted
-component. Public screencopy clients remain subject to the interactive or
-configured capture policy and do not acquire this capability merely by binding
-the public screencopy global.
+`ferese-effects-v1` requires `effects`. `ferese-shell-v1` requires
+`shell-control`. `ferese-shell` receives only the capabilities required by
+enabled shell features. `ferese-settings` MAY receive `effects` when spawned as
+a trusted Ferese component; its configuration changes still use the normal
+validated configuration/IPC path.
+
+Public layer-shell does not require a private capability. The private `capture`
+capability permits unattended capture only for a trusted component. Public
+screencopy clients remain subject to interactive or configured capture policy
+and do not acquire `capture` merely by binding a public global.
 
 If a trusted component launches another privileged Ferese component, it MUST ask
 the compositor to create and pass a new capability-scoped private connection;
 it MUST NOT forward its own Wayland descriptor or capabilities.
+
+Ferese does not ship a polkit authentication agent in the initial desktop tier.
+Security-sensitive actions requiring system authentication MUST use an external
+agent until a separate authentication-agent security specification exists.
 
 ### 13.2 Framing
 
@@ -940,12 +1114,13 @@ show-overview         hide-overview
 show-launcher         hide-launcher
 ```
 
-Enumerating all window titles or capturing pixels requires shell privilege.
+Managed-window enumeration, application identity metadata, shell activation,
+close, and overview-selection operations used by `ferese-shell` belong to the
+private `ferese-shell-v1` protocol rather than widening normal user-control IPC.
 
 Events include `window-opened`, `window-closed`, `window-focused`,
 `window-moved`, `workspace-changed`, `output-added`, `output-removed`,
-`config-changed`, and `config-error`. Payloads MUST omit titles and application
-IDs without shell privilege.
+`config-changed`, and `config-error`.
 
 Subscribers have bounded queues. The server MUST disconnect a subscriber whose
 queue overflows rather than block the compositor.
@@ -1028,7 +1203,7 @@ The target is sustained output refresh at 60 Hz on integrated graphics during
 ordinary use. Animation MUST also work at higher and variable refresh rates.
 
 Ferese SHOULD track frame, render, layout and blur duration; damaged pixels;
-missed presentation deadlines; surface and glass-region counts; and active
+missed presentation deadlines; surface, semantic-material, and blur-region counts; and active
 animations. Performance tracing MUST be optional. Suggested targets are
 `ferese::wayland`, `ferese::layout`, `ferese::render`, `ferese::input`,
 `ferese::ipc`, and `ferese::xwayland`.
@@ -1049,13 +1224,14 @@ stack cardinality, and do not duplicate or lose windows.
 Tests MUST cover defaults, partial files, unknown fields, invalid and non-finite
 values, duplicate key chords, unknown binding actions, missing command
 references, keysym versus physical matching, default unbinding, window-rule
-ordering, reload rollback, serialization, and atomic updates.
+ordering, theme/shell namespace ownership, reload rollback, serialization, and atomic updates.
 
 ### 17.3 IPC and security
 
 Tests MUST cover partial reads, multiple frames per read, oversized frames,
 unsupported versions, subscriptions, slow clients, peer-UID rejection, and
-denial of privileged commands without capability. Launch tests MUST prove that
+denial of privileged commands without capability, `shell-control` filtering, and
+public layer-shell remaining unprivileged. Launch tests MUST prove that
 children receive the public display and activation token but cannot inherit any
 private Wayland or privileged IPC descriptor.
 
@@ -1068,7 +1244,8 @@ visual geometry, configured client size, and committed client size. Nested
 integration tests SHOULD cover configure/commit behavior, inverse-transformed
 input during animation, clipboard, popups, drag-and-drop, focus, fullscreen,
 xdg-activation, output removal, private-client capability filtering, overview
-scene transitions, notification replacement/actions, and shell restart.
+scene transitions, top-bar reservation restart grace, application-identity association,
+DND behavior, notification replacement/actions, and shell restart.
 
 ## 18. Milestones
 
@@ -1148,14 +1325,16 @@ configured terminal launches without shell parsing; malformed clients do not
 affect availability; a 24-hour native-client soak has no compositor crash or
 unbounded resource growth; all Section 3.1 requirements pass.
 
-### M7: Glass materials
+### M7: Semantic surface materials
 
 Before choosing a shell toolkit, build a minimal `wayland-client` probe that
-creates a layer-shell surface and sets a semantic material through
-`ferese-effects-v1`. Then implement capture, dual Kawase blur, tint, saturation,
-noise, caching, and invalidation.
+creates a layer-shell surface and requests `surface.panel` through
+`ferese-effects-v1`. Then implement semantic role resolution for glass,
+translucent, and solid styles plus backdrop capture, blur, tint, saturation,
+optional noise, caching, and invalidation.
 
-Acceptance: the probe blurs only content behind its surface; backdrop changes
+Acceptance: the probe can switch among glass, translucent, and solid without
+changing geometry; glass blurs only content behind its surface; backdrop changes
 invalidate correctly; the effects global is visible only to a client with the
 `effects` capability; a public client cannot bind it; the demo meets its frame
 budget on the reference integrated GPU.
@@ -1165,17 +1344,21 @@ budget on the reference integrated GPU.
 First spike GPUI layer-surface creation, output discovery, focus, configure, and
 shutdown behavior. If the spike fails its lifecycle tests, use a thin native
 Wayland shell adapter or record a toolkit decision before proceeding. Implement
-the compositor overview scene, minimal `ferese-shell-v1` overview control,
-launcher UI, workspace strip, OSD, and the standard notifications D-Bus service.
+the compositor overview scene, minimal `ferese-shell-v1` control/metadata
+protocol, top bar, apps-only launcher UI, workspace UI, OSD, and the standard
+notifications D-Bus service.
 
-Acceptance: normal shell windows use layer-shell; `Super+Tab` controls overview;
-managed windows remain compositor-owned live scene nodes; selection follows
-visual geometry; notification replacement/actions work; shell restart does not
-disrupt windows; each trusted process receives only its assigned capabilities.
+Acceptance: normal shell surfaces use public layer-shell; `Super+Tab` controls
+overview; managed windows remain compositor-owned live scene nodes; selection
+follows visual geometry; the apps-only launcher uses application identity and
+XDG activation; DND and notification replacement/actions work; fullscreen hides
+the top bar without changing underlying layout geometry; shell restart preserves
+the top-bar reservation through its grace period; each trusted process receives
+only its assigned capabilities.
 
 ### M9: Settings and portals
 
-Build Appearance, Tiling, Shortcuts, Input, Workspaces, Displays, and About.
+Build Theme/Appearance, Tiling, Shortcuts, Input, Workspaces, Displays, and About.
 Implement the portal backend and PipeWire integration for screenshots and screen
 sharing.
 
@@ -1212,8 +1395,8 @@ round identically; terminal changes damage the correct regions; and all
 interaction remains responsive.
 
 M4 follows this nested slice immediately so frame pacing is validated on real
-hardware. Glass, GPUI, Settings, XWayland, notifications, portals, and theming
-MUST NOT delay it or the v0 core.
+hardware. Semantic materials, GPUI, Settings, XWayland, notifications, portals, and the
+graphical shell MUST NOT delay it or the v0 core.
 
 ## 20. Definition of v0
 
@@ -1234,7 +1417,8 @@ Ferese v0 is complete when a user can:
     restarts.
 
 The intended v0 result is a low-latency, independently usable tiling compositor.
-The desktop tier adds a coherent Ferese shell, glass, graphical settings,
+The desktop tier adds a coherent Ferese shell, semantic surface materials,
+graphical settings,
 portals, and X11 compatibility without redefining core correctness. Visual
 effects support hierarchy and usability; they do not replace correctness,
 responsiveness, or security.
