@@ -375,6 +375,8 @@ impl Ferese {
                 }
             }
         }
+
+        crate::backends::direct::render_all(self);
     }
 
     pub fn advance_animations(&mut self, now: Instant) -> bool {

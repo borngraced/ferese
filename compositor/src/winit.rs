@@ -31,7 +31,7 @@ use smithay::{
 
 use crate::Ferese;
 
-type AnimatedWindowRenderElement = CropRenderElement<
+pub(crate) type AnimatedWindowRenderElement = CropRenderElement<
     RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
 >;
 
@@ -149,7 +149,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
     Ok(())
 }
 
-fn animated_window_elements(
+pub(crate) fn animated_window_elements(
     state: &Ferese,
     renderer: &mut GlesRenderer,
     output: &Output,

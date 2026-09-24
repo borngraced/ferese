@@ -2,25 +2,31 @@ use std::{collections::HashMap, error::Error, io, path::Path, time::Duration};
 
 use smithay::{
     backend::{
-        allocator::gbm::GbmDevice,
-        drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode},
+        allocator::{
+            Fourcc,
+            gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
+        },
+        drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode, GbmBufferedSurface},
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::gles::GlesRenderer,
+        renderer::{Bind, ImportDma, damage::OutputDamageTracker, gles::GlesRenderer},
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
         udev::{UdevBackend, UdevEvent, primary_gpu},
     },
+    desktop::utils::OutputPresentationFeedback,
     output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::{
         calloop::EventLoop,
         drm::control::{Device as ControlDevice, Mode as DrmMode, ModeTypeFlags, connector, crtc},
         input::Libinput,
         rustix::fs::OFlags,
+        wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind,
     },
-    utils::{DeviceFd, Transform},
+    utils::{DeviceFd, Monotonic, Time, Transform},
+    wayland::presentation::Refresh,
 };
 
-use crate::Ferese;
+use crate::{Ferese, winit::animated_window_elements};
 
 pub struct DirectBackendState {
     pub session: LibSeatSession,
@@ -33,6 +39,8 @@ pub struct DirectBackendState {
 struct PresentationClock {
     last_presentation: Option<Duration>,
     presented_frames: u64,
+    refresh_interval: Option<Duration>,
+    missed_deadlines: u64,
 }
 
 struct DirectDevice {
@@ -49,6 +57,9 @@ struct DirectDevice {
     mode: DrmMode,
     #[allow(dead_code)]
     output: Output,
+    surface: GbmBufferedSurface<GbmAllocator<DrmDeviceFd>, OutputPresentationFeedback>,
+    damage_tracker: OutputDamageTracker,
+    frame_pending: bool,
 }
 
 pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<(), Box<dyn Error>> {
@@ -89,10 +100,11 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
             SessionEvent::PauseSession => {
                 if let Some(backend) = state.direct_backend.as_mut() {
                     backend.active = false;
-                    backend
-                        .devices
-                        .values_mut()
-                        .for_each(|device| device.drm.pause());
+                    backend.devices.values_mut().for_each(|device| {
+                        device.drm.pause();
+                        device.surface.reset_buffers();
+                        device.frame_pending = false;
+                    });
                 }
                 libinput_context.suspend();
                 tracing::info!("direct session paused");
@@ -147,7 +159,7 @@ fn open_primary_device(
         OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
     )?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
-    let (drm, notifier) = DrmDevice::new(fd.clone(), true)?;
+    let (mut drm, notifier) = DrmDevice::new(fd.clone(), true)?;
     let gbm = GbmDevice::new(fd)?;
     // SAFETY: GBM owns a valid DRM descriptor for the lifetime of the EGL display.
     let egl_display = unsafe { EGLDisplay::new(gbm.clone())? };
@@ -156,14 +168,60 @@ fn open_primary_device(
     let renderer = unsafe { GlesRenderer::new(egl_context)? };
     let (connector, crtc, mode) = select_output(&drm)?;
     let output = create_output(state, &connector, mode);
+    if let Some(backend) = state.direct_backend.as_mut() {
+        backend
+            .presentation
+            .set_refresh(OutputMode::from(mode).refresh);
+    }
+    let drm_surface = drm.create_surface(crtc, mode, &[connector.handle()])?;
+    let allocator = GbmAllocator::new(
+        gbm.clone(),
+        GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+    );
+    let surface = GbmBufferedSurface::new(
+        drm_surface,
+        allocator,
+        &[Fourcc::Argb8888, Fourcc::Abgr8888],
+        renderer.dmabuf_formats(),
+    )?;
+    let damage_tracker = OutputDamageTracker::from_output(&output);
 
     event_loop
         .handle()
         .insert_source(notifier, move |event, metadata, state| match event {
             DrmEvent::VBlank(crtc) => {
                 if let Some(metadata) = metadata {
+                    let feedback = state
+                        .direct_backend
+                        .as_mut()
+                        .and_then(|backend| backend.devices.get_mut(&node))
+                        .and_then(|device| match device.surface.frame_submitted() {
+                            Ok(feedback) => feedback,
+                            Err(error) => {
+                                tracing::error!(?node, ?crtc, %error, "failed to retire DRM frame");
+                                None
+                            }
+                        });
+                    if let (Some(mut feedback), DrmEventTime::Monotonic(time)) =
+                        (feedback, metadata.time)
+                    {
+                        feedback.presented(
+                            Time::<Monotonic>::from(time),
+                            Refresh::fixed(refresh_duration(state, node)),
+                            u64::from(metadata.sequence),
+                            Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
+                        );
+                    }
+                    if let Some(device) = state
+                        .direct_backend
+                        .as_mut()
+                        .and_then(|backend| backend.devices.get_mut(&node))
+                    {
+                        device.frame_pending = false;
+                    }
                     state.record_drm_presentation(metadata.time, metadata.sequence);
                     tracing::trace!(?node, ?crtc, sequence = metadata.sequence, "page flip");
+                    render_device(state, node);
                 }
             }
             DrmEvent::Error(error) => {
@@ -186,11 +244,129 @@ fn open_primary_device(
                 crtc,
                 mode,
                 output,
+                surface,
+                damage_tracker,
+                frame_pending: false,
             },
         );
     state.relayout();
+    render_device(state, node);
     tracing::info!(?node, ?path, ?crtc, connector = %connector, "initialized primary DRM/GBM device");
     Ok(())
+}
+
+pub fn render_all(state: &mut Ferese) {
+    let nodes = state
+        .direct_backend
+        .as_ref()
+        .map(|backend| backend.devices.keys().copied().collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    for node in nodes {
+        render_device(state, node);
+    }
+}
+
+fn render_device(state: &mut Ferese, node: DrmNode) {
+    let Some(mut device) = state
+        .direct_backend
+        .as_mut()
+        .and_then(|backend| backend.devices.remove(&node))
+    else {
+        return;
+    };
+    if !device.drm.is_active() || device.frame_pending {
+        restore_device(state, node, device);
+        return;
+    }
+
+    let rendered = (|| -> Result<bool, Box<dyn Error>> {
+        let (mut buffer, age) = device.surface.next_buffer()?;
+        let elements = animated_window_elements(state, &mut device.renderer, &device.output);
+        let mut framebuffer = device.renderer.bind(&mut buffer)?;
+        let result = device.damage_tracker.render_output(
+            &mut device.renderer,
+            &mut framebuffer,
+            usize::from(age),
+            &elements,
+            [0.035, 0.04, 0.055, 1.0],
+        )?;
+        let Some(damage) = result.damage.cloned() else {
+            return Ok(false);
+        };
+
+        let mut presentation = OutputPresentationFeedback::new(&device.output);
+        state.space.elements().for_each(|window| {
+            window.take_presentation_feedback(
+                &mut presentation,
+                |_, _| Some(device.output.clone()),
+                |_, _| Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
+            );
+        });
+        device
+            .surface
+            .queue_buffer(Some(result.sync), Some(damage), presentation)?;
+        device.frame_pending = true;
+        Ok(true)
+    })();
+
+    let queued = match rendered {
+        Ok(true) => {
+            tracing::trace!(?node, "queued DRM frame");
+            true
+        }
+        Ok(false) => false,
+        Err(error) => {
+            tracing::error!(?node, %error, "failed to render DRM frame");
+            false
+        }
+    };
+    restore_device(state, node, device);
+    if queued {
+        send_frame_callbacks(state);
+    }
+}
+
+fn restore_device(state: &mut Ferese, node: DrmNode, device: DirectDevice) {
+    if let Some(backend) = state.direct_backend.as_mut() {
+        backend.devices.insert(node, device);
+    }
+}
+
+fn refresh_duration(state: &Ferese, node: DrmNode) -> Duration {
+    state
+        .direct_backend
+        .as_ref()
+        .and_then(|backend| backend.devices.get(&node))
+        .and_then(|device| device.output.current_mode())
+        .filter(|mode| mode.refresh > 0)
+        .map(|mode| Duration::from_nanos(1_000_000_000_000_u64 / mode.refresh as u64))
+        .unwrap_or_else(|| Duration::from_millis(16))
+}
+
+fn send_frame_callbacks(state: &mut Ferese) {
+    let Some(output) = state
+        .direct_backend
+        .as_ref()
+        .and_then(|backend| backend.devices.values().next())
+        .map(|device| device.output.clone())
+    else {
+        return;
+    };
+
+    state.space.elements().for_each(|window| {
+        window.send_frame(
+            &output,
+            state.start_time.elapsed(),
+            Some(Duration::ZERO),
+            |_, _| Some(output.clone()),
+        );
+    });
+    state.space.refresh();
+    state.popups.cleanup();
+    if let Err(error) = state.display_handle.flush_clients() {
+        tracing::debug!(%error, "failed to flush clients after DRM frame");
+    }
 }
 
 fn select_output(drm: &DrmDevice) -> io::Result<(connector::Info, crtc::Handle, DrmMode)> {
@@ -266,6 +442,14 @@ impl DirectBackendState {
 }
 
 impl PresentationClock {
+    fn set_refresh(&mut self, refresh_millihertz: i32) {
+        if refresh_millihertz > 0 {
+            self.refresh_interval = Some(Duration::from_nanos(
+                1_000_000_000_000_u64 / refresh_millihertz as u64,
+            ));
+        }
+    }
+
     fn record(&mut self, time: DrmEventTime, sequence: u32) -> Option<Duration> {
         let DrmEventTime::Monotonic(time) = time else {
             tracing::warn!(
@@ -280,6 +464,21 @@ impl PresentationClock {
 
         self.last_presentation = Some(time);
         self.presented_frames = self.presented_frames.saturating_add(1);
+        if let (Some(delta), Some(refresh)) = (delta, self.refresh_interval)
+            && delta > refresh + refresh / 2
+        {
+            let elapsed_frames = (delta.as_nanos() / refresh.as_nanos()).max(1) as u64;
+            let missed = elapsed_frames.saturating_sub(1);
+            self.missed_deadlines = self.missed_deadlines.saturating_add(missed);
+            tracing::warn!(
+                sequence,
+                ?delta,
+                ?refresh,
+                missed,
+                total = self.missed_deadlines,
+                "missed DRM presentation deadline"
+            );
+        }
         delta
     }
 }
@@ -293,6 +492,7 @@ mod tests {
     #[test]
     fn presentation_clock_uses_measured_monotonic_deltas() {
         let mut clock = PresentationClock::default();
+        clock.set_refresh(60_000);
 
         assert_eq!(
             clock.record(DrmEventTime::Monotonic(Duration::from_millis(100)), 1),
@@ -303,6 +503,7 @@ mod tests {
             Some(Duration::from_millis(16))
         );
         assert_eq!(clock.presented_frames, 2);
+        assert_eq!(clock.missed_deadlines, 0);
     }
 
     #[test]
@@ -314,5 +515,16 @@ mod tests {
             None
         );
         assert_eq!(clock.presented_frames, 0);
+    }
+
+    #[test]
+    fn presentation_clock_counts_missed_deadlines() {
+        let mut clock = PresentationClock::default();
+        clock.set_refresh(60_000);
+
+        clock.record(DrmEventTime::Monotonic(Duration::ZERO), 1);
+        clock.record(DrmEventTime::Monotonic(Duration::from_millis(50)), 2);
+
+        assert_eq!(clock.missed_deadlines, 2);
     }
 }
