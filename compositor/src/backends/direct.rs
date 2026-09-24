@@ -80,10 +80,14 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         .udev_assign_seat(&seat_name)
         .map_err(|()| io::Error::other(format!("failed to assign libinput seat {seat_name}")))?;
     let libinput_backend = LibinputInputBackend::new(libinput_context.clone());
+    let session_active = session.is_active();
+    if !session_active {
+        libinput_context.suspend();
+    }
 
     state.direct_backend = Some(DirectBackendState {
         session,
-        active: true,
+        active: session_active,
         devices: HashMap::new(),
         presentation: PresentationClock::default(),
     });
@@ -116,12 +120,13 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                 if let Some(backend) = state.direct_backend.as_mut() {
                     backend.active = true;
                     for device in backend.devices.values_mut() {
-                        if let Err(error) = device.drm.activate(false) {
+                        if let Err(error) = device.drm.activate(true) {
                             tracing::error!(%error, "failed to reactivate DRM device");
                         }
                     }
                 }
                 tracing::info!("direct session activated");
+                render_all(state);
             }
         })?;
     event_loop
