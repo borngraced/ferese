@@ -104,9 +104,11 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
             SessionEvent::PauseSession => {
                 if let Some(backend) = state.direct_backend.as_mut() {
                     backend.active = false;
+                    backend.presentation.reset_timing();
                     backend.devices.values_mut().for_each(|device| {
                         device.drm.pause();
                         device.surface.reset_buffers();
+                        device.damage_tracker = OutputDamageTracker::from_output(&device.output);
                         device.frame_pending = false;
                     });
                 }
@@ -458,6 +460,10 @@ impl DirectBackendState {
 }
 
 impl PresentationClock {
+    fn reset_timing(&mut self) {
+        self.last_presentation = None;
+    }
+
     fn set_refresh(&mut self, refresh_millihertz: i32) {
         if refresh_millihertz > 0 {
             self.refresh_interval = Some(Duration::from_nanos(
@@ -542,5 +548,21 @@ mod tests {
         clock.record(DrmEventTime::Monotonic(Duration::from_millis(50)), 2);
 
         assert_eq!(clock.missed_deadlines, 2);
+    }
+
+    #[test]
+    fn presentation_clock_excludes_inactive_session_time() {
+        let mut clock = PresentationClock::default();
+        clock.set_refresh(60_000);
+        clock.record(DrmEventTime::Monotonic(Duration::from_millis(100)), 1);
+
+        clock.reset_timing();
+
+        assert_eq!(
+            clock.record(DrmEventTime::Monotonic(Duration::from_secs(10)), 2),
+            None
+        );
+        assert_eq!(clock.presented_frames, 2);
+        assert_eq!(clock.missed_deadlines, 0);
     }
 }
