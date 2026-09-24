@@ -138,6 +138,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                         |_, _| Some(output.clone()),
                     );
                 });
+                state.send_cursor_frame(&output);
                 state.space.refresh();
                 state.popups.cleanup();
                 if let Err(error) = state.display_handle.flush_clients() {

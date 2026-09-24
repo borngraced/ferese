@@ -3,7 +3,7 @@ use std::{
     error::Error,
     ffi::OsString,
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use ferese_animation::{ClientSize, SpringConfig, WindowGeometry};
@@ -12,8 +12,9 @@ use ferese_layout::{Axis, Direction, GapConfig, LayoutResult, Rect, SizeConstrai
 
 use smithay::{
     backend::drm::DrmEventTime,
-    desktop::{PopupManager, Space, Window, WindowSurfaceType},
+    desktop::{PopupManager, Space, Window, WindowSurfaceType, utils::send_frames_surface_tree},
     input::{Seat, SeatState, pointer::CursorImageStatus},
+    output::Output,
     reexports::{
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_protocols::xdg::shell::server::xdg_toplevel,
@@ -189,6 +190,20 @@ impl Ferese {
                     (surface, position - surface_point)
                 })
         })
+    }
+
+    pub fn send_cursor_frame(&self, output: &Output) {
+        let CursorImageStatus::Surface(surface) = &self.cursor_status else {
+            return;
+        };
+
+        send_frames_surface_tree(
+            surface,
+            output,
+            self.start_time.elapsed(),
+            Some(Duration::ZERO),
+            |_, _| Some(output.clone()),
+        );
     }
 
     pub fn window_under_visual(&self, position: Point<f64, Logical>) -> Option<Window> {

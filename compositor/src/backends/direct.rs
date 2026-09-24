@@ -380,6 +380,7 @@ fn send_frame_callbacks(state: &mut Ferese) {
             |_, _| Some(output.clone()),
         );
     });
+    state.send_cursor_frame(&output);
     state.space.refresh();
     state.popups.cleanup();
     if let Err(error) = state.display_handle.flush_clients() {
