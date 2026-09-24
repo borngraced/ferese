@@ -1,3 +1,3 @@
 mod workspace;
 
-pub use workspace::{Workspace, WorkspaceError, WorkspaceId, WorkspaceSet};
+pub use workspace::{WindowPlacement, Workspace, WorkspaceError, WorkspaceId, WorkspaceSet};

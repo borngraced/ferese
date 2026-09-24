@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use ferese_core::WorkspaceSet;
+use ferese_core::{WindowPlacement, WorkspaceSet};
 use ferese_layout::{Axis, Direction, GapConfig, Rect, WindowId};
 
 use smithay::{
@@ -14,6 +14,7 @@ use smithay::{
     input::{Seat, SeatState},
     reexports::{
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
+        wayland_protocols::xdg::shell::server::xdg_toplevel,
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -168,6 +169,7 @@ impl Ferese {
     pub fn add_tiled_window(&mut self, window: Window) {
         let id = WindowId(self.next_window_id);
         self.next_window_id += 1;
+        let focus_new_window = self.workspaces.active().fullscreen.is_none();
 
         let axis = self
             .output_bounds()
@@ -186,8 +188,10 @@ impl Ferese {
         }
 
         self.window_ids.insert(window.clone(), id);
-        self.focused_window = Some(id);
-        self.space.map_element(window, (0, 0), true);
+        if focus_new_window {
+            self.focused_window = Some(id);
+        }
+        self.space.map_element(window, (0, 0), focus_new_window);
         self.relayout();
     }
 
@@ -211,19 +215,7 @@ impl Ferese {
         let Some(bounds) = self.output_bounds() else {
             return;
         };
-        let active = self.workspaces.active_id();
-        let inactive = self
-            .window_ids
-            .iter()
-            .filter(|(_, id)| self.workspaces.workspace_for_window(**id) != Some(active))
-            .map(|(window, _)| window.clone())
-            .collect::<Vec<_>>();
-
-        for window in inactive {
-            self.space.unmap_elem(&window);
-        }
-
-        let geometry = match self
+        let tiled_geometry = match self
             .workspaces
             .active()
             .layout
@@ -235,13 +227,46 @@ impl Ferese {
                 return;
             }
         };
+        let active = self.workspaces.active_id();
+        let fullscreen = self.workspaces.active().fullscreen;
+        let hidden = self
+            .window_ids
+            .iter()
+            .filter(|(_, id)| {
+                self.workspaces.workspace_for_window(**id) != Some(active)
+                    || fullscreen.is_some_and(|fullscreen| fullscreen != **id)
+            })
+            .map(|(window, _)| window.clone())
+            .collect::<Vec<_>>();
+
+        for window in hidden {
+            self.space.unmap_elem(&window);
+        }
+
         let placements = self
             .window_ids
             .iter()
-            .filter_map(|(window, id)| geometry.get(id).map(|rect| (window.clone(), *rect)))
+            .filter_map(|(window, id)| {
+                if self.workspaces.workspace_for_window(*id) != Some(active) {
+                    return None;
+                }
+
+                let rect = if fullscreen == Some(*id) {
+                    bounds
+                } else if fullscreen.is_some() {
+                    return None;
+                } else {
+                    match self.workspaces.placement(*id)? {
+                        WindowPlacement::Tiled => *tiled_geometry.get(id)?,
+                        WindowPlacement::Floating { rect } => rect,
+                    }
+                };
+
+                Some((window.clone(), rect, fullscreen == Some(*id)))
+            })
             .collect::<Vec<_>>();
 
-        for (window, rect) in placements {
+        for (window, rect, is_fullscreen) in placements {
             let location = (rect.x.round() as i32, rect.y.round() as i32);
             let size = (
                 (rect.width.round() as i32).max(1),
@@ -250,7 +275,15 @@ impl Ferese {
 
             self.space.map_element(window.clone(), location, false);
             if let Some(toplevel) = window.toplevel() {
-                toplevel.with_pending_state(|state| state.size = Some(size.into()));
+                toplevel.with_pending_state(|state| {
+                    state.size = Some(size.into());
+
+                    if is_fullscreen {
+                        state.states.set(xdg_toplevel::State::Fullscreen);
+                    } else {
+                        state.states.unset(xdg_toplevel::State::Fullscreen);
+                    }
+                });
                 toplevel.send_pending_configure();
             }
         }
@@ -347,6 +380,66 @@ impl Ferese {
         }
     }
 
+    pub fn toggle_focused_floating(&mut self) {
+        let Some(window) = self.focused_window else {
+            return;
+        };
+        let Some(bounds) = self.output_bounds() else {
+            return;
+        };
+        let floating_rect = match self.workspaces.placement(window) {
+            Some(WindowPlacement::Tiled) => self
+                .workspaces
+                .active()
+                .layout
+                .geometry_with_gaps(bounds, GapConfig::default())
+                .ok()
+                .and_then(|geometry| geometry.get(&window).copied())
+                .unwrap_or_else(|| centered_floating_rect(bounds)),
+            Some(WindowPlacement::Floating { rect }) => rect,
+            None => return,
+        };
+        let axis = self
+            .workspaces
+            .active()
+            .layout
+            .automatic_axis(Some(window), bounds)
+            .unwrap_or(Axis::Horizontal);
+
+        if let Err(error) = self
+            .workspaces
+            .toggle_floating(window, floating_rect, axis, 0.5)
+        {
+            tracing::error!(%error, ?window, "failed to toggle floating window");
+            return;
+        }
+
+        self.relayout();
+    }
+
+    pub fn toggle_focused_fullscreen(&mut self) {
+        let Some(window) = self.focused_window else {
+            return;
+        };
+
+        if let Err(error) = self.workspaces.toggle_fullscreen(window) {
+            tracing::error!(%error, ?window, "failed to toggle fullscreen window");
+            return;
+        }
+
+        self.relayout();
+    }
+
+    pub fn set_window_fullscreen(&mut self, window: WindowId, enabled: bool) {
+        match self.workspaces.set_fullscreen(window, enabled) {
+            Ok(true) => self.relayout(),
+            Ok(false) => {}
+            Err(error) => {
+                tracing::error!(%error, ?window, enabled, "failed to set fullscreen window")
+            }
+        }
+    }
+
     pub fn switch_workspace(&mut self, index: u32) {
         let focus = match self.workspaces.switch_to_numeric(index) {
             Ok(focus) => focus,
@@ -417,6 +510,18 @@ impl Ferese {
             geometry.size.h as f64,
         ))
     }
+}
+
+fn centered_floating_rect(bounds: Rect) -> Rect {
+    let width = (bounds.width * 0.6).max(1.0);
+    let height = (bounds.height * 0.6).max(1.0);
+
+    Rect::new(
+        bounds.x + (bounds.width - width) / 2.0,
+        bounds.y + (bounds.height - height) / 2.0,
+        width,
+        height,
+    )
 }
 
 #[derive(Default)]

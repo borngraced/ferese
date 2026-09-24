@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
-use ferese_layout::{Axis, LayoutError, LayoutTree, WindowId};
+use ferese_layout::{Axis, LayoutError, LayoutTree, Rect, WindowId};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct WorkspaceId(pub u64);
@@ -12,7 +12,15 @@ pub struct Workspace {
     pub id: WorkspaceId,
     pub name: String,
     pub layout: LayoutTree,
+    pub floating: Vec<WindowId>,
     pub last_focused: Option<WindowId>,
+    pub fullscreen: Option<WindowId>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WindowPlacement {
+    Tiled,
+    Floating { rect: Rect },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +69,7 @@ pub struct WorkspaceSet {
     workspaces: HashMap<WorkspaceId, Workspace>,
     names: HashMap<String, WorkspaceId>,
     window_workspaces: HashMap<WindowId, WorkspaceId>,
+    placements: HashMap<WindowId, WindowPlacement>,
     next_id: u64,
 }
 
@@ -71,7 +80,9 @@ impl Default for WorkspaceSet {
             id: active,
             name: "1".to_owned(),
             layout: LayoutTree::default(),
+            floating: Vec::new(),
             last_focused: None,
+            fullscreen: None,
         };
         let workspaces = HashMap::from([(active, workspace)]);
         let names = HashMap::from([("1".to_owned(), active)]);
@@ -81,6 +92,7 @@ impl Default for WorkspaceSet {
             workspaces,
             names,
             window_workspaces: HashMap::new(),
+            placements: HashMap::new(),
             next_id: 2,
         }
     }
@@ -111,10 +123,23 @@ impl WorkspaceSet {
         self.window_workspaces.get(&window).copied()
     }
 
+    pub fn placement(&self, window: WindowId) -> Option<WindowPlacement> {
+        self.placements.get(&window).copied()
+    }
+
     pub fn focus_window(&mut self, window: WindowId) -> Result<(), WorkspaceError> {
         if self.workspace_for_window(window) != Some(self.active) {
             return Err(WorkspaceError::InvalidState(
                 "focused window is not on the active workspace",
+            ));
+        }
+        if self
+            .active()
+            .fullscreen
+            .is_some_and(|fullscreen| fullscreen != window)
+        {
+            return Err(WorkspaceError::InvalidState(
+                "focused window is hidden by fullscreen",
             ));
         }
 
@@ -144,7 +169,9 @@ impl WorkspaceSet {
                 id,
                 name,
                 layout: LayoutTree::default(),
+                floating: Vec::new(),
                 last_focused: None,
+                fullscreen: None,
             },
         );
 
@@ -156,7 +183,7 @@ impl WorkspaceSet {
         self.active = self.ensure_numeric(index)?;
 
         debug_assert!(self.validate().is_ok());
-        Ok(self.active().last_focused)
+        Ok(self.active().fullscreen.or(self.active().last_focused))
     }
 
     pub fn insert_window(
@@ -173,8 +200,11 @@ impl WorkspaceSet {
         workspace
             .layout
             .insert(window, workspace.last_focused, axis, ratio)?;
-        workspace.last_focused = Some(window);
+        if workspace.fullscreen.is_none() {
+            workspace.last_focused = Some(window);
+        }
         self.window_workspaces.insert(window, self.active);
+        self.placements.insert(window, WindowPlacement::Tiled);
 
         debug_assert!(self.validate().is_ok());
         Ok(())
@@ -190,10 +220,20 @@ impl WorkspaceSet {
             .get_mut(&workspace_id)
             .ok_or(WorkspaceError::UnknownWorkspace(workspace_id))?;
 
-        workspace.layout.remove(window)?;
+        match self.placements.remove(&window) {
+            Some(WindowPlacement::Tiled) => workspace.layout.remove(window)?,
+            Some(WindowPlacement::Floating { .. }) => {
+                workspace.floating.retain(|candidate| *candidate != window);
+            }
+            None => return Err(LayoutError::UnknownWindow(window).into()),
+        }
+
+        if workspace.fullscreen == Some(window) {
+            workspace.fullscreen = None;
+        }
 
         if workspace.last_focused == Some(window) {
-            workspace.last_focused = first_window(&workspace.layout);
+            workspace.last_focused = first_window(workspace);
         }
 
         debug_assert!(self.validate().is_ok());
@@ -216,28 +256,133 @@ impl WorkspaceSet {
             return Ok(destination_id);
         }
 
+        let placement = self
+            .placements
+            .get(&window)
+            .copied()
+            .ok_or(LayoutError::UnknownWindow(window))?;
         let source = self
             .workspaces
             .get_mut(&source_id)
             .ok_or(WorkspaceError::UnknownWorkspace(source_id))?;
-        source.layout.remove(window)?;
+
+        match placement {
+            WindowPlacement::Tiled => source.layout.remove(window)?,
+            WindowPlacement::Floating { .. } => {
+                source.floating.retain(|candidate| *candidate != window);
+            }
+        }
+
+        let was_fullscreen = source.fullscreen == Some(window);
+        if was_fullscreen {
+            source.fullscreen = None;
+        }
 
         if source.last_focused == Some(window) {
-            source.last_focused = first_window(&source.layout);
+            source.last_focused = first_window(source);
         }
 
         let destination = self
             .workspaces
             .get_mut(&destination_id)
             .ok_or(WorkspaceError::UnknownWorkspace(destination_id))?;
-        destination
-            .layout
-            .insert(window, destination.last_focused, axis, ratio)?;
-        destination.last_focused = Some(window);
+        match placement {
+            WindowPlacement::Tiled => {
+                let focused = tiled_focus(destination);
+                destination.layout.insert(window, focused, axis, ratio)?;
+            }
+            WindowPlacement::Floating { .. } => destination.floating.push(window),
+        }
+        if was_fullscreen {
+            destination.fullscreen = Some(window);
+        }
+        if destination.fullscreen.is_none() || was_fullscreen {
+            destination.last_focused = Some(window);
+        }
         self.window_workspaces.insert(window, destination_id);
 
         debug_assert!(self.validate().is_ok());
         Ok(destination_id)
+    }
+
+    pub fn toggle_floating(
+        &mut self,
+        window: WindowId,
+        floating_rect: Rect,
+        axis: Axis,
+        ratio: f64,
+    ) -> Result<WindowPlacement, WorkspaceError> {
+        let workspace_id = self
+            .workspace_for_window(window)
+            .ok_or(LayoutError::UnknownWindow(window))?;
+        let workspace = self
+            .workspaces
+            .get_mut(&workspace_id)
+            .ok_or(WorkspaceError::UnknownWorkspace(workspace_id))?;
+        let placement = self
+            .placements
+            .get_mut(&window)
+            .ok_or(LayoutError::UnknownWindow(window))?;
+
+        *placement = match *placement {
+            WindowPlacement::Tiled => {
+                workspace.layout.remove(window)?;
+                workspace.floating.push(window);
+                WindowPlacement::Floating {
+                    rect: normalized_floating_rect(floating_rect),
+                }
+            }
+            WindowPlacement::Floating { .. } => {
+                workspace.floating.retain(|candidate| *candidate != window);
+                let focused = tiled_focus(workspace);
+                workspace.layout.insert(window, focused, axis, ratio)?;
+                WindowPlacement::Tiled
+            }
+        };
+
+        let result = *placement;
+
+        debug_assert!(self.validate().is_ok());
+        Ok(result)
+    }
+
+    pub fn toggle_fullscreen(&mut self, window: WindowId) -> Result<bool, WorkspaceError> {
+        let enabled = self
+            .workspace_for_window(window)
+            .and_then(|workspace| self.workspaces.get(&workspace))
+            .is_none_or(|workspace| workspace.fullscreen != Some(window));
+
+        self.set_fullscreen(window, enabled)?;
+        Ok(enabled)
+    }
+
+    pub fn set_fullscreen(
+        &mut self,
+        window: WindowId,
+        enabled: bool,
+    ) -> Result<bool, WorkspaceError> {
+        let workspace_id = self
+            .workspace_for_window(window)
+            .ok_or(LayoutError::UnknownWindow(window))?;
+        let workspace = self
+            .workspaces
+            .get_mut(&workspace_id)
+            .ok_or(WorkspaceError::UnknownWorkspace(workspace_id))?;
+
+        let changed = if enabled {
+            let changed = workspace.fullscreen != Some(window);
+            workspace.fullscreen = Some(window);
+            workspace.last_focused = Some(window);
+            changed
+        } else if workspace.fullscreen == Some(window) {
+            workspace.fullscreen = None;
+            true
+        } else {
+            false
+        };
+
+        debug_assert!(self.validate().is_ok());
+        Ok(changed)
     }
 
     pub fn validate(&self) -> Result<(), WorkspaceError> {
@@ -262,24 +407,55 @@ impl WorkspaceSet {
             workspace.layout.validate()?;
 
             for window in workspace.layout.window_ids() {
-                if !seen_windows.insert(window) || self.window_workspaces.get(&window) != Some(id) {
+                if !seen_windows.insert(window)
+                    || self.window_workspaces.get(&window) != Some(id)
+                    || self.placements.get(&window) != Some(&WindowPlacement::Tiled)
+                {
                     return Err(WorkspaceError::InvalidState(
                         "window ownership is inconsistent",
                     ));
                 }
             }
 
+            let mut seen_floating = HashSet::new();
+
+            for window in &workspace.floating {
+                if !seen_floating.insert(*window)
+                    || !seen_windows.insert(*window)
+                    || self.window_workspaces.get(window) != Some(id)
+                    || !matches!(
+                        self.placements.get(window),
+                        Some(WindowPlacement::Floating { .. })
+                    )
+                {
+                    return Err(WorkspaceError::InvalidState(
+                        "floating window ownership is inconsistent",
+                    ));
+                }
+            }
+
             if workspace
                 .last_focused
-                .is_some_and(|window| !workspace.layout.contains(window))
+                .is_some_and(|window| self.window_workspaces.get(&window) != Some(id))
             {
                 return Err(WorkspaceError::InvalidState(
                     "workspace focus is inconsistent",
                 ));
             }
+
+            if workspace
+                .fullscreen
+                .is_some_and(|window| self.window_workspaces.get(&window) != Some(id))
+            {
+                return Err(WorkspaceError::InvalidState(
+                    "fullscreen window ownership is inconsistent",
+                ));
+            }
         }
 
-        if seen_windows.len() != self.window_workspaces.len() {
+        if seen_windows.len() != self.window_workspaces.len()
+            || self.placements.len() != self.window_workspaces.len()
+        {
             return Err(WorkspaceError::InvalidState(
                 "window index retains stale entries",
             ));
@@ -289,8 +465,32 @@ impl WorkspaceSet {
     }
 }
 
-fn first_window(layout: &LayoutTree) -> Option<WindowId> {
-    layout.window_ids().min_by_key(|window| window.0)
+fn first_window(workspace: &Workspace) -> Option<WindowId> {
+    workspace
+        .layout
+        .window_ids()
+        .chain(workspace.floating.iter().copied())
+        .min_by_key(|window| window.0)
+}
+
+fn tiled_focus(workspace: &Workspace) -> Option<WindowId> {
+    workspace
+        .last_focused
+        .filter(|window| workspace.layout.contains(*window))
+        .or_else(|| workspace.layout.window_ids().min_by_key(|window| window.0))
+}
+
+fn normalized_floating_rect(rect: Rect) -> Rect {
+    Rect::new(
+        finite_or_zero(rect.x),
+        finite_or_zero(rect.y),
+        finite_or_zero(rect.width).max(1.0),
+        finite_or_zero(rect.height).max(1.0),
+    )
+}
+
+fn finite_or_zero(value: f64) -> f64 {
+    if value.is_finite() { value } else { 0.0 }
 }
 
 #[cfg(test)]
@@ -388,6 +588,97 @@ mod tests {
             workspaces.focus_window(WindowId(1)),
             Err(WorkspaceError::InvalidState(
                 "focused window is not on the active workspace"
+            ))
+        );
+        assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn floating_toggle_removes_and_restores_tiled_membership() {
+        let mut workspaces = WorkspaceSet::default();
+        workspaces
+            .insert_window(WindowId(1), Axis::Horizontal, 0.5)
+            .unwrap();
+        let rect = Rect::new(10.0, 20.0, 640.0, 480.0);
+
+        assert_eq!(
+            workspaces
+                .toggle_floating(WindowId(1), rect, Axis::Horizontal, 0.5)
+                .unwrap(),
+            WindowPlacement::Floating { rect }
+        );
+        assert!(!workspaces.active().layout.contains(WindowId(1)));
+        assert_eq!(workspaces.active().floating, vec![WindowId(1)]);
+
+        assert_eq!(
+            workspaces
+                .toggle_floating(WindowId(1), rect, Axis::Horizontal, 0.5)
+                .unwrap(),
+            WindowPlacement::Tiled
+        );
+        assert!(workspaces.active().layout.contains(WindowId(1)));
+        assert!(workspaces.active().floating.is_empty());
+        assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn fullscreen_preserves_underlying_placement() {
+        let mut workspaces = WorkspaceSet::default();
+        workspaces
+            .insert_window(WindowId(1), Axis::Horizontal, 0.5)
+            .unwrap();
+        let before = workspaces.placement(WindowId(1));
+
+        assert!(workspaces.toggle_fullscreen(WindowId(1)).unwrap());
+        assert_eq!(workspaces.active().fullscreen, Some(WindowId(1)));
+        assert_eq!(workspaces.placement(WindowId(1)), before);
+        assert!(!workspaces.set_fullscreen(WindowId(1), true).unwrap());
+
+        assert!(!workspaces.toggle_fullscreen(WindowId(1)).unwrap());
+        assert_eq!(workspaces.active().fullscreen, None);
+        assert_eq!(workspaces.placement(WindowId(1)), before);
+        assert!(!workspaces.set_fullscreen(WindowId(1), false).unwrap());
+        assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn mapping_under_fullscreen_does_not_change_focus() {
+        let mut workspaces = WorkspaceSet::default();
+        workspaces
+            .insert_window(WindowId(1), Axis::Horizontal, 0.5)
+            .unwrap();
+        workspaces.toggle_fullscreen(WindowId(1)).unwrap();
+        workspaces
+            .insert_window(WindowId(2), Axis::Horizontal, 0.5)
+            .unwrap();
+
+        assert_eq!(workspaces.active().last_focused, Some(WindowId(1)));
+        assert_eq!(workspaces.active().fullscreen, Some(WindowId(1)));
+        assert!(workspaces.active().layout.contains(WindowId(2)));
+        assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn switching_to_fullscreen_restores_the_visible_window() {
+        let mut workspaces = WorkspaceSet::default();
+        workspaces
+            .insert_window(WindowId(1), Axis::Horizontal, 0.5)
+            .unwrap();
+        workspaces.toggle_fullscreen(WindowId(1)).unwrap();
+        workspaces.switch_to_numeric(2).unwrap();
+        workspaces
+            .insert_window(WindowId(2), Axis::Horizontal, 0.5)
+            .unwrap();
+        workspaces
+            .move_window_to_numeric(WindowId(2), 1, Axis::Horizontal, 0.5)
+            .unwrap();
+
+        assert_eq!(workspaces.switch_to_numeric(1).unwrap(), Some(WindowId(1)));
+        assert_eq!(workspaces.active().last_focused, Some(WindowId(1)));
+        assert_eq!(
+            workspaces.focus_window(WindowId(2)),
+            Err(WorkspaceError::InvalidState(
+                "focused window is hidden by fullscreen"
             ))
         );
         assert!(workspaces.validate().is_ok());

@@ -152,6 +152,32 @@ impl XdgShellHandler for Ferese {
         );
     }
 
+    fn fullscreen_request(
+        &mut self,
+        surface: ToplevelSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+    ) {
+        if let Some(window) = self.window_ids.iter().find_map(|(window, id)| {
+            window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+                .then_some(*id)
+        }) {
+            self.set_window_fullscreen(window, true);
+        }
+    }
+
+    fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
+        if let Some(window) = self.window_ids.iter().find_map(|(window, id)| {
+            window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+                .then_some(*id)
+        }) {
+            self.set_window_fullscreen(window, false);
+        }
+    }
+
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
         let Some(seat) = Seat::from_resource(&seat) else {
             return;

@@ -85,6 +85,22 @@ impl Ferese {
                                 }
 
                                 FilterResult::Intercept(())
+                            } else if !modifiers.shift
+                                && matches!(symbol, keysyms::KEY_f | keysyms::KEY_F)
+                            {
+                                if state == KeyState::Pressed {
+                                    data.intercepted_keys.insert(keycode);
+                                    data.toggle_focused_fullscreen();
+                                }
+
+                                FilterResult::Intercept(())
+                            } else if modifiers.shift && symbol == keysyms::KEY_space {
+                                if state == KeyState::Pressed {
+                                    data.intercepted_keys.insert(keycode);
+                                    data.toggle_focused_floating();
+                                }
+
+                                FilterResult::Intercept(())
                             } else {
                                 FilterResult::Forward
                             }
