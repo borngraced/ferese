@@ -13,7 +13,7 @@ use smithay::{
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
         udev::{UdevBackend, UdevEvent, primary_gpu},
     },
-    desktop::utils::OutputPresentationFeedback,
+    desktop::{layer_map_for_output, utils::OutputPresentationFeedback},
     output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::{
         calloop::EventLoop,
@@ -321,6 +321,17 @@ fn render_device(state: &mut Ferese, node: DrmNode) {
                 |_, _| Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
             );
         });
+        let layers = layer_map_for_output(&device.output)
+            .layers()
+            .cloned()
+            .collect::<Vec<_>>();
+        layers.iter().for_each(|layer| {
+            layer.take_presentation_feedback(
+                &mut presentation,
+                |_, _| Some(device.output.clone()),
+                |_, _| Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
+            );
+        });
         device
             .surface
             .queue_buffer(Some(result.sync), Some(damage), presentation)?;
@@ -380,9 +391,22 @@ fn send_frame_callbacks(state: &mut Ferese) {
             |_, _| Some(output.clone()),
         );
     });
+    let layers = layer_map_for_output(&output)
+        .layers()
+        .cloned()
+        .collect::<Vec<_>>();
+    layers.iter().for_each(|layer| {
+        layer.send_frame(
+            &output,
+            state.start_time.elapsed(),
+            Some(Duration::ZERO),
+            |_, _| Some(output.clone()),
+        );
+    });
     state.send_cursor_frame(&output);
     state.space.refresh();
     state.popups.cleanup();
+    layer_map_for_output(&output).cleanup();
     if let Err(error) = state.display_handle.flush_clients() {
         tracing::debug!(%error, "failed to flush clients after DRM frame");
     }

@@ -8,7 +8,7 @@ use smithay::{
         renderer::{
             damage::OutputDamageTracker,
             element::{
-                Kind as RenderElementKind,
+                AsRenderElements, Kind as RenderElementKind,
                 surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
                 utils::{
                     ConstrainAlign, ConstrainScaleBehavior, CropRenderElement, Relocate,
@@ -20,6 +20,7 @@ use smithay::{
         winit::{self, WinitEvent},
     },
     desktop::{
+        LayerSurface, layer_map_for_output,
         space::{ConstrainBehavior, ConstrainReference, constrain_space_element},
         utils::OutputPresentationFeedback,
     },
@@ -28,6 +29,7 @@ use smithay::{
     reexports::calloop::EventLoop,
     reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind as PresentationKind,
     utils::{Clock, Logical, Monotonic, Physical, Point, Rectangle, Transform},
+    wayland::shell::wlr_layer::Layer,
     wayland::{compositor::with_states, presentation::Refresh},
 };
 
@@ -103,6 +105,13 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                         |_, _| PresentationKind::Vsync,
                     );
                 });
+                layer_surfaces(&output).iter().for_each(|layer| {
+                    layer.take_presentation_feedback(
+                        &mut presentation,
+                        |_, _| Some(output.clone()),
+                        |_, _| PresentationKind::Vsync,
+                    );
+                });
                 let rendered = (|| -> Result<(), Box<dyn Error>> {
                     {
                         let (renderer, mut framebuffer) = backend.bind()?;
@@ -138,9 +147,18 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                         |_, _| Some(output.clone()),
                     );
                 });
+                layer_surfaces(&output).iter().for_each(|layer| {
+                    layer.send_frame(
+                        &output,
+                        state.start_time.elapsed(),
+                        Some(Duration::ZERO),
+                        |_, _| Some(output.clone()),
+                    );
+                });
                 state.send_cursor_frame(&output);
                 state.space.refresh();
                 state.popups.cleanup();
+                layer_map_for_output(&output).cleanup();
                 if let Err(error) = state.display_handle.flush_clients() {
                     tracing::debug!(%error, "failed to flush clients");
                 }
@@ -163,6 +181,11 @@ pub(crate) fn animated_window_elements(
     let scale = output.current_scale().fractional_scale();
 
     let mut elements = cursor_elements(state, renderer, output_geometry, scale);
+    elements.extend(layer_elements(
+        renderer,
+        output,
+        &[Layer::Overlay, Layer::Top],
+    ));
     elements.extend(
         state
             .space
@@ -204,7 +227,63 @@ pub(crate) fn animated_window_elements(
             })
             .flatten(),
     );
+    elements.extend(layer_elements(
+        renderer,
+        output,
+        &[Layer::Bottom, Layer::Background],
+    ));
     elements
+}
+
+fn layer_surfaces(output: &Output) -> Vec<LayerSurface> {
+    layer_map_for_output(output).layers().cloned().collect()
+}
+
+fn layer_elements(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    requested_layers: &[Layer],
+) -> Vec<AnimatedWindowRenderElement> {
+    let scale = output.current_scale().fractional_scale();
+    let Some(mode) = output.current_mode() else {
+        return Vec::new();
+    };
+    let output_crop = Rectangle::<i32, Physical>::from_size(mode.size);
+    let layers = {
+        let map = layer_map_for_output(output);
+
+        requested_layers
+            .iter()
+            .flat_map(|requested| {
+                map.layers_on(*requested).rev().filter_map(|layer| {
+                    map.layer_geometry(layer)
+                        .map(|geometry| (geometry.loc, layer.clone()))
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+
+    layers
+        .into_iter()
+        .flat_map(|(location, layer)| {
+            AsRenderElements::<GlesRenderer>::render_elements::<
+                WaylandSurfaceRenderElement<GlesRenderer>,
+            >(
+                &layer,
+                renderer,
+                location.to_physical_precise_round(scale),
+                scale.into(),
+                1.0,
+            )
+        })
+        .filter_map(|element| {
+            let origin = Point::<i32, Physical>::default();
+            let element = RescaleRenderElement::from_element(element, origin, 1.0);
+            let element = RelocateRenderElement::from_element(element, origin, Relocate::Relative);
+
+            CropRenderElement::from_element(element, scale, output_crop)
+        })
+        .collect()
 }
 
 fn cursor_elements(
