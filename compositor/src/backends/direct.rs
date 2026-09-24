@@ -10,8 +10,14 @@ use smithay::{
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
         udev::{UdevBackend, UdevEvent, primary_gpu},
     },
-    reexports::{calloop::EventLoop, input::Libinput, rustix::fs::OFlags},
-    utils::DeviceFd,
+    output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
+    reexports::{
+        calloop::EventLoop,
+        drm::control::{Device as ControlDevice, Mode as DrmMode, ModeTypeFlags, connector, crtc},
+        input::Libinput,
+        rustix::fs::OFlags,
+    },
+    utils::{DeviceFd, Transform},
 };
 
 use crate::Ferese;
@@ -35,6 +41,14 @@ struct DirectDevice {
     gbm: GbmDevice<DrmDeviceFd>,
     #[allow(dead_code)]
     renderer: GlesRenderer,
+    #[allow(dead_code)]
+    connector: connector::Handle,
+    #[allow(dead_code)]
+    crtc: crtc::Handle,
+    #[allow(dead_code)]
+    mode: DrmMode,
+    #[allow(dead_code)]
+    output: Output,
 }
 
 pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<(), Box<dyn Error>> {
@@ -121,12 +135,14 @@ fn open_primary_device(
     state: &mut Ferese,
     path: &Path,
 ) -> Result<(), Box<dyn Error>> {
-    let backend = state
+    let mut session = state
         .direct_backend
-        .as_mut()
-        .expect("direct backend state is initialized before the DRM device");
+        .as_ref()
+        .expect("direct backend state is initialized before the DRM device")
+        .session
+        .clone();
     let node = DrmNode::from_path(path)?;
-    let fd = backend.session.open(
+    let fd = session.open(
         path,
         OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
     )?;
@@ -138,6 +154,8 @@ fn open_primary_device(
     let egl_context = EGLContext::new(&egl_display)?;
     // SAFETY: the new context is not current on another thread and remains renderer-owned.
     let renderer = unsafe { GlesRenderer::new(egl_context)? };
+    let (connector, crtc, mode) = select_output(&drm)?;
+    let output = create_output(state, &connector, mode);
 
     event_loop
         .handle()
@@ -153,11 +171,92 @@ fn open_primary_device(
             }
         })?;
 
-    backend
+    state
+        .direct_backend
+        .as_mut()
+        .expect("direct backend state remains initialized")
         .devices
-        .insert(node, DirectDevice { drm, gbm, renderer });
-    tracing::info!(?node, ?path, "initialized primary DRM/GBM device");
+        .insert(
+            node,
+            DirectDevice {
+                drm,
+                gbm,
+                renderer,
+                connector: connector.handle(),
+                crtc,
+                mode,
+                output,
+            },
+        );
+    state.relayout();
+    tracing::info!(?node, ?path, ?crtc, connector = %connector, "initialized primary DRM/GBM device");
     Ok(())
+}
+
+fn select_output(drm: &DrmDevice) -> io::Result<(connector::Info, crtc::Handle, DrmMode)> {
+    let resources = drm.resource_handles()?;
+
+    for handle in resources.connectors() {
+        let connector = drm.get_connector(*handle, true)?;
+        if connector.state() != connector::State::Connected {
+            continue;
+        }
+        let Some(mode) = connector
+            .modes()
+            .iter()
+            .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+            .or_else(|| connector.modes().first())
+            .copied()
+        else {
+            continue;
+        };
+
+        let current_crtc = connector
+            .current_encoder()
+            .and_then(|handle| drm.get_encoder(handle).ok())
+            .and_then(|encoder| encoder.crtc());
+        let compatible_crtc = connector.encoders().iter().find_map(|handle| {
+            let encoder = drm.get_encoder(*handle).ok()?;
+            resources
+                .filter_crtcs(encoder.possible_crtcs())
+                .into_iter()
+                .next()
+        });
+        if let Some(crtc) = current_crtc.or(compatible_crtc) {
+            return Ok((connector, crtc, mode));
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::NotFound,
+        "no connected desktop DRM connector with a usable CRTC",
+    ))
+}
+
+fn create_output(state: &mut Ferese, connector: &connector::Info, mode: DrmMode) -> Output {
+    let name = connector.to_string();
+    let physical_size = connector.size().unwrap_or((0, 0));
+    let output = Output::new(
+        name,
+        PhysicalProperties {
+            size: (physical_size.0 as i32, physical_size.1 as i32).into(),
+            subpixel: Subpixel::from(connector.subpixel()),
+            make: "Unknown".into(),
+            model: "Unknown".into(),
+        },
+    );
+    let output_mode = OutputMode::from(mode);
+
+    output.create_global::<Ferese>(&state.display_handle);
+    output.set_preferred(output_mode);
+    output.change_current_state(
+        Some(output_mode),
+        Some(Transform::Normal),
+        Some(Scale::Integer(1)),
+        Some((0, 0).into()),
+    );
+    state.space.map_output(&output, (0, 0));
+    output
 }
 
 impl DirectBackendState {
