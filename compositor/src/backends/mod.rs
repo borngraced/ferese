@@ -1,4 +1,4 @@
-mod direct;
+pub(crate) mod direct;
 
 use std::ffi::OsString;
 

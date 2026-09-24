@@ -11,7 +11,7 @@ use ferese_core::{WindowPlacement, WorkspaceSet};
 use ferese_layout::{Axis, Direction, GapConfig, LayoutResult, Rect, SizeConstraints, WindowId};
 
 use smithay::{
-    backend::session::libseat::LibSeatSession,
+    backend::drm::DrmEventTime,
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
     input::{Seat, SeatState},
     reexports::{
@@ -52,8 +52,7 @@ pub struct Ferese {
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
     pub focused_window: Option<WindowId>,
     pub intercepted_keys: HashSet<smithay::input::keyboard::Keycode>,
-    pub direct_session: Option<LibSeatSession>,
-    pub session_active: bool,
+    pub direct_backend: Option<crate::backends::direct::DirectBackendState>,
     next_window_id: u64,
     last_animation_tick: Instant,
     pub popups: PopupManager,
@@ -113,8 +112,7 @@ impl Ferese {
             window_geometry: HashMap::new(),
             focused_window: None,
             intercepted_keys: HashSet::new(),
-            direct_session: None,
-            session_active: true,
+            direct_backend: None,
             next_window_id: 1,
             last_animation_tick: start_time,
             popups: PopupManager::default(),
@@ -382,6 +380,20 @@ impl Ferese {
     pub fn advance_animations(&mut self, now: Instant) -> bool {
         let delta = now.saturating_duration_since(self.last_animation_tick);
         self.last_animation_tick = now;
+        self.advance_animations_by(delta)
+    }
+
+    pub fn record_drm_presentation(&mut self, time: DrmEventTime, sequence: u32) {
+        let delta = self
+            .direct_backend
+            .as_mut()
+            .and_then(|backend| backend.record_presentation(time, sequence));
+        if let Some(delta) = delta {
+            self.advance_animations_by(delta);
+        }
+    }
+
+    fn advance_animations_by(&mut self, delta: std::time::Duration) -> bool {
         let windows = self
             .space
             .elements()

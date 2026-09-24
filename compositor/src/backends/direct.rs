@@ -1,20 +1,54 @@
-use std::{error::Error, io};
+use std::{collections::HashMap, error::Error, io, path::Path, time::Duration};
 
 use smithay::{
     backend::{
+        allocator::gbm::GbmDevice,
+        drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode},
+        egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
+        renderer::gles::GlesRenderer,
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
-        udev::{UdevBackend, UdevEvent},
+        udev::{UdevBackend, UdevEvent, primary_gpu},
     },
-    reexports::{calloop::EventLoop, input::Libinput},
+    reexports::{calloop::EventLoop, input::Libinput, rustix::fs::OFlags},
+    utils::DeviceFd,
 };
 
 use crate::Ferese;
+
+pub struct DirectBackendState {
+    pub session: LibSeatSession,
+    pub active: bool,
+    devices: HashMap<DrmNode, DirectDevice>,
+    presentation: PresentationClock,
+}
+
+#[derive(Default)]
+struct PresentationClock {
+    last_presentation: Option<Duration>,
+    presented_frames: u64,
+}
+
+struct DirectDevice {
+    drm: DrmDevice,
+    #[allow(dead_code)]
+    gbm: GbmDevice<DrmDeviceFd>,
+    #[allow(dead_code)]
+    renderer: GlesRenderer,
+}
 
 pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<(), Box<dyn Error>> {
     let (session, notifier) = LibSeatSession::new()?;
     let seat_name = session.seat();
     let udev_backend = UdevBackend::new(&seat_name)?;
+    let primary_path = primary_gpu(&seat_name)?
+        .or_else(|| {
+            udev_backend
+                .device_list()
+                .next()
+                .map(|(_, path)| path.to_owned())
+        })
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no DRM device found"))?;
     let mut libinput_context =
         Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.clone().into());
     libinput_context
@@ -22,8 +56,13 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         .map_err(|()| io::Error::other(format!("failed to assign libinput seat {seat_name}")))?;
     let libinput_backend = LibinputInputBackend::new(libinput_context.clone());
 
-    state.direct_session = Some(session);
-    state.session_active = true;
+    state.direct_backend = Some(DirectBackendState {
+        session,
+        active: true,
+        devices: HashMap::new(),
+        presentation: PresentationClock::default(),
+    });
+    open_primary_device(event_loop, state, &primary_path)?;
 
     event_loop
         .handle()
@@ -34,7 +73,13 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         .handle()
         .insert_source(notifier, move |event, _, state| match event {
             SessionEvent::PauseSession => {
-                state.session_active = false;
+                if let Some(backend) = state.direct_backend.as_mut() {
+                    backend.active = false;
+                    backend
+                        .devices
+                        .values_mut()
+                        .for_each(|device| device.drm.pause());
+                }
                 libinput_context.suspend();
                 tracing::info!("direct session paused");
             }
@@ -42,7 +87,14 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                 if libinput_context.resume().is_err() {
                     tracing::error!("failed to resume libinput");
                 }
-                state.session_active = true;
+                if let Some(backend) = state.direct_backend.as_mut() {
+                    backend.active = true;
+                    for device in backend.devices.values_mut() {
+                        if let Err(error) = device.drm.activate(false) {
+                            tracing::error!(%error, "failed to reactivate DRM device");
+                        }
+                    }
+                }
                 tracing::info!("direct session activated");
             }
         })?;
@@ -62,4 +114,106 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
 
     tracing::info!(seat = %seat_name, "initialized direct session input and device discovery");
     Ok(())
+}
+
+fn open_primary_device(
+    event_loop: &mut EventLoop<Ferese>,
+    state: &mut Ferese,
+    path: &Path,
+) -> Result<(), Box<dyn Error>> {
+    let backend = state
+        .direct_backend
+        .as_mut()
+        .expect("direct backend state is initialized before the DRM device");
+    let node = DrmNode::from_path(path)?;
+    let fd = backend.session.open(
+        path,
+        OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
+    )?;
+    let fd = DrmDeviceFd::new(DeviceFd::from(fd));
+    let (drm, notifier) = DrmDevice::new(fd.clone(), true)?;
+    let gbm = GbmDevice::new(fd)?;
+    // SAFETY: GBM owns a valid DRM descriptor for the lifetime of the EGL display.
+    let egl_display = unsafe { EGLDisplay::new(gbm.clone())? };
+    let egl_context = EGLContext::new(&egl_display)?;
+    // SAFETY: the new context is not current on another thread and remains renderer-owned.
+    let renderer = unsafe { GlesRenderer::new(egl_context)? };
+
+    event_loop
+        .handle()
+        .insert_source(notifier, move |event, metadata, state| match event {
+            DrmEvent::VBlank(crtc) => {
+                if let Some(metadata) = metadata {
+                    state.record_drm_presentation(metadata.time, metadata.sequence);
+                    tracing::trace!(?node, ?crtc, sequence = metadata.sequence, "page flip");
+                }
+            }
+            DrmEvent::Error(error) => {
+                tracing::error!(?node, %error, "DRM event error");
+            }
+        })?;
+
+    backend
+        .devices
+        .insert(node, DirectDevice { drm, gbm, renderer });
+    tracing::info!(?node, ?path, "initialized primary DRM/GBM device");
+    Ok(())
+}
+
+impl DirectBackendState {
+    pub fn record_presentation(&mut self, time: DrmEventTime, sequence: u32) -> Option<Duration> {
+        self.presentation.record(time, sequence)
+    }
+}
+
+impl PresentationClock {
+    fn record(&mut self, time: DrmEventTime, sequence: u32) -> Option<Duration> {
+        let DrmEventTime::Monotonic(time) = time else {
+            tracing::warn!(
+                sequence,
+                "DRM driver reported a realtime page-flip timestamp"
+            );
+            return None;
+        };
+        let delta = self
+            .last_presentation
+            .map(|previous| time.saturating_sub(previous));
+
+        self.last_presentation = Some(time);
+        self.presented_frames = self.presented_frames.saturating_add(1);
+        delta
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::SystemTime;
+
+    use super::*;
+
+    #[test]
+    fn presentation_clock_uses_measured_monotonic_deltas() {
+        let mut clock = PresentationClock::default();
+
+        assert_eq!(
+            clock.record(DrmEventTime::Monotonic(Duration::from_millis(100)), 1),
+            None
+        );
+        assert_eq!(
+            clock.record(DrmEventTime::Monotonic(Duration::from_millis(116)), 2),
+            Some(Duration::from_millis(16))
+        );
+        assert_eq!(clock.presented_frames, 2);
+    }
+
+    #[test]
+    fn presentation_clock_rejects_realtime_timestamps() {
+        let mut clock = PresentationClock::default();
+
+        assert_eq!(
+            clock.record(DrmEventTime::Realtime(SystemTime::now()), 1),
+            None
+        );
+        assert_eq!(clock.presented_frames, 0);
+    }
 }
