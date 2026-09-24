@@ -27,6 +27,7 @@ use smithay::{
                 PrimarySelectionHandler, PrimarySelectionState, set_primary_focus,
             },
         },
+        xdg_foreign::{XdgForeignHandler, XdgForeignState},
     },
 };
 
@@ -150,6 +151,12 @@ impl PrimarySelectionHandler for Ferese {
     }
 }
 
+impl XdgForeignHandler for Ferese {
+    fn xdg_foreign_state(&mut self) -> &mut XdgForeignState {
+        &mut self.xdg_foreign_state
+    }
+}
+
 smithay::delegate_compositor!(Ferese);
 smithay::delegate_data_device!(Ferese);
 smithay::delegate_fractional_scale!(Ferese);
@@ -165,4 +172,5 @@ smithay::delegate_single_pixel_buffer!(Ferese);
 smithay::delegate_viewporter!(Ferese);
 smithay::delegate_xdg_activation!(Ferese);
 smithay::delegate_xdg_decoration!(Ferese);
+smithay::delegate_xdg_foreign!(Ferese);
 smithay::delegate_xdg_shell!(Ferese);

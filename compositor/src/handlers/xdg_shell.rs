@@ -51,6 +51,31 @@ impl XdgShellHandler for Ferese {
         }
     }
 
+    fn parent_changed(&mut self, surface: ToplevelSurface) {
+        let Some(parent) = surface.parent() else {
+            return;
+        };
+        let parent = self.window_ids.iter().find_map(|(window, id)| {
+            window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == &parent)
+                .then_some(*id)
+        });
+        let child = self
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+            })
+            .cloned();
+
+        if let (Some(parent), Some(child)) = (parent, child) {
+            self.make_window_transient(&child, parent);
+        }
+    }
+
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         let Some(window) = self
             .space

@@ -45,6 +45,7 @@ use smithay::{
         socket::ListeningSocketSource,
         viewporter::ViewporterState,
         xdg_activation::XdgActivationState,
+        xdg_foreign::XdgForeignState,
     },
 };
 
@@ -80,6 +81,7 @@ pub struct Ferese {
     pub viewporter_state: ViewporterState,
     pub layer_shell_state: WlrLayerShellState,
     pub xdg_activation_state: XdgActivationState,
+    pub xdg_foreign_state: XdgForeignState,
     pub xdg_shell_state: XdgShellState,
 }
 
@@ -105,6 +107,7 @@ impl Ferese {
         let viewporter_state = ViewporterState::new::<Self>(&display_handle);
         let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
         let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
+        let xdg_foreign_state = XdgForeignState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&display_handle, "ferese-winit");
         seat.add_keyboard(Default::default(), 200, 25)?;
@@ -145,6 +148,7 @@ impl Ferese {
             viewporter_state,
             layer_shell_state,
             xdg_activation_state,
+            xdg_foreign_state,
             xdg_shell_state,
         })
     }
@@ -344,6 +348,41 @@ impl Ferese {
 
         self.window_ids.insert(window.clone(), id);
         self.space.map_element(window, (0, 0), false);
+        self.relayout();
+    }
+
+    pub fn make_window_transient(&mut self, window: &Window, parent: WindowId) {
+        let Some(id) = self.window_ids.get(window).copied() else {
+            return;
+        };
+        if self.workspaces.workspace_for_window(id) != self.workspaces.workspace_for_window(parent)
+        {
+            tracing::warn!(
+                ?id,
+                ?parent,
+                "ignored transient parent on another workspace"
+            );
+            return;
+        }
+        let Some(bounds) = self.output_bounds() else {
+            return;
+        };
+        let parent_rect = self.logical_window_rect(parent, bounds).unwrap_or(bounds);
+        let rect = centered_transient_rect(parent_rect);
+        let result = match self.workspaces.placement(id) {
+            Some(WindowPlacement::Tiled) => self
+                .workspaces
+                .toggle_floating(id, rect, Axis::Horizontal, 0.5)
+                .map(|_| ()),
+            Some(WindowPlacement::Floating { .. }) => self.workspaces.set_floating_rect(id, rect),
+            None => return,
+        };
+
+        if let Err(error) = result {
+            tracing::warn!(%error, ?id, ?parent, "failed to apply transient placement");
+            return;
+        }
+
         self.relayout();
     }
 
