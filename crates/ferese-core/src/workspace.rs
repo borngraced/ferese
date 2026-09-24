@@ -127,6 +127,28 @@ impl WorkspaceSet {
         self.placements.get(&window).copied()
     }
 
+    pub fn set_floating_rect(
+        &mut self,
+        window: WindowId,
+        rect: Rect,
+    ) -> Result<(), WorkspaceError> {
+        let placement = self
+            .placements
+            .get_mut(&window)
+            .ok_or(LayoutError::UnknownWindow(window))?;
+
+        if !matches!(placement, WindowPlacement::Floating { .. }) {
+            return Err(WorkspaceError::InvalidState("window is not floating"));
+        }
+
+        *placement = WindowPlacement::Floating {
+            rect: normalized_floating_rect(rect),
+        };
+
+        debug_assert!(self.validate().is_ok());
+        Ok(())
+    }
+
     pub fn focus_window(&mut self, window: WindowId) -> Result<(), WorkspaceError> {
         if self.workspace_for_window(window) != Some(self.active) {
             return Err(WorkspaceError::InvalidState(
@@ -618,6 +640,38 @@ mod tests {
         );
         assert!(workspaces.active().layout.contains(WindowId(1)));
         assert!(workspaces.active().floating.is_empty());
+        assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn floating_geometry_updates_are_authoritative_and_validated() {
+        let mut workspaces = WorkspaceSet::default();
+        workspaces
+            .insert_window(WindowId(1), Axis::Horizontal, 0.5)
+            .unwrap();
+        assert_eq!(
+            workspaces.set_floating_rect(WindowId(1), Rect::default()),
+            Err(WorkspaceError::InvalidState("window is not floating"))
+        );
+
+        workspaces
+            .toggle_floating(
+                WindowId(1),
+                Rect::new(10.0, 20.0, 640.0, 480.0),
+                Axis::Horizontal,
+                0.5,
+            )
+            .unwrap();
+        workspaces
+            .set_floating_rect(WindowId(1), Rect::new(30.0, 40.0, f64::NAN, -2.0))
+            .unwrap();
+
+        assert_eq!(
+            workspaces.placement(WindowId(1)),
+            Some(WindowPlacement::Floating {
+                rect: Rect::new(30.0, 40.0, 1.0, 1.0)
+            })
+        );
         assert!(workspaces.validate().is_ok());
     }
 

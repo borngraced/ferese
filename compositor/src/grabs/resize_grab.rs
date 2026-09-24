@@ -71,6 +71,7 @@ pub struct ResizeSurfaceGrab {
     edges: ResizeEdge,
     initial_rect: Rectangle<i32, Logical>,
     last_size: Size<i32, Logical>,
+    finished: bool,
 }
 
 impl ResizeSurfaceGrab {
@@ -98,6 +99,7 @@ impl ResizeSurfaceGrab {
             edges,
             initial_rect,
             last_size: initial_rect.size,
+            finished: false,
         }
     }
 }
@@ -123,6 +125,8 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
         });
         self.last_size =
             constrained_size(self.initial_rect.size, delta, self.edges, minimum, maximum);
+        let rect = resized_rect(self.initial_rect, self.last_size, self.edges);
+        data.set_floating_window_geometry(&self.window, rect.loc, rect.size);
 
         surface.with_pending_state(|state| {
             state.states.set(xdg_toplevel::State::Resizing);
@@ -149,6 +153,7 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
     ) {
         handle.button(data, event);
         if handle.current_pressed().is_empty() {
+            self.finished = true;
             handle.unset_grab(self, data, event.serial, event.time, true);
             let surface = self
                 .window
@@ -250,7 +255,29 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut Ferese) {}
+    fn unset(&mut self, data: &mut Ferese) {
+        if self.finished {
+            return;
+        }
+
+        let surface = self
+            .window
+            .toplevel()
+            .expect("managed window has a toplevel");
+        surface.with_pending_state(|state| {
+            state.states.unset(xdg_toplevel::State::Resizing);
+            state.size = Some(self.initial_rect.size);
+        });
+        surface.send_pending_configure();
+        ResizeState::with(surface.wl_surface(), |state| *state = ResizeState::Idle);
+        data.set_floating_window_geometry(
+            &self.window,
+            self.initial_rect.loc,
+            self.initial_rect.size,
+        );
+        data.space
+            .map_element(self.window.clone(), self.initial_rect.loc, true);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -359,6 +386,23 @@ fn constrained_size(
         .into()
 }
 
+fn resized_rect(
+    initial: Rectangle<i32, Logical>,
+    size: Size<i32, Logical>,
+    edges: ResizeEdge,
+) -> Rectangle<i32, Logical> {
+    let mut location = initial.loc;
+
+    if edges.left() {
+        location.x += initial.size.w - size.w;
+    }
+    if edges.top() {
+        location.y += initial.size.h - size.h;
+    }
+
+    Rectangle::new(location, size)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,5 +441,18 @@ mod tests {
             (1_024, 768).into(),
         );
         assert_eq!(size, (1_024, 768).into());
+    }
+
+    #[test]
+    fn resized_rect_keeps_the_opposite_edge_fixed() {
+        let initial = Rectangle::new((100, 80).into(), (800, 600).into());
+        let resized = resized_rect(
+            initial,
+            (700, 550).into(),
+            ResizeEdge(xdg_toplevel::ResizeEdge::TopLeft),
+        );
+
+        assert_eq!(resized.loc, (200, 130).into());
+        assert_eq!(resized.size, (700, 550).into());
     }
 }

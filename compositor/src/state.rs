@@ -21,7 +21,7 @@ use smithay::{
             protocol::wl_surface::WlSurface,
         },
     },
-    utils::{Logical, Point},
+    utils::{Logical, Point, Size},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
         fractional_scale::FractionalScaleManagerState,
@@ -437,6 +437,34 @@ impl Ferese {
             Err(error) => {
                 tracing::error!(%error, ?window, enabled, "failed to set fullscreen window")
             }
+        }
+    }
+
+    pub fn is_floating_window(&self, window: &Window) -> bool {
+        self.window_ids
+            .get(window)
+            .and_then(|id| self.workspaces.placement(*id))
+            .is_some_and(|placement| matches!(placement, WindowPlacement::Floating { .. }))
+    }
+
+    pub fn set_floating_window_geometry(
+        &mut self,
+        window: &Window,
+        location: Point<i32, Logical>,
+        size: Size<i32, Logical>,
+    ) {
+        let Some(id) = self.window_ids.get(window).copied() else {
+            return;
+        };
+        let rect = Rect::new(
+            location.x as f64,
+            location.y as f64,
+            size.w.max(1) as f64,
+            size.h.max(1) as f64,
+        );
+
+        if let Err(error) = self.workspaces.set_floating_rect(id, rect) {
+            tracing::error!(%error, ?id, "failed to update floating window geometry");
         }
     }
 

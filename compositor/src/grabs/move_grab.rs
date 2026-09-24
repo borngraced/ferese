@@ -16,6 +16,7 @@ pub struct MoveSurfaceGrab {
     pub start_data: GrabStartData<Ferese>,
     pub window: Window,
     pub initial_location: Point<i32, Logical>,
+    pub finished: bool,
 }
 
 impl PointerGrab<Ferese> for MoveSurfaceGrab {
@@ -28,8 +29,11 @@ impl PointerGrab<Ferese> for MoveSurfaceGrab {
     ) {
         handle.motion(data, None, event);
         let location = self.initial_location.to_f64() + (event.location - self.start_data.location);
-        data.space
-            .map_element(self.window.clone(), location.to_i32_round(), true);
+        let location = location.to_i32_round();
+        let size = self.window.geometry().size;
+
+        data.set_floating_window_geometry(&self.window, location, size);
+        data.space.map_element(self.window.clone(), location, true);
     }
 
     fn relative_motion(
@@ -50,6 +54,7 @@ impl PointerGrab<Ferese> for MoveSurfaceGrab {
     ) {
         handle.button(data, event);
         if handle.current_pressed().is_empty() {
+            self.finished = true;
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
     }
@@ -143,5 +148,14 @@ impl PointerGrab<Ferese> for MoveSurfaceGrab {
         &self.start_data
     }
 
-    fn unset(&mut self, _data: &mut Ferese) {}
+    fn unset(&mut self, data: &mut Ferese) {
+        if self.finished {
+            return;
+        }
+
+        let size = self.window.geometry().size;
+        data.set_floating_window_geometry(&self.window, self.initial_location, size);
+        data.space
+            .map_element(self.window.clone(), self.initial_location, true);
+    }
 }

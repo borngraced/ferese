@@ -100,12 +100,16 @@ impl XdgShellHandler for Ferese {
         let Some(initial_location) = self.space.element_location(&window) else {
             return;
         };
+        if !self.is_floating_window(&window) {
+            return;
+        }
         pointer.set_grab(
             self,
             MoveSurfaceGrab {
                 start_data,
                 window,
                 initial_location,
+                finished: false,
             },
             serial,
             Focus::Clear,
@@ -143,6 +147,9 @@ impl XdgShellHandler for Ferese {
         let Some(location) = self.space.element_location(&window) else {
             return;
         };
+        if !self.is_floating_window(&window) {
+            return;
+        }
         let rect = Rectangle::new(location, window.geometry().size);
         pointer.set_grab(
             self,
