@@ -9,7 +9,7 @@ use smithay::{
         drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode, GbmBufferedSurface},
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{Bind, ImportDma, damage::OutputDamageTracker, gles::GlesRenderer},
+        renderer::{Bind, ImportDma, ImportMemWl, damage::OutputDamageTracker, gles::GlesRenderer},
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
         udev::{UdevBackend, UdevEvent, primary_gpu},
     },
@@ -171,6 +171,7 @@ fn open_primary_device(
     let egl_context = EGLContext::new(&egl_display)?;
     // SAFETY: the new context is not current on another thread and remains renderer-owned.
     let renderer = unsafe { GlesRenderer::new(egl_context)? };
+    state.shm_state.update_formats(renderer.shm_formats());
     let (connector, crtc, mode) = select_output(&drm)?;
     let output = create_output(state, &connector, mode);
     if let Some(backend) = state.direct_backend.as_mut() {
