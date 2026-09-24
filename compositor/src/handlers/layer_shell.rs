@@ -47,6 +47,7 @@ impl WlrLayerShellHandler for Ferese {
     }
 
     fn new_popup(&mut self, _parent: LayerSurface, popup: PopupSurface) {
+        self.unconstrain_popup(&popup);
         if let Err(error) = self.popups.track_popup(PopupKind::Xdg(popup)) {
             tracing::warn!(?error, "failed to track layer-shell popup");
         }

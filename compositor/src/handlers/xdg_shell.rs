@@ -1,7 +1,7 @@
 use smithay::{
     desktop::{
         PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, Space, Window,
-        find_popup_root_surface, get_popup_toplevel_coords,
+        WindowSurfaceType, find_popup_root_surface, get_popup_toplevel_coords,
     },
     input::{
         Seat,
@@ -310,30 +310,42 @@ pub fn handle_commit(popups: &mut PopupManager, space: &mut Space<Window>, surfa
 }
 
 impl Ferese {
-    fn unconstrain_popup(&self, popup: &PopupSurface) {
+    pub(crate) fn unconstrain_popup(&self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;
         };
-        let Some(window) = self.space.elements().find(|window| {
+        let window = self.space.elements().find(|window| {
             window
                 .toplevel()
                 .is_some_and(|toplevel| toplevel.wl_surface() == &root)
-        }) else {
-            return;
-        };
-        let Some(output) = self.space.outputs().next() else {
-            return;
-        };
-        let Some(output_geometry) = self.space.output_geometry(output) else {
-            return;
-        };
-        let Some(window_geometry) = self.space.element_geometry(window) else {
+        });
+        let geometry = (|| {
+            if let Some(window) = window {
+                let output = self.space.outputs().next()?;
+                let output_geometry = self.space.output_geometry(output)?;
+                let window_geometry = self.space.element_geometry(window)?;
+
+                Some((output_geometry, window_geometry.loc))
+            } else {
+                let layer = self
+                    .space
+                    .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)?;
+
+                self.space.outputs().find_map(|output| {
+                    let output_geometry = self.space.output_geometry(output)?;
+                    let layer_geometry =
+                        smithay::desktop::layer_map_for_output(output).layer_geometry(&layer)?;
+
+                    Some((output_geometry, output_geometry.loc + layer_geometry.loc))
+                })
+            }
+        })();
+        let Some((mut target, root_location)) = geometry else {
             return;
         };
 
-        let mut target = output_geometry;
         target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
-        target.loc -= window_geometry.loc;
+        target.loc -= root_location;
         popup.with_pending_state(|state| {
             state.geometry = state.positioner.get_unconstrained_geometry(target);
         });
