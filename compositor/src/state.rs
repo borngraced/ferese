@@ -361,9 +361,11 @@ impl Ferese {
     }
 
     pub fn relayout(&mut self) {
+        self.arrange_layers();
         let Some(bounds) = self.output_bounds() else {
             return;
         };
+        let fullscreen_bounds = self.full_output_bounds().unwrap_or(bounds);
         let layout = match self.tiled_layout(bounds) {
             Ok(layout) => layout,
             Err(error) => {
@@ -410,7 +412,7 @@ impl Ferese {
                 }
 
                 let rect = if fullscreen == Some(*id) {
-                    bounds
+                    fullscreen_bounds
                 } else if fullscreen.is_some() {
                     return None;
                 } else {
@@ -772,6 +774,19 @@ impl Ferese {
     fn output_bounds(&self) -> Option<Rect> {
         let output = self.space.outputs().next()?;
         let geometry = self.space.output_geometry(output)?;
+        let zone = layer_map_for_output(output).non_exclusive_zone();
+
+        Some(Rect::new(
+            (geometry.loc.x + zone.loc.x) as f64,
+            (geometry.loc.y + zone.loc.y) as f64,
+            zone.size.w.max(0) as f64,
+            zone.size.h.max(0) as f64,
+        ))
+    }
+
+    fn full_output_bounds(&self) -> Option<Rect> {
+        let output = self.space.outputs().next()?;
+        let geometry = self.space.output_geometry(output)?;
 
         Some(Rect::new(
             geometry.loc.x as f64,
@@ -779,6 +794,14 @@ impl Ferese {
             geometry.size.w as f64,
             geometry.size.h as f64,
         ))
+    }
+
+    fn arrange_layers(&self) {
+        let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
+
+        for output in outputs {
+            layer_map_for_output(&output).arrange();
+        }
     }
 
     fn logical_window_rect(&self, window: WindowId, bounds: Rect) -> Option<Rect> {
