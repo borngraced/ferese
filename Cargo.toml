@@ -1,0 +1,19 @@
+[workspace]
+members = ["compositor"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.87"
+
+[workspace.dependencies]
+smithay = { version = "0.7.0", default-features = false, features = [
+    "backend_winit",
+    "desktop",
+    "wayland_frontend",
+] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+
