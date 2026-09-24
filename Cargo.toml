@@ -16,8 +16,14 @@ rust-version = "1.87"
 [workspace.dependencies]
 libc = "0.2.176"
 smithay = { version = "0.7.0", default-features = false, features = [
+    "backend_drm",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_session_libseat",
+    "backend_udev",
     "backend_winit",
     "desktop",
+    "renderer_gl",
     "wayland_frontend",
 ] }
 tracing = "0.1.41"
