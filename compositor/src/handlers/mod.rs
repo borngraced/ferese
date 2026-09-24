@@ -12,7 +12,9 @@ use smithay::{
         compositor::with_states,
         fractional_scale::{FractionalScaleHandler, with_fractional_scale},
         output::OutputHandler,
-        pointer_constraints::{PointerConstraintsHandler, with_pointer_constraint},
+        pointer_constraints::{
+            PointerConstraint, PointerConstraintsHandler, with_pointer_constraint,
+        },
         selection::{
             SelectionHandler,
             data_device::{
@@ -57,25 +59,31 @@ impl FractionalScaleHandler for Ferese {
 }
 
 impl PointerConstraintsHandler for Ferese {
-    fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
-        let focused = pointer
-            .current_focus()
-            .is_some_and(|focused| focused == *surface);
-        if focused {
-            with_pointer_constraint(surface, pointer, |constraint| {
-                if let Some(constraint) = constraint {
-                    constraint.activate();
-                }
-            });
-        }
+    fn new_constraint(&mut self, _surface: &WlSurface, pointer: &PointerHandle<Self>) {
+        self.activate_focused_pointer_constraint(pointer);
     }
 
     fn cursor_position_hint(
         &mut self,
-        _surface: &WlSurface,
-        _pointer: &PointerHandle<Self>,
-        _location: smithay::utils::Point<f64, smithay::utils::Logical>,
+        surface: &WlSurface,
+        pointer: &PointerHandle<Self>,
+        location: smithay::utils::Point<f64, smithay::utils::Logical>,
     ) {
+        let locked = with_pointer_constraint(surface, pointer, |constraint| {
+            constraint.is_some_and(|constraint| {
+                constraint.is_active() && matches!(&*constraint, PointerConstraint::Locked(_))
+            })
+        });
+        if !locked || pointer.current_focus().as_ref() != Some(surface) {
+            return;
+        }
+
+        let Some((focused_surface, origin)) = self.surface_under(pointer.current_location()) else {
+            return;
+        };
+        if focused_surface == *surface {
+            pointer.set_location(origin + location);
+        }
     }
 }
 
