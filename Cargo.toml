@@ -1,5 +1,10 @@
 [workspace]
-members = ["compositor", "crates/ferese-core", "crates/ferese-layout"]
+members = [
+    "compositor",
+    "crates/ferese-animation",
+    "crates/ferese-core",
+    "crates/ferese-layout",
+]
 resolver = "3"
 
 [workspace.package]

@@ -377,6 +377,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferese-animation"
+version = "0.1.0"
+dependencies = [
+ "ferese-layout",
+]
+
+[[package]]
 name = "ferese-core"
 version = "0.1.0"
 dependencies = [
