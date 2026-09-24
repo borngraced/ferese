@@ -50,10 +50,10 @@ impl CompositorHandler for Ferese {
             if let Some(window) = window {
                 window.on_commit();
                 self.record_client_commit(&window);
-                crate::backends::direct::render_all(self);
             }
         }
         xdg_shell::handle_commit(&mut self.popups, &mut self.space, surface);
+        crate::backends::direct::render_all(self);
     }
 }
 

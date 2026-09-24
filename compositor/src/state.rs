@@ -13,7 +13,7 @@ use ferese_layout::{Axis, Direction, GapConfig, LayoutResult, Rect, SizeConstrai
 use smithay::{
     backend::drm::DrmEventTime,
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
-    input::{Seat, SeatState},
+    input::{Seat, SeatState, pointer::CursorImageStatus},
     reexports::{
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
         wayland_protocols::xdg::shell::server::xdg_toplevel,
@@ -51,6 +51,7 @@ pub struct Ferese {
     pub window_ids: HashMap<Window, WindowId>,
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
     pub focused_window: Option<WindowId>,
+    pub cursor_status: CursorImageStatus,
     pub intercepted_keys: HashSet<smithay::input::keyboard::Keycode>,
     pub direct_backend: Option<crate::backends::direct::DirectBackendState>,
     next_window_id: u64,
@@ -111,6 +112,7 @@ impl Ferese {
             window_ids: HashMap::new(),
             window_geometry: HashMap::new(),
             focused_window: None,
+            cursor_status: CursorImageStatus::default_named(),
             intercepted_keys: HashSet::new(),
             direct_backend: None,
             next_window_id: 1,

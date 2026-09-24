@@ -8,9 +8,10 @@ use smithay::{
         renderer::{
             damage::OutputDamageTracker,
             element::{
-                surface::WaylandSurfaceRenderElement,
+                Kind as RenderElementKind,
+                surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
                 utils::{
-                    ConstrainAlign, ConstrainScaleBehavior, CropRenderElement,
+                    ConstrainAlign, ConstrainScaleBehavior, CropRenderElement, Relocate,
                     RelocateRenderElement, RescaleRenderElement,
                 },
             },
@@ -22,11 +23,12 @@ use smithay::{
         space::{ConstrainBehavior, ConstrainReference, constrain_space_element},
         utils::OutputPresentationFeedback,
     },
+    input::pointer::{CursorImageStatus, CursorImageSurfaceData},
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::calloop::EventLoop,
-    reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind,
-    utils::{Clock, Logical, Monotonic, Rectangle, Transform},
-    wayland::presentation::Refresh,
+    reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind as PresentationKind,
+    utils::{Clock, Logical, Monotonic, Physical, Point, Rectangle, Transform},
+    wayland::{compositor::with_states, presentation::Refresh},
 };
 
 use crate::Ferese;
@@ -98,7 +100,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     window.take_presentation_feedback(
                         &mut presentation,
                         |_, _| Some(output.clone()),
-                        |_, _| Kind::Vsync,
+                        |_, _| PresentationKind::Vsync,
                     );
                 });
                 let rendered = (|| -> Result<(), Box<dyn Error>> {
@@ -126,7 +128,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     clock.now(),
                     Refresh::fixed(Duration::from_nanos(1_000_000_000 / 60)),
                     sequence,
-                    Kind::Vsync,
+                    PresentationKind::Vsync,
                 );
                 state.space.elements().for_each(|window| {
                     window.send_frame(
@@ -159,46 +161,93 @@ pub(crate) fn animated_window_elements(
     };
     let scale = output.current_scale().fractional_scale();
 
-    state
-        .space
-        .elements()
-        .rev()
-        .filter_map(|window| {
-            let id = state.window_ids.get(window)?;
-            let visual = state.window_geometry.get(id)?.visual.current;
-            let constrain = Rectangle::<i32, Logical>::new(
-                (
-                    (visual.x - f64::from(output_geometry.loc.x)).round() as i32,
-                    (visual.y - f64::from(output_geometry.loc.y)).round() as i32,
-                )
-                    .into(),
-                (
-                    visual.width.round().max(1.0) as i32,
-                    visual.height.round().max(1.0) as i32,
-                )
-                    .into(),
-            );
+    let mut elements = cursor_elements(state, renderer, output_geometry, scale);
+    elements.extend(
+        state
+            .space
+            .elements()
+            .rev()
+            .filter_map(|window| {
+                let id = state.window_ids.get(window)?;
+                let visual = state.window_geometry.get(id)?.visual.current;
+                let constrain = Rectangle::<i32, Logical>::new(
+                    (
+                        (visual.x - f64::from(output_geometry.loc.x)).round() as i32,
+                        (visual.y - f64::from(output_geometry.loc.y)).round() as i32,
+                    )
+                        .into(),
+                    (
+                        visual.width.round().max(1.0) as i32,
+                        visual.height.round().max(1.0) as i32,
+                    )
+                        .into(),
+                );
 
-            Some(constrain_space_element::<
-                GlesRenderer,
-                _,
-                AnimatedWindowRenderElement,
-            >(
-                renderer,
-                window,
-                constrain.loc,
-                1.0,
-                scale,
-                constrain,
-                ConstrainBehavior {
-                    reference: ConstrainReference::Geometry,
-                    behavior: ConstrainScaleBehavior::Zoom,
-                    align: ConstrainAlign::TOP | ConstrainAlign::LEFT,
-                },
-            ))
-        })
-        .flatten()
-        .collect()
+                Some(constrain_space_element::<
+                    GlesRenderer,
+                    _,
+                    AnimatedWindowRenderElement,
+                >(
+                    renderer,
+                    window,
+                    constrain.loc,
+                    1.0,
+                    scale,
+                    constrain,
+                    ConstrainBehavior {
+                        reference: ConstrainReference::Geometry,
+                        behavior: ConstrainScaleBehavior::Zoom,
+                        align: ConstrainAlign::TOP | ConstrainAlign::LEFT,
+                    },
+                ))
+            })
+            .flatten(),
+    );
+    elements
+}
+
+fn cursor_elements(
+    state: &Ferese,
+    renderer: &mut GlesRenderer,
+    output_geometry: Rectangle<i32, Logical>,
+    scale: f64,
+) -> Vec<AnimatedWindowRenderElement> {
+    let CursorImageStatus::Surface(surface) = &state.cursor_status else {
+        return Vec::new();
+    };
+    let Some(pointer) = state.seat.get_pointer() else {
+        return Vec::new();
+    };
+    let hotspot = with_states(surface, |states| {
+        states
+            .data_map
+            .get::<CursorImageSurfaceData>()
+            .map(|attributes| attributes.lock().unwrap().hotspot)
+            .unwrap_or_default()
+    });
+    let logical_location =
+        pointer.current_location() - output_geometry.loc.to_f64() - hotspot.to_f64();
+    let physical_location = logical_location.to_physical_precise_round(scale);
+    let output_crop =
+        Rectangle::<i32, Logical>::from_size(output_geometry.size).to_physical_precise_round(scale);
+    let origin = Point::<i32, Physical>::default();
+
+    render_elements_from_surface_tree::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
+        renderer,
+        surface,
+        physical_location,
+        scale,
+        1.0,
+        RenderElementKind::Cursor,
+    )
+    .into_iter()
+    .filter_map(|element| {
+        let element = RescaleRenderElement::from_element(element, origin, 1.0);
+        let element = RelocateRenderElement::from_element(element, origin, Relocate::Relative);
+
+        CropRenderElement::from_element(element, scale, output_crop)
+    })
+    .collect()
 }
 
 fn normalized_scale(scale: f64) -> f64 {

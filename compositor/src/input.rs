@@ -132,6 +132,7 @@ impl Ferese {
                 );
                 pointer.frame(self);
                 self.activate_focused_pointer_constraint(&pointer);
+                crate::backends::direct::render_all(self);
             }
             InputEvent::PointerMotion { event, .. } => {
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
@@ -167,6 +168,7 @@ impl Ferese {
                 );
                 pointer.frame(self);
                 self.activate_focused_pointer_constraint(&pointer);
+                crate::backends::direct::render_all(self);
             }
             InputEvent::PointerButton { event, .. } => {
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
