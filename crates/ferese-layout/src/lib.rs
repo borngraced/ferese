@@ -2,6 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
+mod workspace;
+
+pub use workspace::{Workspace, WorkspaceError, WorkspaceId, WorkspaceSet};
+
 const MIN_SPLIT_RATIO: f64 = 0.05;
 const MAX_SPLIT_RATIO: f64 = 0.95;
 
@@ -119,6 +123,10 @@ impl LayoutTree {
 
     pub fn contains(&self, window: WindowId) -> bool {
         self.windows.contains_key(&window)
+    }
+
+    pub fn window_ids(&self) -> impl Iterator<Item = WindowId> + '_ {
+        self.windows.keys().copied()
     }
 
     pub fn insert(
