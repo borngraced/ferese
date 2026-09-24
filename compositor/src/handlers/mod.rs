@@ -9,7 +9,7 @@ use smithay::{
     },
     reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
     wayland::{
-        compositor::with_states,
+        compositor::{TraversalAction, with_states, with_surface_tree_downward},
         fractional_scale::{FractionalScaleHandler, with_fractional_scale},
         output::OutputHandler,
         pointer_constraints::{
@@ -52,9 +52,40 @@ impl OutputHandler for Ferese {}
 
 impl FractionalScaleHandler for Ferese {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
+        let scale = self
+            .space
+            .outputs()
+            .next()
+            .map(|output| output.current_scale().fractional_scale())
+            .unwrap_or(1.0);
+
         with_states(&surface, |states| {
-            with_fractional_scale(states, |scale| scale.set_preferred_scale(1.0));
+            with_fractional_scale(states, |surface_scale| {
+                surface_scale.set_preferred_scale(scale);
+            });
         });
+    }
+}
+
+impl Ferese {
+    pub fn update_fractional_scale(&self, scale: f64) {
+        for window in self.space.elements() {
+            let Some(toplevel) = window.toplevel() else {
+                continue;
+            };
+
+            with_surface_tree_downward(
+                toplevel.wl_surface(),
+                (),
+                |_, _, &()| TraversalAction::DoChildren(()),
+                |_, states, &()| {
+                    with_fractional_scale(states, |surface_scale| {
+                        surface_scale.set_preferred_scale(scale);
+                    });
+                },
+                |_, _, &()| true,
+            );
+        }
     }
 }
 

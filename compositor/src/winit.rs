@@ -9,7 +9,7 @@ use smithay::{
         winit::{self, WinitEvent},
     },
     desktop::utils::OutputPresentationFeedback,
-    output::{Mode, Output, PhysicalProperties, Subpixel},
+    output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::calloop::EventLoop,
     reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind,
     utils::{Clock, Monotonic, Rectangle, Transform},
@@ -20,6 +20,7 @@ use crate::Ferese;
 
 pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<(), Box<dyn Error>> {
     let (mut backend, event_source) = winit::init()?;
+    let initial_scale = normalized_scale(backend.scale_factor());
     let mode = Mode {
         size: backend.window_size(),
         refresh: 60_000,
@@ -37,7 +38,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
     output.change_current_state(
         Some(mode),
         Some(Transform::Flipped180),
-        None,
+        Some(Scale::Fractional(initial_scale)),
         Some((0, 0).into()),
     );
     output.set_preferred(mode);
@@ -46,18 +47,29 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let clock = Clock::<Monotonic>::new();
     let mut sequence = 0_u64;
+    let mut output_scale = initial_scale;
+
     event_loop
         .handle()
         .insert_source(event_source, move |event, _, state| match event {
-            WinitEvent::Resized { size, .. } => output.change_current_state(
-                Some(Mode {
-                    size,
-                    refresh: 60_000,
-                }),
-                None,
-                None,
-                None,
-            ),
+            WinitEvent::Resized { size, scale_factor } => {
+                let scale = normalized_scale(scale_factor);
+
+                output.change_current_state(
+                    Some(Mode {
+                        size,
+                        refresh: 60_000,
+                    }),
+                    None,
+                    Some(Scale::Fractional(scale)),
+                    None,
+                );
+
+                if scale != output_scale {
+                    output_scale = scale;
+                    state.update_fractional_scale(scale);
+                }
+            }
             WinitEvent::Input(event) => state.process_input_event(event),
             WinitEvent::Redraw => {
                 let damage = Rectangle::from_size(backend.window_size());
@@ -123,4 +135,29 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
             _ => {}
         })?;
     Ok(())
+}
+
+fn normalized_scale(scale: f64) -> f64 {
+    if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalized_scale;
+
+    #[test]
+    fn accepts_positive_finite_scale() {
+        assert_eq!(normalized_scale(1.25), 1.25);
+    }
+
+    #[test]
+    fn rejects_invalid_scale() {
+        assert_eq!(normalized_scale(0.0), 1.0);
+        assert_eq!(normalized_scale(f64::NAN), 1.0);
+        assert_eq!(normalized_scale(f64::INFINITY), 1.0);
+    }
 }
