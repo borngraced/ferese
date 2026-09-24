@@ -15,8 +15,8 @@ use tracing::{info, warn};
 fn main() -> Result<(), Box<dyn Error>> {
     init_logging();
 
-    let mut event_loop: EventLoop<Ferese> = EventLoop::try_new()?;
-    let display: Display<Ferese> = Display::new()?;
+    let mut event_loop = EventLoop::try_new()?;
+    let display = Display::new()?;
     let mut state = Ferese::new(&mut event_loop, display)?;
     winit::init(&mut event_loop, &mut state)?;
 
