@@ -371,6 +371,70 @@ impl LayoutTree {
         Ok(true)
     }
 
+    pub fn resize_window(
+        &mut self,
+        window: WindowId,
+        direction: Direction,
+        amount: f64,
+    ) -> Result<bool, LayoutError> {
+        let mut child = self
+            .windows
+            .get(&window)
+            .copied()
+            .ok_or(LayoutError::UnknownWindow(window))?;
+        let amount = valid_resize_amount(amount);
+
+        if amount == 0.0 {
+            return Ok(false);
+        }
+
+        while let Some(parent) = self.parents.get(&child).copied() {
+            let adjustment = match self.nodes.get(&parent) {
+                Some(Node::Split {
+                    axis: Axis::Horizontal,
+                    first,
+                    ..
+                }) if direction == Direction::Right && *first == child => Some(amount),
+                Some(Node::Split {
+                    axis: Axis::Horizontal,
+                    second,
+                    ..
+                }) if direction == Direction::Left && *second == child => Some(-amount),
+                Some(Node::Split {
+                    axis: Axis::Vertical,
+                    first,
+                    ..
+                }) if direction == Direction::Down && *first == child => Some(amount),
+                Some(Node::Split {
+                    axis: Axis::Vertical,
+                    second,
+                    ..
+                }) if direction == Direction::Up && *second == child => Some(-amount),
+                Some(Node::Split { .. } | Node::Stack { .. }) => None,
+                Some(Node::Window(_)) => {
+                    return Err(LayoutError::InvalidTree("window cannot be a parent"));
+                }
+                None => return Err(LayoutError::InvalidTree("parent node is missing")),
+            };
+
+            if let Some(adjustment) = adjustment {
+                let Some(Node::Split { ratio, .. }) = self.nodes.get_mut(&parent) else {
+                    return Err(LayoutError::InvalidTree("resize target is not a split"));
+                };
+                let resized = normalized_ratio(*ratio + adjustment);
+                let changed = resized != *ratio;
+                *ratio = resized;
+
+                debug_assert!(self.validate().is_ok());
+                return Ok(changed);
+            }
+
+            child = parent;
+        }
+
+        Ok(false)
+    }
+
     pub fn validate(&self) -> Result<(), LayoutError> {
         let Some(root) = self.root else {
             return if self.nodes.is_empty() && self.parents.is_empty() && self.windows.is_empty() {
@@ -539,6 +603,14 @@ fn normalized_ratio(ratio: f64) -> f64 {
 
 fn valid_gap(gap: f64) -> f64 {
     if gap.is_finite() { gap.max(0.0) } else { 0.0 }
+}
+
+fn valid_resize_amount(amount: f64) -> f64 {
+    if amount.is_finite() {
+        amount.abs()
+    } else {
+        0.0
+    }
 }
 
 fn nearly_equal(left: f64, right: f64) -> bool {
@@ -774,6 +846,73 @@ mod tests {
                     Direction::Left,
                     Rect::new(0.0, 0.0, 100.0, 80.0),
                 )
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn directional_resize_changes_the_nearest_matching_split() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.insert(WindowId(3), Some(WindowId(1)), Axis::Horizontal, 0.5)
+            .unwrap();
+        let bounds = Rect::new(0.0, 0.0, 100.0, 100.0);
+
+        assert!(
+            tree.resize_window(WindowId(1), Direction::Right, 0.1)
+                .unwrap()
+        );
+
+        let geometry = tree.geometry(bounds).unwrap();
+        assert_eq!(geometry[&WindowId(1)].width, 30.0);
+        assert_eq!(geometry[&WindowId(3)].x, 30.0);
+        assert_eq!(geometry[&WindowId(2)].x, 50.0);
+        assert!(tree.validate().is_ok());
+    }
+
+    #[test]
+    fn directional_resize_walks_to_an_ancestor_and_clamps() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.insert(WindowId(3), Some(WindowId(1)), Axis::Vertical, 0.5)
+            .unwrap();
+        let bounds = Rect::new(0.0, 0.0, 100.0, 100.0);
+
+        assert!(
+            tree.resize_window(WindowId(3), Direction::Right, 1.0)
+                .unwrap()
+        );
+        assert!(
+            !tree
+                .resize_window(WindowId(3), Direction::Right, 1.0)
+                .unwrap()
+        );
+
+        let geometry = tree.geometry(bounds).unwrap();
+        assert_eq!(geometry[&WindowId(2)].x, 95.0);
+        assert!(tree.validate().is_ok());
+    }
+
+    #[test]
+    fn directional_resize_at_an_outer_edge_is_a_noop() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+
+        assert!(
+            !tree
+                .resize_window(WindowId(1), Direction::Left, 0.05)
+                .unwrap()
+        );
+        assert!(
+            !tree
+                .resize_window(WindowId(1), Direction::Right, f64::NAN)
                 .unwrap()
         );
     }

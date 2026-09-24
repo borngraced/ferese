@@ -293,6 +293,20 @@ impl Ferese {
         }
     }
 
+    pub fn resize_direction(&mut self, direction: Direction) {
+        const RESIZE_STEP: f64 = 0.05;
+
+        let Some(current) = self.focused_window else {
+            return;
+        };
+
+        match self.layout.resize_window(current, direction, RESIZE_STEP) {
+            Ok(true) => self.relayout(),
+            Ok(false) => {}
+            Err(error) => tracing::error!(%error, ?current, "failed to resize tiled window"),
+        }
+    }
+
     fn output_bounds(&self) -> Option<Rect> {
         let output = self.space.outputs().next()?;
         let geometry = self.space.output_geometry(output)?;
