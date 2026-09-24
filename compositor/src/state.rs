@@ -195,6 +195,33 @@ impl Ferese {
         self.relayout();
     }
 
+    pub fn add_transient_window(&mut self, window: Window, parent: WindowId) {
+        let Some(workspace) = self.workspaces.workspace_for_window(parent) else {
+            self.add_tiled_window(window);
+            return;
+        };
+        let Some(bounds) = self.output_bounds() else {
+            self.add_tiled_window(window);
+            return;
+        };
+        let parent_rect = self.logical_window_rect(parent, bounds).unwrap_or(bounds);
+        let rect = centered_transient_rect(parent_rect);
+        let id = WindowId(self.next_window_id);
+        self.next_window_id += 1;
+
+        if let Err(error) = self
+            .workspaces
+            .insert_floating_window(id, workspace, rect, false)
+        {
+            tracing::error!(%error, ?id, ?parent, "failed to insert transient window");
+            return;
+        }
+
+        self.window_ids.insert(window.clone(), id);
+        self.space.map_element(window, (0, 0), false);
+        self.relayout();
+    }
+
     pub fn remove_tiled_window(&mut self, window: &Window) {
         let Some(id) = self.window_ids.remove(window) else {
             return;
@@ -538,6 +565,25 @@ impl Ferese {
             geometry.size.h as f64,
         ))
     }
+
+    fn logical_window_rect(&self, window: WindowId, bounds: Rect) -> Option<Rect> {
+        let workspace = self.workspaces.workspace_for_window(window)?;
+        let workspace = self.workspaces.workspace(workspace)?;
+
+        if workspace.fullscreen == Some(window) {
+            return Some(bounds);
+        }
+
+        match self.workspaces.placement(window)? {
+            WindowPlacement::Tiled => workspace
+                .layout
+                .geometry_with_gaps(bounds, GapConfig::default())
+                .ok()?
+                .get(&window)
+                .copied(),
+            WindowPlacement::Floating { rect } => Some(rect),
+        }
+    }
 }
 
 fn centered_floating_rect(bounds: Rect) -> Rect {
@@ -552,6 +598,18 @@ fn centered_floating_rect(bounds: Rect) -> Rect {
     )
 }
 
+fn centered_transient_rect(parent: Rect) -> Rect {
+    let width = (parent.width * 0.75).clamp(1.0, 640.0);
+    let height = (parent.height * 0.75).clamp(1.0, 480.0);
+
+    Rect::new(
+        parent.x + (parent.width - width) / 2.0,
+        parent.y + (parent.height - height) / 2.0,
+        width,
+        height,
+    )
+}
+
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
@@ -560,4 +618,17 @@ pub struct ClientState {
 impl ClientData for ClientState {
     fn initialized(&self, _client_id: ClientId) {}
     fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transient_geometry_is_centered_and_bounded_by_its_parent() {
+        let parent = Rect::new(100.0, 50.0, 1_000.0, 800.0);
+        let transient = centered_transient_rect(parent);
+
+        assert_eq!(transient, Rect::new(280.0, 210.0, 640.0, 480.0));
+    }
 }

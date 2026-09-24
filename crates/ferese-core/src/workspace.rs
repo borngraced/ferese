@@ -232,6 +232,37 @@ impl WorkspaceSet {
         Ok(())
     }
 
+    pub fn insert_floating_window(
+        &mut self,
+        window: WindowId,
+        workspace_id: WorkspaceId,
+        rect: Rect,
+        focus: bool,
+    ) -> Result<(), WorkspaceError> {
+        if self.window_workspaces.contains_key(&window) {
+            return Err(WorkspaceError::DuplicateWindow(window));
+        }
+
+        let workspace = self
+            .workspaces
+            .get_mut(&workspace_id)
+            .ok_or(WorkspaceError::UnknownWorkspace(workspace_id))?;
+        workspace.floating.push(window);
+        if focus && workspace.fullscreen.is_none() {
+            workspace.last_focused = Some(window);
+        }
+        self.window_workspaces.insert(window, workspace_id);
+        self.placements.insert(
+            window,
+            WindowPlacement::Floating {
+                rect: normalized_floating_rect(rect),
+            },
+        );
+
+        debug_assert!(self.validate().is_ok());
+        Ok(())
+    }
+
     pub fn remove_window(&mut self, window: WindowId) -> Result<(), WorkspaceError> {
         let workspace_id = self
             .window_workspaces
@@ -671,6 +702,34 @@ mod tests {
             Some(WindowPlacement::Floating {
                 rect: Rect::new(30.0, 40.0, 1.0, 1.0)
             })
+        );
+        assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn floating_window_can_follow_its_parent_workspace_without_focus() {
+        let mut workspaces = WorkspaceSet::default();
+        workspaces
+            .insert_window(WindowId(1), Axis::Horizontal, 0.5)
+            .unwrap();
+        let parent_workspace = workspaces.active_id();
+        workspaces.switch_to_numeric(2).unwrap();
+        workspaces
+            .insert_floating_window(
+                WindowId(2),
+                parent_workspace,
+                Rect::new(20.0, 30.0, 400.0, 300.0),
+                false,
+            )
+            .unwrap();
+
+        assert_eq!(
+            workspaces.workspace_for_window(WindowId(2)),
+            Some(parent_workspace)
+        );
+        assert_eq!(
+            workspaces.workspace(parent_workspace).unwrap().last_focused,
+            Some(WindowId(1))
         );
         assert!(workspaces.validate().is_ok());
     }
