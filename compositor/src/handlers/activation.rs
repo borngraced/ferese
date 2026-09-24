@@ -47,6 +47,7 @@ impl XdgActivationHandler for Ferese {
             return;
         };
 
+        self.focused_window = self.window_ids.get(&window).copied();
         self.space.raise_element(&window, true);
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         keyboard.set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());

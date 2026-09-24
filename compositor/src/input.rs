@@ -132,6 +132,8 @@ impl Ferese {
 
         if let Some((window, _)) = self.space.element_under(pointer.current_location()) {
             let window = window.clone();
+
+            self.focused_window = self.window_ids.get(&window).copied();
             self.space.raise_element(&window, true);
             let surface = window
                 .toplevel()
@@ -140,6 +142,7 @@ impl Ferese {
                 .clone();
             keyboard.set_focus(self, Some(surface), serial);
         } else {
+            self.focused_window = None;
             keyboard.set_focus(self, Option::<WlSurface>::None, serial);
         }
 

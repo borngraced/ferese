@@ -34,8 +34,24 @@ impl XdgShellHandler for Ferese {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        self.space
-            .map_element(Window::new_wayland_window(surface), (0, 0), true);
+        self.add_tiled_window(Window::new_wayland_window(surface));
+    }
+
+    fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+            })
+            .cloned()
+        else {
+            return;
+        };
+
+        self.remove_tiled_window(&window);
     }
 
     fn new_popup(&mut self, surface: PopupSurface, _positioner: PositionerState) {

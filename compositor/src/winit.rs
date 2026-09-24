@@ -69,6 +69,8 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     output_scale = scale;
                     state.update_fractional_scale(scale);
                 }
+
+                state.relayout();
             }
             WinitEvent::Input(event) => state.process_input_event(event),
             WinitEvent::Redraw => {
