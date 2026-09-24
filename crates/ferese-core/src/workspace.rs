@@ -253,9 +253,8 @@ impl WorkspaceSet {
         }
 
         let workspace = self.active_mut();
-        workspace
-            .layout
-            .insert(window, workspace.last_focused, axis, ratio)?;
+        let focused = tiled_focus(workspace);
+        workspace.layout.insert(window, focused, axis, ratio)?;
         if workspace.fullscreen.is_none() {
             workspace.last_focused = Some(window);
         }
@@ -853,5 +852,99 @@ mod tests {
             1
         );
         assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn randomized_workspace_sequences_preserve_all_invariants() {
+        let mut workspaces = WorkspaceSet::default();
+        let mut windows = Vec::new();
+        let mut next_window = 1;
+        let mut random = 0xc0de_cafe_u64;
+
+        for _ in 0..2_000 {
+            random = random
+                .wrapping_mul(2_862_933_555_777_941_757)
+                .wrapping_add(3_037_000_493);
+
+            match random % 7 {
+                0 if windows.len() < 48 => {
+                    let window = WindowId(next_window);
+                    next_window += 1;
+                    workspaces
+                        .insert_window(window, random_axis(random), 0.5)
+                        .unwrap();
+                    windows.push(window);
+                }
+                1 if !windows.is_empty() => {
+                    let index = random as usize % windows.len();
+                    let window = windows.swap_remove(index);
+                    workspaces.remove_window(window).unwrap();
+                }
+                2 => {
+                    workspaces
+                        .switch_to_numeric((random.rotate_left(11) % 4 + 1) as u32)
+                        .unwrap();
+                }
+                3 if !windows.is_empty() => {
+                    let window = windows[random as usize % windows.len()];
+                    workspaces
+                        .move_window_to_numeric(
+                            window,
+                            (random.rotate_left(17) % 4 + 1) as u32,
+                            random_axis(random),
+                            0.5,
+                        )
+                        .unwrap();
+                }
+                4 if !windows.is_empty() => {
+                    let window = windows[random as usize % windows.len()];
+                    workspaces
+                        .toggle_floating(window, random_rect(random), random_axis(random), 0.5)
+                        .unwrap();
+                }
+                5 if !windows.is_empty() => {
+                    let window = windows[random as usize % windows.len()];
+                    workspaces.toggle_fullscreen(window).unwrap();
+                }
+                6 if !windows.is_empty() => {
+                    let candidates = windows
+                        .iter()
+                        .copied()
+                        .filter(|window| {
+                            workspaces.workspace_for_window(*window) == Some(workspaces.active_id())
+                                && workspaces
+                                    .active()
+                                    .fullscreen
+                                    .is_none_or(|fullscreen| fullscreen == *window)
+                        })
+                        .collect::<Vec<_>>();
+
+                    if let Some(window) = candidates.get(random as usize % candidates.len().max(1))
+                    {
+                        workspaces.focus_window(*window).unwrap();
+                    }
+                }
+                _ => {}
+            }
+
+            assert!(workspaces.validate().is_ok());
+        }
+    }
+
+    fn random_axis(random: u64) -> Axis {
+        if random & 1 == 0 {
+            Axis::Horizontal
+        } else {
+            Axis::Vertical
+        }
+    }
+
+    fn random_rect(random: u64) -> Rect {
+        Rect::new(
+            (random % 400) as f64,
+            (random.rotate_left(9) % 300) as f64,
+            (random.rotate_left(21) % 900 + 1) as f64,
+            (random.rotate_left(33) % 700 + 1) as f64,
+        )
     }
 }
