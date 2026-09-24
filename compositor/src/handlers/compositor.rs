@@ -36,12 +36,20 @@ impl CompositorHandler for Ferese {
             while let Some(parent) = get_parent(&root) {
                 root = parent;
             }
-            if let Some(window) = self.space.elements().find(|window| {
-                window
-                    .toplevel()
-                    .is_some_and(|toplevel| toplevel.wl_surface() == &root)
-            }) {
+            let window = {
+                self.space
+                    .elements()
+                    .find(|window| {
+                        window
+                            .toplevel()
+                            .is_some_and(|toplevel| toplevel.wl_surface() == &root)
+                    })
+                    .cloned()
+            };
+
+            if let Some(window) = window {
                 window.on_commit();
+                self.record_client_commit(&window);
             }
         }
         xdg_shell::handle_commit(&mut self.popups, &mut self.space, surface);

@@ -6,6 +6,7 @@ use std::{
     time::Instant,
 };
 
+use ferese_animation::{ClientSize, SpringConfig, WindowGeometry};
 use ferese_core::{WindowPlacement, WorkspaceSet};
 use ferese_layout::{Axis, Direction, GapConfig, LayoutResult, Rect, SizeConstraints, WindowId};
 
@@ -47,9 +48,11 @@ pub struct Ferese {
     pub space: Space<Window>,
     pub workspaces: WorkspaceSet,
     pub window_ids: HashMap<Window, WindowId>,
+    pub window_geometry: HashMap<WindowId, WindowGeometry>,
     pub focused_window: Option<WindowId>,
     pub intercepted_keys: HashSet<smithay::input::keyboard::Keycode>,
     next_window_id: u64,
+    last_animation_tick: Instant,
     pub popups: PopupManager,
     pub seat: Seat<Self>,
     pub compositor_state: CompositorState,
@@ -94,17 +97,21 @@ impl Ferese {
         seat.add_pointer();
         let socket_name = Self::init_wayland_listener(display, event_loop)?;
 
+        let start_time = Instant::now();
+
         Ok(Self {
-            start_time: Instant::now(),
+            start_time,
             socket_name,
             display_handle,
             loop_signal: event_loop.get_signal(),
             space: Space::default(),
             workspaces: WorkspaceSet::default(),
             window_ids: HashMap::new(),
+            window_geometry: HashMap::new(),
             focused_window: None,
             intercepted_keys: HashSet::new(),
             next_window_id: 1,
+            last_animation_tick: start_time,
             popups: PopupManager::default(),
             seat,
             compositor_state,
@@ -228,6 +235,7 @@ impl Ferese {
         };
 
         self.space.unmap_elem(window);
+        self.window_geometry.remove(&id);
         if let Err(error) = self.workspaces.remove_window(id) {
             tracing::error!(%error, ?id, "failed to remove window from layout");
         }
@@ -298,31 +306,87 @@ impl Ferese {
                     }
                 };
 
-                Some((window.clone(), rect, fullscreen == Some(*id)))
+                Some((window.clone(), *id, rect, fullscreen == Some(*id)))
             })
             .collect::<Vec<_>>();
 
-        for (window, rect, is_fullscreen) in placements {
-            let location = (rect.x.round() as i32, rect.y.round() as i32);
-            let size = (
-                (rect.width.round() as i32).max(1),
-                (rect.height.round() as i32).max(1),
-            );
+        let now = self.start_time.elapsed();
+
+        for (window, id, rect, is_fullscreen) in placements {
+            let committed_size = client_size(&window);
+            let geometry = self
+                .window_geometry
+                .entry(id)
+                .or_insert_with(|| WindowGeometry::new(rect, committed_size));
+            let requested_size = geometry.set_logical_target(rect, now);
+            let visual = geometry.visual.current;
+            let location = (visual.x.round() as i32, visual.y.round() as i32);
 
             self.space.map_element(window.clone(), location, false);
             if let Some(toplevel) = window.toplevel() {
-                toplevel.with_pending_state(|state| {
-                    state.size = Some(size.into());
+                let state_changed = toplevel.with_pending_state(|state| {
+                    if let Some(size) = requested_size {
+                        state.size = Some((size.width, size.height).into());
+                    }
 
                     if is_fullscreen {
-                        state.states.set(xdg_toplevel::State::Fullscreen);
+                        state.states.set(xdg_toplevel::State::Fullscreen)
                     } else {
-                        state.states.unset(xdg_toplevel::State::Fullscreen);
+                        state.states.unset(xdg_toplevel::State::Fullscreen)
                     }
                 });
-                toplevel.send_pending_configure();
+
+                if requested_size.is_some() || state_changed {
+                    toplevel.send_pending_configure();
+                }
             }
         }
+    }
+
+    pub fn advance_animations(&mut self, now: Instant) -> bool {
+        let delta = now.saturating_duration_since(self.last_animation_tick);
+        self.last_animation_tick = now;
+        let windows = self
+            .space
+            .elements()
+            .filter_map(|window| {
+                self.window_ids
+                    .get(window)
+                    .copied()
+                    .map(|id| (window.clone(), id))
+            })
+            .collect::<Vec<_>>();
+        let mut active_animation = false;
+
+        for (window, id) in windows {
+            let Some(geometry) = self.window_geometry.get_mut(&id) else {
+                continue;
+            };
+
+            active_animation |= geometry.advance(delta, SpringConfig::default(), true);
+            let visual = geometry.visual.current;
+            self.space.map_element(
+                window,
+                (visual.x.round() as i32, visual.y.round() as i32),
+                false,
+            );
+        }
+
+        active_animation
+    }
+
+    pub fn record_client_commit(&mut self, window: &Window) {
+        let Some(id) = self.window_ids.get(window) else {
+            return;
+        };
+        let Some(size) = client_size(window) else {
+            return;
+        };
+        let Some(geometry) = self.window_geometry.get_mut(id) else {
+            return;
+        };
+
+        geometry.client.commit(size);
     }
 
     pub fn focus_direction(&mut self, direction: Direction) {
@@ -653,6 +717,15 @@ fn centered_transient_rect(parent: Rect) -> Rect {
         width,
         height,
     )
+}
+
+fn client_size(window: &Window) -> Option<ClientSize> {
+    let size = window.geometry().size;
+
+    (size.w > 0 && size.h > 0).then_some(ClientSize {
+        width: size.w,
+        height: size.h,
+    })
 }
 
 #[derive(Default)]

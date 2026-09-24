@@ -1,4 +1,7 @@
-use std::{error::Error, time::Duration};
+use std::{
+    error::Error,
+    time::{Duration, Instant},
+};
 
 use smithay::{
     backend::{
@@ -74,6 +77,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
             }
             WinitEvent::Input(event) => state.process_input_event(event),
             WinitEvent::Redraw => {
+                state.advance_animations(Instant::now());
                 let damage = Rectangle::from_size(backend.window_size());
                 let mut presentation = OutputPresentationFeedback::new(&output);
                 state.space.elements().for_each(|window| {
