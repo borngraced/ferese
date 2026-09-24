@@ -1,5 +1,6 @@
 mod activation;
 mod compositor;
+mod layer_shell;
 mod xdg_shell;
 
 use smithay::{
@@ -152,6 +153,7 @@ impl PrimarySelectionHandler for Ferese {
 smithay::delegate_compositor!(Ferese);
 smithay::delegate_data_device!(Ferese);
 smithay::delegate_fractional_scale!(Ferese);
+smithay::delegate_layer_shell!(Ferese);
 smithay::delegate_output!(Ferese);
 smithay::delegate_pointer_constraints!(Ferese);
 smithay::delegate_presentation!(Ferese);

@@ -14,7 +14,7 @@ use smithay::{
     },
 };
 
-use super::xdg_shell;
+use super::{layer_shell, xdg_shell};
 use crate::{Ferese, state::ClientState};
 
 impl CompositorHandler for Ferese {
@@ -52,6 +52,7 @@ impl CompositorHandler for Ferese {
                 self.record_client_commit(&window);
             }
         }
+        layer_shell::handle_commit(self, surface);
         xdg_shell::handle_commit(&mut self.popups, &mut self.space, surface);
         crate::backends::direct::render_all(self);
     }

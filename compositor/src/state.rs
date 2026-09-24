@@ -33,6 +33,7 @@ use smithay::{
         presentation::PresentationState,
         relative_pointer::RelativePointerManagerState,
         selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
+        shell::wlr_layer::WlrLayerShellState,
         shell::xdg::decoration::XdgDecorationState,
         shell::xdg::{SurfaceCachedState, XdgShellState},
         shm::ShmState,
@@ -71,6 +72,7 @@ pub struct Ferese {
     pub seat_state: SeatState<Self>,
     pub shm_state: ShmState,
     pub viewporter_state: ViewporterState,
+    pub layer_shell_state: WlrLayerShellState,
     pub xdg_activation_state: XdgActivationState,
     pub xdg_shell_state: XdgShellState,
 }
@@ -94,6 +96,7 @@ impl Ferese {
         let primary_selection_state = PrimarySelectionState::new::<Self>(&display_handle);
         let relative_pointer_state = RelativePointerManagerState::new::<Self>(&display_handle);
         let viewporter_state = ViewporterState::new::<Self>(&display_handle);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
         let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&display_handle, "ferese-winit");
@@ -132,6 +135,7 @@ impl Ferese {
             seat_state,
             shm_state,
             viewporter_state,
+            layer_shell_state,
             xdg_activation_state,
             xdg_shell_state,
         })
