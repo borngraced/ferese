@@ -6,20 +6,34 @@ use std::{
 use smithay::{
     backend::{
         renderer::{
-            damage::OutputDamageTracker, element::surface::WaylandSurfaceRenderElement,
+            damage::OutputDamageTracker,
+            element::{
+                surface::WaylandSurfaceRenderElement,
+                utils::{
+                    ConstrainAlign, ConstrainScaleBehavior, CropRenderElement,
+                    RelocateRenderElement, RescaleRenderElement,
+                },
+            },
             gles::GlesRenderer,
         },
         winit::{self, WinitEvent},
     },
-    desktop::utils::OutputPresentationFeedback,
+    desktop::{
+        space::{ConstrainBehavior, ConstrainReference, constrain_space_element},
+        utils::OutputPresentationFeedback,
+    },
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::calloop::EventLoop,
     reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind,
-    utils::{Clock, Monotonic, Rectangle, Transform},
+    utils::{Clock, Logical, Monotonic, Rectangle, Transform},
     wayland::presentation::Refresh,
 };
 
 use crate::Ferese;
+
+type AnimatedWindowRenderElement = CropRenderElement<
+    RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
+>;
 
 pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<(), Box<dyn Error>> {
     let (mut backend, event_source) = winit::init()?;
@@ -90,20 +104,12 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                 let rendered = (|| -> Result<(), Box<dyn Error>> {
                     {
                         let (renderer, mut framebuffer) = backend.bind()?;
-                        smithay::desktop::space::render_output::<
-                            _,
-                            WaylandSurfaceRenderElement<GlesRenderer>,
-                            _,
-                            _,
-                        >(
-                            &output,
+                        let elements = animated_window_elements(state, renderer, &output);
+                        damage_tracker.render_output(
                             renderer,
                             &mut framebuffer,
-                            1.0,
                             0,
-                            [&state.space],
-                            &[],
-                            &mut damage_tracker,
+                            &elements,
                             [0.035, 0.04, 0.055, 1.0],
                         )?;
                     }
@@ -141,6 +147,58 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
             _ => {}
         })?;
     Ok(())
+}
+
+fn animated_window_elements(
+    state: &Ferese,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+) -> Vec<AnimatedWindowRenderElement> {
+    let Some(output_geometry) = state.space.output_geometry(output) else {
+        return Vec::new();
+    };
+    let scale = output.current_scale().fractional_scale();
+
+    state
+        .space
+        .elements()
+        .rev()
+        .filter_map(|window| {
+            let id = state.window_ids.get(window)?;
+            let visual = state.window_geometry.get(id)?.visual.current;
+            let constrain = Rectangle::<i32, Logical>::new(
+                (
+                    (visual.x - f64::from(output_geometry.loc.x)).round() as i32,
+                    (visual.y - f64::from(output_geometry.loc.y)).round() as i32,
+                )
+                    .into(),
+                (
+                    visual.width.round().max(1.0) as i32,
+                    visual.height.round().max(1.0) as i32,
+                )
+                    .into(),
+            );
+
+            Some(constrain_space_element::<
+                GlesRenderer,
+                _,
+                AnimatedWindowRenderElement,
+            >(
+                renderer,
+                window,
+                constrain.loc,
+                1.0,
+                scale,
+                constrain,
+                ConstrainBehavior {
+                    reference: ConstrainReference::Geometry,
+                    behavior: ConstrainScaleBehavior::Zoom,
+                    align: ConstrainAlign::TOP | ConstrainAlign::LEFT,
+                },
+            ))
+        })
+        .flatten()
+        .collect()
 }
 
 fn normalized_scale(scale: f64) -> f64 {

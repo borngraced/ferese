@@ -135,14 +135,21 @@ impl Ferese {
             }
             InputEvent::PointerMotion { event, .. } => {
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
-                let focus = self.surface_under(pointer.current_location());
+                let position = pointer.current_location();
+                let focus = self.surface_under(position);
+                let scale = self
+                    .window_under_visual(position)
+                    .and_then(|window| self.visual_scale_for_window(&window))
+                    .unwrap_or(1.0);
+                let delta = event.delta();
+                let delta_unaccel = event.delta_unaccel();
 
                 pointer.relative_motion(
                     self,
                     focus,
                     &RelativeMotionEvent {
-                        delta: event.delta(),
-                        delta_unaccel: event.delta_unaccel(),
+                        delta: (delta.x / scale, delta.y / scale).into(),
+                        delta_unaccel: (delta_unaccel.x / scale, delta_unaccel.y / scale).into(),
                         utime: (event.time_msec() as u64).saturating_mul(1_000),
                     },
                 );
@@ -212,9 +219,7 @@ impl Ferese {
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
 
-        if let Some((window, _)) = self.space.element_under(pointer.current_location()) {
-            let window = window.clone();
-
+        if let Some(window) = self.window_under_visual(pointer.current_location()) {
             self.focused_window = self.window_ids.get(&window).copied();
             if let Some(focused) = self.focused_window
                 && let Err(error) = self.workspaces.focus_window(focused)

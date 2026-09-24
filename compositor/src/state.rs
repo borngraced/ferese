@@ -162,15 +162,46 @@ impl Ferese {
         &self,
         position: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        self.space
-            .element_under(position)
-            .and_then(|(window, location)| {
-                window
-                    .surface_under(position - location.to_f64(), WindowSurfaceType::ALL)
-                    .map(|(surface, surface_location)| {
-                        (surface, (surface_location + location).to_f64())
-                    })
-            })
+        self.space.elements().rev().find_map(|window| {
+            let id = self.window_ids.get(window)?;
+            let geometry = self.window_geometry.get(id)?;
+            let visual = geometry.visual.current;
+            let inside_visual = position.x >= visual.x
+                && position.y >= visual.y
+                && position.x < visual.x + visual.width
+                && position.y < visual.y + visual.height;
+            if !inside_visual {
+                return None;
+            }
+
+            let (source_x, source_y) = geometry.inverse_visual_point(position.x, position.y)?;
+            let source_point = Point::from((source_x, source_y)) + window.geometry().loc.to_f64();
+
+            window
+                .surface_under(source_point, WindowSurfaceType::ALL)
+                .map(|(surface, surface_location)| {
+                    let surface_point = source_point - surface_location.to_f64();
+                    (surface, position - surface_point)
+                })
+        })
+    }
+
+    pub fn window_under_visual(&self, position: Point<f64, Logical>) -> Option<Window> {
+        self.space.elements().rev().find_map(|window| {
+            let id = self.window_ids.get(window)?;
+            let visual = self.window_geometry.get(id)?.visual.current;
+
+            (position.x >= visual.x
+                && position.y >= visual.y
+                && position.x < visual.x + visual.width
+                && position.y < visual.y + visual.height)
+                .then(|| window.clone())
+        })
+    }
+
+    pub fn visual_scale_for_window(&self, window: &Window) -> Option<f64> {
+        let id = self.window_ids.get(window)?;
+        self.window_geometry.get(id)?.visual_scale()
     }
 
     pub fn add_tiled_window(&mut self, window: Window) {
@@ -364,6 +395,15 @@ impl Ferese {
             };
 
             active_animation |= geometry.advance(delta, SpringConfig::default(), true);
+            if let Some(size) = geometry.client.expire_wait(self.start_time.elapsed()) {
+                tracing::warn!(
+                    ?id,
+                    configured_width = size.width,
+                    configured_height = size.height,
+                    committed = ?geometry.client.committed_size,
+                    "client did not commit the final configured size within 500 ms"
+                );
+            }
             let visual = geometry.visual.current;
             self.space.map_element(
                 window,
@@ -386,7 +426,13 @@ impl Ferese {
             return;
         };
 
-        geometry.client.commit(size);
+        let matches_target = geometry.client.commit(size);
+        tracing::debug!(
+            ?id,
+            ?size,
+            matches_target,
+            "recorded client geometry commit"
+        );
     }
 
     pub fn focus_direction(&mut self, direction: Direction) {

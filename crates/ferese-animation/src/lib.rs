@@ -179,6 +179,15 @@ impl ClientGeometry {
         self.waiting_since
             .is_some_and(|started| now.saturating_sub(started) >= CLIENT_COMMIT_TIMEOUT)
     }
+
+    pub fn expire_wait(&mut self, now: Duration) -> Option<ClientSize> {
+        if !self.timed_out(now) {
+            return None;
+        }
+
+        self.waiting_since = None;
+        self.last_configured_size
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -224,6 +233,23 @@ impl WindowGeometry {
         }
 
         self.visual.advance(delta, config)
+    }
+
+    pub fn inverse_visual_point(&self, x: f64, y: f64) -> Option<(f64, f64)> {
+        let visual = self.visual.current;
+        let scale = self.visual_scale()?;
+
+        Some(((x - visual.x) / scale, (y - visual.y) / scale))
+    }
+
+    pub fn visual_scale(&self) -> Option<f64> {
+        let source = self.client.committed_size?;
+        let visual = self.visual.current;
+        if source.width <= 0 || source.height <= 0 || visual.width <= 0.0 || visual.height <= 0.0 {
+            return None;
+        }
+
+        Some((visual.width / f64::from(source.width)).max(visual.height / f64::from(source.height)))
     }
 }
 
@@ -347,6 +373,24 @@ mod tests {
 
         assert!(!client.timed_out(Duration::from_millis(499)));
         assert!(client.timed_out(Duration::from_millis(500)));
+        assert_eq!(
+            client.expire_wait(Duration::from_millis(500)),
+            Some(ClientSize::from_rect(rect))
+        );
+        assert!(!client.timed_out(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn inverse_visual_point_matches_uniform_cover_transform() {
+        let initial = Rect::new(100.0, 50.0, 400.0, 300.0);
+        let mut geometry = WindowGeometry::new(initial, Some(ClientSize::from_rect(initial)));
+        geometry.visual.current = Rect::new(200.0, 100.0, 600.0, 600.0);
+
+        // Cover scales the 4:3 source by 2x for a square allocation, then clips it.
+        assert_eq!(
+            geometry.inverse_visual_point(600.0, 500.0),
+            Some((200.0, 200.0))
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@ use smithay::{
         pointer::{CursorImageStatus, PointerHandle},
     },
     reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
+    utils::Point,
     wayland::{
         compositor::{TraversalAction, with_states, with_surface_tree_downward},
         fractional_scale::{FractionalScaleHandler, with_fractional_scale},
@@ -113,7 +114,15 @@ impl PointerConstraintsHandler for Ferese {
             return;
         };
         if focused_surface == *surface {
-            pointer.set_location(origin + location);
+            let current = pointer.current_location();
+            let scale = self
+                .window_under_visual(current)
+                .and_then(|window| self.visual_scale_for_window(&window))
+                .unwrap_or(1.0);
+            let current_surface_location = current - origin;
+            let offset = location - current_surface_location;
+
+            pointer.set_location(current + Point::from((offset.x * scale, offset.y * scale)));
         }
     }
 }
