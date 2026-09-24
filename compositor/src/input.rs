@@ -35,6 +35,20 @@ impl Ferese {
                         }
 
                         let symbol = keysym.modified_sym().raw();
+                        if let Some(vt) = virtual_terminal(
+                            symbol,
+                            modifiers.ctrl,
+                            modifiers.alt,
+                            data.direct_backend.is_some(),
+                        ) {
+                            if state == KeyState::Pressed {
+                                data.intercepted_keys.insert(keycode);
+                                crate::backends::direct::switch_vt(data, vt);
+                            }
+
+                            return FilterResult::Intercept(());
+                        }
+
                         let direction = if modifiers.logo && !modifiers.ctrl && !modifiers.alt {
                             match symbol {
                                 keysyms::KEY_h | keysyms::KEY_H => Some(Direction::Left),
@@ -342,5 +356,52 @@ impl Ferese {
                 constraint.activate();
             }
         });
+    }
+}
+
+fn virtual_terminal(symbol: u32, ctrl: bool, alt: bool, direct: bool) -> Option<i32> {
+    if !direct {
+        return None;
+    }
+
+    if (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&symbol) {
+        return Some((symbol - keysyms::KEY_XF86Switch_VT_1 + 1) as i32);
+    }
+
+    (ctrl && alt && (keysyms::KEY_F1..=keysyms::KEY_F12).contains(&symbol))
+        .then_some((symbol - keysyms::KEY_F1 + 1) as i32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::virtual_terminal;
+    use smithay::input::keyboard::keysyms;
+
+    #[test]
+    fn maps_xkb_virtual_terminal_symbols_for_direct_sessions() {
+        assert_eq!(
+            virtual_terminal(keysyms::KEY_XF86Switch_VT_1, false, false, true),
+            Some(1)
+        );
+        assert_eq!(
+            virtual_terminal(keysyms::KEY_XF86Switch_VT_12, false, false, true),
+            Some(12)
+        );
+    }
+
+    #[test]
+    fn accepts_plain_function_symbols_only_with_control_alt() {
+        assert_eq!(virtual_terminal(keysyms::KEY_F7, true, true, true), Some(7));
+        assert_eq!(virtual_terminal(keysyms::KEY_F7, true, false, true), None);
+        assert_eq!(virtual_terminal(keysyms::KEY_F7, false, true, true), None);
+    }
+
+    #[test]
+    fn leaves_virtual_terminal_keys_to_nested_clients() {
+        assert_eq!(
+            virtual_terminal(keysyms::KEY_XF86Switch_VT_3, false, false, false),
+            None
+        );
+        assert_eq!(virtual_terminal(keysyms::KEY_F3, true, true, false), None);
     }
 }

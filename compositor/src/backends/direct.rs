@@ -273,6 +273,16 @@ pub fn render_all(state: &mut Ferese) {
     }
 }
 
+pub fn switch_vt(state: &mut Ferese, vt: i32) {
+    let Some(backend) = state.direct_backend.as_mut() else {
+        return;
+    };
+
+    if let Err(error) = backend.session.change_vt(vt) {
+        tracing::error!(vt, %error, "failed to switch virtual terminal");
+    }
+}
+
 fn render_device(state: &mut Ferese, node: DrmNode) {
     let Some(mut device) = state
         .direct_backend
