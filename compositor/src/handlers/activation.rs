@@ -48,6 +48,12 @@ impl XdgActivationHandler for Ferese {
         };
 
         self.focused_window = self.window_ids.get(&window).copied();
+        if let Some(focused) = self.focused_window
+            && let Err(error) = self.workspaces.focus_window(focused)
+        {
+            tracing::error!(%error, ?focused, "failed to update workspace focus");
+            return;
+        }
         self.space.raise_element(&window, true);
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         keyboard.set_focus(self, Some(surface), SERIAL_COUNTER.next_serial());

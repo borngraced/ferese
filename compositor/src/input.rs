@@ -37,8 +37,9 @@ impl Ferese {
                         let supported_modifiers = modifiers.logo
                             && !modifiers.alt
                             && !(modifiers.ctrl && modifiers.shift);
+                        let symbol = keysym.modified_sym().raw();
                         let direction = if supported_modifiers {
-                            match keysym.modified_sym().raw() {
+                            match symbol {
                                 keysyms::KEY_h | keysyms::KEY_H => Some(Direction::Left),
                                 keysyms::KEY_j | keysyms::KEY_J => Some(Direction::Down),
                                 keysyms::KEY_k | keysyms::KEY_K => Some(Direction::Up),
@@ -63,6 +64,35 @@ impl Ferese {
                             }
 
                             FilterResult::Intercept(())
+                        } else if modifiers.logo && !modifiers.ctrl && !modifiers.alt {
+                            let workspace = match symbol {
+                                keysyms::KEY_1 => Some(1),
+                                keysyms::KEY_2 => Some(2),
+                                keysyms::KEY_3 => Some(3),
+                                keysyms::KEY_4 => Some(4),
+                                keysyms::KEY_5 => Some(5),
+                                keysyms::KEY_6 => Some(6),
+                                keysyms::KEY_7 => Some(7),
+                                keysyms::KEY_8 => Some(8),
+                                keysyms::KEY_9 => Some(9),
+                                _ => None,
+                            };
+
+                            if let Some(workspace) = workspace {
+                                if state == KeyState::Pressed {
+                                    data.intercepted_keys.insert(keycode);
+
+                                    if modifiers.shift {
+                                        data.move_focused_to_workspace(workspace);
+                                    } else {
+                                        data.switch_workspace(workspace);
+                                    }
+                                }
+
+                                FilterResult::Intercept(())
+                            } else {
+                                FilterResult::Forward
+                            }
                         } else {
                             FilterResult::Forward
                         }
@@ -175,6 +205,11 @@ impl Ferese {
             let window = window.clone();
 
             self.focused_window = self.window_ids.get(&window).copied();
+            if let Some(focused) = self.focused_window
+                && let Err(error) = self.workspaces.focus_window(focused)
+            {
+                tracing::error!(%error, ?focused, "failed to update workspace focus");
+            }
             self.space.raise_element(&window, true);
             let surface = window
                 .toplevel()

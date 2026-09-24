@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use ferese_layout::{Axis, Direction, GapConfig, LayoutTree, Rect, WindowId};
+use ferese_layout::{Axis, Direction, GapConfig, Rect, WindowId, WorkspaceSet};
 
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
@@ -43,7 +43,7 @@ pub struct Ferese {
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
     pub space: Space<Window>,
-    pub layout: LayoutTree,
+    pub workspaces: WorkspaceSet,
     pub window_ids: HashMap<Window, WindowId>,
     pub focused_window: Option<WindowId>,
     pub intercepted_keys: HashSet<smithay::input::keyboard::Keycode>,
@@ -98,7 +98,7 @@ impl Ferese {
             display_handle,
             loop_signal: event_loop.get_signal(),
             space: Space::default(),
-            layout: LayoutTree::default(),
+            workspaces: WorkspaceSet::default(),
             window_ids: HashMap::new(),
             focused_window: None,
             intercepted_keys: HashSet::new(),
@@ -170,10 +170,16 @@ impl Ferese {
 
         let axis = self
             .output_bounds()
-            .and_then(|bounds| self.layout.automatic_axis(self.focused_window, bounds).ok())
+            .and_then(|bounds| {
+                self.workspaces
+                    .active()
+                    .layout
+                    .automatic_axis(self.focused_window, bounds)
+                    .ok()
+            })
             .unwrap_or(Axis::Horizontal);
 
-        if let Err(error) = self.layout.insert(id, self.focused_window, axis, 0.5) {
+        if let Err(error) = self.workspaces.insert_window(id, axis, 0.5) {
             tracing::error!(%error, ?id, "failed to insert window into layout");
             return;
         }
@@ -190,15 +196,11 @@ impl Ferese {
         };
 
         self.space.unmap_elem(window);
-        if let Err(error) = self.layout.remove(id) {
+        if let Err(error) = self.workspaces.remove_window(id) {
             tracing::error!(%error, ?id, "failed to remove window from layout");
         }
         if self.focused_window == Some(id) {
-            self.focused_window = self
-                .space
-                .elements()
-                .rev()
-                .find_map(|window| self.window_ids.get(window).copied());
+            self.focused_window = self.workspaces.active().last_focused;
         }
 
         self.relayout();
@@ -208,7 +210,24 @@ impl Ferese {
         let Some(bounds) = self.output_bounds() else {
             return;
         };
-        let geometry = match self.layout.geometry_with_gaps(bounds, GapConfig::default()) {
+        let active = self.workspaces.active_id();
+        let inactive = self
+            .window_ids
+            .iter()
+            .filter(|(_, id)| self.workspaces.workspace_for_window(**id) != Some(active))
+            .map(|(window, _)| window.clone())
+            .collect::<Vec<_>>();
+
+        for window in inactive {
+            self.space.unmap_elem(&window);
+        }
+
+        let geometry = match self
+            .workspaces
+            .active()
+            .layout
+            .geometry_with_gaps(bounds, GapConfig::default())
+        {
             Ok(geometry) => geometry,
             Err(error) => {
                 tracing::error!(%error, "failed to compute tiled geometry");
@@ -243,9 +262,19 @@ impl Ferese {
         let Some(bounds) = self.output_bounds() else {
             return;
         };
-        let Ok(Some(next)) = self.layout.directional_neighbor(current, direction, bounds) else {
+        let Ok(Some(next)) = self
+            .workspaces
+            .active()
+            .layout
+            .directional_neighbor(current, direction, bounds)
+        else {
             return;
         };
+
+        if let Err(error) = self.workspaces.focus_window(next) {
+            tracing::error!(%error, ?next, "failed to update workspace focus");
+            return;
+        }
         let Some(window) = self
             .window_ids
             .iter()
@@ -286,7 +315,12 @@ impl Ferese {
             return;
         };
 
-        match self.layout.move_window(current, direction, bounds) {
+        match self
+            .workspaces
+            .active_mut()
+            .layout
+            .move_window(current, direction, bounds)
+        {
             Ok(true) => self.relayout(),
             Ok(false) => {}
             Err(error) => tracing::error!(%error, ?current, "failed to move tiled window"),
@@ -300,11 +334,75 @@ impl Ferese {
             return;
         };
 
-        match self.layout.resize_window(current, direction, RESIZE_STEP) {
+        match self
+            .workspaces
+            .active_mut()
+            .layout
+            .resize_window(current, direction, RESIZE_STEP)
+        {
             Ok(true) => self.relayout(),
             Ok(false) => {}
             Err(error) => tracing::error!(%error, ?current, "failed to resize tiled window"),
         }
+    }
+
+    pub fn switch_workspace(&mut self, index: u32) {
+        let focus = match self.workspaces.switch_to_numeric(index) {
+            Ok(focus) => focus,
+            Err(error) => {
+                tracing::error!(%error, index, "failed to switch workspace");
+                return;
+            }
+        };
+
+        self.focused_window = focus;
+        self.relayout();
+        self.restore_keyboard_focus();
+    }
+
+    pub fn move_focused_to_workspace(&mut self, index: u32) {
+        let Some(window) = self.focused_window else {
+            return;
+        };
+        let axis = self
+            .output_bounds()
+            .and_then(|bounds| {
+                let workspace = self.workspaces.ensure_numeric(index).ok()?;
+                let target = self.workspaces.workspace(workspace)?;
+                target
+                    .layout
+                    .automatic_axis(target.last_focused, bounds)
+                    .ok()
+            })
+            .unwrap_or(Axis::Horizontal);
+
+        if let Err(error) = self
+            .workspaces
+            .move_window_to_numeric(window, index, axis, 0.5)
+        {
+            tracing::error!(%error, ?window, index, "failed to move window to workspace");
+            return;
+        }
+
+        self.focused_window = self.workspaces.active().last_focused;
+        self.relayout();
+        self.restore_keyboard_focus();
+    }
+
+    fn restore_keyboard_focus(&mut self) {
+        let surface = self.focused_window.and_then(|focused| {
+            self.window_ids.iter().find_map(|(window, id)| {
+                (*id == focused)
+                    .then(|| window.toplevel())
+                    .flatten()
+                    .map(|toplevel| toplevel.wl_surface().clone())
+            })
+        });
+
+        self.seat
+            .get_keyboard()
+            .expect("seat has a keyboard")
+            .set_focus(self, surface, smithay::utils::SERIAL_COUNTER.next_serial());
     }
 
     fn output_bounds(&self) -> Option<Rect> {

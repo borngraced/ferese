@@ -111,6 +111,19 @@ impl WorkspaceSet {
         self.window_workspaces.get(&window).copied()
     }
 
+    pub fn focus_window(&mut self, window: WindowId) -> Result<(), WorkspaceError> {
+        if self.workspace_for_window(window) != Some(self.active) {
+            return Err(WorkspaceError::InvalidState(
+                "focused window is not on the active workspace",
+            ));
+        }
+
+        self.active_mut().last_focused = Some(window);
+
+        debug_assert!(self.validate().is_ok());
+        Ok(())
+    }
+
     pub fn ensure_numeric(&mut self, index: u32) -> Result<WorkspaceId, WorkspaceError> {
         if index == 0 {
             return Err(WorkspaceError::InvalidNumericName(index));
@@ -358,6 +371,25 @@ mod tests {
         workspaces.remove_window(WindowId(1)).unwrap();
 
         assert_eq!(workspaces.active().last_focused, Some(WindowId(2)));
+        assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn focus_rejects_a_window_on_an_inactive_workspace() {
+        let mut workspaces = WorkspaceSet::default();
+        workspaces
+            .insert_window(WindowId(1), Axis::Horizontal, 0.5)
+            .unwrap();
+        workspaces
+            .move_window_to_numeric(WindowId(1), 2, Axis::Horizontal, 0.5)
+            .unwrap();
+
+        assert_eq!(
+            workspaces.focus_window(WindowId(1)),
+            Err(WorkspaceError::InvalidState(
+                "focused window is not on the active workspace"
+            ))
+        );
         assert!(workspaces.validate().is_ok());
     }
 }
