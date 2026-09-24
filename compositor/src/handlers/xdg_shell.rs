@@ -1,6 +1,7 @@
 use smithay::{
     desktop::{
-        PopupKind, PopupManager, Space, Window, find_popup_root_surface, get_popup_toplevel_coords,
+        PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, Space, Window,
+        find_popup_root_surface, get_popup_toplevel_coords,
     },
     input::{
         Seat,
@@ -135,7 +136,34 @@ impl XdgShellHandler for Ferese {
         );
     }
 
-    fn grab(&mut self, _: PopupSurface, _: wl_seat::WlSeat, _: Serial) {}
+    fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        let Some(seat) = Seat::from_resource(&seat) else {
+            return;
+        };
+        let popup = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&popup) else {
+            return;
+        };
+        let popup_grab = match self.popups.grab_popup(root, popup, &seat, serial) {
+            Ok(grab) => grab,
+            Err(error) => {
+                tracing::debug!(?error, "rejected xdg popup grab");
+                return;
+            }
+        };
+
+        if let Some(pointer) = seat.get_pointer() {
+            pointer.set_grab(
+                self,
+                PopupPointerGrab::new(&popup_grab),
+                serial,
+                Focus::Keep,
+            );
+        }
+        if let Some(keyboard) = seat.get_keyboard() {
+            keyboard.set_grab(self, PopupKeyboardGrab::new(&popup_grab), serial);
+        }
+    }
 }
 
 fn check_grab(
