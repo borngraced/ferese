@@ -165,7 +165,41 @@ impl WorkspaceSet {
             ));
         }
 
+        if self.placement(window) == Some(WindowPlacement::Tiled) {
+            self.active_mut().layout.activate_window(window)?;
+        }
         self.active_mut().last_focused = Some(window);
+
+        debug_assert!(self.validate().is_ok());
+        Ok(())
+    }
+
+    pub fn stack_window(
+        &mut self,
+        window: WindowId,
+        target: WindowId,
+    ) -> Result<(), WorkspaceError> {
+        let workspace = self
+            .workspace_for_window(window)
+            .ok_or(LayoutError::UnknownWindow(window))?;
+
+        if self.workspace_for_window(target) != Some(workspace) {
+            return Err(WorkspaceError::InvalidState(
+                "stack windows belong to different workspaces",
+            ));
+        }
+        if self.placement(window) != Some(WindowPlacement::Tiled)
+            || self.placement(target) != Some(WindowPlacement::Tiled)
+        {
+            return Err(WorkspaceError::InvalidState("stack window is not tiled"));
+        }
+
+        let workspace = self
+            .workspaces
+            .get_mut(&workspace)
+            .ok_or(WorkspaceError::InvalidState("window workspace is missing"))?;
+        workspace.layout.stack_window(window, target)?;
+        workspace.last_focused = Some(window);
 
         debug_assert!(self.validate().is_ok());
         Ok(())
@@ -793,6 +827,30 @@ mod tests {
             Err(WorkspaceError::InvalidState(
                 "focused window is hidden by fullscreen"
             ))
+        );
+        assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn stacking_tiled_windows_preserves_workspace_membership() {
+        let mut workspaces = WorkspaceSet::default();
+        workspaces
+            .insert_window(WindowId(1), Axis::Horizontal, 0.5)
+            .unwrap();
+        workspaces
+            .insert_window(WindowId(2), Axis::Horizontal, 0.5)
+            .unwrap();
+        workspaces.stack_window(WindowId(2), WindowId(1)).unwrap();
+
+        assert_eq!(workspaces.active().last_focused, Some(WindowId(2)));
+        assert_eq!(
+            workspaces
+                .active()
+                .layout
+                .geometry(Rect::new(0.0, 0.0, 100.0, 80.0))
+                .unwrap()
+                .len(),
+            1
         );
         assert!(workspaces.validate().is_ok());
     }

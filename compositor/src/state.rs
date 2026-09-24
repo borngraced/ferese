@@ -262,6 +262,9 @@ impl Ferese {
             .filter(|(_, id)| {
                 self.workspaces.workspace_for_window(**id) != Some(active)
                     || fullscreen.is_some_and(|fullscreen| fullscreen != **id)
+                    || (fullscreen.is_none()
+                        && self.workspaces.placement(**id) == Some(WindowPlacement::Tiled)
+                        && !tiled_geometry.contains_key(id))
             })
             .map(|(window, _)| window.clone())
             .collect::<Vec<_>>();

@@ -178,30 +178,120 @@ impl LayoutTree {
     pub fn remove(&mut self, window: WindowId) -> Result<(), LayoutError> {
         let leaf = self
             .windows
-            .remove(&window)
+            .get(&window)
+            .copied()
             .ok_or(LayoutError::UnknownWindow(window))?;
-        let Some(parent) = self.parents.remove(&leaf) else {
+        let Some(parent) = self.parents.get(&leaf).copied() else {
+            self.windows.remove(&window);
             self.nodes.remove(&leaf);
             self.root = None;
             return Ok(());
         };
 
-        let sibling = match self.nodes.get(&parent) {
-            Some(Node::Split { first, second, .. }) if *first == leaf => *second,
-            Some(Node::Split { first, second, .. }) if *second == leaf => *first,
-            _ => return Err(LayoutError::InvalidTree("window parent is not a split")),
-        };
-        let grandparent = self.parents.remove(&parent);
+        match self.nodes.get(&parent).cloned() {
+            Some(Node::Split { first, second, .. }) => {
+                let sibling = if first == leaf {
+                    second
+                } else if second == leaf {
+                    first
+                } else {
+                    return Err(LayoutError::InvalidTree("split does not contain window"));
+                };
 
-        self.nodes.remove(&leaf);
-        self.nodes.remove(&parent);
+                self.collapse_parent(parent, leaf, sibling)?;
+            }
+            Some(Node::Stack {
+                mut children,
+                mut active,
+            }) => {
+                let position = children
+                    .iter()
+                    .position(|child| *child == leaf)
+                    .ok_or(LayoutError::InvalidTree("stack does not contain window"))?;
 
-        if let Some(grandparent) = grandparent {
-            self.replace_child(grandparent, parent, sibling)?;
-            self.parents.insert(sibling, grandparent);
+                if children.len() == 2 {
+                    let sibling = children[1 - position];
+                    self.collapse_parent(parent, leaf, sibling)?;
+                } else {
+                    children.remove(position);
+                    if position < active {
+                        active -= 1;
+                    } else if position == active {
+                        active = active.min(children.len() - 1);
+                    }
+
+                    self.windows.remove(&window);
+                    self.parents.remove(&leaf);
+                    self.nodes.remove(&leaf);
+                    self.nodes.insert(parent, Node::Stack { children, active });
+                }
+            }
+            Some(Node::Window(_)) => {
+                return Err(LayoutError::InvalidTree("window parent is a window"));
+            }
+            None => return Err(LayoutError::InvalidTree("window parent is missing")),
+        }
+
+        debug_assert!(self.validate().is_ok());
+        Ok(())
+    }
+
+    pub fn stack_window(&mut self, window: WindowId, target: WindowId) -> Result<(), LayoutError> {
+        if window == target {
+            return Ok(());
+        }
+        if !self.contains(target) {
+            return Err(LayoutError::UnknownWindow(target));
+        }
+        if !self.contains(window) {
+            return Err(LayoutError::UnknownWindow(window));
+        }
+
+        self.remove(window)?;
+
+        let target_node = self
+            .windows
+            .get(&target)
+            .copied()
+            .ok_or(LayoutError::UnknownWindow(target))?;
+        let old_parent = self.parents.get(&target_node).copied();
+        let window_node = self.insert_node(Node::Window(window));
+        let stack = self.insert_node(Node::Stack {
+            children: vec![target_node, window_node],
+            active: 1,
+        });
+
+        self.windows.insert(window, window_node);
+        self.parents.insert(target_node, stack);
+        self.parents.insert(window_node, stack);
+
+        if let Some(parent) = old_parent {
+            self.replace_child(parent, target_node, stack)?;
+            self.parents.insert(stack, parent);
         } else {
-            self.parents.remove(&sibling);
-            self.root = Some(sibling);
+            self.root = Some(stack);
+        }
+
+        debug_assert!(self.validate().is_ok());
+        Ok(())
+    }
+
+    pub fn activate_window(&mut self, window: WindowId) -> Result<(), LayoutError> {
+        let mut child = self
+            .windows
+            .get(&window)
+            .copied()
+            .ok_or(LayoutError::UnknownWindow(window))?;
+
+        while let Some(parent) = self.parents.get(&child).copied() {
+            if let Some(Node::Stack { children, active }) = self.nodes.get_mut(&parent) {
+                *active = children
+                    .iter()
+                    .position(|candidate| *candidate == child)
+                    .ok_or(LayoutError::InvalidTree("stack does not contain child"))?;
+            }
+
+            child = parent;
         }
 
         debug_assert!(self.validate().is_ok());
@@ -509,6 +599,35 @@ impl LayoutTree {
                 *child = new;
             }
             _ => return Err(LayoutError::InvalidTree("parent does not contain child")),
+        }
+
+        Ok(())
+    }
+
+    fn collapse_parent(
+        &mut self,
+        parent: NodeId,
+        leaf: NodeId,
+        sibling: NodeId,
+    ) -> Result<(), LayoutError> {
+        let window = match self.nodes.get(&leaf) {
+            Some(Node::Window(window)) => *window,
+            _ => return Err(LayoutError::InvalidTree("removed leaf is not a window")),
+        };
+        let grandparent = self.parents.get(&parent).copied();
+
+        self.windows.remove(&window);
+        self.parents.remove(&leaf);
+        self.parents.remove(&parent);
+        self.nodes.remove(&leaf);
+        self.nodes.remove(&parent);
+
+        if let Some(grandparent) = grandparent {
+            self.replace_child(grandparent, parent, sibling)?;
+            self.parents.insert(sibling, grandparent);
+        } else {
+            self.parents.remove(&sibling);
+            self.root = Some(sibling);
         }
 
         Ok(())
@@ -919,5 +1038,137 @@ mod tests {
                 .resize_window(WindowId(1), Direction::Right, f64::NAN)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn stacking_windows_shows_only_the_active_child() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.stack_window(WindowId(2), WindowId(1)).unwrap();
+
+        let geometry = tree.geometry(Rect::new(0.0, 0.0, 100.0, 80.0)).unwrap();
+        assert_eq!(geometry.len(), 1);
+        assert_eq!(geometry[&WindowId(2)], Rect::new(0.0, 0.0, 100.0, 80.0));
+        assert!(tree.validate().is_ok());
+    }
+
+    #[test]
+    fn activating_a_hidden_stack_child_changes_visible_geometry() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.stack_window(WindowId(2), WindowId(1)).unwrap();
+        tree.activate_window(WindowId(1)).unwrap();
+
+        let geometry = tree.geometry(Rect::new(0.0, 0.0, 100.0, 80.0)).unwrap();
+        assert_eq!(geometry.len(), 1);
+        assert_eq!(geometry[&WindowId(1)], Rect::new(0.0, 0.0, 100.0, 80.0));
+        assert!(tree.validate().is_ok());
+    }
+
+    #[test]
+    fn removing_from_a_stack_collapses_or_preserves_cardinality() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.stack_window(WindowId(2), WindowId(1)).unwrap();
+        tree.insert(WindowId(3), Some(WindowId(2)), Axis::Vertical, 0.5)
+            .unwrap();
+
+        tree.remove(WindowId(3)).unwrap();
+        tree.remove(WindowId(2)).unwrap();
+
+        assert_eq!(
+            tree.node(tree.root().unwrap()),
+            Some(&Node::Window(WindowId(1)))
+        );
+        assert!(tree.validate().is_ok());
+    }
+
+    #[test]
+    fn randomized_operation_sequences_preserve_tree_invariants() {
+        let mut tree = LayoutTree::default();
+        let mut windows = Vec::new();
+        let mut next_window = 1;
+        let mut random = 0x5eed_u64;
+        let bounds = Rect::new(0.0, 0.0, 1_920.0, 1_080.0);
+
+        for _ in 0..2_000 {
+            random = random
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            let operation = random % 6;
+
+            match operation {
+                0 if windows.len() < 32 => {
+                    let window = WindowId(next_window);
+                    next_window += 1;
+                    let focused = choose_window(&windows, random.rotate_left(7));
+                    let axis = if random & 1 == 0 {
+                        Axis::Horizontal
+                    } else {
+                        Axis::Vertical
+                    };
+
+                    tree.insert(window, focused, axis, ratio_from_random(random))
+                        .unwrap();
+                    windows.push(window);
+                }
+                1 if !windows.is_empty() => {
+                    let index = random as usize % windows.len();
+                    let window = windows.swap_remove(index);
+                    tree.remove(window).unwrap();
+                }
+                2 if windows.len() >= 2 => {
+                    let first = random as usize % windows.len();
+                    let mut second = random.rotate_left(13) as usize % windows.len();
+                    if first == second {
+                        second = (second + 1) % windows.len();
+                    }
+
+                    tree.stack_window(windows[first], windows[second]).unwrap();
+                }
+                3 if !windows.is_empty() => {
+                    let window = windows[random as usize % windows.len()];
+                    tree.activate_window(window).unwrap();
+                }
+                4 if !windows.is_empty() => {
+                    let window = windows[random as usize % windows.len()];
+                    let _ = tree.move_window(window, random_direction(random), bounds);
+                }
+                5 if !windows.is_empty() => {
+                    let window = windows[random as usize % windows.len()];
+                    tree.resize_window(window, random_direction(random), 0.03)
+                        .unwrap();
+                }
+                _ => {}
+            }
+
+            assert!(tree.validate().is_ok());
+        }
+    }
+
+    fn choose_window(windows: &[WindowId], random: u64) -> Option<WindowId> {
+        (!windows.is_empty()).then(|| windows[random as usize % windows.len()])
+    }
+
+    fn ratio_from_random(random: u64) -> f64 {
+        0.2 + (random.rotate_left(19) % 601) as f64 / 1_000.0
+    }
+
+    fn random_direction(random: u64) -> Direction {
+        match random.rotate_left(29) % 4 {
+            0 => Direction::Left,
+            1 => Direction::Right,
+            2 => Direction::Up,
+            _ => Direction::Down,
+        }
     }
 }
