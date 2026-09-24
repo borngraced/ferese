@@ -12,7 +12,10 @@ use ferese_layout::{Axis, Direction, GapConfig, LayoutResult, Rect, SizeConstrai
 
 use smithay::{
     backend::drm::DrmEventTime,
-    desktop::{PopupManager, Space, Window, WindowSurfaceType, utils::send_frames_surface_tree},
+    desktop::{
+        LayerSurface, PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output,
+        utils::send_frames_surface_tree,
+    },
     input::{Seat, SeatState, pointer::CursorImageStatus},
     output::Output,
     reexports::{
@@ -33,6 +36,7 @@ use smithay::{
         presentation::PresentationState,
         relative_pointer::RelativePointerManagerState,
         selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
+        shell::wlr_layer::Layer,
         shell::wlr_layer::WlrLayerShellState,
         shell::xdg::decoration::XdgDecorationState,
         shell::xdg::{SurfaceCachedState, XdgShellState},
@@ -172,6 +176,33 @@ impl Ferese {
         &self,
         position: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        self.layer_surface_under(position, &[Layer::Overlay, Layer::Top])
+            .map(|(_, surface, origin)| (surface, origin))
+            .or_else(|| self.window_surface_under(position))
+            .or_else(|| {
+                self.layer_surface_under(position, &[Layer::Bottom, Layer::Background])
+                    .map(|(_, surface, origin)| (surface, origin))
+            })
+    }
+
+    pub fn layer_under(
+        &self,
+        position: Point<f64, Logical>,
+    ) -> Option<(LayerSurface, WlSurface, Point<f64, Logical>)> {
+        if let Some(layer) = self.layer_surface_under(position, &[Layer::Overlay, Layer::Top]) {
+            return Some(layer);
+        }
+        if self.window_surface_under(position).is_some() {
+            return None;
+        }
+
+        self.layer_surface_under(position, &[Layer::Bottom, Layer::Background])
+    }
+
+    fn window_surface_under(
+        &self,
+        position: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
         self.space.elements().rev().find_map(|window| {
             let id = self.window_ids.get(window)?;
             let geometry = self.window_geometry.get(id)?;
@@ -194,6 +225,34 @@ impl Ferese {
                     (surface, position - surface_point)
                 })
         })
+    }
+
+    fn layer_surface_under(
+        &self,
+        position: Point<f64, Logical>,
+        layers: &[Layer],
+    ) -> Option<(LayerSurface, WlSurface, Point<f64, Logical>)> {
+        let output = self.space.output_under(position).next()?;
+        let output_geometry = self.space.output_geometry(output)?;
+        let output_position = position - output_geometry.loc.to_f64();
+        let map = layer_map_for_output(output);
+
+        for requested in layers {
+            for layer in map.layers_on(*requested).rev() {
+                let geometry = map.layer_geometry(layer)?;
+                let layer_position = output_position - geometry.loc.to_f64();
+                let Some((surface, surface_location)) =
+                    layer.surface_under(layer_position, WindowSurfaceType::ALL)
+                else {
+                    continue;
+                };
+                let origin = output_geometry.loc + geometry.loc + surface_location;
+
+                return Some((layer.clone(), surface, origin.to_f64()));
+            }
+        }
+
+        None
     }
 
     pub fn send_cursor_frame(&self, output: &Output) {
@@ -694,7 +753,7 @@ impl Ferese {
         self.restore_keyboard_focus();
     }
 
-    fn restore_keyboard_focus(&mut self) {
+    pub(crate) fn restore_keyboard_focus(&mut self) {
         let surface = self.focused_window.and_then(|focused| {
             self.window_ids.iter().find_map(|(window, id)| {
                 (*id == focused)

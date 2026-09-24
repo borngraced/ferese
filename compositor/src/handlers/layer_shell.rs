@@ -5,7 +5,9 @@ use smithay::{
     output::Output,
     reexports::wayland_server::protocol::{wl_output::WlOutput, wl_surface::WlSurface},
     wayland::shell::{
-        wlr_layer::{Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState},
+        wlr_layer::{
+            KeyboardInteractivity, Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState,
+        },
         xdg::PopupSurface,
     },
 };
@@ -57,6 +59,7 @@ impl WlrLayerShellHandler for Ferese {
         else {
             return;
         };
+        let restore_focus = layer_has_keyboard_focus(self, &layer);
         let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
 
         for output in outputs {
@@ -64,6 +67,9 @@ impl WlrLayerShellHandler for Ferese {
         }
 
         self.relayout();
+        if restore_focus {
+            self.restore_keyboard_focus();
+        }
         crate::backends::direct::render_all(self);
     }
 }
@@ -86,5 +92,35 @@ pub fn handle_commit(state: &mut Ferese, surface: &WlSurface) {
         }
     }
 
+    let policy = layer.cached_state();
+    if policy.keyboard_interactivity == KeyboardInteractivity::Exclusive
+        && matches!(policy.layer, Layer::Top | Layer::Overlay)
+    {
+        state
+            .seat
+            .get_keyboard()
+            .expect("seat has a keyboard")
+            .set_focus(
+                state,
+                Some(layer.wl_surface().clone()),
+                smithay::utils::SERIAL_COUNTER.next_serial(),
+            );
+    } else if !layer.can_receive_keyboard_focus() && layer_has_keyboard_focus(state, &layer) {
+        state.restore_keyboard_focus();
+    }
+
     state.relayout();
+}
+
+fn layer_has_keyboard_focus(state: &Ferese, layer: &DesktopLayerSurface) -> bool {
+    state
+        .seat
+        .get_keyboard()
+        .and_then(|keyboard| keyboard.current_focus())
+        .and_then(|surface| {
+            state
+                .space
+                .layer_for_surface(&surface, WindowSurfaceType::ALL)
+        })
+        .is_some_and(|focused| focused == *layer)
 }

@@ -247,8 +247,16 @@ impl Ferese {
     fn focus_window_under_pointer(&mut self, serial: Serial) {
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
+        let position = pointer.current_location();
 
-        if let Some(window) = self.window_under_visual(pointer.current_location()) {
+        if let Some((layer, _, _)) = self.layer_under(position) {
+            if layer.can_receive_keyboard_focus() {
+                keyboard.set_focus(self, Some(layer.wl_surface().clone()), serial);
+            }
+            return;
+        }
+
+        if let Some(window) = self.window_under_visual(position) {
             self.focused_window = self.window_ids.get(&window).copied();
             if let Some(focused) = self.focused_window
                 && let Err(error) = self.workspaces.focus_window(focused)
