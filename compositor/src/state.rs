@@ -1,6 +1,12 @@
-use std::{collections::HashMap, error::Error, ffi::OsString, sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    ffi::OsString,
+    sync::Arc,
+    time::Instant,
+};
 
-use ferese_layout::{Axis, LayoutTree, Rect, WindowId};
+use ferese_layout::{Axis, Direction, GapConfig, LayoutTree, Rect, WindowId};
 
 use smithay::{
     desktop::{PopupManager, Space, Window, WindowSurfaceType},
@@ -40,6 +46,7 @@ pub struct Ferese {
     pub layout: LayoutTree,
     pub window_ids: HashMap<Window, WindowId>,
     pub focused_window: Option<WindowId>,
+    pub intercepted_keys: HashSet<smithay::input::keyboard::Keycode>,
     next_window_id: u64,
     pub popups: PopupManager,
     pub seat: Seat<Self>,
@@ -94,6 +101,7 @@ impl Ferese {
             layout: LayoutTree::default(),
             window_ids: HashMap::new(),
             focused_window: None,
+            intercepted_keys: HashSet::new(),
             next_window_id: 1,
             popups: PopupManager::default(),
             seat,
@@ -160,10 +168,12 @@ impl Ferese {
         let id = WindowId(self.next_window_id);
         self.next_window_id += 1;
 
-        if let Err(error) = self
-            .layout
-            .insert(id, self.focused_window, Axis::Horizontal, 0.5)
-        {
+        let axis = self
+            .output_bounds()
+            .and_then(|bounds| self.layout.automatic_axis(self.focused_window, bounds).ok())
+            .unwrap_or(Axis::Horizontal);
+
+        if let Err(error) = self.layout.insert(id, self.focused_window, axis, 0.5) {
             tracing::error!(%error, ?id, "failed to insert window into layout");
             return;
         }
@@ -195,19 +205,10 @@ impl Ferese {
     }
 
     pub fn relayout(&mut self) {
-        let Some(output) = self.space.outputs().next() else {
+        let Some(bounds) = self.output_bounds() else {
             return;
         };
-        let Some(output_geometry) = self.space.output_geometry(output) else {
-            return;
-        };
-        let bounds = Rect::new(
-            output_geometry.loc.x as f64,
-            output_geometry.loc.y as f64,
-            output_geometry.size.w as f64,
-            output_geometry.size.h as f64,
-        );
-        let geometry = match self.layout.geometry(bounds) {
+        let geometry = match self.layout.geometry_with_gaps(bounds, GapConfig::default()) {
             Ok(geometry) => geometry,
             Err(error) => {
                 tracing::error!(%error, "failed to compute tiled geometry");
@@ -233,6 +234,60 @@ impl Ferese {
                 toplevel.send_pending_configure();
             }
         }
+    }
+
+    pub fn focus_direction(&mut self, direction: Direction) {
+        let Some(current) = self.focused_window else {
+            return;
+        };
+        let Some(bounds) = self.output_bounds() else {
+            return;
+        };
+        let Ok(Some(next)) = self.layout.directional_neighbor(current, direction, bounds) else {
+            return;
+        };
+        let Some(window) = self
+            .window_ids
+            .iter()
+            .find_map(|(window, id)| (*id == next).then(|| window.clone()))
+        else {
+            return;
+        };
+        let Some(surface) = window
+            .toplevel()
+            .map(|toplevel| toplevel.wl_surface().clone())
+        else {
+            return;
+        };
+
+        self.focused_window = Some(next);
+        self.space.raise_element(&window, true);
+        self.seat
+            .get_keyboard()
+            .expect("seat has a keyboard")
+            .set_focus(
+                self,
+                Some(surface),
+                smithay::utils::SERIAL_COUNTER.next_serial(),
+            );
+
+        for window in self.space.elements() {
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.send_pending_configure();
+            }
+        }
+    }
+
+    fn output_bounds(&self) -> Option<Rect> {
+        let output = self.space.outputs().next()?;
+        let geometry = self.space.output_geometry(output)?;
+
+        Some(Rect::new(
+            geometry.loc.x as f64,
+            geometry.loc.y as f64,
+            geometry.size.w as f64,
+            geometry.size.h as f64,
+        ))
     }
 }
 

@@ -1,10 +1,10 @@
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+        KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::{
-        keyboard::FilterResult,
+        keyboard::{FilterResult, keysyms},
         pointer::{AxisFrame, ButtonEvent, MotionEvent, PointerHandle, RelativeMotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -13,19 +13,54 @@ use smithay::{
 };
 
 use crate::Ferese;
+use ferese_layout::Direction;
 
 impl Ferese {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         match event {
             InputEvent::Keyboard { event, .. } => {
                 let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
+                let keycode = event.key_code();
+                let state = event.state();
+
                 keyboard.input::<(), _>(
                     self,
-                    event.key_code(),
-                    event.state(),
+                    keycode,
+                    state,
                     SERIAL_COUNTER.next_serial(),
                     Event::time(&event) as u32,
-                    |_, _, _| FilterResult::Forward,
+                    |data, modifiers, keysym| {
+                        if state == KeyState::Released && data.intercepted_keys.remove(&keycode) {
+                            return FilterResult::Intercept(());
+                        }
+
+                        let direction = if modifiers.logo
+                            && !modifiers.ctrl
+                            && !modifiers.alt
+                            && !modifiers.shift
+                        {
+                            match keysym.modified_sym().raw() {
+                                keysyms::KEY_h | keysyms::KEY_H => Some(Direction::Left),
+                                keysyms::KEY_j | keysyms::KEY_J => Some(Direction::Down),
+                                keysyms::KEY_k | keysyms::KEY_K => Some(Direction::Up),
+                                keysyms::KEY_l | keysyms::KEY_L => Some(Direction::Right),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
+
+                        if let Some(direction) = direction {
+                            if state == KeyState::Pressed {
+                                data.intercepted_keys.insert(keycode);
+                                data.focus_direction(direction);
+                            }
+
+                            FilterResult::Intercept(())
+                        } else {
+                            FilterResult::Forward
+                        }
+                    },
                 );
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {

@@ -17,6 +17,14 @@ pub enum Axis {
     Vertical,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Node {
     Window(WindowId),
@@ -47,6 +55,27 @@ impl Rect {
             y,
             width,
             height,
+        }
+    }
+
+    fn center(self) -> (f64, f64) {
+        (self.x + self.width / 2.0, self.y + self.height / 2.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GapConfig {
+    pub inner: f64,
+    pub outer: f64,
+    pub smart: bool,
+}
+
+impl Default for GapConfig {
+    fn default() -> Self {
+        Self {
+            inner: 10.0,
+            outer: 10.0,
+            smart: true,
         }
     }
 }
@@ -183,6 +212,134 @@ impl LayoutTree {
         }
 
         Ok(geometry)
+    }
+
+    pub fn geometry_with_gaps(
+        &self,
+        bounds: Rect,
+        gaps: GapConfig,
+    ) -> Result<HashMap<WindowId, Rect>, LayoutError> {
+        let mut geometry = self.geometry(bounds)?;
+        let outer = if gaps.smart && geometry.len() == 1 {
+            0.0
+        } else {
+            valid_gap(gaps.outer)
+        };
+        let half_inner = valid_gap(gaps.inner) / 2.0;
+        let right = bounds.x + bounds.width;
+        let bottom = bounds.y + bounds.height;
+
+        for rect in geometry.values_mut() {
+            let left_inset = if nearly_equal(rect.x, bounds.x) {
+                outer
+            } else {
+                half_inner
+            };
+            let top_inset = if nearly_equal(rect.y, bounds.y) {
+                outer
+            } else {
+                half_inner
+            };
+            let right_inset = if nearly_equal(rect.x + rect.width, right) {
+                outer
+            } else {
+                half_inner
+            };
+            let bottom_inset = if nearly_equal(rect.y + rect.height, bottom) {
+                outer
+            } else {
+                half_inner
+            };
+
+            rect.x += left_inset;
+            rect.y += top_inset;
+            rect.width = (rect.width - left_inset - right_inset).max(1.0);
+            rect.height = (rect.height - top_inset - bottom_inset).max(1.0);
+        }
+
+        Ok(geometry)
+    }
+
+    pub fn automatic_axis(
+        &self,
+        focused: Option<WindowId>,
+        bounds: Rect,
+    ) -> Result<Axis, LayoutError> {
+        let Some(root) = self.root else {
+            return Ok(Axis::Horizontal);
+        };
+        let target = match focused {
+            Some(window) => window,
+            None => match self.nodes.get(&self.first_window(root)?) {
+                Some(Node::Window(window)) => *window,
+                _ => return Err(LayoutError::InvalidTree("leaf is not a window")),
+            },
+        };
+        let rect = self
+            .geometry(bounds)?
+            .remove(&target)
+            .ok_or(LayoutError::UnknownWindow(target))?;
+
+        Ok(if rect.width > rect.height {
+            Axis::Horizontal
+        } else {
+            Axis::Vertical
+        })
+    }
+
+    pub fn directional_neighbor(
+        &self,
+        window: WindowId,
+        direction: Direction,
+        bounds: Rect,
+    ) -> Result<Option<WindowId>, LayoutError> {
+        let geometry = self.geometry(bounds)?;
+        let target = geometry
+            .get(&window)
+            .copied()
+            .ok_or(LayoutError::UnknownWindow(window))?;
+        let (target_x, target_y) = target.center();
+
+        Ok(geometry
+            .into_iter()
+            .filter(|(candidate, _)| *candidate != window)
+            .filter_map(|(candidate, rect)| {
+                let (candidate_x, candidate_y) = rect.center();
+                let (primary, secondary, aligned) = match direction {
+                    Direction::Left if candidate_x < target_x => (
+                        target_x - candidate_x,
+                        (target_y - candidate_y).abs(),
+                        intervals_overlap(target.y, target.height, rect.y, rect.height),
+                    ),
+                    Direction::Right if candidate_x > target_x => (
+                        candidate_x - target_x,
+                        (target_y - candidate_y).abs(),
+                        intervals_overlap(target.y, target.height, rect.y, rect.height),
+                    ),
+                    Direction::Up if candidate_y < target_y => (
+                        target_y - candidate_y,
+                        (target_x - candidate_x).abs(),
+                        intervals_overlap(target.x, target.width, rect.x, rect.width),
+                    ),
+                    Direction::Down if candidate_y > target_y => (
+                        candidate_y - target_y,
+                        (target_x - candidate_x).abs(),
+                        intervals_overlap(target.x, target.width, rect.x, rect.width),
+                    ),
+                    _ => return None,
+                };
+
+                Some((candidate, primary, secondary, aligned))
+            })
+            .min_by(|left, right| {
+                right
+                    .3
+                    .cmp(&left.3)
+                    .then_with(|| left.1.total_cmp(&right.1))
+                    .then_with(|| left.2.total_cmp(&right.2))
+                    .then_with(|| left.0.0.cmp(&right.0.0))
+            })
+            .map(|(candidate, _, _, _)| candidate))
     }
 
     pub fn validate(&self) -> Result<(), LayoutError> {
@@ -351,6 +508,23 @@ fn normalized_ratio(ratio: f64) -> f64 {
     }
 }
 
+fn valid_gap(gap: f64) -> f64 {
+    if gap.is_finite() { gap.max(0.0) } else { 0.0 }
+}
+
+fn nearly_equal(left: f64, right: f64) -> bool {
+    (left - right).abs() < f64::EPSILON * left.abs().max(right.abs()).max(1.0)
+}
+
+fn intervals_overlap(
+    first_start: f64,
+    first_size: f64,
+    second_start: f64,
+    second_size: f64,
+) -> bool {
+    first_start < second_start + second_size && second_start < first_start + first_size
+}
+
 fn split_rect(bounds: Rect, axis: Axis, ratio: f64) -> (Rect, Rect) {
     match axis {
         Axis::Horizontal => {
@@ -455,5 +629,86 @@ mod tests {
     fn non_finite_ratio_uses_balanced_split() {
         assert_eq!(normalized_ratio(f64::NAN), 0.5);
         assert_eq!(normalized_ratio(f64::INFINITY), 0.5);
+    }
+
+    #[test]
+    fn automatic_axis_follows_focused_tile_shape() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+
+        let wide = Rect::new(0.0, 0.0, 1_920.0, 1_080.0);
+        assert_eq!(
+            tree.automatic_axis(Some(WindowId(1)), wide).unwrap(),
+            Axis::Horizontal
+        );
+
+        tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
+            .unwrap();
+        assert_eq!(
+            tree.automatic_axis(Some(WindowId(1)), wide).unwrap(),
+            Axis::Vertical
+        );
+    }
+
+    #[test]
+    fn gaps_preserve_outer_and_shared_spacing() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
+            .unwrap();
+
+        let geometry = tree
+            .geometry_with_gaps(Rect::new(0.0, 0.0, 100.0, 80.0), GapConfig::default())
+            .unwrap();
+        let first = geometry[&WindowId(1)];
+        let second = geometry[&WindowId(2)];
+
+        assert_eq!(first.x, 10.0);
+        assert_eq!(second.x + second.width, 90.0);
+        assert_eq!(second.x - (first.x + first.width), 10.0);
+    }
+
+    #[test]
+    fn smart_gaps_remove_outer_gap_for_one_window() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+
+        let bounds = Rect::new(0.0, 0.0, 100.0, 80.0);
+        let geometry = tree
+            .geometry_with_gaps(bounds, GapConfig::default())
+            .unwrap();
+
+        assert_eq!(geometry[&WindowId(1)], bounds);
+    }
+
+    #[test]
+    fn directional_neighbor_prefers_primary_distance() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.insert(WindowId(3), Some(WindowId(2)), Axis::Vertical, 0.5)
+            .unwrap();
+
+        let bounds = Rect::new(0.0, 0.0, 100.0, 100.0);
+        assert_eq!(
+            tree.directional_neighbor(WindowId(1), Direction::Right, bounds)
+                .unwrap(),
+            Some(WindowId(2))
+        );
+        assert_eq!(
+            tree.directional_neighbor(WindowId(2), Direction::Down, bounds)
+                .unwrap(),
+            Some(WindowId(3))
+        );
+        assert_eq!(
+            tree.directional_neighbor(WindowId(1), Direction::Left, bounds)
+                .unwrap(),
+            None
+        );
     }
 }
