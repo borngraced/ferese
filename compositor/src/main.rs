@@ -49,7 +49,7 @@ fn spawn_client(mut args: Vec<std::ffi::OsString>) {
     let program = args.remove(0);
 
     match Command::new(&program).args(args).spawn() {
-        Ok(child) => info!(program = ?program, pid = child.id(), "spawned nested client"),
-        Err(error) => warn!(program = ?program, %error, "failed to spawn nested client"),
+        Ok(child) => info!(program = ?program, pid = child.id(), "spawned Wayland client"),
+        Err(error) => warn!(program = ?program, %error, "failed to spawn Wayland client"),
     }
 }
