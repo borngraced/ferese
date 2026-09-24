@@ -1,6 +1,7 @@
 #![allow(irrefutable_let_patterns)]
 
 mod backends;
+mod cursor;
 mod grabs;
 mod handlers;
 mod input;

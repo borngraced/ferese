@@ -16,7 +16,10 @@ use smithay::{
         LayerSurface, PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output,
         utils::send_frames_surface_tree,
     },
-    input::{Seat, SeatState, pointer::CursorImageStatus},
+    input::{
+        Seat, SeatState,
+        pointer::{CursorIcon, CursorImageStatus},
+    },
     output::Output,
     reexports::{
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
@@ -62,6 +65,8 @@ pub struct Ferese {
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
     pub focused_window: Option<WindowId>,
     pub cursor_status: CursorImageStatus,
+    pub(crate) cursor_theme: xcursor::CursorTheme,
+    pub(crate) named_cursors: HashMap<CursorIcon, crate::cursor::NamedCursor>,
     pub intercepted_keys: HashSet<smithay::input::keyboard::Keycode>,
     pub idle_inhibitors: HashMap<WlSurface, usize>,
     pub direct_backend: Option<crate::backends::direct::DirectBackendState>,
@@ -122,6 +127,9 @@ impl Ferese {
         let socket_name = Self::init_wayland_listener(display, event_loop)?;
 
         let start_time = Instant::now();
+        let cursor_theme = crate::cursor::cursor_theme();
+        let default_cursor = crate::cursor::load_named_cursor(&cursor_theme, CursorIcon::Default);
+        let named_cursors = HashMap::from([(CursorIcon::Default, default_cursor)]);
 
         Ok(Self {
             start_time,
@@ -134,6 +142,8 @@ impl Ferese {
             window_geometry: HashMap::new(),
             focused_window: None,
             cursor_status: CursorImageStatus::default_named(),
+            cursor_theme,
+            named_cursors,
             intercepted_keys: HashSet::new(),
             idle_inhibitors: HashMap::new(),
             direct_backend: None,

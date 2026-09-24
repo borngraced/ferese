@@ -13,3 +13,4 @@ libc.workspace = true
 smithay.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+xcursor.workspace = true

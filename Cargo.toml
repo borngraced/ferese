@@ -28,3 +28,4 @@ smithay = { version = "0.7.0", default-features = false, features = [
 ] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+xcursor = "0.3.11"

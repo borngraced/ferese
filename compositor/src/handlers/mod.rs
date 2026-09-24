@@ -45,6 +45,11 @@ impl SeatHandler for Ferese {
     }
 
     fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        if let CursorImageStatus::Named(icon) = &image {
+            self.named_cursors
+                .entry(*icon)
+                .or_insert_with(|| crate::cursor::load_named_cursor(&self.cursor_theme, *icon));
+        }
         self.cursor_status = image;
         crate::backends::direct::render_all(self);
     }

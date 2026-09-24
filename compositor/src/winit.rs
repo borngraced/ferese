@@ -9,6 +9,8 @@ use smithay::{
             damage::OutputDamageTracker,
             element::{
                 AsRenderElements, Kind as RenderElementKind,
+                memory::MemoryRenderBufferRenderElement,
+                render_elements,
                 surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
                 utils::{
                     ConstrainAlign, ConstrainScaleBehavior, CropRenderElement, Relocate,
@@ -35,9 +37,19 @@ use smithay::{
 
 use crate::Ferese;
 
-pub(crate) type AnimatedWindowRenderElement = CropRenderElement<
+type SurfaceRenderElement = CropRenderElement<
     RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
 >;
+
+type MemoryRenderElement = CropRenderElement<
+    RelocateRenderElement<RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>>,
+>;
+
+render_elements! {
+    pub(crate) AnimatedWindowRenderElement<=GlesRenderer>;
+    Surface=SurfaceRenderElement,
+    Memory=MemoryRenderElement,
+}
 
 pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<(), Box<dyn Error>> {
     let (mut backend, event_source) = winit::init()?;
@@ -281,7 +293,7 @@ fn layer_elements(
             let element = RescaleRenderElement::from_element(element, origin, 1.0);
             let element = RelocateRenderElement::from_element(element, origin, Relocate::Relative);
 
-            CropRenderElement::from_element(element, scale, output_crop)
+            CropRenderElement::from_element(element, scale, output_crop).map(Into::into)
         })
         .collect()
 }
@@ -292,42 +304,73 @@ fn cursor_elements(
     output_geometry: Rectangle<i32, Logical>,
     scale: f64,
 ) -> Vec<AnimatedWindowRenderElement> {
-    let CursorImageStatus::Surface(surface) = &state.cursor_status else {
-        return Vec::new();
-    };
     let Some(pointer) = state.seat.get_pointer() else {
         return Vec::new();
     };
-    let hotspot = with_states(surface, |states| {
-        states
-            .data_map
-            .get::<CursorImageSurfaceData>()
-            .map(|attributes| attributes.lock().unwrap().hotspot)
-            .unwrap_or_default()
-    });
-    let logical_location =
-        pointer.current_location() - output_geometry.loc.to_f64() - hotspot.to_f64();
-    let physical_location = logical_location.to_physical_precise_round(scale);
     let output_crop =
         Rectangle::<i32, Logical>::from_size(output_geometry.size).to_physical_precise_round(scale);
     let origin = Point::<i32, Physical>::default();
+    let pointer_location = pointer.current_location() - output_geometry.loc.to_f64();
+    match &state.cursor_status {
+        CursorImageStatus::Surface(surface) => {
+            let hotspot = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<CursorImageSurfaceData>()
+                    .map(|attributes| attributes.lock().unwrap().hotspot)
+                    .unwrap_or_default()
+            });
+            let physical_location =
+                (pointer_location - hotspot.to_f64()).to_physical_precise_round(scale);
 
-    render_elements_from_surface_tree::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
-        renderer,
-        surface,
-        physical_location,
-        scale,
-        1.0,
-        RenderElementKind::Cursor,
-    )
-    .into_iter()
-    .filter_map(|element| {
-        let element = RescaleRenderElement::from_element(element, origin, 1.0);
-        let element = RelocateRenderElement::from_element(element, origin, Relocate::Relative);
+            render_elements_from_surface_tree::<
+                GlesRenderer,
+                WaylandSurfaceRenderElement<GlesRenderer>,
+            >(
+                renderer,
+                surface,
+                physical_location,
+                scale,
+                1.0,
+                RenderElementKind::Cursor,
+            )
+            .into_iter()
+            .filter_map(|element| {
+                let element = RescaleRenderElement::from_element(element, origin, 1.0);
+                let element =
+                    RelocateRenderElement::from_element(element, origin, Relocate::Relative);
 
-        CropRenderElement::from_element(element, scale, output_crop)
-    })
-    .collect()
+                CropRenderElement::from_element(element, scale, output_crop).map(Into::into)
+            })
+            .collect()
+        }
+        CursorImageStatus::Named(icon) => {
+            let Some(cursor) = state.named_cursors.get(icon) else {
+                return Vec::new();
+            };
+            let hotspot = Point::<i32, Physical>::from((cursor.hotspot.x, cursor.hotspot.y));
+            let physical_location = pointer_location.to_physical_precise_round(scale) - hotspot;
+            let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+                renderer,
+                physical_location.to_f64(),
+                &cursor.buffer,
+                None,
+                None,
+                None,
+                RenderElementKind::Cursor,
+            ) else {
+                return Vec::new();
+            };
+
+            let element = RescaleRenderElement::from_element(element, origin, 1.0);
+            let element = RelocateRenderElement::from_element(element, origin, Relocate::Relative);
+
+            CropRenderElement::from_element(element, scale, output_crop)
+                .map(|element| vec![element.into()])
+                .unwrap_or_default()
+        }
+        CursorImageStatus::Hidden => Vec::new(),
+    }
 }
 
 fn normalized_scale(scale: f64) -> f64 {
