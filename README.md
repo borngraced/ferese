@@ -1,8 +1,8 @@
 # Ferese
 
 Ferese is an experimental Wayland tiling compositor written in Rust with
-Smithay. Development currently targets the Phase 0 nested compositor described
-in [spec.md](spec.md).
+Smithay. The nested compositor is complete and development currently targets
+the M1 native protocol and interaction milestone in [spec.md](spec.md).
 
 ## Development
 
@@ -20,4 +20,3 @@ cargo run -p ferese -- foot
 ```
 
 Set `RUST_LOG=ferese=debug` for detailed compositor logging.
-

@@ -2,9 +2,16 @@ use smithay::{
     desktop::{
         PopupKind, PopupManager, Space, Window, find_popup_root_surface, get_popup_toplevel_coords,
     },
+    input::{
+        Seat,
+        pointer::{Focus, GrabStartData},
+    },
     reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
-    reexports::wayland_server::protocol::{wl_seat, wl_surface::WlSurface},
-    utils::Serial,
+    reexports::wayland_server::{
+        Resource,
+        protocol::{wl_seat, wl_surface::WlSurface},
+    },
+    utils::{Rectangle, Serial},
     wayland::{
         compositor::with_states,
         shell::xdg::decoration::XdgDecorationHandler,
@@ -15,7 +22,10 @@ use smithay::{
     },
 };
 
-use crate::Ferese;
+use crate::{
+    Ferese,
+    grabs::{MoveSurfaceGrab, ResizeEdge, ResizeSurfaceGrab, handle_resize_commit},
+};
 
 impl XdgShellHandler for Ferese {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
@@ -48,18 +58,101 @@ impl XdgShellHandler for Ferese {
         surface.send_repositioned(token);
     }
 
-    fn move_request(&mut self, _: ToplevelSurface, _: wl_seat::WlSeat, _: Serial) {}
+    fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
+        let Some(seat) = Seat::from_resource(&seat) else {
+            return;
+        };
+        let Some(start_data) = check_grab(&seat, surface.wl_surface(), serial) else {
+            return;
+        };
+        let Some(pointer) = seat.get_pointer() else {
+            return;
+        };
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+            })
+            .cloned()
+        else {
+            return;
+        };
+        let Some(initial_location) = self.space.element_location(&window) else {
+            return;
+        };
+        pointer.set_grab(
+            self,
+            MoveSurfaceGrab {
+                start_data,
+                window,
+                initial_location,
+            },
+            serial,
+            Focus::Clear,
+        );
+    }
 
     fn resize_request(
         &mut self,
-        _: ToplevelSurface,
-        _: wl_seat::WlSeat,
-        _: Serial,
-        _: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge,
+        surface: ToplevelSurface,
+        seat: wl_seat::WlSeat,
+        serial: Serial,
+        edges: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge,
     ) {
+        let Some(seat) = Seat::from_resource(&seat) else {
+            return;
+        };
+        let Some(start_data) = check_grab(&seat, surface.wl_surface(), serial) else {
+            return;
+        };
+        let Some(pointer) = seat.get_pointer() else {
+            return;
+        };
+        let Some(window) = self
+            .space
+            .elements()
+            .find(|window| {
+                window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+            })
+            .cloned()
+        else {
+            return;
+        };
+        let Some(location) = self.space.element_location(&window) else {
+            return;
+        };
+        let rect = Rectangle::new(location, window.geometry().size);
+        pointer.set_grab(
+            self,
+            ResizeSurfaceGrab::new(start_data, window, ResizeEdge::from(edges), rect),
+            serial,
+            Focus::Clear,
+        );
     }
 
     fn grab(&mut self, _: PopupSurface, _: wl_seat::WlSeat, _: Serial) {}
+}
+
+fn check_grab(
+    seat: &Seat<Ferese>,
+    surface: &WlSurface,
+    serial: Serial,
+) -> Option<GrabStartData<Ferese>> {
+    let pointer = seat.get_pointer()?;
+    if !pointer.has_grab(serial) {
+        return None;
+    }
+    let start_data = pointer.grab_start_data()?;
+    let (focus, _) = start_data.focus.as_ref()?;
+    focus
+        .id()
+        .same_client_as(&surface.id())
+        .then_some(start_data)
 }
 
 impl XdgDecorationHandler for Ferese {
@@ -87,7 +180,8 @@ fn set_decoration_mode(toplevel: &ToplevelSurface, mode: Mode) {
     toplevel.send_pending_configure();
 }
 
-pub fn handle_commit(popups: &mut PopupManager, space: &Space<Window>, surface: &WlSurface) {
+pub fn handle_commit(popups: &mut PopupManager, space: &mut Space<Window>, surface: &WlSurface) {
+    handle_resize_commit(space, surface);
     if let Some(window) = space
         .elements()
         .find(|window| {

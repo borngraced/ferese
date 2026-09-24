@@ -44,7 +44,7 @@ impl CompositorHandler for Ferese {
                 window.on_commit();
             }
         }
-        xdg_shell::handle_commit(&mut self.popups, &self.space, surface);
+        xdg_shell::handle_commit(&mut self.popups, &mut self.space, surface);
     }
 }
 
