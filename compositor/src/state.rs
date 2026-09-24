@@ -14,12 +14,18 @@ use smithay::{
     utils::{Logical, Point},
     wayland::{
         compositor::{CompositorClientState, CompositorState},
+        fractional_scale::FractionalScaleManagerState,
         output::OutputManagerState,
+        pointer_constraints::PointerConstraintsState,
+        presentation::PresentationState,
+        relative_pointer::RelativePointerManagerState,
         selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
         shell::xdg::XdgShellState,
         shell::xdg::decoration::XdgDecorationState,
         shm::ShmState,
         socket::ListeningSocketSource,
+        viewporter::ViewporterState,
+        xdg_activation::XdgActivationState,
     },
 };
 
@@ -34,10 +40,16 @@ pub struct Ferese {
     pub compositor_state: CompositorState,
     pub data_device_state: DataDeviceState,
     pub decoration_state: XdgDecorationState,
+    pub fractional_scale_state: FractionalScaleManagerState,
     pub output_manager_state: OutputManagerState,
+    pub pointer_constraints_state: PointerConstraintsState,
+    pub presentation_state: PresentationState,
     pub primary_selection_state: PrimarySelectionState,
+    pub relative_pointer_state: RelativePointerManagerState,
     pub seat_state: SeatState<Self>,
     pub shm_state: ShmState,
+    pub viewporter_state: ViewporterState,
+    pub xdg_activation_state: XdgActivationState,
     pub xdg_shell_state: XdgShellState,
 }
 
@@ -50,10 +62,17 @@ impl Ferese {
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let decoration_state = XdgDecorationState::new::<Self>(&display_handle);
+        let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, Vec::new());
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
+        let pointer_constraints_state = PointerConstraintsState::new::<Self>(&display_handle);
+        let presentation_state =
+            PresentationState::new::<Self>(&display_handle, libc::CLOCK_MONOTONIC as u32);
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let primary_selection_state = PrimarySelectionState::new::<Self>(&display_handle);
+        let relative_pointer_state = RelativePointerManagerState::new::<Self>(&display_handle);
+        let viewporter_state = ViewporterState::new::<Self>(&display_handle);
+        let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&display_handle, "ferese-winit");
         seat.add_keyboard(Default::default(), 200, 25)?;
@@ -71,10 +90,16 @@ impl Ferese {
             compositor_state,
             data_device_state,
             decoration_state,
+            fractional_scale_state,
             output_manager_state,
+            pointer_constraints_state,
+            presentation_state,
             primary_selection_state,
+            relative_pointer_state,
             seat_state,
             shm_state,
+            viewporter_state,
+            xdg_activation_state,
             xdg_shell_state,
         })
     }

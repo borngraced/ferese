@@ -1,11 +1,18 @@
+mod activation;
 mod compositor;
 mod xdg_shell;
 
 use smithay::{
-    input::{Seat, SeatHandler, SeatState, pointer::CursorImageStatus},
+    input::{
+        Seat, SeatHandler, SeatState,
+        pointer::{CursorImageStatus, PointerHandle},
+    },
     reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
     wayland::{
+        compositor::with_states,
+        fractional_scale::{FractionalScaleHandler, with_fractional_scale},
         output::OutputHandler,
+        pointer_constraints::{PointerConstraintsHandler, with_pointer_constraint},
         selection::{
             SelectionHandler,
             data_device::{
@@ -41,6 +48,37 @@ impl SeatHandler for Ferese {
 
 impl OutputHandler for Ferese {}
 
+impl FractionalScaleHandler for Ferese {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        with_states(&surface, |states| {
+            with_fractional_scale(states, |scale| scale.set_preferred_scale(1.0));
+        });
+    }
+}
+
+impl PointerConstraintsHandler for Ferese {
+    fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
+        let focused = pointer
+            .current_focus()
+            .is_some_and(|focused| focused == *surface);
+        if focused {
+            with_pointer_constraint(surface, pointer, |constraint| {
+                if let Some(constraint) = constraint {
+                    constraint.activate();
+                }
+            });
+        }
+    }
+
+    fn cursor_position_hint(
+        &mut self,
+        _surface: &WlSurface,
+        _pointer: &PointerHandle<Self>,
+        _location: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) {
+    }
+}
+
 impl SelectionHandler for Ferese {
     type SelectionUserData = ();
 }
@@ -62,9 +100,15 @@ impl PrimarySelectionHandler for Ferese {
 
 smithay::delegate_compositor!(Ferese);
 smithay::delegate_data_device!(Ferese);
+smithay::delegate_fractional_scale!(Ferese);
 smithay::delegate_output!(Ferese);
+smithay::delegate_pointer_constraints!(Ferese);
+smithay::delegate_presentation!(Ferese);
 smithay::delegate_primary_selection!(Ferese);
+smithay::delegate_relative_pointer!(Ferese);
 smithay::delegate_seat!(Ferese);
 smithay::delegate_shm!(Ferese);
+smithay::delegate_viewporter!(Ferese);
+smithay::delegate_xdg_activation!(Ferese);
 smithay::delegate_xdg_decoration!(Ferese);
 smithay::delegate_xdg_shell!(Ferese);

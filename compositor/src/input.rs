@@ -1,11 +1,11 @@
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent,
+        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
     },
     input::{
         keyboard::FilterResult,
-        pointer::{AxisFrame, ButtonEvent, MotionEvent},
+        pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{SERIAL_COUNTER, Serial},
@@ -43,6 +43,20 @@ impl Ferese {
                         location: position,
                         serial: SERIAL_COUNTER.next_serial(),
                         time: event.time() as u32,
+                    },
+                );
+                pointer.frame(self);
+            }
+            InputEvent::PointerMotion { event, .. } => {
+                let pointer = self.seat.get_pointer().expect("seat has a pointer");
+                let focus = self.surface_under(pointer.current_location());
+                pointer.relative_motion(
+                    self,
+                    focus,
+                    &RelativeMotionEvent {
+                        delta: event.delta(),
+                        delta_unaccel: event.delta_unaccel(),
+                        utime: (event.time_msec() as u64).saturating_mul(1_000),
                     },
                 );
                 pointer.frame(self);

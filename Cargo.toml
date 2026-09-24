@@ -9,6 +9,7 @@ license = "MIT"
 rust-version = "1.87"
 
 [workspace.dependencies]
+libc = "0.2.176"
 smithay = { version = "0.7.0", default-features = false, features = [
     "backend_winit",
     "desktop",
@@ -16,4 +17,3 @@ smithay = { version = "0.7.0", default-features = false, features = [
 ] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
-

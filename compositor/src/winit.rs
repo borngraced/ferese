@@ -8,9 +8,12 @@ use smithay::{
         },
         winit::{self, WinitEvent},
     },
+    desktop::utils::OutputPresentationFeedback,
     output::{Mode, Output, PhysicalProperties, Subpixel},
     reexports::calloop::EventLoop,
-    utils::{Rectangle, Transform},
+    reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind,
+    utils::{Clock, Monotonic, Rectangle, Transform},
+    wayland::presentation::Refresh,
 };
 
 use crate::Ferese;
@@ -41,6 +44,8 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
     state.space.map_output(&output, (0, 0));
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
+    let clock = Clock::<Monotonic>::new();
+    let mut sequence = 0_u64;
     event_loop
         .handle()
         .insert_source(event_source, move |event, _, state| match event {
@@ -56,6 +61,14 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
             WinitEvent::Input(event) => state.process_input_event(event),
             WinitEvent::Redraw => {
                 let damage = Rectangle::from_size(backend.window_size());
+                let mut presentation = OutputPresentationFeedback::new(&output);
+                state.space.elements().for_each(|window| {
+                    window.take_presentation_feedback(
+                        &mut presentation,
+                        |_, _| Some(output.clone()),
+                        |_, _| Kind::Vsync,
+                    );
+                });
                 let rendered = (|| -> Result<(), Box<dyn Error>> {
                     {
                         let (renderer, mut framebuffer) = backend.bind()?;
@@ -84,6 +97,13 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     state.loop_signal.stop();
                     return;
                 }
+                sequence = sequence.wrapping_add(1);
+                presentation.presented(
+                    clock.now(),
+                    Refresh::fixed(Duration::from_nanos(1_000_000_000 / 60)),
+                    sequence,
+                    Kind::Vsync,
+                );
                 state.space.elements().for_each(|window| {
                     window.send_frame(
                         &output,
