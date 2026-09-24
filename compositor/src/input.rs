@@ -153,7 +153,20 @@ impl Ferese {
                         utime: (event.time_msec() as u64).saturating_mul(1_000),
                     },
                 );
+                let requested = self.clamp_pointer_position(position + delta);
+                let location = self.constrain_pointer_position(&pointer, requested);
+
+                pointer.motion(
+                    self,
+                    self.surface_under(location),
+                    &MotionEvent {
+                        location,
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time() as u32,
+                    },
+                );
                 pointer.frame(self);
+                self.activate_focused_pointer_constraint(&pointer);
             }
             InputEvent::PointerButton { event, .. } => {
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
@@ -243,6 +256,26 @@ impl Ferese {
                 toplevel.send_pending_configure();
             }
         });
+    }
+
+    fn clamp_pointer_position(&self, requested: Point<f64, Logical>) -> Point<f64, Logical> {
+        let Some(output) = self.space.outputs().next() else {
+            return requested;
+        };
+        let Some(geometry) = self.space.output_geometry(output) else {
+            return requested;
+        };
+
+        Point::from((
+            requested.x.clamp(
+                f64::from(geometry.loc.x),
+                f64::from(geometry.loc.x + geometry.size.w - 1),
+            ),
+            requested.y.clamp(
+                f64::from(geometry.loc.y),
+                f64::from(geometry.loc.y + geometry.size.h - 1),
+            ),
+        ))
     }
 
     fn constrain_pointer_position(
