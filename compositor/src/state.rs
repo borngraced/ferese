@@ -41,6 +41,7 @@ use smithay::{
         shell::xdg::decoration::XdgDecorationState,
         shell::xdg::{SurfaceCachedState, XdgShellState},
         shm::ShmState,
+        single_pixel_buffer::SinglePixelBufferState,
         socket::ListeningSocketSource,
         viewporter::ViewporterState,
         xdg_activation::XdgActivationState,
@@ -75,6 +76,7 @@ pub struct Ferese {
     pub relative_pointer_state: RelativePointerManagerState,
     pub seat_state: SeatState<Self>,
     pub shm_state: ShmState,
+    pub single_pixel_buffer_state: SinglePixelBufferState,
     pub viewporter_state: ViewporterState,
     pub layer_shell_state: WlrLayerShellState,
     pub xdg_activation_state: XdgActivationState,
@@ -92,6 +94,7 @@ impl Ferese {
         let decoration_state = XdgDecorationState::new::<Self>(&display_handle);
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, Vec::new());
+        let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&display_handle);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
         let pointer_constraints_state = PointerConstraintsState::new::<Self>(&display_handle);
         let presentation_state =
@@ -138,6 +141,7 @@ impl Ferese {
             relative_pointer_state,
             seat_state,
             shm_state,
+            single_pixel_buffer_state,
             viewporter_state,
             layer_shell_state,
             xdg_activation_state,

@@ -161,6 +161,7 @@ smithay::delegate_primary_selection!(Ferese);
 smithay::delegate_relative_pointer!(Ferese);
 smithay::delegate_seat!(Ferese);
 smithay::delegate_shm!(Ferese);
+smithay::delegate_single_pixel_buffer!(Ferese);
 smithay::delegate_viewporter!(Ferese);
 smithay::delegate_xdg_activation!(Ferese);
 smithay::delegate_xdg_decoration!(Ferese);
