@@ -342,6 +342,35 @@ impl LayoutTree {
             .map(|(candidate, _, _, _)| candidate))
     }
 
+    pub fn move_window(
+        &mut self,
+        window: WindowId,
+        direction: Direction,
+        bounds: Rect,
+    ) -> Result<bool, LayoutError> {
+        let Some(neighbor) = self.directional_neighbor(window, direction, bounds)? else {
+            return Ok(false);
+        };
+        let window_node = self
+            .windows
+            .get(&window)
+            .copied()
+            .ok_or(LayoutError::UnknownWindow(window))?;
+        let neighbor_node = self
+            .windows
+            .get(&neighbor)
+            .copied()
+            .ok_or(LayoutError::UnknownWindow(neighbor))?;
+
+        self.nodes.insert(window_node, Node::Window(neighbor));
+        self.nodes.insert(neighbor_node, Node::Window(window));
+        self.windows.insert(window, neighbor_node);
+        self.windows.insert(neighbor, window_node);
+
+        debug_assert!(self.validate().is_ok());
+        Ok(true)
+    }
+
     pub fn validate(&self) -> Result<(), LayoutError> {
         let Some(root) = self.root else {
             return if self.nodes.is_empty() && self.parents.is_empty() && self.windows.is_empty() {
@@ -709,6 +738,43 @@ mod tests {
             tree.directional_neighbor(WindowId(1), Direction::Left, bounds)
                 .unwrap(),
             None
+        );
+    }
+
+    #[test]
+    fn directional_move_swaps_window_leaves() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+        tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
+            .unwrap();
+        let bounds = Rect::new(0.0, 0.0, 100.0, 80.0);
+
+        assert!(
+            tree.move_window(WindowId(1), Direction::Right, bounds)
+                .unwrap()
+        );
+
+        let geometry = tree.geometry(bounds).unwrap();
+        assert_eq!(geometry[&WindowId(2)].x, 0.0);
+        assert_eq!(geometry[&WindowId(1)].x, 50.0);
+        assert!(tree.validate().is_ok());
+    }
+
+    #[test]
+    fn directional_move_at_boundary_is_a_noop() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+
+        assert!(
+            !tree
+                .move_window(
+                    WindowId(1),
+                    Direction::Left,
+                    Rect::new(0.0, 0.0, 100.0, 80.0),
+                )
+                .unwrap()
         );
     }
 }

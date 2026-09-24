@@ -278,6 +278,21 @@ impl Ferese {
         }
     }
 
+    pub fn move_direction(&mut self, direction: Direction) {
+        let Some(current) = self.focused_window else {
+            return;
+        };
+        let Some(bounds) = self.output_bounds() else {
+            return;
+        };
+
+        match self.layout.move_window(current, direction, bounds) {
+            Ok(true) => self.relayout(),
+            Ok(false) => {}
+            Err(error) => tracing::error!(%error, ?current, "failed to move tiled window"),
+        }
+    }
+
     fn output_bounds(&self) -> Option<Rect> {
         let output = self.space.outputs().next()?;
         let geometry = self.space.output_geometry(output)?;

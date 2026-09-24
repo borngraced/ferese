@@ -34,11 +34,7 @@ impl Ferese {
                             return FilterResult::Intercept(());
                         }
 
-                        let direction = if modifiers.logo
-                            && !modifiers.ctrl
-                            && !modifiers.alt
-                            && !modifiers.shift
-                        {
+                        let direction = if modifiers.logo && !modifiers.ctrl && !modifiers.alt {
                             match keysym.modified_sym().raw() {
                                 keysyms::KEY_h | keysyms::KEY_H => Some(Direction::Left),
                                 keysyms::KEY_j | keysyms::KEY_J => Some(Direction::Down),
@@ -53,7 +49,11 @@ impl Ferese {
                         if let Some(direction) = direction {
                             if state == KeyState::Pressed {
                                 data.intercepted_keys.insert(keycode);
-                                data.focus_direction(direction);
+                                if modifiers.shift {
+                                    data.move_direction(direction);
+                                } else {
+                                    data.focus_direction(direction);
+                                }
                             }
 
                             FilterResult::Intercept(())
