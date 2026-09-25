@@ -121,6 +121,19 @@ their client surfaces, `Super+H/J/K/L` moves the selection using the presented
 preview geometry, and clicking a preview activates it without forwarding the
 selection click to the application.
 
+The first production shell slice provides a floating libcosmic top bar backed
+by the private shell-control connection. Build and preview it nested with:
+
+```bash
+cargo build -p ferese -p ferese-shell
+target/debug/ferese --backend nested --grant-effects --grant-shell-control -- \
+  target/debug/ferese-shell
+```
+
+The Ferese mark enters overview, workspace pills switch workspaces, the clock
+remains geometrically centered, and focused-application/output metadata updates
+from compositor snapshots.
+
 Keyboard and direct-session touchpad settings are applied at startup:
 
 ```toml

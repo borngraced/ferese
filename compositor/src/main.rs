@@ -17,7 +17,13 @@ mod state;
 mod window_rules;
 mod winit;
 
-use std::{error::Error, io, process::Command};
+use std::{
+    error::Error,
+    io,
+    process::{Child, Command},
+    thread,
+    time::Duration,
+};
 
 use calloop::signals::{Signal, Signals};
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
@@ -70,9 +76,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
 
     info!(socket = ?state.socket_name, backend = ?launch.backend, "Ferese is accepting Wayland clients");
-    spawn_client(&mut state, launch.client, launch.client_capabilities);
-    event_loop.run(None, &mut state, |_| {})?;
-    Ok(())
+    let mut child = spawn_client(&mut state, launch.client, launch.client_capabilities);
+    let result = event_loop.run(None, &mut state, |_| {});
+
+    if let Some(child) = &mut child {
+        terminate_child(child);
+    }
+
+    result.map_err(Into::into)
 }
 
 fn init_logging() {
@@ -85,10 +96,10 @@ fn spawn_client(
     state: &mut Ferese,
     mut args: Vec<std::ffi::OsString>,
     capabilities: private_client::ClientCapabilities,
-) {
+) -> Option<Child> {
     if args.is_empty() {
         info!("no client requested; pass one after `--`, for example `-- foot`");
-        return;
+        return None;
     }
     let program = args.remove(0);
 
@@ -101,14 +112,42 @@ fn spawn_client(
             Ok(connection) => Some(connection),
             Err(error) => {
                 warn!(program = ?program, %error, "failed to create private Wayland connection");
-                return;
+                return None;
             }
         }
     };
 
-    match command.spawn() {
-        Ok(child) => info!(program = ?program, pid = child.id(), "spawned Wayland client"),
-        Err(error) => warn!(program = ?program, %error, "failed to spawn Wayland client"),
-    }
+    let child = match command.spawn() {
+        Ok(child) => {
+            info!(program = ?program, pid = child.id(), "spawned Wayland client");
+            Some(child)
+        }
+        Err(error) => {
+            warn!(program = ?program, %error, "failed to spawn Wayland client");
+            None
+        }
+    };
     drop(private_connection);
+    child
+}
+
+fn terminate_child(child: &mut Child) {
+    if child.try_wait().ok().flatten().is_some() {
+        return;
+    }
+
+    // SAFETY: the process ID comes from the live Child owned by Ferese.
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGTERM);
+    }
+
+    for _ in 0..20 {
+        if child.try_wait().ok().flatten().is_some() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    let _ = child.kill();
+    let _ = child.wait();
 }

@@ -1,5 +1,5 @@
 [package]
-name = "ferese-shell-spike"
+name = "ferese-shell"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,5 +7,6 @@ rust-version = "1.93"
 
 [dependencies]
 ferese-protocols = { path = "../../crates/ferese-protocols", default-features = false, features = ["client"] }
+jiff.workspace = true
 libcosmic.workspace = true
 wayland-client.workspace = true

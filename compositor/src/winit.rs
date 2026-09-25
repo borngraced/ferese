@@ -1371,13 +1371,15 @@ fn framebuffer_clip_rect(
     output_size: smithay::utils::Size<i32, Physical>,
     transform: Transform,
 ) -> [f32; 4] {
-    let transformed = transform.transform_rect_in(geometry, &output_size);
-    let transformed_output_size = transform.transform_size(output_size);
-    let bottom = transformed_output_size.h - transformed.loc.y - transformed.size.h;
+    // Match GlesFrame's projection: Smithay already accounts for GL's Y axis.
+    // An extra bottom-left conversion here mirrors shader clips independently
+    // of the surface geometry (notably with the nested Flipped180 output).
+    let element_size = transform.transform_size(output_size);
+    let transformed = transform.transform_rect_in(geometry, &element_size);
 
     [
         transformed.loc.x as f32,
-        bottom as f32,
+        transformed.loc.y as f32,
         transformed.size.w as f32,
         transformed.size.h as f32,
     ]
@@ -1861,12 +1863,12 @@ mod tests {
     }
 
     #[test]
-    fn clip_rect_uses_opengl_bottom_left_origin() {
+    fn clip_rect_matches_smithay_gles_projection() {
         let geometry = Rectangle::<i32, Physical>::new((10, 5).into(), (30, 40).into());
 
         assert_eq!(
             framebuffer_clip_rect(geometry, (100, 80).into(), Transform::Normal),
-            [10.0, 35.0, 30.0, 40.0]
+            [10.0, 5.0, 30.0, 40.0]
         );
     }
 
@@ -1876,12 +1878,70 @@ mod tests {
 
         assert_eq!(
             framebuffer_clip_rect(geometry, (100, 80).into(), Transform::Flipped180),
-            [10.0, 5.0, 30.0, 40.0]
+            [10.0, 35.0, 30.0, 40.0]
         );
         assert_eq!(
             framebuffer_clip_rect(geometry, (100, 80).into(), Transform::_180),
-            [60.0, 5.0, 30.0, 40.0]
+            [60.0, 35.0, 30.0, 40.0]
         );
+    }
+
+    #[test]
+    fn panel_clearance_clip_matches_gles_projection_at_fractional_scales() {
+        for scale in [1.0, 1.25, 1.75, 2.0] {
+            for transform in [
+                Transform::Normal,
+                Transform::_90,
+                Transform::_180,
+                Transform::_270,
+                Transform::Flipped,
+                Transform::Flipped90,
+                Transform::Flipped180,
+                Transform::Flipped270,
+            ] {
+                let output_size = smithay::utils::Size::<i32, Physical>::from((
+                    (1280.0 * scale) as i32,
+                    (800.0 * scale) as i32,
+                ));
+                let element_size = transform.transform_size(output_size);
+                let logical_height = f64::from(element_size.h) / scale;
+                // Bar and exclusion end at 40; the 10px outer gap ends at 50.
+                let geometry = Rectangle::<f64, Logical>::new(
+                    (10.0, 50.0).into(),
+                    (400.0, logical_height - 60.0).into(),
+                )
+                .to_physical_precise_round(scale);
+                let clip = framebuffer_clip_rect(geometry, output_size, transform);
+                // Independently reproduce GlesFrame's orthographic projection,
+                // transform matrix, GL flip, and viewport mapping for each corner.
+                let matrix = transform.matrix();
+                let mut xs = Vec::new();
+                let mut ys = Vec::new();
+                for x in [geometry.loc.x, geometry.loc.x + geometry.size.w] {
+                    for y in [geometry.loc.y, geometry.loc.y + geometry.size.h] {
+                        let nx = 2.0 * x as f32 / element_size.w as f32 - 1.0;
+                        let ny = 1.0 - 2.0 * y as f32 / element_size.h as f32;
+                        let tx = matrix[0][0] * nx + matrix[1][0] * ny;
+                        let ty = matrix[0][1] * nx + matrix[1][1] * ny;
+                        xs.push((tx + 1.0) * output_size.w as f32 / 2.0);
+                        ys.push((1.0 - ty) * output_size.h as f32 / 2.0);
+                    }
+                }
+                let min_x = xs.iter().copied().fold(f32::INFINITY, f32::min);
+                let max_x = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                let min_y = ys.iter().copied().fold(f32::INFINITY, f32::min);
+                let max_y = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+                for (actual, expected) in
+                    clip.into_iter()
+                        .zip([min_x, min_y, max_x - min_x, max_y - min_y])
+                {
+                    assert!(
+                        (actual - expected).abs() < 0.001,
+                        "{transform:?}, scale={scale}: {actual} != {expected}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

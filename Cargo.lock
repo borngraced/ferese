@@ -1638,6 +1638,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferese-shell"
+version = "0.1.0"
+dependencies = [
+ "ferese-protocols",
+ "jiff",
+ "libcosmic",
+ "wayland-client",
+]
+
+[[package]]
 name = "ferese-shell-control-probe"
 version = "0.1.0"
 dependencies = [
