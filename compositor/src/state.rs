@@ -124,6 +124,8 @@ pub struct Ferese {
     closing_windows: HashMap<WindowId, ClosingAnimation>,
     viewport_animations: HashMap<WorkspaceId, AnimatedValue>,
     scrolling_world_x: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
+    viewport_coupled_widths: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
+    pending_column_width_cycles: HashSet<WindowId>,
     pub focused_window: Option<WindowId>,
     column_width_presets: Vec<ColumnWidth>,
     gap_config: GapConfig,
@@ -430,6 +432,8 @@ impl Ferese {
             closing_windows: HashMap::new(),
             viewport_animations: HashMap::new(),
             scrolling_world_x: HashMap::new(),
+            viewport_coupled_widths: HashMap::new(),
+            pending_column_width_cycles: HashSet::new(),
             focused_window: None,
             column_width_presets: config.column_width_presets,
             gap_config: config.gap_config,
@@ -817,6 +821,8 @@ impl Ferese {
         self.closing_windows.remove(&id);
         self.window_rules_applied.remove(&id);
         self.scrolling_world_x.remove(&id);
+        self.viewport_coupled_widths.remove(&id);
+        self.pending_column_width_cycles.remove(&id);
         if let Err(error) = self.workspaces.remove_window(id) {
             tracing::error!(%error, ?id, "failed to remove window from layout");
         }
@@ -830,6 +836,7 @@ impl Ferese {
     pub fn relayout(&mut self) {
         self.arrange_layers();
         let mut previous_scrolling_world_x = std::mem::take(&mut self.scrolling_world_x);
+        let pending_column_width_cycles = std::mem::take(&mut self.pending_column_width_cycles);
         let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
         let constraints = self.window_constraints();
         let mut visible = HashSet::new();
@@ -873,17 +880,20 @@ impl Ferese {
                 }
             };
             let viewport_target = workspace.layout.viewport_x();
-            let viewport_current = viewport_target.map(|target| {
+            let viewport_motion = viewport_target.map(|target| {
                 let viewport = self
                     .viewport_animations
                     .entry(workspace_id)
                     .or_insert_with(|| AnimatedValue::new(target));
+                let target_changed = (viewport.target - target).abs() > 0.001;
                 viewport.retarget_preserving_motion(target);
                 if !self.animations_enabled {
                     viewport.snap();
                 }
-                viewport.current
+                (viewport.current, target_changed)
             });
+            let viewport_current = viewport_motion.map(|(current, _)| current);
+            let viewport_target_changed = viewport_motion.is_some_and(|(_, changed)| changed);
 
             for warning in layout.warnings {
                 tracing::warn!(
@@ -938,6 +948,7 @@ impl Ferese {
                     is_fullscreen,
                     is_floating,
                     scrolling,
+                    pending_column_width_cycles.contains(id) && viewport_target_changed,
                 ));
             }
         }
@@ -957,7 +968,7 @@ impl Ferese {
 
         let mut scrolling_world_x = HashMap::new();
 
-        for (window, id, rect, is_fullscreen, is_floating, scrolling) in placements {
+        for (window, id, rect, is_fullscreen, is_floating, scrolling, couple_width) in placements {
             let committed_size = client_size(&window);
             let geometry = self
                 .window_geometry
@@ -980,6 +991,28 @@ impl Ferese {
                 geometry.visual.current.x = animated_world_x.current - viewport_x;
                 geometry.visual.velocity.x = 0.0;
                 scrolling_world_x.insert(id, (workspace, animated_world_x));
+
+                let coupled = couple_width
+                    || self
+                        .viewport_coupled_widths
+                        .get(&id)
+                        .is_some_and(|(previous_workspace, _)| *previous_workspace == workspace);
+                if coupled {
+                    let width = self.viewport_coupled_widths.entry(id).or_insert_with(|| {
+                        (workspace, AnimatedValue::new(geometry.visual.current.width))
+                    });
+                    if width.0 != workspace {
+                        *width = (workspace, AnimatedValue::new(geometry.visual.current.width));
+                    }
+                    width.1.retarget_preserving_motion(rect.width);
+                    if !self.animations_enabled {
+                        width.1.snap();
+                    }
+                    geometry.visual.current.width = width.1.current;
+                    geometry.visual.velocity.width = width.1.velocity;
+                } else if pending_column_width_cycles.contains(&id) {
+                    self.viewport_coupled_widths.remove(&id);
+                }
             }
             let visual = geometry.visual.current;
             let location = (visual.x.round() as i32, visual.y.round() as i32);
@@ -1096,13 +1129,25 @@ impl Ferese {
             }
         }
 
+        let mut settled_coupled_widths = Vec::new();
         for (window, id) in windows {
             let Some(geometry) = self.window_geometry.get_mut(&id) else {
                 continue;
             };
 
+            let coupled_target = self
+                .viewport_coupled_widths
+                .get(&id)
+                .map(|(_, width)| width.target);
+            if coupled_target.is_some() {
+                geometry.visual.target.width = geometry.visual.current.width;
+                geometry.visual.velocity.width = 0.0;
+            }
             active_animation |=
                 geometry.advance(delta, self.spring_config, self.animations_enabled);
+            if let Some(target) = coupled_target {
+                geometry.visual.target.width = target;
+            }
             if let Some((workspace, world_x)) = self.scrolling_world_x.get_mut(&id)
                 && let Some(viewport) = self.viewport_animations.get(workspace)
             {
@@ -1113,6 +1158,20 @@ impl Ferese {
                 }
                 geometry.visual.current.x = world_x.current - viewport.current;
                 geometry.visual.velocity.x = 0.0;
+            }
+            if let Some((_, width)) = self.viewport_coupled_widths.get_mut(&id) {
+                let width_active = if self.animations_enabled {
+                    width.advance(delta, self.viewport_spring_config)
+                } else {
+                    width.snap();
+                    false
+                };
+                active_animation |= width_active;
+                geometry.visual.current.width = width.current;
+                geometry.visual.velocity.width = width.velocity;
+                if !width_active {
+                    settled_coupled_widths.push(id);
+                }
             }
             if let Some(size) = geometry.client.expire_wait(self.start_time.elapsed()) {
                 tracing::warn!(
@@ -1129,6 +1188,9 @@ impl Ferese {
                 (visual.x.round() as i32, visual.y.round() as i32),
                 false,
             );
+        }
+        for id in settled_coupled_widths {
+            self.viewport_coupled_widths.remove(&id);
         }
 
         active_animation
@@ -1320,7 +1382,10 @@ impl Ferese {
             .workspaces
             .cycle_column_width(window, &self.column_width_presets)
         {
-            Ok(true) => self.relayout(),
+            Ok(true) => {
+                self.pending_column_width_cycles.insert(window);
+                self.relayout();
+            }
             Ok(false) => {}
             Err(error) => tracing::error!(%error, ?window, "failed to cycle column width"),
         }
@@ -1714,5 +1779,27 @@ mod tests {
         assert!(animation.advance(Duration::from_millis(70)));
         assert!(animation.close_sent);
         assert!(!animation.advance(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn coupled_right_column_width_keeps_its_right_edge_stable() {
+        let spring = SpringConfig {
+            mass: 1.0,
+            stiffness: 320.0,
+            damping: 2.0 * 320.0_f64.sqrt(),
+            position_tolerance: 0.1,
+            velocity_tolerance: 0.1,
+        };
+        let mut width = AnimatedValue::new(980.0);
+        let mut viewport = AnimatedValue::new(495.0);
+        width.retarget_preserving_motion(485.0);
+        viewport.retarget_preserving_motion(0.0);
+
+        for _ in 0..120 {
+            width.advance(Duration::from_secs_f64(1.0 / 120.0), spring);
+            viewport.advance(Duration::from_secs_f64(1.0 / 120.0), spring);
+
+            assert!((width.current - viewport.current - 485.0).abs() < 0.001);
+        }
     }
 }

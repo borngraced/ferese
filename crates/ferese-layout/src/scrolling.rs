@@ -78,6 +78,7 @@ pub struct ScrollingLayout {
     default_width: ColumnWidth,
     focus_strategy: ViewportFocusStrategy,
     reveal_pending: bool,
+    width_cycle_pending: bool,
 }
 
 impl Default for ScrollingLayout {
@@ -90,6 +91,7 @@ impl Default for ScrollingLayout {
             default_width: ColumnWidth::default(),
             focus_strategy: ViewportFocusStrategy::Minimal,
             reveal_pending: false,
+            width_cycle_pending: false,
         }
     }
 }
@@ -281,6 +283,7 @@ impl ScrollingLayout {
             .map(|index| presets[(index + 1) % presets.len()])
             .unwrap_or(presets[0]);
         self.columns[column].width = next;
+        self.width_cycle_pending = next != current;
         Ok(next != current)
     }
 
@@ -461,7 +464,11 @@ impl ScrollingLayout {
             column_positions.push((next_column_x, width));
             next_column_x += width + inner;
         }
-        if self.reveal_pending {
+        if self.width_cycle_pending {
+            self.retarget_after_width_cycle(&column_positions, viewport_width);
+            self.width_cycle_pending = false;
+            self.reveal_pending = false;
+        } else if self.reveal_pending {
             self.reveal_active_column(&column_positions, viewport_width);
             self.reveal_pending = false;
         }
@@ -526,6 +533,27 @@ impl ScrollingLayout {
             self.viewport_x = start - comfort_start;
         } else if end > self.viewport_x + comfort_end {
             self.viewport_x = end - comfort_end;
+        }
+    }
+
+    fn retarget_after_width_cycle(&mut self, positions: &[(f64, f64)], viewport_width: f64) {
+        let Some(active) = self.active_column else {
+            return;
+        };
+        let Some(&(start, width)) = positions.get(active) else {
+            return;
+        };
+        let Some(&(last_start, last_width)) = positions.last() else {
+            return;
+        };
+        let strip_width = last_start + last_width;
+
+        if strip_width <= viewport_width {
+            self.viewport_x = 0.0;
+        } else if width >= viewport_width {
+            self.viewport_x = start;
+        } else {
+            self.viewport_x = (start + width - viewport_width).max(0.0);
         }
     }
 
@@ -984,6 +1012,79 @@ mod tests {
         assert_eq!(layout.columns()[0].width, ColumnWidth::Full);
         assert!(layout.cycle_column_width(window(1), &presets).unwrap());
         assert_eq!(layout.columns()[0].width, ColumnWidth::Proportion(0.5));
+    }
+
+    #[test]
+    fn left_column_zoom_pushes_and_restores_the_right_column() {
+        let (mut layout, bounds, gaps) = two_half_width_layout();
+        let presets = [ColumnWidth::Proportion(0.5), ColumnWidth::Full];
+
+        layout.focus(window(1)).unwrap();
+        layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(1)))
+            .unwrap();
+        layout.cycle_column_width(window(1), &presets).unwrap();
+        let zoomed = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(1)))
+            .unwrap();
+
+        assert_eq!(layout.viewport_x(), 0.0);
+        assert_eq!(zoomed.geometry[&window(1)].x, 10.0);
+        assert_eq!(zoomed.geometry[&window(1)].width, 980.0);
+        assert_eq!(zoomed.geometry[&window(2)].x, 1_000.0);
+
+        layout.cycle_column_width(window(1), &presets).unwrap();
+        let restored = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(1)))
+            .unwrap();
+
+        assert_eq!(layout.viewport_x(), 0.0);
+        assert_eq!(restored.geometry[&window(1)].x, 10.0);
+        assert_eq!(restored.geometry[&window(2)].x, 505.0);
+    }
+
+    #[test]
+    fn right_column_zoom_moves_left_neighbor_out_and_back() {
+        let (mut layout, bounds, gaps) = two_half_width_layout();
+        let presets = [ColumnWidth::Proportion(0.5), ColumnWidth::Full];
+
+        layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(2)))
+            .unwrap();
+        layout.cycle_column_width(window(2), &presets).unwrap();
+        let zoomed = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(2)))
+            .unwrap();
+
+        assert_eq!(layout.viewport_x(), 495.0);
+        assert_eq!(zoomed.geometry[&window(1)].x, -485.0);
+        assert_eq!(zoomed.geometry[&window(2)].x, 10.0);
+        assert_eq!(zoomed.geometry[&window(2)].width, 980.0);
+
+        layout.cycle_column_width(window(2), &presets).unwrap();
+        let restored = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(2)))
+            .unwrap();
+
+        assert_eq!(layout.viewport_x(), 0.0);
+        assert_eq!(restored.geometry[&window(1)].x, 10.0);
+        assert_eq!(restored.geometry[&window(2)].x, 505.0);
+    }
+
+    fn two_half_width_layout() -> (ScrollingLayout, Rect, GapConfig) {
+        let mut layout = ScrollingLayout::default();
+        layout.insert(window(1), None).unwrap();
+        layout.insert(window(2), Some(window(1))).unwrap();
+
+        (
+            layout,
+            Rect::new(0.0, 0.0, 1_000.0, 800.0),
+            GapConfig {
+                inner: 10.0,
+                outer: 10.0,
+                smart: false,
+            },
+        )
     }
 
     #[test]

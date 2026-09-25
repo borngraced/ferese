@@ -548,6 +548,49 @@ a new column, cycle standard widths, set a precise width, or redistribute
 heights within a column. Full-width columns occupy the viewport but do not alter
 neighboring column widths.
 
+### 5.1 Scrolling column zoom motion
+
+Cycling a scrolling column between a proportional width and full width is a
+layout morph, not a camera-scale effect. The focused column's visual allocation
+animates with the normal geometry spring while the scrolling viewport uses its
+dedicated critically damped spring. Ferese sends the final client size once and
+may scale and clip the latest valid buffer inside the animated allocation until
+the matching commit arrives.
+
+For two half-width columns, zooming the left column expands it in place and
+pushes the right column out through the right edge. Zooming the right column
+retargets the viewport so it expands into the viewport while the left column
+leaves through the left edge. Zoom-out continuously reverses these
+relationships: a right neighbor returns from the right and a left neighbor
+returns from the left. A neighbor remains a live window and MUST NOT fade,
+teleport, use a screenshot substitute, or receive an unrelated translation.
+
+The presented horizontal position remains the composition:
+
+```text
+screen_x = animated_world_x - animated_viewport_x
+```
+
+Width-cycle viewport targets expose the final scrolling layout. If the complete
+column strip fits, the viewport returns to the strip origin. A full-width
+focused column aligns to the usable viewport; a smaller focused column in a
+larger strip keeps as much real left-side context as fits. This retargeting is
+specific to column zoom. Pointer-driven and directional manual resize continue
+toward the existing viewport target and do not trigger comfort-region
+recentering.
+
+Zoom is interruptible. A reversed width cycle or focus change retargets active
+geometry and viewport springs from their current positions and velocities; it
+MUST NOT finish or snap through the previous target first. Hit testing follows
+presented geometry. Reduced motion shortens the settle while preserving spatial
+direction, and disabling animations snaps directly to the final layout.
+
+Tests MUST cover half-plus-half zoom and zoom-out for either focused column,
+neighbor exit and return direction, bounded focused-anchor drift, interrupted
+and reversed transitions, focus changes during motion, geometry/viewport
+composition, one final configure rather than per-frame configure traffic,
+animated hit testing, reduced motion, and animation-disabled behavior.
+
 Mode conversion is deterministic. Scrolling-to-tree conversion builds
 horizontal structure from columns and vertical structure from windows within a
 column, preserving reading order and size proportions. Tree-to-scrolling
