@@ -9,4 +9,6 @@ rust-version = "1.93"
 ferese-protocols = { path = "../../crates/ferese-protocols", default-features = false, features = ["client"] }
 jiff.workspace = true
 libcosmic.workspace = true
+serde.workspace = true
+toml.workspace = true
 wayland-client.workspace = true

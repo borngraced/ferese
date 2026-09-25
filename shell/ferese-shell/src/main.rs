@@ -1,3 +1,4 @@
+mod config;
 mod control;
 
 use std::time::Duration;
@@ -11,10 +12,11 @@ use cosmic::iced::platform_specific::{
     shell::commands::layer_surface::{Anchor, KeyboardInteractivity, Layer},
 };
 use cosmic::iced::{
-    Background, Border, Color, Event, Length, Shadow, Subscription, Vector, window,
+    Background, Border, Color, ContentFit, Event, Length, Limits, Shadow, Subscription, Vector,
+    window,
 };
 use cosmic::theme;
-use cosmic::widget::{button, container, row, text};
+use cosmic::widget::{button, container, image, row, text};
 use ferese_protocols::effects::v1::client::{
     ferese_effects_manager_v1::FereseEffectsManagerV1,
     ferese_surface_effects_v1::{self, FereseSurfaceEffectsV1},
@@ -26,11 +28,12 @@ use wayland_client::{
     protocol::{wl_registry, wl_surface},
 };
 
+use crate::config::{ShellConfig, WallpaperMode};
 use crate::control::{ShellControl, ShellSnapshot};
 
 const APP_ID: &str = "dev.ferese.Shell";
 const BAR_HEIGHT: u32 = 32;
-const BAR_MARGIN: i32 = 8;
+const BAR_MARGIN: i32 = 4;
 const EXCLUSIVE_ZONE: i32 = BAR_HEIGHT as i32;
 const BAR_TEXT_SIZE: u16 = (BAR_HEIGHT * 3 / 8) as u16;
 const BAR_ICON_SIZE: u16 = (BAR_HEIGHT / 2) as u16;
@@ -42,18 +45,25 @@ const DOT_MARKER_SIZE: f32 = BAR_HEIGHT as f32 * 0.1875;
 const EMPTY_MARKER_SIZE: f32 = BAR_HEIGHT as f32 * 0.125;
 
 fn main() -> cosmic::iced::Result {
-    let settings = Settings::default()
+    let config = config::load();
+    let mut settings = Settings::default()
         .no_main_window(true)
         .client_decorations(false)
         .transparent(true)
         .is_daemon(true);
+    if let Some(font_family) = config.font_family.clone() {
+        let font_family = Box::leak(font_family.into_boxed_str());
 
-    cosmic::app::run::<FereseShell>(settings, ())
+        settings = settings.default_font(cosmic::font::Font::with_name(font_family));
+    }
+
+    cosmic::app::run::<FereseShell>(settings, config)
 }
 
 struct FereseShell {
     core: Core,
-    surface_id: window::Id,
+    bar_surface_id: window::Id,
+    config: ShellConfig,
     control: Option<ShellControl>,
     snapshot: ShellSnapshot,
     clock: String,
@@ -70,7 +80,7 @@ enum Message {
 
 impl cosmic::Application for FereseShell {
     type Executor = cosmic::executor::Default;
-    type Flags = ();
+    type Flags = ShellConfig;
     type Message = Message;
 
     const APP_ID: &'static str = APP_ID;
@@ -83,11 +93,13 @@ impl cosmic::Application for FereseShell {
         &mut self.core
     }
 
-    fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Self::Message>) {
-        let surface_id = window::Id::unique();
+    fn init(core: Core, config: Self::Flags) -> (Self, Task<Self::Message>) {
+        let bar_surface_id = window::Id::unique();
+        let wallpaper_surface_id = window::Id::unique();
         let app = Self {
             core,
-            surface_id,
+            bar_surface_id,
+            config,
             control: ShellControl::connect()
                 .map_err(|error| {
                     eprintln!("ferese-shell: shell control unavailable: {error}");
@@ -97,10 +109,26 @@ impl cosmic::Application for FereseShell {
             clock: current_time(),
             effects: None,
         };
-        let action = cosmic::surface::action::app_layer_shell::<Self>(
+        let wallpaper_action = cosmic::surface::action::app_layer_shell::<Self>(
             |_| Default::default(),
             move |_| SctkLayerSurfaceSettings {
-                id: surface_id,
+                id: wallpaper_surface_id,
+                layer: Layer::Background,
+                keyboard_interactivity: KeyboardInteractivity::None,
+                input_zone: Some(Vec::new()),
+                anchor: Anchor::TOP | Anchor::RIGHT | Anchor::BOTTOM | Anchor::LEFT,
+                output: IcedOutput::Active,
+                namespace: "ferese-shell-wallpaper".to_owned(),
+                size: Some((None, None)),
+                size_limits: Limits::NONE,
+                ..Default::default()
+            },
+            Some(Box::new(Self::view_wallpaper)),
+        );
+        let bar_action = cosmic::surface::action::app_layer_shell::<Self>(
+            |_| Default::default(),
+            move |_| SctkLayerSurfaceSettings {
+                id: bar_surface_id,
                 layer: Layer::Top,
                 keyboard_interactivity: KeyboardInteractivity::None,
                 anchor: Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
@@ -113,13 +141,18 @@ impl cosmic::Application for FereseShell {
                     left: 10,
                 },
                 size: Some((None, Some(BAR_HEIGHT))),
+                size_limits: Limits::NONE,
                 exclusive_zone: EXCLUSIVE_ZONE,
                 ..Default::default()
             },
             Some(Box::new(Self::view_layer)),
         );
 
-        (app, cosmic::task::message(cosmic::Action::Surface(action)))
+        let tasks = [wallpaper_action, bar_action]
+            .map(cosmic::Action::Surface)
+            .map(cosmic::task::message);
+
+        (app, Task::batch(tasks))
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
@@ -173,12 +206,14 @@ impl cosmic::Application for FereseShell {
 impl FereseShell {
     fn handle_event(&mut self, event: Event, id: window::Id) -> Task<Message> {
         match event {
-            Event::Window(window::Event::Closed) if id == self.surface_id => cosmic::iced::exit(),
+            Event::Window(window::Event::Closed) if id == self.bar_surface_id => {
+                cosmic::iced::exit()
+            }
             Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(
                 _,
                 surface,
                 frame_id,
-            ))) if frame_id == self.surface_id => {
+            ))) if frame_id == self.bar_surface_id => {
                 self.attach_effects(&surface);
                 Task::none()
             }
@@ -186,7 +221,7 @@ impl FereseShell {
                 _,
                 surface,
                 layer_id,
-            ))) if layer_id == self.surface_id => {
+            ))) if layer_id == self.bar_surface_id => {
                 self.attach_effects(&surface);
                 Task::none()
             }
@@ -290,6 +325,26 @@ impl FereseShell {
             .class(theme::Container::custom(bar_style))
             .into()
     }
+
+    fn view_wallpaper(&self) -> Element<'_, cosmic::Action<Message>> {
+        let Some(path) = self.config.wallpaper.path.as_ref() else {
+            return container(text(""))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .class(theme::Container::custom(wallpaper_fallback_style))
+                .into();
+        };
+        let content_fit = match self.config.wallpaper.mode {
+            WallpaperMode::Fill => ContentFit::Cover,
+            WallpaperMode::Fit => ContentFit::Contain,
+        };
+
+        image(path.clone())
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .content_fit(content_fit)
+            .into()
+    }
 }
 
 fn workspace_indicator(active: bool, occupied: bool) -> Element<'static, cosmic::Action<Message>> {
@@ -387,6 +442,15 @@ fn bar_style(_theme: &cosmic::Theme) -> container::Style {
             blur_radius: 18.0,
         },
         snap: true,
+    }
+}
+
+fn wallpaper_fallback_style(_theme: &cosmic::Theme) -> container::Style {
+    let [red, green, blue] = config::default_background();
+
+    container::Style {
+        background: Some(Background::Color(Color::from_rgb8(red, green, blue))),
+        ..container::Style::default()
     }
 }
 

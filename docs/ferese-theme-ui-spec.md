@@ -132,6 +132,12 @@ image fill
 image fit
 ```
 
+```toml
+[theme.background]
+path = "/path/to/wallpaper.png"
+mode = "fill" # fill or fit
+```
+
 Ferese SHOULD NOT globally blur the wallpaper.
 
 Optional restrained adjustments MAY include:
@@ -235,7 +241,7 @@ base_unit = 8.0
 window_radius = 14.0
 
 top_bar_height = 32.0
-top_bar_margin_top = 8.0
+top_bar_margin_top = 4.0
 top_bar_margin_horizontal = 10.0
 top_bar_radius = 16.0
 
@@ -256,6 +262,11 @@ Only the top bar consumes persistent shell space.
 
 ## 10. Typography
 
+```toml
+[theme.typography]
+font_family = "sans-serif"
+```
+
 Initial roles:
 
 ```text
@@ -268,6 +279,10 @@ display       22-28 px semibold
 ```
 
 Use the system UI sans-serif by default.
+
+The configured family applies consistently to shell text. Icon assets use the
+theme icon set and are sized from the same scale tokens rather than text glyph
+metrics.
 
 Clocks and changing numeric values SHOULD use tabular numerals where available.
 
