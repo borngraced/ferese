@@ -749,6 +749,19 @@ impl Ferese {
                         state.states.unset(xdg_toplevel::State::Fullscreen)
                     };
 
+                    let tiled = !is_floating && !is_fullscreen;
+                    let tiled_changed = if tiled {
+                        state.states.set(xdg_toplevel::State::TiledLeft)
+                            | state.states.set(xdg_toplevel::State::TiledRight)
+                            | state.states.set(xdg_toplevel::State::TiledTop)
+                            | state.states.set(xdg_toplevel::State::TiledBottom)
+                    } else {
+                        state.states.unset(xdg_toplevel::State::TiledLeft)
+                            | state.states.unset(xdg_toplevel::State::TiledRight)
+                            | state.states.unset(xdg_toplevel::State::TiledTop)
+                            | state.states.unset(xdg_toplevel::State::TiledBottom)
+                    };
+
                     let decoration_mode = if is_floating && !is_fullscreen {
                         DecorationMode::ClientSide
                     } else {
@@ -757,7 +770,7 @@ impl Ferese {
                     let decoration_changed = state.decoration_mode != Some(decoration_mode);
                     state.decoration_mode = Some(decoration_mode);
 
-                    fullscreen_changed || decoration_changed
+                    fullscreen_changed || tiled_changed || decoration_changed
                 });
 
                 if requested_size.is_some() || state_changed {
