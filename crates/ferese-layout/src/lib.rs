@@ -2,6 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
+mod scrolling;
+
+pub use scrolling::{Column, ColumnWidth, ScrollingLayout};
+
 const MIN_SPLIT_RATIO: f64 = 0.05;
 const MAX_SPLIT_RATIO: f64 = 0.95;
 
