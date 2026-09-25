@@ -26,7 +26,9 @@ use smithay::{
     output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::{
         calloop::EventLoop,
-        drm::control::{Device as ControlDevice, Mode as DrmMode, ModeTypeFlags, connector, crtc},
+        drm::control::{
+            Device as ControlDevice, Mode as DrmMode, ModeTypeFlags, connector, crtc, property,
+        },
         input::Libinput,
         rustix::fs::OFlags,
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind,
@@ -619,7 +621,8 @@ fn create_direct_output(
     crtc: crtc::Handle,
     mode: DrmMode,
 ) -> Result<DirectOutput, Box<dyn Error>> {
-    let (output, global) = create_output(state, &connector, mode);
+    let identity = connector_identity(drm, &connector);
+    let (output, global) = create_output(state, &connector, mode, identity);
     let drm_surface = drm.create_surface(crtc, mode, &[connector.handle()])?;
     let allocator = GbmAllocator::new(
         gbm.clone(),
@@ -649,9 +652,9 @@ fn create_output(
     state: &mut Ferese,
     connector: &connector::Info,
     mode: DrmMode,
+    identity: String,
 ) -> (Output, GlobalId) {
     let name = connector.to_string();
-    let identity = format!("drm:{name}");
     let physical_size = connector.size().unwrap_or((0, 0));
     let output = Output::new(
         name,
@@ -682,6 +685,40 @@ fn create_output(
     state.space.map_output(&output, (x, 0));
     state.register_output(&output, identity);
     (output, global)
+}
+
+fn connector_identity(drm: &DrmDevice, connector: &connector::Info) -> String {
+    let edid = drm
+        .get_properties(connector.handle())
+        .ok()
+        .and_then(|properties| {
+            properties.iter().find_map(|(handle, raw)| {
+                let info = drm.get_property(*handle).ok()?;
+                if info.name().to_bytes() != b"EDID" {
+                    return None;
+                }
+                match info.value_type().convert_value(*raw) {
+                    property::Value::Blob(blob) if blob != 0 => drm.get_property_blob(blob).ok(),
+                    _ => None,
+                }
+            })
+        });
+
+    match edid {
+        Some(edid) if !edid.is_empty() => {
+            format!("drm:{}:{:016x}", connector, stable_hash(&edid))
+        }
+        _ => format!("drm:{connector}"),
+    }
+}
+
+fn stable_hash(bytes: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    bytes.iter().fold(FNV_OFFSET, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
+    })
 }
 
 impl DirectBackendState {
@@ -749,6 +786,11 @@ mod tests {
     use std::time::SystemTime;
 
     use super::*;
+
+    #[test]
+    fn connector_identity_hash_is_stable() {
+        assert_eq!(stable_hash(b"hello"), 0xa430_d846_80aa_bd0b);
+    }
 
     #[test]
     fn presentation_clock_uses_measured_monotonic_deltas() {
