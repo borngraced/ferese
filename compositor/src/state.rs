@@ -68,6 +68,7 @@ use smithay::{
         viewporter::ViewporterState,
         xdg_activation::XdgActivationState,
         xdg_foreign::XdgForeignState,
+        xdg_toplevel_icon::XdgToplevelIconManager,
     },
 };
 
@@ -126,6 +127,7 @@ pub struct Ferese {
     pub xdg_activation_state: XdgActivationState,
     pub xdg_foreign_state: XdgForeignState,
     pub xdg_shell_state: XdgShellState,
+    pub xdg_toplevel_icon_manager: XdgToplevelIconManager,
 }
 
 pub struct RuntimeConfig {
@@ -321,6 +323,7 @@ impl Ferese {
         let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
         let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
         let xdg_foreign_state = XdgForeignState::new::<Self>(&display_handle);
+        let xdg_toplevel_icon_manager = XdgToplevelIconManager::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&display_handle, "ferese-winit");
         seat.add_keyboard(Default::default(), 200, 25)?;
@@ -388,6 +391,7 @@ impl Ferese {
             xdg_activation_state,
             xdg_foreign_state,
             xdg_shell_state,
+            xdg_toplevel_icon_manager,
         })
     }
 

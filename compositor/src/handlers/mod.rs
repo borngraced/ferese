@@ -37,6 +37,7 @@ use smithay::{
         },
         tablet_manager::TabletSeatHandler,
         xdg_foreign::{XdgForeignHandler, XdgForeignState},
+        xdg_toplevel_icon::XdgToplevelIconHandler,
     },
 };
 
@@ -233,6 +234,8 @@ impl XdgForeignHandler for Ferese {
     }
 }
 
+impl XdgToplevelIconHandler for Ferese {}
+
 smithay::delegate_compositor!(Ferese);
 smithay::delegate_cursor_shape!(Ferese);
 smithay::delegate_data_device!(Ferese);
@@ -257,3 +260,4 @@ smithay::delegate_xdg_activation!(Ferese);
 smithay::delegate_xdg_decoration!(Ferese);
 smithay::delegate_xdg_foreign!(Ferese);
 smithay::delegate_xdg_shell!(Ferese);
+smithay::delegate_xdg_toplevel_icon!(Ferese);
