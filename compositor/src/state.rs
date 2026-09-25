@@ -85,6 +85,9 @@ pub struct Ferese {
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
     pub focused_window: Option<WindowId>,
     column_width_presets: Vec<ColumnWidth>,
+    animations_enabled: bool,
+    animation_speed: f64,
+    spring_config: SpringConfig,
     pub cursor_status: CursorImageStatus,
     pub(crate) cursor_theme: xcursor::CursorTheme,
     pub(crate) named_cursors: HashMap<CursorIcon, crate::cursor::NamedCursor>,
@@ -123,6 +126,15 @@ pub struct Ferese {
     pub xdg_activation_state: XdgActivationState,
     pub xdg_foreign_state: XdgForeignState,
     pub xdg_shell_state: XdgShellState,
+}
+
+pub struct RuntimeConfig {
+    pub layout_mode: LayoutMode,
+    pub default_column_width: ColumnWidth,
+    pub column_width_presets: Vec<ColumnWidth>,
+    pub animations_enabled: bool,
+    pub animation_speed: f64,
+    pub spring_config: SpringConfig,
 }
 
 impl Ferese {
@@ -272,9 +284,7 @@ impl Ferese {
     pub fn new(
         event_loop: &mut EventLoop<'static, Self>,
         display: Display<Self>,
-        default_layout_mode: LayoutMode,
-        default_column_width: ColumnWidth,
-        column_width_presets: Vec<ColumnWidth>,
+        config: RuntimeConfig,
     ) -> Result<Self, Box<dyn Error>> {
         let display_handle = display.handle();
         crate::handlers::screencopy::init_global(&display_handle);
@@ -323,14 +333,17 @@ impl Ferese {
             display_handle,
             loop_signal: event_loop.get_signal(),
             space: Space::default(),
-            workspaces: WorkspaceSet::new(default_layout_mode, default_column_width),
+            workspaces: WorkspaceSet::new(config.layout_mode, config.default_column_width),
             output_workspaces: OutputWorkspaceMap::default(),
             output_ids: HashMap::new(),
             output_identity_ids: HashMap::new(),
             window_ids: HashMap::new(),
             window_geometry: HashMap::new(),
             focused_window: None,
-            column_width_presets,
+            column_width_presets: config.column_width_presets,
+            animations_enabled: config.animations_enabled,
+            animation_speed: config.animation_speed,
+            spring_config: config.spring_config,
             cursor_status: CursorImageStatus::default_named(),
             cursor_theme,
             named_cursors,
@@ -733,6 +746,9 @@ impl Ferese {
                 .entry(id)
                 .or_insert_with(|| WindowGeometry::new(rect, committed_size));
             let requested_size = geometry.set_logical_target(rect, now);
+            if !self.animations_enabled {
+                geometry.advance(Duration::ZERO, self.spring_config, false);
+            }
             let visual = geometry.visual.current;
             let location = (visual.x.round() as i32, visual.y.round() as i32);
 
@@ -805,6 +821,7 @@ impl Ferese {
     }
 
     fn advance_animations_by(&mut self, delta: std::time::Duration) -> bool {
+        let delta = delta.mul_f64(self.animation_speed);
         let windows = self
             .space
             .elements()
@@ -822,7 +839,8 @@ impl Ferese {
                 continue;
             };
 
-            active_animation |= geometry.advance(delta, SpringConfig::default(), true);
+            active_animation |=
+                geometry.advance(delta, self.spring_config, self.animations_enabled);
             if let Some(size) = geometry.client.expire_wait(self.start_time.elapsed()) {
                 tracing::warn!(
                     ?id,

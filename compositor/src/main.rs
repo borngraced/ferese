@@ -12,7 +12,7 @@ mod winit;
 use std::{error::Error, io, process::Command};
 
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
-pub use state::Ferese;
+pub use state::{Ferese, RuntimeConfig};
 use tracing::{info, warn};
 
 use crate::backends::LaunchConfig;
@@ -26,13 +26,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config = Config::load()?;
     let mut event_loop = EventLoop::try_new()?;
     let display = Display::new()?;
-    let mut state = Ferese::new(
-        &mut event_loop,
-        display,
-        config.layout_mode(),
-        config.default_column_width()?,
-        config.width_presets()?,
-    )?;
+    let runtime = RuntimeConfig {
+        layout_mode: config.layout_mode(),
+        default_column_width: config.default_column_width()?,
+        column_width_presets: config.width_presets()?,
+        animations_enabled: config.animations_enabled(),
+        animation_speed: config.animation_speed()?,
+        spring_config: config.spring_config()?,
+    };
+    let mut state = Ferese::new(&mut event_loop, display, runtime)?;
     backends::init(launch.backend, &mut event_loop, &mut state)?;
 
     // SAFETY: the backend has already read the host display and Ferese is

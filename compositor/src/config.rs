@@ -5,6 +5,7 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+use ferese_animation::SpringConfig;
 use ferese_core::LayoutMode;
 use ferese_layout::ColumnWidth;
 use serde::Deserialize;
@@ -12,9 +13,54 @@ use serde::Deserialize;
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
     #[serde(default)]
+    animations: AnimationsConfig,
+    #[serde(default)]
     layout: LayoutConfig,
     #[serde(default)]
     scrolling: ScrollingConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnimationsConfig {
+    #[serde(default = "enabled_by_default")]
+    enabled: bool,
+    #[serde(default)]
+    reduced_motion: bool,
+    #[serde(default = "default_animation_speed")]
+    speed: f64,
+    #[serde(default)]
+    spring: SpringSettings,
+}
+
+impl Default for AnimationsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            reduced_motion: false,
+            speed: 1.0,
+            spring: SpringSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SpringSettings {
+    #[serde(default = "default_spring_mass")]
+    mass: f64,
+    #[serde(default = "default_spring_stiffness")]
+    stiffness: f64,
+    #[serde(default = "default_spring_damping")]
+    damping: f64,
+}
+
+impl Default for SpringSettings {
+    fn default() -> Self {
+        Self {
+            mass: default_spring_mass(),
+            stiffness: default_spring_stiffness(),
+            damping: default_spring_damping(),
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -57,6 +103,10 @@ pub enum ConfigError {
         field: &'static str,
         value: String,
     },
+    InvalidAnimationValue {
+        field: &'static str,
+        value: f64,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -72,6 +122,9 @@ impl fmt::Display for ConfigError {
                 formatter,
                 "invalid scrolling.{field} {value}; expected a positive number or \"full\""
             ),
+            Self::InvalidAnimationValue { field, value } => {
+                write!(formatter, "invalid animations.{field} value {value}")
+            }
         }
     }
 }
@@ -81,7 +134,7 @@ impl Error for ConfigError {
         match self {
             Self::Read { source, .. } => Some(source),
             Self::Parse { source, .. } => Some(source),
-            Self::InvalidColumnWidth { .. } => None,
+            Self::InvalidColumnWidth { .. } | Self::InvalidAnimationValue { .. } => None,
         }
     }
 }
@@ -133,6 +186,62 @@ impl Config {
             .map(|value| parse_column_width(value, "width_presets"))
             .collect()
     }
+
+    pub fn animations_enabled(&self) -> bool {
+        self.animations.enabled && !self.animations.reduced_motion
+    }
+
+    pub fn animation_speed(&self) -> Result<f64, ConfigError> {
+        positive_animation_value(self.animations.speed, "speed")
+    }
+
+    pub fn spring_config(&self) -> Result<SpringConfig, ConfigError> {
+        let mass = positive_animation_value(self.animations.spring.mass, "spring.mass")?;
+        let stiffness =
+            positive_animation_value(self.animations.spring.stiffness, "spring.stiffness")?;
+        let damping = self.animations.spring.damping;
+        if !damping.is_finite() || damping < 0.0 {
+            return Err(ConfigError::InvalidAnimationValue {
+                field: "spring.damping",
+                value: damping,
+            });
+        }
+
+        Ok(SpringConfig {
+            mass,
+            stiffness,
+            damping,
+            ..SpringConfig::default()
+        })
+    }
+}
+
+fn positive_animation_value(value: f64, field: &'static str) -> Result<f64, ConfigError> {
+    if value.is_finite() && value > 0.0 {
+        Ok(value)
+    } else {
+        Err(ConfigError::InvalidAnimationValue { field, value })
+    }
+}
+
+const fn enabled_by_default() -> bool {
+    true
+}
+
+const fn default_animation_speed() -> f64 {
+    1.0
+}
+
+const fn default_spring_mass() -> f64 {
+    1.0
+}
+
+const fn default_spring_stiffness() -> f64 {
+    700.0
+}
+
+const fn default_spring_damping() -> f64 {
+    53.0
 }
 
 fn parse_column_width(
@@ -221,5 +330,33 @@ mod tests {
 
         assert!(zero.default_column_width().is_err());
         assert!(unknown.default_column_width().is_err());
+    }
+
+    #[test]
+    fn parses_animation_policy_and_reduced_motion() {
+        let config = parse(
+            "[animations]\nspeed = 1.5\nreduced_motion = true\n\n[animations.spring]\nmass = 2.0\nstiffness = 500.0\ndamping = 40.0",
+        );
+
+        assert!(!config.animations_enabled());
+        assert_eq!(config.animation_speed().unwrap(), 1.5);
+        assert_eq!(
+            config.spring_config().unwrap(),
+            SpringConfig {
+                mass: 2.0,
+                stiffness: 500.0,
+                damping: 40.0,
+                ..SpringConfig::default()
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_animation_numbers() {
+        let speed = parse("[animations]\nspeed = 0.0");
+        let damping = parse("[animations.spring]\ndamping = -1.0");
+
+        assert!(speed.animation_speed().is_err());
+        assert!(damping.spring_config().is_err());
     }
 }
