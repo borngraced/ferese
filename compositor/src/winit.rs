@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     error::Error,
     time::{Duration, Instant},
 };
@@ -6,26 +7,32 @@ use std::{
 use smithay::{
     backend::{
         renderer::{
-            Color32F, Frame, ImportDma, Renderer,
+            Color32F, ErasedContextId, Frame, ImportDma, Renderer,
             damage::OutputDamageTracker,
             element::{
-                AsRenderElements, Kind as RenderElementKind, RenderElement,
+                AsRenderElements, Element, Id, Kind as RenderElementKind, RenderElement,
+                UnderlyingStorage,
                 memory::MemoryRenderBufferRenderElement,
                 render_elements,
-                solid::{SolidColorBuffer, SolidColorRenderElement},
-                surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
+                surface::{
+                    WaylandSurfaceRenderElement, WaylandSurfaceTexture,
+                    render_elements_from_surface_tree,
+                },
                 utils::{
                     ConstrainAlign, ConstrainScaleBehavior, CropRenderElement, Relocate,
-                    RelocateRenderElement, RescaleRenderElement,
+                    RelocateRenderElement, RescaleRenderElement, constrain_render_elements,
                 },
             },
-            gles::GlesRenderer,
-            utils::draw_render_elements,
+            gles::{
+                GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, Uniform,
+                UniformName, UniformType, element::PixelShaderElement,
+            },
+            utils::{CommitCounter, DamageSet, OpaqueRegions, draw_render_elements},
         },
         winit::{self, WinitEvent},
     },
     desktop::{
-        LayerSurface, layer_map_for_output,
+        LayerSurface, PopupManager, layer_map_for_output,
         space::{ConstrainBehavior, ConstrainReference, constrain_space_element},
         utils::OutputPresentationFeedback,
     },
@@ -33,7 +40,10 @@ use smithay::{
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::calloop::EventLoop,
     reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind as PresentationKind,
-    utils::{Clock, Logical, Monotonic, Physical, Point, Rectangle, Transform},
+    utils::{
+        Buffer, Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale as RenderScale,
+        Transform,
+    },
     wayland::shell::wlr_layer::Layer,
     wayland::{compositor::with_states, presentation::Refresh},
 };
@@ -44,27 +54,230 @@ type SurfaceRenderElement = CropRenderElement<
     RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
 >;
 
+type WindowRenderElement =
+    CropRenderElement<RelocateRenderElement<RescaleRenderElement<WindowContentRenderElement>>>;
+
 type MemoryRenderElement = CropRenderElement<
     RelocateRenderElement<RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>>,
 >;
 
 render_elements! {
     pub(crate) AnimatedWindowRenderElement<=GlesRenderer>;
+    Window=WindowRenderElement,
     Surface=SurfaceRenderElement,
     Memory=MemoryRenderElement,
-    Solid=SolidColorRenderElement,
+    Border=PixelShaderElement,
+}
+
+render_elements! {
+    WindowContentRenderElement<=GlesRenderer>;
+    Rounded=RoundedSurfaceRenderElement,
+    Popup=WaylandSurfaceRenderElement<GlesRenderer>,
+}
+
+const ROUNDED_TEXTURE_SHADER: &str = r#"#version 100
+
+//_DEFINES_
+
+#if defined(EXTERNAL)
+#extension GL_OES_EGL_image_external : require
+#endif
+
+precision mediump float;
+#if defined(EXTERNAL)
+uniform samplerExternalOES tex;
+#else
+uniform sampler2D tex;
+#endif
+
+uniform float alpha;
+uniform vec4 clip_rect;
+uniform float radius;
+varying vec2 v_coords;
+
+#if defined(DEBUG_FLAGS)
+uniform float tint;
+#endif
+
+void main() {
+    vec4 color = texture2D(tex, v_coords);
+
+#if defined(NO_ALPHA)
+    color = vec4(color.rgb, 1.0) * alpha;
+#else
+    color = color * alpha;
+#endif
+
+    vec2 point = gl_FragCoord.xy - clip_rect.xy;
+    vec2 half_size = clip_rect.zw * 0.5;
+    vec2 distance = abs(point - half_size) - (half_size - vec2(radius));
+    float signed_distance = length(max(distance, 0.0))
+        + min(max(distance.x, distance.y), 0.0)
+        - radius;
+    float coverage = 1.0 - smoothstep(-0.5, 0.5, signed_distance);
+    color *= coverage;
+
+#if defined(DEBUG_FLAGS)
+    if (tint == 1.0)
+        color = vec4(0.0, 0.2, 0.0, 0.2) + color * 0.8;
+#endif
+
+    gl_FragColor = color;
+}
+"#;
+
+const ROUNDED_BORDER_SHADER: &str = r#"
+precision mediump float;
+
+uniform float alpha;
+uniform vec4 clip_rect;
+uniform float radius;
+uniform float border_width;
+uniform vec4 border_color;
+varying vec2 v_coords;
+
+#if defined(DEBUG_FLAGS)
+uniform float tint;
+#endif
+
+void main() {
+    vec2 point = gl_FragCoord.xy - clip_rect.xy;
+    vec2 half_size = clip_rect.zw * 0.5;
+    vec2 distance = abs(point - half_size) - (half_size - vec2(radius));
+    float signed_distance = length(max(distance, 0.0))
+        + min(max(distance.x, distance.y), 0.0)
+        - radius;
+    float outer_coverage = 1.0 - smoothstep(-0.5, 0.5, signed_distance);
+
+    vec2 inner_half_size = max(half_size - vec2(border_width), vec2(0.0));
+    float inner_radius = max(radius - border_width, 0.0);
+    vec2 inner_distance = abs(point - half_size)
+        - (inner_half_size - vec2(inner_radius));
+    float inner_signed_distance = length(max(inner_distance, 0.0))
+        + min(max(inner_distance.x, inner_distance.y), 0.0)
+        - inner_radius;
+    float inner_coverage = 1.0 - smoothstep(-0.5, 0.5, inner_signed_distance);
+    float coverage = max(outer_coverage - inner_coverage, 0.0);
+    vec4 color = vec4(border_color.rgb * border_color.a, border_color.a)
+        * coverage * alpha;
+
+#if defined(DEBUG_FLAGS)
+    if (tint == 1.0)
+        color = vec4(0.0, 0.2, 0.0, 0.2) + color * 0.8;
+#endif
+
+    gl_FragColor = color;
+}
+"#;
+
+#[derive(Clone, Debug)]
+pub(crate) struct RoundedClipPrograms {
+    texture: GlesTexProgram,
+    border: GlesPixelProgram,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct BorderParameters {
+    geometry: Rectangle<i32, Logical>,
+    clip_rect: [f32; 4],
+    radius: f32,
+    width: f32,
+    color: [f32; 4],
 }
 
 #[derive(Debug)]
-pub(crate) struct WindowBorderBuffers {
-    edges: [SolidColorBuffer; 4],
+struct CachedBorder {
+    element: PixelShaderElement,
+    parameters: BorderParameters,
 }
 
-impl Default for WindowBorderBuffers {
-    fn default() -> Self {
-        Self {
-            edges: std::array::from_fn(|_| SolidColorBuffer::default()),
+#[derive(Debug, Default)]
+pub(crate) struct WindowBorderBuffers {
+    contexts: HashMap<ErasedContextId, CachedBorder>,
+}
+
+#[derive(Debug)]
+struct RoundedSurfaceRenderElement {
+    inner: WaylandSurfaceRenderElement<GlesRenderer>,
+    program: GlesTexProgram,
+    clip_rect: [f32; 4],
+    radius: f32,
+}
+
+impl Element for RoundedSurfaceRenderElement {
+    fn id(&self) -> &Id {
+        self.inner.id()
+    }
+
+    fn current_commit(&self) -> CommitCounter {
+        self.inner.current_commit()
+    }
+
+    fn geometry(&self, scale: RenderScale<f64>) -> Rectangle<i32, Physical> {
+        self.inner.geometry(scale)
+    }
+
+    fn transform(&self) -> Transform {
+        self.inner.transform()
+    }
+
+    fn src(&self) -> Rectangle<f64, Buffer> {
+        self.inner.src()
+    }
+
+    fn damage_since(
+        &self,
+        scale: RenderScale<f64>,
+        commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
+        self.inner.damage_since(scale, commit)
+    }
+
+    fn opaque_regions(&self, _scale: RenderScale<f64>) -> OpaqueRegions<i32, Physical> {
+        OpaqueRegions::default()
+    }
+
+    fn alpha(&self) -> f32 {
+        self.inner.alpha()
+    }
+
+    fn kind(&self) -> RenderElementKind {
+        self.inner.kind()
+    }
+}
+
+impl RenderElement<GlesRenderer> for RoundedSurfaceRenderElement {
+    fn draw(
+        &self,
+        frame: &mut GlesFrame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+    ) -> Result<(), GlesError> {
+        match self.inner.texture() {
+            WaylandSurfaceTexture::Texture(texture) => frame.render_texture_from_to(
+                texture,
+                src,
+                dst,
+                damage,
+                opaque_regions,
+                self.transform(),
+                self.alpha(),
+                Some(&self.program),
+                &[
+                    Uniform::new("clip_rect", self.clip_rect),
+                    Uniform::new("radius", self.radius),
+                ],
+            ),
+            WaylandSurfaceTexture::SolidColor(_) => {
+                self.inner.draw(frame, src, dst, damage, opaque_regions)
+            }
         }
+    }
+
+    fn underlying_storage(&self, renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
+        self.inner.underlying_storage(renderer)
     }
 }
 
@@ -256,6 +469,7 @@ fn output_elements(
         return Vec::new();
     };
     let scale = output.current_scale().fractional_scale();
+    let rounded_clip_program = rounded_clip_program(state, renderer);
 
     let mut elements = if include_cursor {
         cursor_elements(state, renderer, output_geometry, scale)
@@ -298,26 +512,61 @@ fn output_elements(
                 .into(),
         );
 
-        if !fullscreen {
-            elements.extend(window_border_elements(state, id, constrain, scale));
+        if !fullscreen && let Some(programs) = rounded_clip_program.clone() {
+            let focused = state.focused_window == Some(id);
+            let border_width = if focused {
+                state.theme_settings.focus_ring_width
+            } else {
+                state.theme_settings.border_width
+            };
+            let border_color = if focused {
+                state.theme_settings.accent_color.0
+            } else {
+                state.theme_settings.border_color.0
+            };
+
+            if let Some(border) = window_border_element(
+                state,
+                renderer,
+                id,
+                constrain,
+                scale,
+                state.theme_settings.window_radius,
+                border_width,
+                border_color,
+                output,
+                &programs,
+            ) {
+                elements.push(border.into());
+            }
+            elements.extend(rounded_window_elements(
+                renderer,
+                &window,
+                constrain,
+                scale,
+                state.theme_settings.window_radius,
+                output,
+                programs.texture,
+            ));
+        } else {
+            elements.extend(constrain_space_element::<
+                GlesRenderer,
+                _,
+                AnimatedWindowRenderElement,
+            >(
+                renderer,
+                &window,
+                constrain.loc,
+                1.0,
+                scale,
+                constrain,
+                ConstrainBehavior {
+                    reference: ConstrainReference::Geometry,
+                    behavior: ConstrainScaleBehavior::Stretch,
+                    align: ConstrainAlign::TOP | ConstrainAlign::LEFT,
+                },
+            ));
         }
-        elements.extend(constrain_space_element::<
-            GlesRenderer,
-            _,
-            AnimatedWindowRenderElement,
-        >(
-            renderer,
-            &window,
-            constrain.loc,
-            1.0,
-            scale,
-            constrain,
-            ConstrainBehavior {
-                reference: ConstrainReference::Geometry,
-                behavior: ConstrainScaleBehavior::Stretch,
-                align: ConstrainAlign::TOP | ConstrainAlign::LEFT,
-            },
-        ));
     }
     elements.extend(layer_elements(
         renderer,
@@ -327,86 +576,221 @@ fn output_elements(
     elements
 }
 
-fn window_border_elements(
+fn rounded_clip_program(
     state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+) -> Option<RoundedClipPrograms> {
+    let context = renderer.context_id().erased();
+    if let Some(program) = state.rounded_clip_programs.get(&context) {
+        return Some(program.clone());
+    }
+
+    let texture_uniforms = [
+        UniformName::new("clip_rect", UniformType::_4f),
+        UniformName::new("radius", UniformType::_1f),
+    ];
+    let border_uniforms = [
+        UniformName::new("clip_rect", UniformType::_4f),
+        UniformName::new("radius", UniformType::_1f),
+        UniformName::new("border_width", UniformType::_1f),
+        UniformName::new("border_color", UniformType::_4f),
+    ];
+    let texture = renderer.compile_custom_texture_shader(ROUNDED_TEXTURE_SHADER, &texture_uniforms);
+    let border = renderer.compile_custom_pixel_shader(ROUNDED_BORDER_SHADER, &border_uniforms);
+    match texture.and_then(|texture| border.map(|border| (texture, border))) {
+        Ok((texture, border)) => {
+            let programs = RoundedClipPrograms { texture, border };
+            state
+                .rounded_clip_programs
+                .insert(context, programs.clone());
+            Some(programs)
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to compile rounded-window shader");
+            None
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn window_border_element(
+    state: &mut Ferese,
+    renderer: &GlesRenderer,
     id: ferese_layout::WindowId,
     geometry: Rectangle<i32, Logical>,
     scale: f64,
-) -> Vec<AnimatedWindowRenderElement> {
-    let focused = state.focused_window == Some(id);
-    let width = if focused {
-        state.theme_settings.focus_ring_width
-    } else {
-        state.theme_settings.border_width
-    };
-    let rectangles = border_rectangles(geometry, width);
-    if rectangles.is_empty() {
-        return Vec::new();
+    requested_radius: f64,
+    requested_width: f64,
+    color: [f32; 4],
+    output: &Output,
+    programs: &RoundedClipPrograms,
+) -> Option<PixelShaderElement> {
+    let mode = output.current_mode()?;
+    let width = scaled_effect_value(requested_width, geometry, scale);
+    if width == 0.0 {
+        return None;
     }
 
-    let color = if focused {
-        state.theme_settings.accent_color.0
-    } else {
-        state.theme_settings.border_color.0
+    let parameters = BorderParameters {
+        geometry,
+        clip_rect: framebuffer_clip_rect(
+            geometry.to_physical_precise_round(scale),
+            mode.size,
+            output.current_transform().invert(),
+        ),
+        radius: scaled_effect_value(requested_radius, geometry, scale),
+        width,
+        color,
     };
+    let context = renderer.context_id().erased();
     let buffers = state.window_borders.entry(id).or_default();
+    if !buffers.contexts.contains_key(&context) {
+        let element = PixelShaderElement::new(
+            programs.border.clone(),
+            geometry,
+            None,
+            1.0,
+            border_uniforms(&parameters),
+            RenderElementKind::Unspecified,
+        );
+        buffers.contexts.insert(
+            context.clone(),
+            CachedBorder {
+                element,
+                parameters: parameters.clone(),
+            },
+        );
+    }
 
-    buffers
-        .edges
-        .iter_mut()
-        .zip(rectangles)
-        .map(|(buffer, rectangle)| {
-            buffer.update(rectangle.size, color);
-            SolidColorRenderElement::from_buffer(
-                buffer,
-                rectangle.loc.to_physical_precise_round(scale),
+    let cached = buffers.contexts.get_mut(&context)?;
+    if cached.parameters != parameters {
+        if cached.parameters.geometry != parameters.geometry {
+            cached.element.resize(parameters.geometry, None);
+        }
+        cached.element.update_uniforms(border_uniforms(&parameters));
+        cached.parameters = parameters;
+    }
+
+    Some(cached.element.clone())
+}
+
+fn border_uniforms(parameters: &BorderParameters) -> Vec<Uniform<'static>> {
+    vec![
+        Uniform::new("clip_rect", parameters.clip_rect).into_owned(),
+        Uniform::new("radius", parameters.radius).into_owned(),
+        Uniform::new("border_width", parameters.width).into_owned(),
+        Uniform::new("border_color", parameters.color).into_owned(),
+    ]
+}
+
+fn scaled_effect_value(requested: f64, geometry: Rectangle<i32, Logical>, scale: f64) -> f32 {
+    requested
+        .min(f64::from(geometry.size.w.min(geometry.size.h)) / 2.0)
+        .max(0.0) as f32
+        * scale as f32
+}
+
+#[allow(clippy::too_many_arguments)]
+fn rounded_window_elements(
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    constrain: Rectangle<i32, Logical>,
+    scale: f64,
+    requested_radius: f64,
+    output: &Output,
+    program: GlesTexProgram,
+) -> Vec<AnimatedWindowRenderElement> {
+    let Some(toplevel) = window.toplevel() else {
+        return Vec::new();
+    };
+    let Some(mode) = output.current_mode() else {
+        return Vec::new();
+    };
+
+    let geometry = window.geometry();
+    let reference = geometry.to_physical_precise_round(scale);
+    let physical_constrain = constrain.to_physical_precise_round(scale);
+    let location = (constrain.loc - geometry.loc).to_physical_precise_round(scale);
+    let clip = framebuffer_clip_rect(
+        physical_constrain,
+        mode.size,
+        output.current_transform().invert(),
+    );
+    let radius = scaled_effect_value(requested_radius, constrain, scale);
+    let surface = toplevel.wl_surface();
+
+    let mut content = PopupManager::popups_for_surface(surface)
+        .flat_map(|(popup, popup_offset)| {
+            let offset = (geometry.loc + popup_offset - popup.geometry().loc)
+                .to_physical_precise_round(scale);
+
+            render_elements_from_surface_tree::<
+                GlesRenderer,
+                WaylandSurfaceRenderElement<GlesRenderer>,
+            >(
+                renderer,
+                popup.wl_surface(),
+                location + offset,
                 scale,
                 1.0,
                 RenderElementKind::Unspecified,
             )
-            .into()
+            .into_iter()
+            .map(WindowContentRenderElement::from)
         })
-        .collect()
+        .collect::<Vec<_>>();
+    content.extend(
+        render_elements_from_surface_tree::<
+            GlesRenderer,
+            WaylandSurfaceRenderElement<GlesRenderer>,
+        >(
+            renderer,
+            surface,
+            location,
+            scale,
+            1.0,
+            RenderElementKind::Unspecified,
+        )
+        .into_iter()
+        .map(|inner| {
+            RoundedSurfaceRenderElement {
+                inner,
+                program: program.clone(),
+                clip_rect: clip,
+                radius,
+            }
+            .into()
+        }),
+    );
+
+    constrain_render_elements(
+        content,
+        location,
+        physical_constrain,
+        reference,
+        ConstrainScaleBehavior::Stretch,
+        ConstrainAlign::TOP | ConstrainAlign::LEFT,
+        scale,
+    )
+    .map(Into::into)
+    .collect()
 }
 
-fn border_rectangles(
-    geometry: Rectangle<i32, Logical>,
-    requested_width: f64,
-) -> Vec<Rectangle<i32, Logical>> {
-    let width = requested_width
-        .ceil()
-        .max(0.0)
-        .min(f64::from(geometry.size.w.min(geometry.size.h)) / 2.0) as i32;
-    if width == 0 {
-        return Vec::new();
-    }
+fn framebuffer_clip_rect(
+    geometry: Rectangle<i32, Physical>,
+    output_size: smithay::utils::Size<i32, Physical>,
+    transform: Transform,
+) -> [f32; 4] {
+    let transformed = transform.transform_rect_in(geometry, &output_size);
+    let transformed_output_size = transform.transform_size(output_size);
+    let bottom = transformed_output_size.h - transformed.loc.y - transformed.size.h;
 
-    let inner_height = geometry.size.h - width * 2;
-    let mut rectangles = vec![
-        Rectangle::new(geometry.loc, (geometry.size.w, width).into()),
-        Rectangle::new(
-            (geometry.loc.x, geometry.loc.y + geometry.size.h - width).into(),
-            (geometry.size.w, width).into(),
-        ),
-    ];
-    if inner_height > 0 {
-        rectangles.extend([
-            Rectangle::new(
-                (geometry.loc.x, geometry.loc.y + width).into(),
-                (width, inner_height).into(),
-            ),
-            Rectangle::new(
-                (
-                    geometry.loc.x + geometry.size.w - width,
-                    geometry.loc.y + width,
-                )
-                    .into(),
-                (width, inner_height).into(),
-            ),
-        ]);
-    }
-
-    rectangles
+    [
+        transformed.loc.x as f32,
+        bottom as f32,
+        transformed.size.w as f32,
+        transformed.size.h as f32,
+    ]
 }
 
 pub(crate) fn redraw_output<R, E>(
@@ -573,9 +957,9 @@ fn normalized_scale(scale: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use smithay::utils::{Logical, Rectangle};
+    use smithay::utils::{Physical, Rectangle, Transform};
 
-    use super::{border_rectangles, normalized_scale};
+    use super::{framebuffer_clip_rect, normalized_scale};
 
     #[test]
     fn accepts_positive_finite_scale() {
@@ -590,30 +974,26 @@ mod tests {
     }
 
     #[test]
-    fn border_rectangles_stay_inside_window_geometry() {
-        let geometry = Rectangle::<i32, Logical>::new((10, 20).into(), (100, 80).into());
+    fn clip_rect_uses_opengl_bottom_left_origin() {
+        let geometry = Rectangle::<i32, Physical>::new((10, 5).into(), (30, 40).into());
 
         assert_eq!(
-            border_rectangles(geometry, 2.0),
-            vec![
-                Rectangle::new((10, 20).into(), (100, 2).into()),
-                Rectangle::new((10, 98).into(), (100, 2).into()),
-                Rectangle::new((10, 22).into(), (2, 76).into()),
-                Rectangle::new((108, 22).into(), (2, 76).into()),
-            ]
+            framebuffer_clip_rect(geometry, (100, 80).into(), Transform::Normal),
+            [10.0, 35.0, 30.0, 40.0]
         );
     }
 
     #[test]
-    fn border_width_is_clamped_for_tiny_windows() {
-        let geometry = Rectangle::<i32, Logical>::new((0, 0).into(), (3, 2).into());
-        let rectangles = border_rectangles(geometry, 20.0);
+    fn clip_rect_follows_output_transform() {
+        let geometry = Rectangle::<i32, Physical>::new((10, 5).into(), (30, 40).into());
 
-        assert_eq!(rectangles.len(), 2);
-        assert!(
-            rectangles
-                .iter()
-                .all(|rectangle| geometry.contains_rect(*rectangle))
+        assert_eq!(
+            framebuffer_clip_rect(geometry, (100, 80).into(), Transform::Flipped180),
+            [10.0, 5.0, 30.0, 40.0]
+        );
+        assert_eq!(
+            framebuffer_clip_rect(geometry, (100, 80).into(), Transform::_180),
+            [60.0, 5.0, 30.0, 40.0]
         );
     }
 }

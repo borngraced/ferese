@@ -20,7 +20,7 @@ use smithay::{
     backend::{
         allocator::dmabuf::Dmabuf,
         drm::{DrmEventTime, DrmNode},
-        renderer::ImportDma,
+        renderer::{ErasedContextId, ImportDma},
     },
     desktop::{
         LayerSurface, PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output,
@@ -93,6 +93,7 @@ pub struct Ferese {
     pub window_ids: HashMap<Window, WindowId>,
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
     pub(crate) window_borders: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
+    pub(crate) rounded_clip_programs: HashMap<ErasedContextId, crate::winit::RoundedClipPrograms>,
     viewport_animations: HashMap<WorkspaceId, AnimatedValue>,
     scrolling_world_x: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
     pub focused_window: Option<WindowId>,
@@ -394,6 +395,7 @@ impl Ferese {
             window_ids: HashMap::new(),
             window_geometry: HashMap::new(),
             window_borders: HashMap::new(),
+            rounded_clip_programs: HashMap::new(),
             viewport_animations: HashMap::new(),
             scrolling_world_x: HashMap::new(),
             focused_window: None,
