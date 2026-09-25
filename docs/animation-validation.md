@@ -1,7 +1,7 @@
 # Animation regression checks
 
 Run `cargo test -p ferese-animation -p ferese --offline` for transition,
-resize pacing, reduced motion, stacking, and refresh-rate regression tests.
+resize requests, reduced motion, stacking, and refresh-rate regression tests.
 
 For visual validation, use a disposable Ferese session with three tiled windows
 containing text and at least one floating window. Test both the nested and DRM
@@ -15,11 +15,12 @@ single screenshots cannot establish smoothness.
 | Cycle width, then immediately Super+F | The old column-width spring cannot override fullscreen width. |
 | Exit fullscreen and immediately resize or scroll | The current frame is retained when the target changes; scrolling resumes without a position jump. |
 | Drag a floating window; resize from its top-left corner | The window follows the pointer directly. The opposite edge stays anchored. Delayed client commits do not move or raise it. |
-| Zoom a slow-redrawing client | Intermediate resize requests wait for commits or timeout. The final size is always requested and the animation keeps moving. |
+| Zoom responsive and slow-redrawing clients | Each zoom requests the destination size once. Client redraws do not generate intermediate resize requests or restart the motion. |
+| Zoom the leftmost and rightmost columns in and out | Each outer edge moves monotonically toward its destination; neither side trembles or reverses near the screen edge. |
 | Disable borders and shadows, then zoom | Rounded corner pixels repaint through the final frame; no corner remnants remain. |
 | Repeat on 60 Hz and 144 Hz outputs; move focus between them | Similar elapsed-time motion with no double advancement. Check frame timing on actual DRM hardware. |
 | Enable reduced motion | Geometry and decorations reach their final values together. |
 
-The zoom resize policy asks responsive clients to redraw near the current visual
-size. A late client buffer is still stretched as a fallback; this is not a buffer
-snapshot or a guarantee of perfectly sharp text on every intermediate frame.
+Zoom requests the destination client size once and scales the available buffer
+along the transition. This avoids repeated content reflow during motion. It is
+not a buffer snapshot or a guarantee of perfectly sharp intermediate text.

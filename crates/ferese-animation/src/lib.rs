@@ -356,20 +356,10 @@ impl WindowGeometry {
         self.presentation_size_request(now)
     }
 
-    /// Pace intermediate resizes to client commits, but always deliver the final
-    /// size. Fast clients redraw near the presented size instead of one giant
-    /// buffer being stretched throughout the zoom.
+    /// Configure the destination once. Intermediate sizes make clients reflow
+    /// and replace buffers on every frame, disrupting an otherwise smooth zoom.
     pub fn presentation_size_request(&mut self, now: Duration) -> Option<ClientSize> {
-        if self.zoom.is_some() && self.client.waiting_since.is_some() && !self.client.timed_out(now)
-        {
-            return None;
-        }
-        let rect = if self.zoom.is_some() {
-            self.visual.current
-        } else {
-            self.logical
-        };
-        let size = ClientSize::from_rect(rect);
+        let size = ClientSize::from_rect(self.logical);
         self.client.request_size(size, now).then_some(size)
     }
 
@@ -631,37 +621,63 @@ mod tests {
     }
 
     #[test]
-    fn slow_client_does_not_queue_intermediate_sizes_but_gets_final_size() {
+    fn zoom_requests_destination_once_even_with_a_responsive_client() {
         let start = Rect::new(0.0, 0.0, 600.0, 800.0);
         let end = Rect::new(0.0, 0.0, 1920.0, 1080.0);
         let mut geometry = WindowGeometry::new(start, Some(ClientSize::from_rect(start)));
         assert_eq!(
             geometry.set_presentation_target(end, true, Duration::ZERO),
-            None
-        );
-        geometry.advance(Duration::from_millis(16), SpringConfig::default(), true);
-        let first = geometry
-            .presentation_size_request(Duration::from_millis(16))
-            .unwrap();
-        assert_ne!(first, ClientSize::from_rect(end));
-        geometry.advance(Duration::from_millis(16), SpringConfig::default(), true);
-        assert_eq!(
-            geometry.presentation_size_request(Duration::from_millis(32)),
-            None
-        );
-        geometry.client.commit(first);
-        assert!(
-            geometry
-                .presentation_size_request(Duration::from_millis(32))
-                .is_some()
-        );
-        for _ in 0..240 {
-            geometry.advance(Duration::from_millis(8), SpringConfig::default(), true);
-        }
-        assert_eq!(
-            geometry.presentation_size_request(Duration::from_secs(2)),
             Some(ClientSize::from_rect(end))
         );
+        geometry.client.commit(ClientSize::from_rect(end));
+        for frame in 0..240 {
+            geometry.advance(Duration::from_millis(8), SpringConfig::default(), true);
+            assert_eq!(
+                geometry.presentation_size_request(Duration::from_millis(frame * 8)),
+                None
+            );
+        }
+        assert_eq!(
+            geometry.set_presentation_target(start, false, Duration::from_secs(2)),
+            Some(ClientSize::from_rect(start))
+        );
+    }
+
+    #[test]
+    fn left_and_right_zoom_edges_do_not_reverse_direction() {
+        let fullscreen = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        for tiled in [
+            Rect::new(12.0, 12.0, 942.0, 1056.0),
+            Rect::new(966.0, 12.0, 942.0, 1056.0),
+        ] {
+            for rate in [60, 144] {
+                let mut geometry = WindowGeometry::new(tiled, Some(ClientSize::from_rect(tiled)));
+                for (target, enabled) in [(fullscreen, true), (tiled, false)] {
+                    geometry.set_presentation_target(target, enabled, Duration::ZERO);
+                    let mut previous = geometry.visual.current;
+                    for _ in 0..rate * 2 {
+                        geometry.advance(
+                            Duration::from_secs_f64(1.0 / f64::from(rate)),
+                            SpringConfig::default(),
+                            true,
+                        );
+                        let current = geometry.visual.current;
+                        let edges = |rect: Rect| {
+                            [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height]
+                        };
+                        for ((before, after), end) in edges(previous)
+                            .into_iter()
+                            .zip(edges(current))
+                            .zip(edges(target))
+                        {
+                            assert!((after - end).abs() <= (before - end).abs() + 1e-9);
+                        }
+                        previous = current;
+                    }
+                    assert_eq!(geometry.visual.current, target);
+                }
+            }
+        }
     }
 
     #[test]
