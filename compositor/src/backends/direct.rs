@@ -3,7 +3,7 @@ use std::{
     error::Error,
     io,
     path::Path,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use smithay::{
@@ -41,6 +41,7 @@ use smithay::{
 
 use crate::{
     Ferese,
+    metrics::RenderMetrics,
     winit::{animated_window_elements, cursorless_window_elements, redraw_output},
 };
 
@@ -73,6 +74,7 @@ struct DirectOutput {
     global: GlobalId,
     surface: GbmBufferedSurface<GbmAllocator<DrmDeviceFd>, OutputPresentationFeedback>,
     damage_tracker: OutputDamageTracker,
+    render_metrics: RenderMetrics,
     frame_pending: bool,
 }
 
@@ -357,6 +359,11 @@ pub fn switch_vt(state: &mut Ferese, vt: i32) {
 }
 
 fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
+    let missed_deadlines = state
+        .direct_backend
+        .as_ref()
+        .and_then(|backend| backend.presentation.get(&(node, crtc)))
+        .map_or(0, |clock| clock.missed_deadlines);
     let Some(mut device) = state
         .direct_backend
         .as_mut()
@@ -374,6 +381,7 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
         return;
     }
 
+    let render_started = Instant::now();
     let rendered = (|| -> Result<bool, Box<dyn Error>> {
         state.process_dmabuf_imports(&mut device.renderer);
         let (mut buffer, age) = output.surface.next_buffer()?;
@@ -445,7 +453,10 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
         });
         output
             .surface
-            .queue_buffer(Some(result.sync), Some(damage), presentation)?;
+            .queue_buffer(Some(result.sync), Some(damage.clone()), presentation)?;
+        output
+            .render_metrics
+            .record_frame(render_started.elapsed(), &damage, missed_deadlines);
         output.frame_pending = true;
         Ok(true)
     })();
@@ -692,6 +703,7 @@ fn create_direct_output(
         renderer.dmabuf_formats(),
     )?;
     let damage_tracker = OutputDamageTracker::from_output(&output);
+    let render_metrics = RenderMetrics::from_environment(output.name());
 
     tracing::info!(?crtc, connector = %connector, "initialized DRM output");
     Ok(DirectOutput {
@@ -701,6 +713,7 @@ fn create_direct_output(
         global,
         surface,
         damage_tracker,
+        render_metrics,
         frame_pending: false,
     })
 }

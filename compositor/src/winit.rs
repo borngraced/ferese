@@ -48,7 +48,7 @@ use smithay::{
     wayland::{compositor::with_states, presentation::Refresh},
 };
 
-use crate::Ferese;
+use crate::{Ferese, metrics::RenderMetrics};
 
 type SurfaceRenderElement = CropRenderElement<
     RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
@@ -379,6 +379,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
     let clock = Clock::<Monotonic>::new();
     let mut sequence = 0_u64;
     let mut output_scale = initial_scale;
+    let mut render_metrics = RenderMetrics::from_environment(output.name());
 
     event_loop
         .handle()
@@ -407,6 +408,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
             WinitEvent::Redraw => {
                 state.advance_animations(Instant::now());
                 let age = backend.buffer_age().unwrap_or(0);
+                let render_started = Instant::now();
                 let rendered = (|| -> DamageRenderResult {
                     {
                         let (renderer, mut framebuffer) = backend.bind()?;
@@ -470,6 +472,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     state.loop_signal.stop();
                     return;
                 }
+                render_metrics.record_frame(render_started.elapsed(), &damage, 0);
 
                 let mut presentation = OutputPresentationFeedback::new(&output);
                 state.space.elements().for_each(|window| {

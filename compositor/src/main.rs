@@ -7,6 +7,7 @@ mod grabs;
 mod handlers;
 mod input;
 mod ipc;
+mod metrics;
 mod state;
 mod window_rules;
 mod winit;
