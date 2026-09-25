@@ -15,7 +15,9 @@ use smithay::{
     wayland::compositor::with_states,
 };
 
-use crate::{Ferese, private_client::ClientCapabilities, state::ClientState};
+use crate::{
+    Ferese, config::MaterialStyle, private_client::ClientCapabilities, state::ClientState,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SemanticRole {
@@ -26,6 +28,56 @@ pub(crate) enum SemanticRole {
     Notification,
     Hud,
     Modal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[allow(dead_code)] // Used by the material renderer in the next M7 slice.
+pub(crate) struct ResolvedMaterial {
+    pub style: MaterialStyle,
+    pub opacity: f32,
+    pub blur: f32,
+    pub saturation: f32,
+    pub brightness: f32,
+    pub noise: f32,
+}
+
+#[allow(dead_code)] // Used by the material renderer in the next M7 slice.
+pub(crate) fn resolve_material(role: SemanticRole, style: MaterialStyle) -> ResolvedMaterial {
+    let (opacity, blur, saturation, brightness, noise) = match role {
+        SemanticRole::Panel => (0.78, 24.0, 1.08, 1.02, 0.012),
+        SemanticRole::PanelElevated
+        | SemanticRole::Popover
+        | SemanticRole::Menu
+        | SemanticRole::Notification => (0.84, 28.0, 1.10, 1.03, 0.014),
+        SemanticRole::Hud | SemanticRole::Modal => (0.88, 30.0, 1.06, 1.04, 0.010),
+    };
+
+    match style {
+        MaterialStyle::Glass => ResolvedMaterial {
+            style,
+            opacity,
+            blur,
+            saturation,
+            brightness,
+            noise,
+        },
+        MaterialStyle::Translucent => ResolvedMaterial {
+            style,
+            opacity,
+            blur: 0.0,
+            saturation: 1.0,
+            brightness: 1.0,
+            noise: 0.0,
+        },
+        MaterialStyle::Solid => ResolvedMaterial {
+            style,
+            opacity: 1.0,
+            blur: 0.0,
+            saturation: 1.0,
+            brightness: 1.0,
+            noise: 0.0,
+        },
+    }
 }
 
 #[derive(Debug)]
@@ -220,5 +272,29 @@ mod tests {
 
         effects.set_role(Some(SemanticRole::Popover));
         assert_eq!(effects.generation.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn styles_preserve_semantics_but_disable_unsupported_effects() {
+        let glass = resolve_material(SemanticRole::Popover, MaterialStyle::Glass);
+        let translucent = resolve_material(SemanticRole::Popover, MaterialStyle::Translucent);
+        let solid = resolve_material(SemanticRole::Popover, MaterialStyle::Solid);
+
+        assert!(glass.blur > 0.0);
+        assert!(glass.noise > 0.0);
+        assert_eq!(translucent.opacity, glass.opacity);
+        assert_eq!(translucent.blur, 0.0);
+        assert_eq!(translucent.noise, 0.0);
+        assert_eq!(solid.opacity, 1.0);
+        assert_eq!(solid.blur, 0.0);
+    }
+
+    #[test]
+    fn elevated_roles_resolve_more_strongly_than_the_panel() {
+        let panel = resolve_material(SemanticRole::Panel, MaterialStyle::Glass);
+        let popover = resolve_material(SemanticRole::Popover, MaterialStyle::Glass);
+
+        assert!(popover.opacity > panel.opacity);
+        assert!(popover.blur > panel.blur);
     }
 }

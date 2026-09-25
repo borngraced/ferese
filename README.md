@@ -84,6 +84,9 @@ window_radius = 14.0
 offset_y = 4.0
 blur = 18.0
 opacity = 0.20
+
+[theme.material]
+style = "glass" # glass, translucent, or solid
 ```
 
 Fullscreen windows are borderless and shadowless. Other managed windows use GPU

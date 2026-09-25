@@ -114,6 +114,16 @@ pub struct ThemeSettings {
     pub shadow_offset_y: f64,
     pub shadow_blur: f64,
     pub shadow_opacity: f64,
+    pub material_style: MaterialStyle,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum MaterialStyle {
+    #[default]
+    Glass,
+    Translucent,
+    Solid,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -124,6 +134,14 @@ struct ThemeConfig {
     geometry: ThemeGeometryConfig,
     #[serde(default)]
     shadow: ThemeShadowConfig,
+    #[serde(default)]
+    material: ThemeMaterialConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ThemeMaterialConfig {
+    #[serde(default)]
+    style: MaterialStyle,
 }
 
 #[derive(Debug, Deserialize)]
@@ -788,6 +806,7 @@ impl Config {
             shadow_offset_y,
             shadow_blur,
             shadow_opacity,
+            material_style: self.theme.material.style,
         })
     }
 
@@ -1535,7 +1554,7 @@ mod tests {
     #[test]
     fn parses_and_validates_theme_window_tokens() {
         let configured = parse(
-            "[theme.colors]\nborder = \"#11223344\"\naccent = \"#AABBCC\"\nshadow = \"#01020380\"\n\n[theme.geometry]\nborder_width = 1.5\nfocus_ring_width = 3.0\nwindow_radius = 12.0\n\n[theme.shadow.soft]\noffset_y = -2.0\nblur = 24.0\nopacity = 0.4",
+            "[theme.colors]\nborder = \"#11223344\"\naccent = \"#AABBCC\"\nshadow = \"#01020380\"\n\n[theme.geometry]\nborder_width = 1.5\nfocus_ring_width = 3.0\nwindow_radius = 12.0\n\n[theme.shadow.soft]\noffset_y = -2.0\nblur = 24.0\nopacity = 0.4\n\n[theme.material]\nstyle = \"translucent\"",
         );
         let invalid_color = parse("[theme.colors]\naccent = \"blue\"");
         let invalid_radius = parse("[theme.geometry]\nwindow_radius = -1.0");
@@ -1553,11 +1572,13 @@ mod tests {
                 shadow_offset_y: -2.0,
                 shadow_blur: 24.0,
                 shadow_opacity: 0.4,
+                material_style: MaterialStyle::Translucent,
             }
         );
         assert!(invalid_color.theme_settings().is_err());
         assert!(invalid_radius.theme_settings().is_err());
         assert!(invalid_opacity.theme_settings().is_err());
+        assert!(toml::from_str::<Config>("[theme.material]\nstyle = \"mist\"").is_err());
     }
 
     #[test]
