@@ -274,7 +274,13 @@ fn check_grab(
 impl XdgDecorationHandler for Ferese {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         let mode = self.decoration_mode_for(&toplevel);
-        set_decoration_mode(&toplevel, mode);
+        toplevel.with_pending_state(|state| state.decoration_mode = Some(mode));
+
+        // This must be unconditional: the initial xdg-toplevel configure may
+        // already contain the same mode before the decoration object exists.
+        // `send_pending_configure` would then see no state change and omit the
+        // decoration configure, leaving clients to fall back to CSD.
+        toplevel.send_configure();
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: Mode) {
