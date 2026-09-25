@@ -4,7 +4,7 @@ use std::fmt;
 
 use ferese_layout::{
     Axis, ColumnWidth, Direction, GapConfig, LayoutError, LayoutResult, LayoutTree, Rect,
-    ScrollingLayout, SizeConstraints, WindowId,
+    ScrollingLayout, SizeConstraints, ViewportFocusStrategy, WindowId,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -40,10 +40,16 @@ impl Default for WorkspaceLayout {
 }
 
 impl WorkspaceLayout {
-    pub fn new(mode: LayoutMode, default_column_width: ColumnWidth) -> Self {
+    pub fn new(
+        mode: LayoutMode,
+        default_column_width: ColumnWidth,
+        focus_strategy: ViewportFocusStrategy,
+    ) -> Self {
         match mode {
             LayoutMode::Scrolling => {
-                Self::Scrolling(ScrollingLayout::with_default_width(default_column_width))
+                let mut layout = ScrollingLayout::with_default_width(default_column_width);
+                layout.set_focus_strategy(focus_strategy);
+                Self::Scrolling(layout)
             }
             LayoutMode::Tree => Self::Tree(LayoutTree::default()),
         }
@@ -53,6 +59,20 @@ impl WorkspaceLayout {
         match self {
             Self::Scrolling(_) => LayoutMode::Scrolling,
             Self::Tree(_) => LayoutMode::Tree,
+        }
+    }
+
+    pub fn viewport_x(&self) -> Option<f64> {
+        match self {
+            Self::Scrolling(layout) => Some(layout.viewport_x()),
+            Self::Tree(_) => None,
+        }
+    }
+
+    pub fn preferred_window(&self) -> Option<WindowId> {
+        match self {
+            Self::Scrolling(layout) => layout.active_window(),
+            Self::Tree(layout) => layout.window_ids().next(),
         }
     }
 
@@ -235,6 +255,7 @@ impl WorkspaceLayout {
         bounds: Rect,
         focused: Option<WindowId>,
         default_column_width: ColumnWidth,
+        focus_strategy: ViewportFocusStrategy,
     ) -> Result<bool, LayoutError> {
         if self.mode() == mode {
             return Ok(false);
@@ -265,6 +286,7 @@ impl WorkspaceLayout {
             Self::Tree(layout) => {
                 let windows = layout.window_ids_in_reading_order(bounds)?;
                 let mut scrolling = ScrollingLayout::with_default_width(default_column_width);
+                scrolling.set_focus_strategy(focus_strategy);
                 let mut previous = None;
 
                 for window in windows {
@@ -339,22 +361,35 @@ pub struct WorkspaceSet {
     placements: HashMap<WindowId, WindowPlacement>,
     default_layout_mode: LayoutMode,
     default_column_width: ColumnWidth,
+    scrolling_focus_strategy: ViewportFocusStrategy,
     next_id: u64,
 }
 
 impl Default for WorkspaceSet {
     fn default() -> Self {
-        Self::new(LayoutMode::default(), ColumnWidth::default())
+        Self::new(
+            LayoutMode::default(),
+            ColumnWidth::default(),
+            ViewportFocusStrategy::default(),
+        )
     }
 }
 
 impl WorkspaceSet {
-    pub fn new(default_layout_mode: LayoutMode, default_column_width: ColumnWidth) -> Self {
+    pub fn new(
+        default_layout_mode: LayoutMode,
+        default_column_width: ColumnWidth,
+        scrolling_focus_strategy: ViewportFocusStrategy,
+    ) -> Self {
         let active = WorkspaceId(1);
         let workspace = Workspace {
             id: active,
             name: "1".to_owned(),
-            layout: WorkspaceLayout::new(default_layout_mode, default_column_width),
+            layout: WorkspaceLayout::new(
+                default_layout_mode,
+                default_column_width,
+                scrolling_focus_strategy,
+            ),
             floating: Vec::new(),
             last_focused: None,
             fullscreen: None,
@@ -370,6 +405,7 @@ impl WorkspaceSet {
             placements: HashMap::new(),
             default_layout_mode,
             default_column_width,
+            scrolling_focus_strategy,
             next_id: 2,
         }
     }
@@ -423,11 +459,16 @@ impl WorkspaceSet {
         bounds: Rect,
     ) -> Result<bool, WorkspaceError> {
         let default_column_width = self.default_column_width;
+        let focus_strategy = self.scrolling_focus_strategy;
         let workspace = self.active_mut();
         let focused = tiled_focus(workspace);
-        let changed = workspace
-            .layout
-            .set_mode(mode, bounds, focused, default_column_width)?;
+        let changed = workspace.layout.set_mode(
+            mode,
+            bounds,
+            focused,
+            default_column_width,
+            focus_strategy,
+        )?;
 
         debug_assert!(self.validate().is_ok());
         Ok(changed)
@@ -588,7 +629,11 @@ impl WorkspaceSet {
             Workspace {
                 id,
                 name,
-                layout: WorkspaceLayout::new(self.default_layout_mode, self.default_column_width),
+                layout: WorkspaceLayout::new(
+                    self.default_layout_mode,
+                    self.default_column_width,
+                    self.scrolling_focus_strategy,
+                ),
                 floating: Vec::new(),
                 last_focused: None,
                 fullscreen: None,
@@ -914,11 +959,13 @@ impl WorkspaceSet {
 }
 
 fn first_window(workspace: &Workspace) -> Option<WindowId> {
-    workspace
-        .layout
-        .window_ids()
-        .chain(workspace.floating.iter().copied())
-        .min_by_key(|window| window.0)
+    workspace.layout.preferred_window().or_else(|| {
+        workspace
+            .floating
+            .iter()
+            .copied()
+            .min_by_key(|window| window.0)
+    })
 }
 
 fn tiled_focus(workspace: &Workspace) -> Option<WindowId> {
@@ -959,7 +1006,11 @@ mod tests {
 
     #[test]
     fn configured_layout_defaults_apply_to_new_workspaces() {
-        let mut workspaces = WorkspaceSet::new(LayoutMode::Scrolling, ColumnWidth::Full);
+        let mut workspaces = WorkspaceSet::new(
+            LayoutMode::Scrolling,
+            ColumnWidth::Full,
+            ViewportFocusStrategy::Minimal,
+        );
         workspaces
             .insert_window(WindowId(1), Axis::Horizontal, 0.5)
             .unwrap();
@@ -1042,6 +1093,21 @@ mod tests {
 
         assert_eq!(workspaces.active().last_focused, Some(WindowId(2)));
         assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn closing_a_scrolling_column_focuses_its_adjacent_column() {
+        let mut workspaces = WorkspaceSet::default();
+        for id in 1..=4 {
+            workspaces
+                .insert_window(WindowId(id), Axis::Horizontal, 0.5)
+                .unwrap();
+        }
+        workspaces.focus_window(WindowId(3)).unwrap();
+
+        workspaces.remove_window(WindowId(3)).unwrap();
+
+        assert_eq!(workspaces.active().last_focused, Some(WindowId(4)));
     }
 
     #[test]

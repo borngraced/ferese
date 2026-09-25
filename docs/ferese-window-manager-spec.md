@@ -465,19 +465,77 @@ Scrolling layouts maintain these invariants after every transaction:
 3. Proportional and fixed widths are positive and finite. Height weights are
    positive, finite, match the column's window count, and normalize
    deterministically.
-4. `viewport_x` is finite and clamped to the strip, while permitting the final
-   column to align with either viewport edge.
+4. `viewport_x` is finite. It is an unbounded world-space offset and MUST NOT be
+   clamped to the populated column strip.
 
 Scrolling columns form a horizontal strip that MAY be wider than the usable
-output. Windows within a column divide its height. The viewport follows focus
-only as far as required to reveal the focused window and SHOULD retain part of
-an adjacent column when space permits. It MUST NOT recenter on every focus
-change. An explicit center command MAY center the focused column.
+output. Windows within a column divide its height; there is no vertical
+scrolling. Window geometry uses stable workspace coordinates and presentation
+subtracts the workspace viewport:
+
+```text
+screen_x = window_world_x - viewport_x
+```
+
+Navigation animates one viewport spring per visible scrolling workspace.
+Existing windows MUST NOT receive independent horizontal motion for the same
+navigation. Retargeting while the viewport is moving preserves its current
+interpolated position and velocity; viewport moves are not queued.
+
+Viewport translation uses a dedicated critically damped spring, separate from
+window geometry:
+
+```text
+mass = 1.0
+stiffness = 320.0
+damping_ratio = 1.0
+damping = 2 * damping_ratio * sqrt(stiffness * mass)  # approximately 35.8
+```
+
+It MUST NOT visibly overshoot. Rapid navigation retargets this same spring
+immediately and may coalesce commands received before the next presented frame.
+Same-direction velocity is preserved. Direction reversal preserves the current
+position, reduces opposing velocity when necessary, and reverses without a
+snap.
+
+New normal windows insert immediately after the focused column at their final
+world position and become focused. The compositor then computes the minimum
+viewport movement needed to expose the new column. A small local reveal using
+opacity, scale, or an x offset MAY supplement this motion, but the viewport is
+the primary animation.
+
+When the focused column closes, focus moves to an adjacent column and the
+viewport retargets to reveal it. Closing a non-focused column MUST NOT move the
+viewport. Manual column resize also MUST NOT retarget it; a subsequent
+navigation, open, or focused-close operation may do so.
+
+During an in-flight viewport transition, resize leaves the viewport target and
+motion intact while affected world geometry uses the normal window spring. The
+composed transform is:
+
+```text
+screen_x = animated_world_x - animated_viewport_x
+```
+
+Resize MUST NOT restart or cancel the viewport spring. If reflow would make the
+focused window completely unreachable, Ferese MAY apply only the minimum
+visibility correction, not normal comfort-region recentering.
+
+The default reveal strategy avoids scrolling when the focused column is already
+fully visible. Otherwise it moves only enough to place the column in a comfort
+region approximately 20% through 80% of the viewport. It MUST NOT center every
+focus change. `focus_strategy = "center_on_focus"` selects that alternative,
+and the explicit center command always centers the focused column. When a large
+column cannot fit the comfort region, Ferese SHOULD retain 40–80 logical pixels
+of the previous column where possible.
+
+Each scrolling workspace owns its viewport. Outputs animate their hosted
+workspaces independently; neither columns nor a viewport span outputs.
 
 Opening, closing, moving, or resizing a window MUST preserve a stable visual
 anchor: columns before the focused column do not jump merely because a later
 column changed. Each workspace stores and restores its own viewport. Output
-resize or migration clamps that viewport without discarding it. Constraint
+resize or migration preserves that viewport without imposing strip bounds. Constraint
 resolution MUST prefer the focused column, preserve user-selected widths where
 possible, and report conflicts rather than silently compressing every column to
 fit. These stable anchors, deterministic constraints, and retained neighboring
@@ -1016,6 +1074,11 @@ stiffness = 700.0
 damping = 53.0
 mass = 1.0
 
+[animations.viewport_spring]
+stiffness = 320.0
+damping_ratio = 1.0
+mass = 1.0
+
 [layout]
 mode = "scrolling"
 inner_gap = 10.0
@@ -1026,6 +1089,7 @@ smart_gaps = true
 default_column_width = 0.5
 # Use 1.0 or "full" to open every new column at the viewport width.
 width_presets = [0.333333, 0.5, 0.666667, 1.0]
+focus_strategy = "minimal"
 neighbor_context = 48.0
 new_window = "column_after_focused"
 

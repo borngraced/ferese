@@ -37,6 +37,11 @@ default_column_width = "full"
 `default_column_width = 1.0` is equivalent. `Super+M` switches the active
 workspace between scrolling and tree modes.
 
+Scrolling keeps windows in stable workspace coordinates and animates the
+viewport only when focus must be revealed. Set
+`focus_strategy = "center_on_focus"` under `[scrolling]` to center focused
+columns instead.
+
 Scrolling controls use `Super+R` to cycle configured width presets, `Super+C`
 to center the focused column, `Super+[` to consume the focused window into an
 adjacent column, and `Super+]` to expel it. `Super+Ctrl+H/J/K/L` resizes in the

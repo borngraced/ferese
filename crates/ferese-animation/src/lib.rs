@@ -56,6 +56,83 @@ pub struct AnimatedRect {
     pub velocity: RectVelocity,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimatedValue {
+    pub current: f64,
+    pub target: f64,
+    pub velocity: f64,
+}
+
+impl AnimatedValue {
+    pub fn new(value: f64) -> Self {
+        let value = finite_or_zero(value);
+
+        Self {
+            current: value,
+            target: value,
+            velocity: 0.0,
+        }
+    }
+
+    pub fn set_target(&mut self, target: f64) {
+        self.target = finite_or_zero(target);
+    }
+
+    pub fn retarget_preserving_motion(&mut self, target: f64) {
+        let target = finite_or_zero(target);
+        let direction = (target - self.current).signum();
+
+        if direction != 0.0 && self.velocity.signum() != direction {
+            self.velocity *= 0.35;
+        }
+        self.target = target;
+    }
+
+    pub fn snap(&mut self) {
+        self.current = self.target;
+        self.velocity = 0.0;
+    }
+
+    pub fn advance(&mut self, delta: Duration, config: SpringConfig) -> bool {
+        let config = config.normalized();
+        if (self.current - self.target).abs() <= config.position_tolerance
+            && self.velocity.abs() <= config.velocity_tolerance
+        {
+            self.snap();
+            return false;
+        }
+
+        let seconds = delta.min(MAX_FRAME_DELTA).as_secs_f64();
+        let steps = (seconds / MAX_STEP_SECONDS).ceil().max(1.0) as usize;
+        let step = seconds / steps as f64;
+
+        for _ in 0..steps {
+            let previous_error = self.current - self.target;
+            advance_value(
+                &mut self.current,
+                self.target,
+                &mut self.velocity,
+                step,
+                config,
+            );
+            let current_error = self.current - self.target;
+            if previous_error != 0.0 && previous_error.signum() != current_error.signum() {
+                self.snap();
+                break;
+            }
+        }
+
+        if (self.current - self.target).abs() <= config.position_tolerance
+            && self.velocity.abs() <= config.velocity_tolerance
+        {
+            self.snap();
+            false
+        } else {
+            true
+        }
+    }
+}
+
 impl AnimatedRect {
     pub fn new(rect: Rect) -> Self {
         Self {
@@ -276,6 +353,10 @@ fn advance_value(
     }
 }
 
+fn finite_or_zero(value: f64) -> f64 {
+    if value.is_finite() { value } else { 0.0 }
+}
+
 fn normalized_rect(rect: Rect) -> Rect {
     Rect::new(
         finite_or(rect.x, 0.0),
@@ -325,6 +406,48 @@ fn finite_or(value: f64, fallback: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scalar_spring_retargets_from_current_motion() {
+        let mut value = AnimatedValue::new(0.0);
+        value.set_target(1_000.0);
+        value.advance(Duration::from_millis(40), SpringConfig::default());
+        let current = value.current;
+        let velocity = value.velocity;
+
+        value.retarget_preserving_motion(2_000.0);
+
+        assert_eq!(value.current, current);
+        assert_eq!(value.velocity, velocity);
+        assert_eq!(value.target, 2_000.0);
+    }
+
+    #[test]
+    fn scalar_spring_softens_opposing_velocity_on_reversal() {
+        let mut value = AnimatedValue::new(0.0);
+        value.set_target(1_000.0);
+        value.advance(Duration::from_millis(40), SpringConfig::default());
+        let current = value.current;
+        let velocity = value.velocity;
+
+        value.retarget_preserving_motion(-500.0);
+
+        assert!(value.velocity > 0.0);
+        assert_eq!(value.velocity, velocity * 0.35);
+        assert_eq!(value.current, current);
+    }
+
+    #[test]
+    fn scalar_spring_does_not_overshoot_target() {
+        let mut value = AnimatedValue::new(0.0);
+        value.velocity = 20_000.0;
+        value.set_target(100.0);
+
+        for _ in 0..60 {
+            value.advance(Duration::from_secs_f64(1.0 / 60.0), SpringConfig::default());
+            assert!(value.current <= 100.0);
+        }
+    }
 
     #[test]
     fn logical_target_changes_without_jumping_visual_geometry() {

@@ -9,12 +9,21 @@ const DEFAULT_WIDTH: f64 = 0.5;
 const MIN_COLUMN_WIDTH: f64 = 0.1;
 const MAX_COLUMN_WIDTH: f64 = 2.0;
 const MIN_ROW_HEIGHT: f64 = 0.05;
+const COMFORT_START: f64 = 0.2;
+const COMFORT_END: f64 = 0.8;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ColumnWidth {
     Proportion(f64),
     Fixed(f64),
     Full,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ViewportFocusStrategy {
+    #[default]
+    Minimal,
+    Center,
 }
 
 impl Default for ColumnWidth {
@@ -67,6 +76,8 @@ pub struct ScrollingLayout {
     viewport_x: f64,
     neighbor_context: f64,
     default_width: ColumnWidth,
+    focus_strategy: ViewportFocusStrategy,
+    reveal_pending: bool,
 }
 
 impl Default for ScrollingLayout {
@@ -77,6 +88,8 @@ impl Default for ScrollingLayout {
             viewport_x: 0.0,
             neighbor_context: 48.0,
             default_width: ColumnWidth::default(),
+            focus_strategy: ViewportFocusStrategy::Minimal,
+            reveal_pending: false,
         }
     }
 }
@@ -89,6 +102,10 @@ impl ScrollingLayout {
         }
     }
 
+    pub fn set_focus_strategy(&mut self, strategy: ViewportFocusStrategy) {
+        self.focus_strategy = strategy;
+    }
+
     pub fn default_width(&self) -> ColumnWidth {
         self.default_width
     }
@@ -99,6 +116,11 @@ impl ScrollingLayout {
 
     pub fn active_column(&self) -> Option<usize> {
         self.active_column
+    }
+
+    pub fn active_window(&self) -> Option<WindowId> {
+        let column = self.columns.get(self.active_column?)?;
+        column.windows.get(column.active).copied()
     }
 
     pub fn viewport_x(&self) -> f64 {
@@ -131,6 +153,7 @@ impl ScrollingLayout {
         self.columns
             .insert(index, Column::new(window, self.default_width));
         self.active_column = Some(index);
+        self.reveal_pending = self.columns.len() > 1;
 
         debug_assert!(self.validate().is_ok());
         Ok(())
@@ -141,6 +164,8 @@ impl ScrollingLayout {
             .window_location(window)
             .ok_or(LayoutError::UnknownWindow(window))?;
         let column = &mut self.columns[column_index];
+        let removed_active_column =
+            self.active_column == Some(column_index) && column.windows.len() == 1;
         column.windows.remove(window_index);
         column.heights.remove(window_index);
 
@@ -156,6 +181,7 @@ impl ScrollingLayout {
             column.active = column.active.min(column.windows.len() - 1);
             column.normalize_heights();
         }
+        self.reveal_pending |= removed_active_column && !self.columns.is_empty();
 
         debug_assert!(self.validate().is_ok());
         Ok(())
@@ -165,8 +191,10 @@ impl ScrollingLayout {
         let (column, index) = self
             .window_location(window)
             .ok_or(LayoutError::UnknownWindow(window))?;
+        let changed_column = self.active_column != Some(column);
         self.active_column = Some(column);
         self.columns[column].active = index;
+        self.reveal_pending |= changed_column;
         Ok(())
     }
 
@@ -191,6 +219,7 @@ impl ScrollingLayout {
         column.active = insertion;
         column.normalize_heights();
         self.active_column = Some(target_column);
+        self.reveal_pending = true;
 
         debug_assert!(self.validate().is_ok());
         Ok(())
@@ -210,6 +239,7 @@ impl ScrollingLayout {
         self.columns
             .insert(insertion, Column::new(window, self.default_width));
         self.active_column = Some(insertion);
+        self.reveal_pending = true;
 
         debug_assert!(self.validate().is_ok());
         Ok(())
@@ -405,7 +435,7 @@ impl ScrollingLayout {
         let viewport_width = (bounds.width - outer * 2.0).max(1.0);
         let viewport_height = (bounds.height - outer * 2.0).max(1.0);
         let mut column_positions = Vec::with_capacity(self.columns.len());
-        let mut strip_width = 0.0;
+        let mut next_column_x = 0.0;
 
         for column in &self.columns {
             let requested = match normalized_width(column.width) {
@@ -428,11 +458,13 @@ impl ScrollingLayout {
                 })
                 .fold(1.0_f64, f64::max);
             let width = requested.max(minimum).max(1.0);
-            column_positions.push((strip_width, width));
-            strip_width += width + inner;
+            column_positions.push((next_column_x, width));
+            next_column_x += width + inner;
         }
-        strip_width = (strip_width - inner).max(0.0);
-        self.reveal_active_column(&column_positions, strip_width, viewport_width);
+        if self.reveal_pending {
+            self.reveal_active_column(&column_positions, viewport_width);
+            self.reveal_pending = false;
+        }
 
         let mut result = LayoutResult::default();
         for (column_index, column) in self.columns.iter().enumerate() {
@@ -464,25 +496,36 @@ impl ScrollingLayout {
         Ok(result)
     }
 
-    fn reveal_active_column(
-        &mut self,
-        positions: &[(f64, f64)],
-        strip_width: f64,
-        viewport_width: f64,
-    ) {
-        let max_scroll = (strip_width - viewport_width).max(0.0);
-        self.viewport_x = finite_nonnegative(self.viewport_x).min(max_scroll);
+    fn reveal_active_column(&mut self, positions: &[(f64, f64)], viewport_width: f64) {
         let Some(active) = self.active_column else {
             return;
         };
         let (start, width) = positions[active];
         let end = start + width;
-        let context = finite_nonnegative(self.neighbor_context).min(viewport_width / 3.0);
+        if self.focus_strategy == ViewportFocusStrategy::Center {
+            self.viewport_x = start + width / 2.0 - viewport_width / 2.0;
+            return;
+        }
 
-        if start < self.viewport_x + context {
-            self.viewport_x = (start - context).max(0.0);
-        } else if end > self.viewport_x + viewport_width - context {
-            self.viewport_x = (end - viewport_width + context).min(max_scroll);
+        if start >= self.viewport_x && end <= self.viewport_x + viewport_width {
+            return;
+        }
+
+        let comfort_start = viewport_width * COMFORT_START;
+        let comfort_end = viewport_width * COMFORT_END;
+        let comfort_width = comfort_end - comfort_start;
+
+        if width > comfort_width {
+            let context = finite_nonnegative(self.neighbor_context).min(viewport_width / 3.0);
+            if start > self.viewport_x + comfort_start {
+                self.viewport_x = start - context;
+            } else if end < self.viewport_x + comfort_end {
+                self.viewport_x = end - viewport_width + context;
+            }
+        } else if start < self.viewport_x + comfort_start {
+            self.viewport_x = start - comfort_start;
+        } else if end > self.viewport_x + comfort_end {
+            self.viewport_x = end - comfort_end;
         }
     }
 
@@ -497,6 +540,7 @@ impl ScrollingLayout {
         if self.columns[source].windows.len() == 1 {
             self.columns.swap(source, destination);
             self.active_column = Some(destination);
+            self.reveal_pending = true;
             return Ok(());
         }
 
@@ -510,6 +554,7 @@ impl ScrollingLayout {
         self.columns
             .insert(insertion, Column::new(window, self.default_width));
         self.active_column = Some(insertion);
+        self.reveal_pending = true;
         Ok(())
     }
 
@@ -523,7 +568,7 @@ impl ScrollingLayout {
     }
 
     pub fn validate(&self) -> Result<(), LayoutError> {
-        if !self.viewport_x.is_finite() || self.viewport_x < 0.0 {
+        if !self.viewport_x.is_finite() {
             return Err(LayoutError::InvalidTree(
                 "scrolling viewport offset is invalid",
             ));
@@ -701,8 +746,8 @@ mod tests {
             .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(4)))
             .unwrap();
 
-        assert_eq!(layout.viewport_x(), 1_000.0);
-        assert_eq!(result.geometry[&window(4)].x, 500.0);
+        assert_eq!(layout.viewport_x(), 1_200.0);
+        assert_eq!(result.geometry[&window(4)].x, 300.0);
     }
 
     #[test]
@@ -735,6 +780,85 @@ mod tests {
             second.geometry[&window(2)],
             Rect::new(505.0, 10.0, 485.0, 780.0)
         );
+    }
+
+    #[test]
+    fn manual_resize_does_not_retarget_the_viewport() {
+        let mut layout = ScrollingLayout::default();
+        let bounds = Rect::new(0.0, 0.0, 1_000.0, 800.0);
+        let gaps = GapConfig {
+            inner: 0.0,
+            outer: 0.0,
+            smart: false,
+        };
+
+        for id in 1..=3 {
+            layout
+                .insert(window(id), (id > 1).then(|| window(id - 1)))
+                .unwrap();
+            layout
+                .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(id)))
+                .unwrap();
+        }
+        let before = layout.viewport_x();
+
+        layout
+            .resize_window(window(3), Direction::Right, 0.5)
+            .unwrap();
+        layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(3)))
+            .unwrap();
+
+        assert_eq!(layout.viewport_x(), before);
+    }
+
+    #[test]
+    fn viewport_is_not_clamped_to_the_column_strip() {
+        let mut layout = ScrollingLayout::default();
+        let bounds = Rect::new(0.0, 0.0, 1_000.0, 800.0);
+        let gaps = GapConfig {
+            inner: 0.0,
+            outer: 0.0,
+            smart: false,
+        };
+
+        for id in 1..=3 {
+            layout.insert(window(id), None).unwrap();
+        }
+        layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(3)))
+            .unwrap();
+        layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(1)))
+            .unwrap();
+
+        assert_eq!(layout.viewport_x(), -200.0);
+    }
+
+    #[test]
+    fn closing_non_focused_column_does_not_move_viewport() {
+        let mut layout = ScrollingLayout::default();
+        let bounds = Rect::new(0.0, 0.0, 1_000.0, 800.0);
+        let gaps = GapConfig {
+            inner: 0.0,
+            outer: 0.0,
+            smart: false,
+        };
+
+        for id in 1..=4 {
+            layout.insert(window(id), None).unwrap();
+        }
+        layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(4)))
+            .unwrap();
+        let before = layout.viewport_x();
+
+        layout.remove(window(1)).unwrap();
+        layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(4)))
+            .unwrap();
+
+        assert_eq!(layout.viewport_x(), before);
     }
 
     #[test]

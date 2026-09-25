@@ -29,10 +29,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let runtime = RuntimeConfig {
         layout_mode: config.layout_mode(),
         default_column_width: config.default_column_width()?,
+        scrolling_focus_strategy: config.scrolling_focus_strategy(),
         column_width_presets: config.width_presets()?,
         animations_enabled: config.animations_enabled(),
         animation_speed: config.animation_speed()?,
         spring_config: config.spring_config()?,
+        viewport_spring_config: config.viewport_spring_config()?,
     };
     let mut state = Ferese::new(&mut event_loop, display, runtime)?;
     backends::init(launch.backend, &mut event_loop, &mut state)?;

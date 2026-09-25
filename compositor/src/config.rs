@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use ferese_animation::SpringConfig;
 use ferese_core::LayoutMode;
-use ferese_layout::ColumnWidth;
+use ferese_layout::{ColumnWidth, ViewportFocusStrategy};
 use serde::Deserialize;
 
 #[derive(Debug, Default, Deserialize)]
@@ -30,6 +30,8 @@ struct AnimationsConfig {
     speed: f64,
     #[serde(default)]
     spring: SpringSettings,
+    #[serde(default)]
+    viewport_spring: ViewportSpringSettings,
 }
 
 impl Default for AnimationsConfig {
@@ -39,6 +41,27 @@ impl Default for AnimationsConfig {
             reduced_motion: false,
             speed: 1.0,
             spring: SpringSettings::default(),
+            viewport_spring: ViewportSpringSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ViewportSpringSettings {
+    #[serde(default = "default_viewport_mass")]
+    mass: f64,
+    #[serde(default = "default_viewport_stiffness")]
+    stiffness: f64,
+    #[serde(default = "default_viewport_damping_ratio")]
+    damping_ratio: f64,
+}
+
+impl Default for ViewportSpringSettings {
+    fn default() -> Self {
+        Self {
+            mass: default_viewport_mass(),
+            stiffness: default_viewport_stiffness(),
+            damping_ratio: default_viewport_damping_ratio(),
         }
     }
 }
@@ -78,8 +101,16 @@ enum LayoutModeValue {
 #[derive(Debug, Default, Deserialize)]
 struct ScrollingConfig {
     default_column_width: Option<ColumnWidthValue>,
+    focus_strategy: Option<FocusStrategyValue>,
     #[serde(default)]
     width_presets: Vec<ColumnWidthValue>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FocusStrategyValue {
+    Minimal,
+    CenterOnFocus,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -187,6 +218,17 @@ impl Config {
             .collect()
     }
 
+    pub fn scrolling_focus_strategy(&self) -> ViewportFocusStrategy {
+        match self
+            .scrolling
+            .focus_strategy
+            .unwrap_or(FocusStrategyValue::Minimal)
+        {
+            FocusStrategyValue::Minimal => ViewportFocusStrategy::Minimal,
+            FocusStrategyValue::CenterOnFocus => ViewportFocusStrategy::Center,
+        }
+    }
+
     pub fn animations_enabled(&self) -> bool {
         self.animations.enabled && !self.animations.reduced_motion
     }
@@ -211,6 +253,26 @@ impl Config {
             mass,
             stiffness,
             damping,
+            ..SpringConfig::default()
+        })
+    }
+
+    pub fn viewport_spring_config(&self) -> Result<SpringConfig, ConfigError> {
+        let mass =
+            positive_animation_value(self.animations.viewport_spring.mass, "viewport_spring.mass")?;
+        let stiffness = positive_animation_value(
+            self.animations.viewport_spring.stiffness,
+            "viewport_spring.stiffness",
+        )?;
+        let damping_ratio = positive_animation_value(
+            self.animations.viewport_spring.damping_ratio,
+            "viewport_spring.damping_ratio",
+        )?;
+
+        Ok(SpringConfig {
+            mass,
+            stiffness,
+            damping: 2.0 * damping_ratio * (stiffness * mass).sqrt(),
             ..SpringConfig::default()
         })
     }
@@ -242,6 +304,18 @@ const fn default_spring_stiffness() -> f64 {
 
 const fn default_spring_damping() -> f64 {
     53.0
+}
+
+const fn default_viewport_mass() -> f64 {
+    1.0
+}
+
+const fn default_viewport_stiffness() -> f64 {
+    320.0
+}
+
+const fn default_viewport_damping_ratio() -> f64 {
+    1.0
 }
 
 fn parse_column_width(
@@ -324,6 +398,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_scrolling_focus_strategy() {
+        let minimal = parse("");
+        let centered = parse("[scrolling]\nfocus_strategy = \"center_on_focus\"");
+
+        assert_eq!(
+            minimal.scrolling_focus_strategy(),
+            ViewportFocusStrategy::Minimal
+        );
+        assert_eq!(
+            centered.scrolling_focus_strategy(),
+            ViewportFocusStrategy::Center
+        );
+    }
+
+    #[test]
     fn rejects_non_positive_or_unknown_column_widths() {
         let zero = parse("[scrolling]\ndefault_column_width = 0.0");
         let unknown = parse("[scrolling]\ndefault_column_width = \"wide\"");
@@ -358,5 +447,15 @@ mod tests {
 
         assert!(speed.animation_speed().is_err());
         assert!(damping.spring_config().is_err());
+    }
+
+    #[test]
+    fn derives_critical_viewport_damping() {
+        let config = parse("");
+        let spring = config.viewport_spring_config().unwrap();
+
+        assert_eq!(spring.mass, 1.0);
+        assert_eq!(spring.stiffness, 320.0);
+        assert!((spring.damping - 35.777_087_64).abs() < 0.000_001);
     }
 }

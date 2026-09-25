@@ -6,12 +6,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ferese_animation::{ClientSize, SpringConfig, WindowGeometry};
+use ferese_animation::{AnimatedValue, ClientSize, SpringConfig, WindowGeometry};
 use ferese_core::{
-    LayoutMode, OutputGeometry, OutputId, OutputWorkspaceMap, WindowPlacement, WorkspaceSet,
+    LayoutMode, OutputGeometry, OutputId, OutputWorkspaceMap, WindowPlacement, WorkspaceId,
+    WorkspaceSet,
 };
 use ferese_layout::{
-    Axis, ColumnWidth, Direction, GapConfig, LayoutResult, Rect, SizeConstraints, WindowId,
+    Axis, ColumnWidth, Direction, GapConfig, LayoutResult, Rect, SizeConstraints,
+    ViewportFocusStrategy, WindowId,
 };
 
 use smithay::{
@@ -84,11 +86,14 @@ pub struct Ferese {
     output_identity_ids: HashMap<String, OutputId>,
     pub window_ids: HashMap<Window, WindowId>,
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
+    viewport_animations: HashMap<WorkspaceId, AnimatedValue>,
+    scrolling_world_x: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
     pub focused_window: Option<WindowId>,
     column_width_presets: Vec<ColumnWidth>,
     animations_enabled: bool,
     animation_speed: f64,
     spring_config: SpringConfig,
+    viewport_spring_config: SpringConfig,
     pub cursor_status: CursorImageStatus,
     pub(crate) cursor_theme: xcursor::CursorTheme,
     pub(crate) named_cursors: HashMap<CursorIcon, crate::cursor::NamedCursor>,
@@ -133,10 +138,12 @@ pub struct Ferese {
 pub struct RuntimeConfig {
     pub layout_mode: LayoutMode,
     pub default_column_width: ColumnWidth,
+    pub scrolling_focus_strategy: ViewportFocusStrategy,
     pub column_width_presets: Vec<ColumnWidth>,
     pub animations_enabled: bool,
     pub animation_speed: f64,
     pub spring_config: SpringConfig,
+    pub viewport_spring_config: SpringConfig,
 }
 
 impl Ferese {
@@ -342,17 +349,24 @@ impl Ferese {
             display_handle,
             loop_signal: event_loop.get_signal(),
             space: Space::default(),
-            workspaces: WorkspaceSet::new(config.layout_mode, config.default_column_width),
+            workspaces: WorkspaceSet::new(
+                config.layout_mode,
+                config.default_column_width,
+                config.scrolling_focus_strategy,
+            ),
             output_workspaces: OutputWorkspaceMap::default(),
             output_ids: HashMap::new(),
             output_identity_ids: HashMap::new(),
             window_ids: HashMap::new(),
             window_geometry: HashMap::new(),
+            viewport_animations: HashMap::new(),
+            scrolling_world_x: HashMap::new(),
             focused_window: None,
             column_width_presets: config.column_width_presets,
             animations_enabled: config.animations_enabled,
             animation_speed: config.animation_speed,
             spring_config: config.spring_config,
+            viewport_spring_config: config.viewport_spring_config,
             cursor_status: CursorImageStatus::default_named(),
             cursor_theme,
             named_cursors,
@@ -639,6 +653,7 @@ impl Ferese {
 
         self.space.unmap_elem(window);
         self.window_geometry.remove(&id);
+        self.scrolling_world_x.remove(&id);
         if let Err(error) = self.workspaces.remove_window(id) {
             tracing::error!(%error, ?id, "failed to remove window from layout");
         }
@@ -651,6 +666,7 @@ impl Ferese {
 
     pub fn relayout(&mut self) {
         self.arrange_layers();
+        let mut previous_scrolling_world_x = std::mem::take(&mut self.scrolling_world_x);
         let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
         let constraints = self.window_constraints();
         let mut visible = HashSet::new();
@@ -693,6 +709,18 @@ impl Ferese {
                     continue;
                 }
             };
+            let viewport_target = workspace.layout.viewport_x();
+            let viewport_current = viewport_target.map(|target| {
+                let viewport = self
+                    .viewport_animations
+                    .entry(workspace_id)
+                    .or_insert_with(|| AnimatedValue::new(target));
+                viewport.retarget_preserving_motion(target);
+                if !self.animations_enabled {
+                    viewport.snap();
+                }
+                viewport.current
+            });
 
             for warning in layout.warnings {
                 tracing::warn!(
@@ -732,7 +760,22 @@ impl Ferese {
                 );
 
                 visible.insert(*id);
-                placements.push((window.clone(), *id, rect, is_fullscreen, is_floating));
+                let scrolling = if !is_fullscreen && !is_floating {
+                    viewport_target
+                        .zip(viewport_current)
+                        .map(|(target, current)| (workspace_id, rect.x + target, current))
+                } else {
+                    None
+                };
+
+                placements.push((
+                    window.clone(),
+                    *id,
+                    rect,
+                    is_fullscreen,
+                    is_floating,
+                    scrolling,
+                ));
             }
         }
 
@@ -749,7 +792,9 @@ impl Ferese {
 
         let now = self.start_time.elapsed();
 
-        for (window, id, rect, is_fullscreen, is_floating) in placements {
+        let mut scrolling_world_x = HashMap::new();
+
+        for (window, id, rect, is_fullscreen, is_floating, scrolling) in placements {
             let committed_size = client_size(&window);
             let geometry = self
                 .window_geometry
@@ -758,6 +803,20 @@ impl Ferese {
             let requested_size = geometry.set_logical_target(rect, now);
             if !self.animations_enabled {
                 geometry.advance(Duration::ZERO, self.spring_config, false);
+            }
+            if let Some((workspace, world_x, viewport_x)) = scrolling {
+                let mut animated_world_x = previous_scrolling_world_x
+                    .remove(&id)
+                    .filter(|(previous_workspace, _)| *previous_workspace == workspace)
+                    .map(|(_, world_x)| world_x)
+                    .unwrap_or_else(|| AnimatedValue::new(world_x));
+                animated_world_x.set_target(world_x);
+                if !self.animations_enabled {
+                    animated_world_x.snap();
+                }
+                geometry.visual.current.x = animated_world_x.current - viewport_x;
+                geometry.visual.velocity.x = 0.0;
+                scrolling_world_x.insert(id, (workspace, animated_world_x));
             }
             let visual = geometry.visual.current;
             let location = (visual.x.round() as i32, visual.y.round() as i32);
@@ -804,6 +863,7 @@ impl Ferese {
                 }
             }
         }
+        self.scrolling_world_x = scrolling_world_x;
 
         crate::backends::direct::render_all(self);
     }
@@ -832,6 +892,12 @@ impl Ferese {
 
     fn advance_animations_by(&mut self, delta: std::time::Duration) -> bool {
         let delta = delta.mul_f64(self.animation_speed);
+        let visible_workspaces = self
+            .space
+            .outputs()
+            .filter_map(|output| self.output_ids.get(output))
+            .filter_map(|output| self.output_workspaces.active_workspace(*output))
+            .collect::<HashSet<_>>();
         let windows = self
             .space
             .elements()
@@ -844,6 +910,17 @@ impl Ferese {
             .collect::<Vec<_>>();
         let mut active_animation = false;
 
+        for (workspace, viewport) in &mut self.viewport_animations {
+            if !visible_workspaces.contains(workspace) {
+                continue;
+            }
+            if self.animations_enabled {
+                active_animation |= viewport.advance(delta, self.viewport_spring_config);
+            } else {
+                viewport.snap();
+            }
+        }
+
         for (window, id) in windows {
             let Some(geometry) = self.window_geometry.get_mut(&id) else {
                 continue;
@@ -851,6 +928,17 @@ impl Ferese {
 
             active_animation |=
                 geometry.advance(delta, self.spring_config, self.animations_enabled);
+            if let Some((workspace, world_x)) = self.scrolling_world_x.get_mut(&id)
+                && let Some(viewport) = self.viewport_animations.get(workspace)
+            {
+                if self.animations_enabled {
+                    active_animation |= world_x.advance(delta, self.spring_config);
+                } else {
+                    world_x.snap();
+                }
+                geometry.visual.current.x = world_x.current - viewport.current;
+                geometry.visual.velocity.x = 0.0;
+            }
             if let Some(size) = geometry.client.expire_wait(self.start_time.elapsed()) {
                 tracing::warn!(
                     ?id,
