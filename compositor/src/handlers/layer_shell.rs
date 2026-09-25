@@ -111,6 +111,9 @@ pub fn handle_commit(state: &mut Ferese, surface: &WlSurface) {
     }
 
     state.relayout();
+    if let Err(error) = state.display_handle.flush_clients() {
+        tracing::debug!(%error, "failed to flush layer-surface configure");
+    }
 }
 
 fn layer_has_keyboard_focus(state: &Ferese, layer: &DesktopLayerSurface) -> bool {
