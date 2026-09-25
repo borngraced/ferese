@@ -229,7 +229,7 @@ impl Ferese {
         }
     }
 
-    fn focused_output(&self) -> Option<&Output> {
+    pub(crate) fn focused_output(&self) -> Option<&Output> {
         let focused = self.output_workspaces.focused_output()?;
         self.output_ids
             .iter()
@@ -325,6 +325,7 @@ impl Ferese {
         let mut seat = seat_state.new_wl_seat(&display_handle, "ferese-winit");
         seat.add_keyboard(Default::default(), 200, 25)?;
         seat.add_pointer();
+        seat.add_touch();
         let socket_name = Self::init_wayland_listener(display, event_loop)?;
 
         let start_time = Instant::now();

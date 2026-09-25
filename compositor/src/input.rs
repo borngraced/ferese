@@ -2,10 +2,12 @@ use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
         KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+        TouchEvent,
     },
     input::{
         keyboard::{FilterResult, keysyms},
         pointer::{AxisFrame, ButtonEvent, MotionEvent, PointerHandle, RelativeMotionEvent},
+        touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent},
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Point, SERIAL_COUNTER, Serial},
@@ -209,13 +211,9 @@ impl Ferese {
                 );
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
-                let Some(output) = self.space.outputs().next() else {
+                let Some(position) = self.absolute_event_position(&event) else {
                     return;
                 };
-                let Some(geometry) = self.space.output_geometry(output) else {
-                    return;
-                };
-                let position = event.position_transformed(geometry.size) + geometry.loc.to_f64();
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
                 let position = self.constrain_pointer_position(&pointer, position);
 
@@ -274,7 +272,7 @@ impl Ferese {
                 let serial = SERIAL_COUNTER.next_serial();
 
                 if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
-                    self.focus_window_under_pointer(serial);
+                    self.focus_window_at(pointer.current_location(), serial);
                 }
 
                 pointer.button(
@@ -325,14 +323,79 @@ impl Ferese {
                 pointer.axis(self, frame);
                 pointer.frame(self);
             }
+            InputEvent::TouchDown { event, .. } => {
+                let Some(location) = self.absolute_event_position(&event) else {
+                    return;
+                };
+                self.focus_window_at(location, SERIAL_COUNTER.next_serial());
+                let touch = self.seat.get_touch().expect("seat has touch capability");
+                let serial = SERIAL_COUNTER.next_serial();
+
+                touch.down(
+                    self,
+                    self.surface_under(location),
+                    &DownEvent {
+                        slot: event.slot(),
+                        location,
+                        serial,
+                        time: event.time() as u32,
+                    },
+                );
+            }
+            InputEvent::TouchMotion { event, .. } => {
+                let Some(location) = self.absolute_event_position(&event) else {
+                    return;
+                };
+                let touch = self.seat.get_touch().expect("seat has touch capability");
+
+                touch.motion(
+                    self,
+                    self.surface_under(location),
+                    &TouchMotionEvent {
+                        slot: event.slot(),
+                        location,
+                        time: event.time() as u32,
+                    },
+                );
+            }
+            InputEvent::TouchUp { event, .. } => {
+                let touch = self.seat.get_touch().expect("seat has touch capability");
+                touch.up(
+                    self,
+                    &UpEvent {
+                        slot: event.slot(),
+                        serial: SERIAL_COUNTER.next_serial(),
+                        time: event.time() as u32,
+                    },
+                );
+            }
+            InputEvent::TouchCancel { .. } => {
+                let touch = self.seat.get_touch().expect("seat has touch capability");
+                touch.cancel(self);
+            }
+            InputEvent::TouchFrame { .. } => {
+                let touch = self.seat.get_touch().expect("seat has touch capability");
+                touch.frame(self);
+            }
             _ => {}
         }
     }
 
-    fn focus_window_under_pointer(&mut self, serial: Serial) {
-        let pointer = self.seat.get_pointer().expect("seat has a pointer");
+    fn absolute_event_position<I, E>(&self, event: &E) -> Option<Point<f64, Logical>>
+    where
+        I: InputBackend,
+        E: AbsolutePositionEvent<I>,
+    {
+        let output = self
+            .focused_output()
+            .or_else(|| self.space.outputs().next())?;
+        let geometry = self.space.output_geometry(output)?;
+
+        Some(event.position_transformed(geometry.size) + geometry.loc.to_f64())
+    }
+
+    fn focus_window_at(&mut self, position: Point<f64, Logical>, serial: Serial) {
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
-        let position = pointer.current_location();
         self.focus_output_at(position);
 
         if let Some((layer, _, _)) = self.layer_under(position) {
