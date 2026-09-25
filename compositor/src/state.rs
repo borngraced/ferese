@@ -219,6 +219,32 @@ impl Ferese {
             .find_map(|(output, id)| (*id == focused).then_some(output))
     }
 
+    pub(crate) fn focus_output_at(&mut self, position: Point<f64, Logical>) {
+        let output = self.space.outputs().find_map(|output| {
+            let geometry = self.space.output_geometry(output)?;
+            (position.x >= f64::from(geometry.loc.x)
+                && position.y >= f64::from(geometry.loc.y)
+                && position.x < f64::from(geometry.loc.x + geometry.size.w)
+                && position.y < f64::from(geometry.loc.y + geometry.size.h))
+            .then(|| output.clone())
+        });
+        let Some(output) = output else {
+            return;
+        };
+        let Some(output_id) = self.output_ids.get(&output).copied() else {
+            return;
+        };
+        if self.output_workspaces.focused_output() == Some(output_id) {
+            return;
+        }
+        let Some(workspace) = self.output_workspaces.active_workspace(output_id) else {
+            return;
+        };
+
+        self.activate_output_workspace(output_id, workspace);
+        self.relayout();
+    }
+
     pub(crate) fn queue_dmabuf_import(&mut self, dmabuf: Dmabuf, notifier: ImportNotifier) {
         self.pending_dmabuf_imports.push((dmabuf, notifier));
     }
@@ -593,75 +619,95 @@ impl Ferese {
 
     pub fn relayout(&mut self) {
         self.arrange_layers();
-        let Some(bounds) = self.output_bounds() else {
-            return;
-        };
-        let fullscreen_bounds = self.full_output_bounds().unwrap_or(bounds);
-        let layout = match self.tiled_layout(bounds) {
-            Ok(layout) => layout,
-            Err(error) => {
-                tracing::error!(%error, "failed to compute tiled geometry");
-                return;
-            }
-        };
-        let tiled_geometry = layout.geometry;
+        let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
+        let mut visible = HashSet::new();
+        let mut placements = Vec::new();
 
-        for warning in layout.warnings {
-            tracing::warn!(
-                window = ?warning.window,
-                kind = ?warning.kind,
-                requested = warning.requested,
-                assigned = warning.assigned,
-                "window size constraint could not be satisfied exactly"
-            );
+        for output in outputs {
+            let Some(output_id) = self.output_ids.get(&output).copied() else {
+                continue;
+            };
+            let Some(workspace_id) = self.output_workspaces.active_workspace(output_id) else {
+                continue;
+            };
+            let Some(workspace) = self.workspaces.workspace(workspace_id) else {
+                continue;
+            };
+            let Some(bounds) = self.output_bounds_for(&output) else {
+                continue;
+            };
+            let fullscreen_bounds = self.full_output_bounds_for(&output).unwrap_or(bounds);
+            let focused = self
+                .focused_window
+                .filter(|window| {
+                    self.workspaces.workspace_for_window(*window) == Some(workspace_id)
+                })
+                .or(workspace.last_focused);
+            let layout = match workspace.layout.geometry_with_constraints(
+                bounds,
+                GapConfig::default(),
+                &self.window_constraints(),
+                focused,
+            ) {
+                Ok(layout) => layout,
+                Err(error) => {
+                    tracing::error!(%error, ?workspace_id, "failed to compute tiled geometry");
+                    continue;
+                }
+            };
+
+            for warning in layout.warnings {
+                tracing::warn!(
+                    window = ?warning.window,
+                    kind = ?warning.kind,
+                    requested = warning.requested,
+                    assigned = warning.assigned,
+                    "window size constraint could not be satisfied exactly"
+                );
+            }
+
+            for (window, id) in &self.window_ids {
+                if self.workspaces.workspace_for_window(*id) != Some(workspace_id) {
+                    continue;
+                }
+
+                let rect = if workspace.fullscreen == Some(*id) {
+                    fullscreen_bounds
+                } else if workspace.fullscreen.is_some() {
+                    continue;
+                } else {
+                    match self.workspaces.placement(*id) {
+                        Some(WindowPlacement::Tiled) => {
+                            let Some(rect) = layout.geometry.get(id).copied() else {
+                                continue;
+                            };
+                            rect
+                        }
+                        Some(WindowPlacement::Floating { rect }) => rect,
+                        None => continue,
+                    }
+                };
+                let is_fullscreen = workspace.fullscreen == Some(*id);
+                let is_floating = matches!(
+                    self.workspaces.placement(*id),
+                    Some(WindowPlacement::Floating { .. })
+                );
+
+                visible.insert(*id);
+                placements.push((window.clone(), *id, rect, is_fullscreen, is_floating));
+            }
         }
-        let active = self.workspaces.active_id();
-        let fullscreen = self.workspaces.active().fullscreen;
+
         let hidden = self
             .window_ids
             .iter()
-            .filter(|(_, id)| {
-                self.workspaces.workspace_for_window(**id) != Some(active)
-                    || fullscreen.is_some_and(|fullscreen| fullscreen != **id)
-                    || (fullscreen.is_none()
-                        && self.workspaces.placement(**id) == Some(WindowPlacement::Tiled)
-                        && !tiled_geometry.contains_key(id))
-            })
+            .filter(|(_, id)| !visible.contains(id))
             .map(|(window, _)| window.clone())
             .collect::<Vec<_>>();
 
         for window in hidden {
             self.space.unmap_elem(&window);
         }
-
-        let placements = self
-            .window_ids
-            .iter()
-            .filter_map(|(window, id)| {
-                if self.workspaces.workspace_for_window(*id) != Some(active) {
-                    return None;
-                }
-
-                let rect = if fullscreen == Some(*id) {
-                    fullscreen_bounds
-                } else if fullscreen.is_some() {
-                    return None;
-                } else {
-                    match self.workspaces.placement(*id)? {
-                        WindowPlacement::Tiled => *tiled_geometry.get(id)?,
-                        WindowPlacement::Floating { rect } => rect,
-                    }
-                };
-
-                let is_fullscreen = fullscreen == Some(*id);
-                let is_floating = matches!(
-                    self.workspaces.placement(*id),
-                    Some(WindowPlacement::Floating { .. })
-                );
-
-                Some((window.clone(), *id, rect, is_fullscreen, is_floating))
-            })
-            .collect::<Vec<_>>();
 
         let now = self.start_time.elapsed();
 
@@ -1021,12 +1067,20 @@ impl Ferese {
             })
             .unwrap_or(Axis::Horizontal);
 
-        if let Err(error) = self
+        let destination = match self
             .workspaces
             .move_window_to_numeric(window, index, axis, 0.5)
         {
-            tracing::error!(%error, ?window, index, "failed to move window to workspace");
-            return;
+            Ok(destination) => destination,
+            Err(error) => {
+                tracing::error!(%error, ?window, index, "failed to move window to workspace");
+                return;
+            }
+        };
+        if let Some(output) = self.output_workspaces.focused_output()
+            && let Err(error) = self.output_workspaces.assign_workspace(output, destination)
+        {
+            tracing::error!(%error, ?destination, "failed to assign destination workspace");
         }
 
         self.focused_window = self.workspaces.active().last_focused;
@@ -1054,6 +1108,10 @@ impl Ferese {
         let output = self
             .focused_output()
             .or_else(|| self.space.outputs().next())?;
+        self.output_bounds_for(output)
+    }
+
+    fn output_bounds_for(&self, output: &Output) -> Option<Rect> {
         let geometry = self.space.output_geometry(output)?;
         let zone = layer_map_for_output(output).non_exclusive_zone();
 
@@ -1065,10 +1123,7 @@ impl Ferese {
         ))
     }
 
-    fn full_output_bounds(&self) -> Option<Rect> {
-        let output = self
-            .focused_output()
-            .or_else(|| self.space.outputs().next())?;
+    fn full_output_bounds_for(&self, output: &Output) -> Option<Rect> {
         let geometry = self.space.output_geometry(output)?;
 
         Some(Rect::new(

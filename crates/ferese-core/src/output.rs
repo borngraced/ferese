@@ -285,6 +285,30 @@ impl OutputWorkspaceMap {
         Ok(WorkspaceSwitch::Activated(output))
     }
 
+    pub fn assign_workspace(
+        &mut self,
+        output: OutputId,
+        workspace: WorkspaceId,
+    ) -> Result<OutputId, OutputError> {
+        if !self.outputs.contains_key(&output) {
+            return Err(OutputError::UnknownOutput(output));
+        }
+        if let Some(owner) = self.assignments.get(&workspace).copied() {
+            return Ok(owner);
+        }
+
+        self.assignments.insert(workspace, output);
+        self.outputs
+            .get_mut(&output)
+            .expect("output was checked above")
+            .workspaces
+            .insert(workspace);
+        self.bump_revision(workspace);
+
+        debug_assert!(self.validate());
+        Ok(output)
+    }
+
     fn migration_target(
         &self,
         removed: OutputId,
@@ -497,5 +521,23 @@ mod tests {
             Ok(WorkspaceSwitch::FocusedExisting(OutputId(2)))
         );
         assert_eq!(outputs.focused_output(), Some(OutputId(2)));
+    }
+
+    #[test]
+    fn assigning_an_unused_workspace_does_not_change_the_active_workspace() {
+        let mut outputs = OutputWorkspaceMap::default();
+        outputs
+            .connect(OutputId(1), geometry(0), WorkspaceId(1))
+            .unwrap();
+
+        assert_eq!(
+            outputs.assign_workspace(OutputId(1), WorkspaceId(2)),
+            Ok(OutputId(1))
+        );
+        assert_eq!(outputs.active_workspace(OutputId(1)), Some(WorkspaceId(1)));
+        assert_eq!(
+            outputs.output_for_workspace(WorkspaceId(2)),
+            Some(OutputId(1))
+        );
     }
 }

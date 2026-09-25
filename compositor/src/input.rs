@@ -280,6 +280,7 @@ impl Ferese {
         let pointer = self.seat.get_pointer().expect("seat has a pointer");
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         let position = pointer.current_location();
+        self.focus_output_at(position);
 
         if let Some((layer, _, _)) = self.layer_under(position) {
             if layer.can_receive_keyboard_focus() {
@@ -315,23 +316,27 @@ impl Ferese {
     }
 
     fn clamp_pointer_position(&self, requested: Point<f64, Logical>) -> Point<f64, Logical> {
-        let Some(output) = self.space.outputs().next() else {
-            return requested;
-        };
-        let Some(geometry) = self.space.output_geometry(output) else {
-            return requested;
-        };
-
-        Point::from((
-            requested.x.clamp(
-                f64::from(geometry.loc.x),
-                f64::from(geometry.loc.x + geometry.size.w - 1),
-            ),
-            requested.y.clamp(
-                f64::from(geometry.loc.y),
-                f64::from(geometry.loc.y + geometry.size.h - 1),
-            ),
-        ))
+        self.space
+            .outputs()
+            .filter_map(|output| self.space.output_geometry(output))
+            .map(|geometry| {
+                let position = Point::from((
+                    requested.x.clamp(
+                        f64::from(geometry.loc.x),
+                        f64::from(geometry.loc.x + geometry.size.w - 1),
+                    ),
+                    requested.y.clamp(
+                        f64::from(geometry.loc.y),
+                        f64::from(geometry.loc.y + geometry.size.h - 1),
+                    ),
+                ));
+                let x = position.x - requested.x;
+                let y = position.y - requested.y;
+                (x * x + y * y, position)
+            })
+            .min_by(|(left, _), (right, _)| left.total_cmp(right))
+            .map(|(_, position)| position)
+            .unwrap_or(requested)
     }
 
     fn constrain_pointer_position(
