@@ -52,8 +52,15 @@ Environment controls:
   `target/debug/ferese-malformed-client`;
 - `FERESE_PID`: compositor PID; automatic lookup is only a fallback;
 - `FERESE_SOAK_LOG`: result log, default `/tmp/ferese-soak-<pid>.log`.
+- `FERESE_SOAK_MAX_RSS_GROWTH_KIB`: maximum RSS growth, default `131072`
+  (128 MiB);
+- `FERESE_SOAK_MAX_FD_GROWTH`: maximum open-file-descriptor growth, default
+  `32`;
+- `FERESE_SOAK_MAX_THREAD_GROWTH`: maximum thread growth, default `8`.
 
 Run the same workload once with the nested backend and once from a direct DRM
-session. A passing run requires the compositor to remain alive, IPC queries to
-succeed, and RSS samples to stabilize rather than grow without bound. Preserve
+session. Samples are taken after spawned clients are reaped. A passing run
+requires the compositor to remain alive, IPC queries to succeed, and RSS, file
+descriptor, and thread growth to stay within the declared budgets. Tighten the
+defaults for release hardware when its normal cache behavior is known. Preserve
 the soak log and the `ferese::render` summaries with the release artifacts.

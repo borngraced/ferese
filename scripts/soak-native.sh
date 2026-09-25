@@ -9,6 +9,9 @@ feresectl_program="${FERESECTL:-target/debug/feresectl}"
 malformed_client_program="${FERESE_MALFORMED_CLIENT:-target/debug/ferese-malformed-client}"
 compositor_pid="${FERESE_PID:-}"
 log_path="${FERESE_SOAK_LOG:-/tmp/ferese-soak-$$.log}"
+max_rss_growth_kib="${FERESE_SOAK_MAX_RSS_GROWTH_KIB:-131072}"
+max_fd_growth="${FERESE_SOAK_MAX_FD_GROWTH:-32}"
+max_thread_growth="${FERESE_SOAK_MAX_THREAD_GROWTH:-8}"
 
 if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
     echo "WAYLAND_DISPLAY must name the Ferese socket" >&2
@@ -19,6 +22,13 @@ if [[ ! "$soak_seconds" =~ ^[1-9][0-9]*$ ]]; then
     echo "FERESE_SOAK_SECONDS must be a positive integer" >&2
     exit 2
 fi
+
+for value in "$max_rss_growth_kib" "$max_fd_growth" "$max_thread_growth"; do
+    if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+        echo "soak resource-growth limits must be non-negative integers" >&2
+        exit 2
+    fi
+done
 
 if [[ ! -x "$feresectl_program" ]]; then
     cargo build -p feresectl
@@ -58,6 +68,36 @@ trap cleanup EXIT INT TERM
 
 rss_kib() {
     awk '/^VmRSS:/ { print $2; exit }' "/proc/$compositor_pid/status"
+}
+
+thread_count() {
+    awk '/^Threads:/ { print $2; exit }' "/proc/$compositor_pid/status"
+}
+
+fd_count() {
+    find "/proc/$compositor_pid/fd" -mindepth 1 -maxdepth 1 -printf . | wc -c
+}
+
+check_resource_budget() {
+    local rss_growth=$((current_rss - initial_rss))
+    local fd_growth=$((current_fds - initial_fds))
+    local thread_growth=$((current_threads - initial_threads))
+
+    if ((rss_growth > max_rss_growth_kib)); then
+        echo "FAIL RSS growth ${rss_growth} KiB exceeds ${max_rss_growth_kib} KiB" \
+            | tee -a "$log_path"
+        exit 1
+    fi
+    if ((fd_growth > max_fd_growth)); then
+        echo "FAIL file-descriptor growth $fd_growth exceeds $max_fd_growth" \
+            | tee -a "$log_path"
+        exit 1
+    fi
+    if ((thread_growth > max_thread_growth)); then
+        echo "FAIL thread growth $thread_growth exceeds $max_thread_growth" \
+            | tee -a "$log_path"
+        exit 1
+    fi
 }
 
 control() {
@@ -101,12 +141,17 @@ start_time="$SECONDS"
 deadline=$((start_time + soak_seconds))
 iteration=0
 initial_rss="$(rss_kib)"
+initial_fds="$(fd_count)"
+initial_threads="$(thread_count)"
 maximum_rss="$initial_rss"
+maximum_fds="$initial_fds"
+maximum_threads="$initial_threads"
 
 {
     echo "ferese native soak"
     echo "pid=$compositor_pid display=$WAYLAND_DISPLAY client=$client_program"
-    echo "duration_seconds=$soak_seconds initial_rss_kib=$initial_rss"
+    echo "duration_seconds=$soak_seconds initial_rss_kib=$initial_rss initial_fds=$initial_fds initial_threads=$initial_threads"
+    echo "limits rss_growth_kib=$max_rss_growth_kib fd_growth=$max_fd_growth thread_growth=$max_thread_growth"
 } | tee "$log_path"
 
 while ((SECONDS < deadline)); do
@@ -146,13 +191,23 @@ while ((SECONDS < deadline)); do
     reap_clients
 
     current_rss="$(rss_kib)"
+    current_fds="$(fd_count)"
+    current_threads="$(thread_count)"
     if ((current_rss > maximum_rss)); then
         maximum_rss="$current_rss"
     fi
+    if ((current_fds > maximum_fds)); then
+        maximum_fds="$current_fds"
+    fi
+    if ((current_threads > maximum_threads)); then
+        maximum_threads="$current_threads"
+    fi
+    check_resource_budget
 
     if ((iteration % 100 == 0)); then
-        printf 'iteration=%d elapsed=%d rss_kib=%d max_rss_kib=%d\n' \
+        printf 'iteration=%d elapsed=%d rss_kib=%d max_rss_kib=%d fds=%d max_fds=%d threads=%d max_threads=%d\n' \
             "$iteration" "$((SECONDS - start_time))" "$current_rss" "$maximum_rss" \
+            "$current_fds" "$maximum_fds" "$current_threads" "$maximum_threads" \
             | tee -a "$log_path"
     fi
 
@@ -163,7 +218,15 @@ done
 control get-outputs
 control get-workspaces
 final_rss="$(rss_kib)"
+final_fds="$(fd_count)"
+final_threads="$(thread_count)"
+current_rss="$final_rss"
+current_fds="$final_fds"
+current_threads="$final_threads"
+check_resource_budget
 
-printf 'PASS iterations=%d final_rss_kib=%d max_rss_kib=%d growth_kib=%d\n' \
+printf 'PASS iterations=%d final_rss_kib=%d max_rss_kib=%d rss_growth_kib=%d final_fds=%d max_fds=%d fd_growth=%d final_threads=%d max_threads=%d thread_growth=%d\n' \
     "$iteration" "$final_rss" "$maximum_rss" "$((final_rss - initial_rss))" \
+    "$final_fds" "$maximum_fds" "$((final_fds - initial_fds))" \
+    "$final_threads" "$maximum_threads" "$((final_threads - initial_threads))" \
     | tee -a "$log_path"
