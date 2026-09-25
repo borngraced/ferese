@@ -302,6 +302,11 @@ impl Ferese {
             InputMethodManagerState::new::<Self, _>(&display_handle, move |_| input_method_enabled);
         let keyboard_shortcuts_inhibit_state =
             KeyboardShortcutsInhibitState::new::<Self>(&display_handle);
+        let shortcut_inhibit_enabled =
+            std::env::var_os("FERESE_ENABLE_SHORTCUT_INHIBIT").is_some_and(|value| value == "1");
+        if !shortcut_inhibit_enabled {
+            display_handle.disable_global::<Self>(keyboard_shortcuts_inhibit_state.global());
+        }
         let shm_state = ShmState::new::<Self>(&display_handle, Vec::new());
         let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&display_handle);
         let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);

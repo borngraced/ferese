@@ -53,6 +53,16 @@ FERESE_ENABLE_INPUT_METHOD=1 cargo run -p ferese
 
 `Ctrl+Alt+Escape` always releases an active client shortcut inhibitor.
 
+Keyboard-shortcut inhibition is hidden unless a trusted VM or remote-desktop
+session explicitly enables it:
+
+```bash
+FERESE_ENABLE_SHORTCUT_INHIBIT=1 cargo run -p ferese
+```
+
+The emergency `Ctrl+Alt+Escape` binding remains available while inhibition is
+active.
+
 Screen capture is hidden by default. A session that has already made an
 explicit capture-policy decision can expose screencopy-v1 to its clients with:
 
