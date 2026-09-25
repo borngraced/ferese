@@ -50,7 +50,10 @@ use smithay::{
     wayland::{compositor::with_states, presentation::Refresh},
 };
 
-use crate::{Ferese, metrics::RenderMetrics};
+use crate::{
+    Ferese,
+    metrics::{FrameEffectMetrics, RenderMetrics},
+};
 
 type SurfaceRenderElement = CropRenderElement<
     RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
@@ -64,7 +67,7 @@ type MemoryRenderElement = CropRenderElement<
 >;
 
 type PhysicalDamage = Vec<Rectangle<i32, Physical>>;
-type DamageRenderResult = Result<Option<PhysicalDamage>, Box<dyn Error>>;
+type DamageRenderResult = Result<(Option<PhysicalDamage>, FrameEffectMetrics), Box<dyn Error>>;
 
 render_elements! {
     pub(crate) AnimatedWindowRenderElement<=GlesRenderer>;
@@ -682,6 +685,10 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                         let (renderer, mut framebuffer) = backend.bind()?;
                         state.process_dmabuf_imports(renderer);
                         let elements = animated_window_elements(state, renderer, &output);
+                        let effects = frame_effect_metrics(
+                            &elements,
+                            output.current_scale().fractional_scale(),
+                        );
                         let result = damage_tracker.render_output(
                             renderer,
                             &mut framebuffer,
@@ -714,12 +721,12 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                                 .finish()?;
                         }
 
-                        Ok(result.damage.cloned())
+                        Ok((result.damage.cloned(), effects))
                     }
                 })();
-                let damage = match rendered {
-                    Ok(Some(damage)) => damage,
-                    Ok(None) => {
+                let (damage, effects) = match rendered {
+                    Ok((Some(damage), effects)) => (damage, effects),
+                    Ok((None, _)) => {
                         state.space.refresh();
                         state.popups.cleanup();
                         layer_map_for_output(&output).cleanup();
@@ -740,7 +747,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     state.loop_signal.stop();
                     return;
                 }
-                render_metrics.record_frame(render_started.elapsed(), &damage, 0);
+                render_metrics.record_frame(render_started.elapsed(), &damage, 0, effects);
 
                 let mut presentation = OutputPresentationFeedback::new(&output);
                 state.space.elements().for_each(|window| {
@@ -809,6 +816,23 @@ pub(crate) fn cursorless_window_elements(
     output: &Output,
 ) -> Vec<AnimatedWindowRenderElement> {
     output_elements(state, renderer, output, false)
+}
+
+pub(crate) fn frame_effect_metrics(
+    elements: &[AnimatedWindowRenderElement],
+    scale: f64,
+) -> FrameEffectMetrics {
+    elements
+        .iter()
+        .fold(FrameEffectMetrics::default(), |mut metrics, element| {
+            if let AnimatedWindowRenderElement::Backdrop(backdrop) = element {
+                let geometry = backdrop.geometry(scale.into());
+                metrics.blur_regions += 1;
+                metrics.blur_sample_pixels += u64::try_from(geometry.size.w.max(0)).unwrap_or(0)
+                    * u64::try_from(geometry.size.h.max(0)).unwrap_or(0);
+            }
+            metrics
+        })
 }
 
 fn output_elements(

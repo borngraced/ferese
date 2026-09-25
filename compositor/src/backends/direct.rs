@@ -43,7 +43,9 @@ use crate::{
     Ferese,
     config::{OutputModeRequest, OutputProfile, OutputSettings, OutputTransform},
     metrics::RenderMetrics,
-    winit::{animated_window_elements, cursorless_window_elements, redraw_output},
+    winit::{
+        animated_window_elements, cursorless_window_elements, frame_effect_metrics, redraw_output,
+    },
 };
 
 pub struct DirectBackendState {
@@ -444,6 +446,8 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
         state.process_dmabuf_imports(&mut device.renderer);
         let (mut buffer, age) = output.surface.next_buffer()?;
         let elements = animated_window_elements(state, &mut device.renderer, &output.output);
+        let effects =
+            frame_effect_metrics(&elements, output.output.current_scale().fractional_scale());
         let mut framebuffer = device.renderer.bind(&mut buffer)?;
         let result = output.damage_tracker.render_output(
             &mut device.renderer,
@@ -512,9 +516,12 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
         output
             .surface
             .queue_buffer(Some(result.sync), Some(damage.clone()), presentation)?;
-        output
-            .render_metrics
-            .record_frame(render_started.elapsed(), &damage, missed_deadlines);
+        output.render_metrics.record_frame(
+            render_started.elapsed(),
+            &damage,
+            missed_deadlines,
+            effects,
+        );
         output.frame_pending = true;
         Ok(true)
     })();

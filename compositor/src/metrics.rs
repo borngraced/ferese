@@ -4,6 +4,12 @@ use smithay::utils::{Physical, Rectangle};
 
 const REPORT_INTERVAL: Duration = Duration::from_secs(5);
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct FrameEffectMetrics {
+    pub(crate) blur_regions: u64,
+    pub(crate) blur_sample_pixels: u64,
+}
+
 #[derive(Debug)]
 pub(crate) struct RenderMetrics {
     enabled: bool,
@@ -13,6 +19,9 @@ pub(crate) struct RenderMetrics {
     damaged_pixels: u64,
     total_render_time: Duration,
     longest_render_time: Duration,
+    blur_frames: u64,
+    blur_regions: u64,
+    blur_sample_pixels: u64,
 }
 
 impl RenderMetrics {
@@ -33,6 +42,9 @@ impl RenderMetrics {
             damaged_pixels: 0,
             total_render_time: Duration::ZERO,
             longest_render_time: Duration::ZERO,
+            blur_frames: 0,
+            blur_regions: 0,
+            blur_sample_pixels: 0,
         }
     }
 
@@ -41,6 +53,7 @@ impl RenderMetrics {
         render_time: Duration,
         damage: &[Rectangle<i32, Physical>],
         missed_deadlines: u64,
+        effects: FrameEffectMetrics,
     ) {
         if !self.enabled {
             return;
@@ -50,6 +63,9 @@ impl RenderMetrics {
         self.damaged_pixels += damage.iter().map(rectangle_area).sum::<u64>();
         self.total_render_time += render_time;
         self.longest_render_time = self.longest_render_time.max(render_time);
+        self.blur_frames += u64::from(effects.blur_regions > 0);
+        self.blur_regions += effects.blur_regions;
+        self.blur_sample_pixels += effects.blur_sample_pixels;
 
         let now = Instant::now();
         let elapsed = now.saturating_duration_since(self.interval_started);
@@ -71,6 +87,9 @@ impl RenderMetrics {
             average_render_us,
             longest_render_us = self.longest_render_time.as_micros(),
             missed_deadlines,
+            blur_frames = self.blur_frames,
+            blur_regions = self.blur_regions,
+            blur_sample_pixels = self.blur_sample_pixels,
             "render performance"
         );
 
@@ -79,6 +98,9 @@ impl RenderMetrics {
         self.damaged_pixels = 0;
         self.total_render_time = Duration::ZERO;
         self.longest_render_time = Duration::ZERO;
+        self.blur_frames = 0;
+        self.blur_regions = 0;
+        self.blur_sample_pixels = 0;
     }
 }
 
@@ -99,6 +121,7 @@ mod tests {
             Duration::from_millis(2),
             &[Rectangle::new((0, 0).into(), (100, 50).into())],
             0,
+            FrameEffectMetrics::default(),
         );
 
         assert_eq!(metrics.rendered_frames, 0);
@@ -116,11 +139,18 @@ mod tests {
                 Rectangle::new((10, 10).into(), (20, 10).into()),
             ],
             0,
+            FrameEffectMetrics {
+                blur_regions: 2,
+                blur_sample_pixels: 4_096,
+            },
         );
 
         assert_eq!(metrics.rendered_frames, 1);
         assert_eq!(metrics.damaged_pixels, 5_200);
         assert_eq!(metrics.total_render_time, Duration::from_millis(2));
         assert_eq!(metrics.longest_render_time, Duration::from_millis(2));
+        assert_eq!(metrics.blur_frames, 1);
+        assert_eq!(metrics.blur_regions, 2);
+        assert_eq!(metrics.blur_sample_pixels, 4_096);
     }
 }

@@ -26,7 +26,8 @@ Set `RUST_LOG=ferese=debug` for detailed compositor logging.
 
 Set `FERESE_TRACE_PERFORMANCE=1` to emit five-second per-output summaries under
 the `ferese::render` tracing target. Summaries include rendered frames, damaged
-pixels, average and longest render time, and DRM missed-deadline totals.
+pixels, average and longest render time, DRM missed-deadline totals, blur-active
+frames, blur-region count, and sampled blur pixels.
 
 The native-client soak runner and its nested/DRM procedure are documented in
 [docs/native-soak-testing.md](docs/native-soak-testing.md).
