@@ -1311,7 +1311,10 @@ User-control commands are:
 focus                 move
 resize                workspace
 move-to-workspace     toggle-floating
-toggle-fullscreen     close
+toggle-fullscreen     toggle-layout
+cycle-column-width    center-column
+consume               expel
+close
 reload-config         get-focused-window
 get-workspaces        get-outputs
 get-config            set-config

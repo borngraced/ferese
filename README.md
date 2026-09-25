@@ -155,7 +155,8 @@ cargo run -p feresectl -- get-workspaces
 ```
 
 The v0 IPC slice also supports `move`, `resize`, `move-to-workspace`,
-`toggle-floating`, `toggle-fullscreen`, `close`, `get-focused-window`, and
+`toggle-floating`, `toggle-fullscreen`, `toggle-layout`, `cycle-column-width`,
+`center-column`, `consume`, `expel`, `close`, `get-focused-window`, and
 `get-outputs`. Requests use versioned, 1 MiB-limited length-prefixed JSON. The
 runtime directory and socket are restricted to modes `0700` and `0600`, and the
 server rejects peers whose effective UID differs from the compositor's.
