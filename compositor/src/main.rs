@@ -31,6 +31,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let input_settings = config.input_settings()?;
     let bindings = config.bindings(&input_settings)?;
     let window_rules = config.window_rules()?;
+    let output_profiles = config.output_profiles()?;
     let mut event_loop = EventLoop::try_new()?;
     let signals = Signals::new(&[Signal::SIGINT, Signal::SIGTERM])?;
     event_loop
@@ -54,6 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         animation_speed: config.animation_speed()?,
         spring_config: config.spring_config()?,
         viewport_spring_config: config.viewport_spring_config()?,
+        output_profiles,
     };
     let mut state = Ferese::new(&mut event_loop, display, runtime)?;
     backends::init(launch.backend, &mut event_loop, &mut state)?;

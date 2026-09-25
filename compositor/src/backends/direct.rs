@@ -41,6 +41,7 @@ use smithay::{
 
 use crate::{
     Ferese,
+    config::{OutputModeRequest, OutputProfile, OutputSettings, OutputTransform},
     metrics::RenderMetrics,
     winit::{animated_window_elements, cursorless_window_elements, redraw_output},
 };
@@ -50,6 +51,29 @@ pub struct DirectBackendState {
     pub active: bool,
     devices: HashMap<DrmNode, DirectDevice>,
     presentation: HashMap<(DrmNode, crtc::Handle), PresentationClock>,
+    pub(crate) connected_outputs: Vec<ConnectedOutputInfo>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ConnectedOutputInfo {
+    pub connector: String,
+    pub identity: String,
+    pub enabled: bool,
+    pub profile: Option<String>,
+    pub physical_size: Option<(u32, u32)>,
+    pub current_mode: Option<ConnectedModeInfo>,
+    pub available_modes: Vec<ConnectedModeInfo>,
+    pub scale: f64,
+    pub transform: OutputTransform,
+    pub configured_position: Option<[i32; 2]>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ConnectedModeInfo {
+    pub width: u16,
+    pub height: u16,
+    pub refresh_millihertz: i32,
+    pub preferred: bool,
 }
 
 #[derive(Default)]
@@ -70,12 +94,25 @@ struct DirectDevice {
 struct DirectOutput {
     connector: connector::Handle,
     mode: DrmMode,
+    settings: OutputSettings,
     output: Output,
     global: GlobalId,
     surface: GbmBufferedSurface<GbmAllocator<DrmDeviceFd>, OutputPresentationFeedback>,
     damage_tracker: OutputDamageTracker,
     render_metrics: RenderMetrics,
     frame_pending: bool,
+}
+
+struct OutputSelection {
+    connector: connector::Info,
+    crtc: crtc::Handle,
+    mode: DrmMode,
+    settings: OutputSettings,
+}
+
+struct OutputScan {
+    selections: Vec<OutputSelection>,
+    connected_outputs: Vec<ConnectedOutputInfo>,
 }
 
 pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<(), Box<dyn Error>> {
@@ -106,6 +143,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         active: session_active,
         devices: HashMap::new(),
         presentation: HashMap::new(),
+        connected_outputs: Vec::new(),
     });
     open_primary_device(event_loop, state, &primary_path)?;
 
@@ -242,10 +280,30 @@ fn open_primary_device(
     state
         .dmabuf_state
         .create_global::<Ferese>(&display_handle, dmabuf_formats);
-    let selections = select_outputs(&drm)?;
+    let scan = select_outputs(&drm, &state.output_profiles)?;
+    if scan.selections.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no connected enabled DRM output with a usable CRTC",
+        )
+        .into());
+    }
+    state
+        .direct_backend
+        .as_mut()
+        .expect("direct backend state remains initialized")
+        .connected_outputs = scan.connected_outputs;
     let mut outputs = HashMap::new();
-    for (connector, crtc, mode) in selections {
-        let output = create_direct_output(state, &mut drm, &gbm, &renderer, connector, crtc, mode)?;
+    for selection in scan.selections {
+        let OutputSelection {
+            connector,
+            crtc,
+            mode,
+            settings,
+        } = selection;
+        let output = create_direct_output(
+            state, &mut drm, &gbm, &renderer, connector, crtc, mode, &settings,
+        )?;
         state
             .direct_backend
             .as_mut()
@@ -505,25 +563,30 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
         return;
     };
 
-    let selections = match select_outputs(&device.drm) {
-        Ok(selections) => selections,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+    let scan = match select_outputs(&device.drm, &state.output_profiles) {
+        Ok(scan) => scan,
         Err(error) => {
             tracing::error!(?node, %error, "failed to scan DRM connectors");
             restore_device(state, node, device);
             return;
         }
     };
-    let mut selections = selections
+    if let Some(backend) = state.direct_backend.as_mut() {
+        backend.connected_outputs = scan.connected_outputs;
+    }
+    let mut selections = scan
+        .selections
         .into_iter()
-        .map(|selection @ (_, crtc, _)| (crtc, selection))
+        .map(|selection| (selection.crtc, selection))
         .collect::<HashMap<_, _>>();
     let existing = device.outputs.keys().copied().collect::<Vec<_>>();
 
     for crtc in existing {
         let unchanged = device.outputs.get(&crtc).is_some_and(|output| {
-            selections.get(&crtc).is_some_and(|(connector, _, mode)| {
-                connector.handle() == output.connector && *mode == output.mode
+            selections.get(&crtc).is_some_and(|selection| {
+                selection.connector.handle() == output.connector
+                    && selection.mode == output.mode
+                    && selection.settings == output.settings
             })
         });
         if unchanged {
@@ -541,7 +604,13 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
         }
     }
 
-    for (_, (connector, crtc, mode)) in selections {
+    for (_, selection) in selections {
+        let OutputSelection {
+            connector,
+            crtc,
+            mode,
+            settings,
+        } = selection;
         match create_direct_output(
             state,
             &mut device.drm,
@@ -550,6 +619,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
             connector,
             crtc,
             mode,
+            &settings,
         ) {
             Ok(output) => {
                 state
@@ -586,6 +656,9 @@ fn remove_device(state: &mut Ferese, node: DrmNode) {
         if let Some(backend) = state.direct_backend.as_mut() {
             backend.presentation.remove(&(node, crtc));
         }
+    }
+    if let Some(backend) = state.direct_backend.as_mut() {
+        backend.connected_outputs.clear();
     }
     tracing::info!(?node, "removed DRM device");
 }
@@ -632,23 +705,72 @@ fn send_frame_callbacks(state: &mut Ferese, output: &Output) {
     }
 }
 
-fn select_outputs(drm: &DrmDevice) -> io::Result<Vec<(connector::Info, crtc::Handle, DrmMode)>> {
+fn select_outputs(drm: &DrmDevice, profiles: &[OutputProfile]) -> io::Result<OutputScan> {
     let resources = drm.resource_handles()?;
+    let connected = resources
+        .connectors()
+        .iter()
+        .map(|handle| drm.get_connector(*handle, true))
+        .collect::<io::Result<Vec<_>>>()?
+        .into_iter()
+        .filter(|connector| connector.state() == connector::State::Connected)
+        .collect::<Vec<_>>();
+    let identities = connected
+        .iter()
+        .map(|connector| connector_identity(drm, connector))
+        .collect::<Vec<_>>();
+    let active_profile = profiles.iter().find(|profile| {
+        profile.outputs.iter().all(|settings| {
+            connected
+                .iter()
+                .zip(&identities)
+                .any(|(connector, identity)| output_matches(settings, connector, identity))
+        })
+    });
+    if let Some(profile) = active_profile {
+        tracing::info!(profile = %profile.name, "selected output profile");
+    }
+
     let mut selections = Vec::new();
+    let mut connected_outputs = Vec::new();
     let mut used_crtcs = HashSet::new();
 
-    for handle in resources.connectors() {
-        let connector = drm.get_connector(*handle, true)?;
-        if connector.state() != connector::State::Connected {
+    for (connector, identity) in connected.into_iter().zip(identities) {
+        let settings = active_profile
+            .and_then(|profile| {
+                profile
+                    .outputs
+                    .iter()
+                    .find(|settings| output_matches(settings, &connector, &identity))
+            })
+            .cloned()
+            .unwrap_or_else(|| default_output_settings(connector.to_string()));
+        let selected_mode = settings
+            .enabled
+            .then(|| select_mode(&connector, settings.mode))
+            .flatten();
+        connected_outputs.push(ConnectedOutputInfo {
+            connector: connector.to_string(),
+            identity: identity.clone(),
+            enabled: settings.enabled,
+            profile: active_profile.map(|profile| profile.name.clone()),
+            physical_size: connector.size(),
+            current_mode: selected_mode.map(|mode| connected_mode_info(mode)),
+            available_modes: connector
+                .modes()
+                .iter()
+                .copied()
+                .map(connected_mode_info)
+                .collect(),
+            scale: settings.scale,
+            transform: settings.transform,
+            configured_position: settings.position,
+        });
+        if !settings.enabled {
+            tracing::info!(output = %connector, "output disabled by active profile");
             continue;
         }
-        let Some(mode) = connector
-            .modes()
-            .iter()
-            .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
-            .or_else(|| connector.modes().first())
-            .copied()
-        else {
+        let Some(mode) = selected_mode else {
             continue;
         };
 
@@ -666,18 +788,99 @@ fn select_outputs(drm: &DrmDevice) -> io::Result<Vec<(connector::Info, crtc::Han
         });
         if let Some(crtc) = current_crtc.or(compatible_crtc) {
             used_crtcs.insert(crtc);
-            selections.push((connector, crtc, mode));
+            selections.push(OutputSelection {
+                connector,
+                crtc,
+                mode,
+                settings,
+            });
         }
     }
 
-    if selections.is_empty() {
-        Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "no connected desktop DRM connector with a usable CRTC",
-        ))
-    } else {
-        Ok(selections)
+    selections.sort_by_key(|selection| selection.settings.position.is_none());
+    Ok(OutputScan {
+        selections,
+        connected_outputs,
+    })
+}
+
+fn connected_mode_info(mode: DrmMode) -> ConnectedModeInfo {
+    let (width, height) = mode.size();
+    ConnectedModeInfo {
+        width,
+        height,
+        refresh_millihertz: OutputMode::from(mode).refresh,
+        preferred: mode.mode_type().contains(ModeTypeFlags::PREFERRED),
     }
+}
+
+fn output_matches(settings: &OutputSettings, connector: &connector::Info, identity: &str) -> bool {
+    settings.matcher == connector.to_string() || settings.matcher == identity
+}
+
+fn default_output_settings(matcher: String) -> OutputSettings {
+    OutputSettings {
+        matcher,
+        enabled: true,
+        mode: None,
+        scale: 1.0,
+        transform: OutputTransform::Normal,
+        position: None,
+    }
+}
+
+fn select_mode(
+    connector: &connector::Info,
+    requested: Option<OutputModeRequest>,
+) -> Option<DrmMode> {
+    let fallback = || {
+        connector
+            .modes()
+            .iter()
+            .find(|mode| mode.mode_type().contains(ModeTypeFlags::PREFERRED))
+            .or_else(|| connector.modes().first())
+            .copied()
+    };
+    let Some(requested) = requested else {
+        return fallback();
+    };
+
+    let matching = connector
+        .modes()
+        .iter()
+        .filter(|mode| mode.size() == (requested.width, requested.height));
+    let selected = if let Some(refresh) = requested.refresh_millihertz {
+        matching
+            .min_by_key(|mode| {
+                OutputMode::from(**mode)
+                    .refresh
+                    .unsigned_abs()
+                    .abs_diff(refresh)
+            })
+            .filter(|mode| {
+                OutputMode::from(**mode)
+                    .refresh
+                    .unsigned_abs()
+                    .abs_diff(refresh)
+                    <= 1_000
+            })
+            .copied()
+    } else {
+        matching
+            .max_by_key(|mode| OutputMode::from(**mode).refresh)
+            .copied()
+    };
+    if selected.is_none() {
+        tracing::warn!(
+            output = %connector,
+            width = requested.width,
+            height = requested.height,
+            refresh_millihertz = ?requested.refresh_millihertz,
+            "requested output mode is unavailable; using preferred mode"
+        );
+    }
+
+    selected.or_else(fallback)
 }
 
 fn create_direct_output(
@@ -688,9 +891,10 @@ fn create_direct_output(
     connector: connector::Info,
     crtc: crtc::Handle,
     mode: DrmMode,
+    settings: &OutputSettings,
 ) -> Result<DirectOutput, Box<dyn Error>> {
     let identity = connector_identity(drm, &connector);
-    let (output, global) = create_output(state, &connector, mode, identity);
+    let (output, global) = create_output(state, &connector, mode, identity, settings);
     let drm_surface = drm.create_surface(crtc, mode, &[connector.handle()])?;
     let allocator = GbmAllocator::new(
         gbm.clone(),
@@ -709,6 +913,7 @@ fn create_direct_output(
     Ok(DirectOutput {
         connector: connector.handle(),
         mode,
+        settings: settings.clone(),
         output,
         global,
         surface,
@@ -723,6 +928,7 @@ fn create_output(
     connector: &connector::Info,
     mode: DrmMode,
     identity: String,
+    settings: &OutputSettings,
 ) -> (Output, GlobalId) {
     let name = connector.to_string();
     let physical_size = connector.size().unwrap_or((0, 0));
@@ -738,23 +944,45 @@ fn create_output(
     let output_mode = OutputMode::from(mode);
 
     let global = output.create_global::<Ferese>(&state.display_handle);
+    for mode in connector.modes().iter().copied().map(OutputMode::from) {
+        output.add_mode(mode);
+    }
     output.set_preferred(output_mode);
     output.change_current_state(
         Some(output_mode),
-        Some(Transform::Normal),
-        Some(Scale::Integer(1)),
-        Some((0, 0).into()),
+        Some(output_transform(settings.transform)),
+        Some(Scale::Fractional(settings.scale)),
+        Some({
+            let [x, y] = settings.position.unwrap_or([0, 0]);
+            (x, y).into()
+        }),
     );
-    let x = state
-        .space
-        .outputs()
-        .filter_map(|output| state.space.output_geometry(output))
-        .map(|geometry| geometry.loc.x + geometry.size.w)
-        .max()
-        .unwrap_or(0);
-    state.space.map_output(&output, (x, 0));
+    let position = settings.position.unwrap_or_else(|| {
+        let x = state
+            .space
+            .outputs()
+            .filter_map(|output| state.space.output_geometry(output))
+            .map(|geometry| geometry.loc.x + geometry.size.w)
+            .max()
+            .unwrap_or(0);
+        [x, 0]
+    });
+    state.space.map_output(&output, (position[0], position[1]));
     state.register_output(&output, identity);
     (output, global)
+}
+
+fn output_transform(transform: OutputTransform) -> Transform {
+    match transform {
+        OutputTransform::Normal => Transform::Normal,
+        OutputTransform::Rotate90 => Transform::_90,
+        OutputTransform::Rotate180 => Transform::_180,
+        OutputTransform::Rotate270 => Transform::_270,
+        OutputTransform::Flipped => Transform::Flipped,
+        OutputTransform::Flipped90 => Transform::Flipped90,
+        OutputTransform::Flipped180 => Transform::Flipped180,
+        OutputTransform::Flipped270 => Transform::Flipped270,
+    }
 }
 
 fn connector_identity(drm: &DrmDevice, connector: &connector::Info) -> String {
@@ -775,9 +1003,7 @@ fn connector_identity(drm: &DrmDevice, connector: &connector::Info) -> String {
         });
 
     match edid {
-        Some(edid) if !edid.is_empty() => {
-            format!("drm:{}:{:016x}", connector, stable_hash(&edid))
-        }
+        Some(edid) if !edid.is_empty() => format!("drm-edid:{:016x}", stable_hash(&edid)),
         _ => format!("drm:{connector}"),
     }
 }

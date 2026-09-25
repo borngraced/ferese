@@ -107,6 +107,40 @@ Touchpad settings apply to libinput devices in the direct DRM session. In the
 nested backend, the host compositor remains responsible for physical touchpad
 configuration.
 
+The direct DRM backend selects the first output profile whose listed monitors
+are all connected. Match either the connector name reported by `get-outputs`
+or its persistent EDID-derived identity:
+
+```toml
+[[output_profiles]]
+name = "docked"
+
+[[output_profiles.outputs]]
+match = "HDMI-A-1"
+mode = "3840x2160@119.998"
+scale = 1.6
+position = [0, 0]
+
+[[output_profiles.outputs]]
+match = "eDP-1"
+enabled = false
+
+[[output_profiles]]
+name = "laptop"
+
+[[output_profiles.outputs]]
+match = "eDP-1"
+mode = "2880x1800@120"
+scale = 1.6
+position = [0, 0]
+```
+
+Unspecified connected outputs remain enabled with their preferred mode, scale
+`1.0`, normal transform, and automatic horizontal placement. Supported
+transforms are `normal`, `rotate_90`, `rotate_180`, `rotate_270`, `flipped`,
+and their rotated flipped variants. Output configuration is applied at startup
+and on hotplug; live configuration reload remains deferred.
+
 Commands are argv arrays and are started directly, without a shell. The
 default `Super+Enter` binding runs the built-in `terminal = ["foot"]` command:
 
@@ -159,6 +193,7 @@ presented, and are not re-applied when an application later changes its title.
 cargo run -p feresectl -- focus left
 cargo run -p feresectl -- workspace 2
 cargo run -p feresectl -- get-workspaces
+cargo run -p feresectl -- get-outputs
 ```
 
 The v0 IPC slice also supports `move`, `resize`, `move-to-workspace`,
@@ -167,6 +202,9 @@ The v0 IPC slice also supports `move`, `resize`, `move-to-workspace`,
 `get-outputs`. Requests use versioned, 1 MiB-limited length-prefixed JSON. The
 runtime directory and socket are restricted to modes `0700` and `0600`, and the
 server rejects peers whose effective UID differs from the compositor's.
+`get-outputs` includes disabled-but-connected monitors, connector and persistent
+identity matchers, current and available modes with refresh rates, fractional
+scale, transform, logical position and size, and physical dimensions.
 
 Text-input-v3 is available to applications by default. Input-method-v2 is
 hidden unless the session explicitly opts in, because an input method can

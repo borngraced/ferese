@@ -13,8 +13,9 @@ use ferese_ipc::{Request, Response, VERSION, read_frame, write_frame};
 use ferese_layout::Direction;
 use serde_json::{Value, json};
 use smithay::reexports::calloop::{EventLoop, channel};
+use smithay::utils::Transform;
 
-use crate::Ferese;
+use crate::{Ferese, config::OutputTransform};
 
 const REQUEST_QUEUE_CAPACITY: usize = 128;
 
@@ -223,6 +224,79 @@ impl Ferese {
     }
 
     fn outputs_json(&self) -> Value {
+        if let Some(backend) = self.direct_backend.as_ref() {
+            let focused = self.output_workspaces.focused_output();
+            let mut outputs = backend
+                .connected_outputs
+                .iter()
+                .map(|info| {
+                    let mapped = self
+                        .space
+                        .outputs()
+                        .find(|output| output.name() == info.connector);
+                    let id = mapped.and_then(|output| self.output_id(output));
+                    let geometry = mapped.and_then(|output| self.space.output_geometry(output));
+                    let workspace = id.and_then(|id| self.output_workspaces.active_workspace(id));
+                    let position = geometry
+                        .map(|geometry| [geometry.loc.x, geometry.loc.y])
+                        .or(info.configured_position);
+                    let scale = mapped
+                        .map(|output| output.current_scale().fractional_scale())
+                        .unwrap_or(info.scale);
+                    let transform = mapped
+                        .map(|output| transform_name(output.current_transform()))
+                        .unwrap_or_else(|| configured_transform_name(info.transform));
+                    let modes = info
+                        .available_modes
+                        .iter()
+                        .map(|mode| {
+                            json!({
+                                "width": mode.width,
+                                "height": mode.height,
+                                "refresh_millihertz": mode.refresh_millihertz,
+                                "refresh_hz": f64::from(mode.refresh_millihertz) / 1_000.0,
+                                "preferred": mode.preferred,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let current_mode = info.current_mode.map(|mode| {
+                        json!({
+                            "width": mode.width,
+                            "height": mode.height,
+                            "refresh_millihertz": mode.refresh_millihertz,
+                            "refresh_hz": f64::from(mode.refresh_millihertz) / 1_000.0,
+                        })
+                    });
+
+                    json!({
+                        "id": id.map(|id| id.0),
+                        "name": info.connector,
+                        "connector": info.connector,
+                        "identity": info.identity,
+                        "connected": true,
+                        "enabled": info.enabled && mapped.is_some(),
+                        "profile": info.profile,
+                        "focused": id.is_some() && id == focused,
+                        "workspace": workspace.map(|workspace| workspace.0),
+                        "x": position.map(|position| position[0]),
+                        "y": position.map(|position| position[1]),
+                        "width": geometry.map(|geometry| geometry.size.w),
+                        "height": geometry.map(|geometry| geometry.size.h),
+                        "physical_width_mm": info.physical_size.map(|size| size.0),
+                        "physical_height_mm": info.physical_size.map(|size| size.1),
+                        "scale": scale,
+                        "transform": transform,
+                        "current_mode": current_mode,
+                        "available_modes": modes,
+                    })
+                })
+                .collect::<Vec<_>>();
+            outputs.sort_by(|left, right| {
+                left["connector"].as_str().cmp(&right["connector"].as_str())
+            });
+            return Value::Array(outputs);
+        }
+
         let focused = self.output_workspaces.focused_output();
         let mut outputs = self
             .space
@@ -231,20 +305,69 @@ impl Ferese {
                 let id = self.output_id(output)?;
                 let geometry = self.space.output_geometry(output)?;
                 let workspace = self.output_workspaces.active_workspace(id)?;
+                let mode = output.current_mode();
+                let physical = output.physical_properties().size;
                 Some(json!({
                     "id": id.0,
                     "name": output.name(),
+                    "connector": output.name(),
+                    "identity": Value::Null,
+                    "connected": true,
+                    "enabled": true,
                     "focused": Some(id) == focused,
                     "workspace": workspace.0,
                     "x": geometry.loc.x,
                     "y": geometry.loc.y,
                     "width": geometry.size.w,
                     "height": geometry.size.h,
+                    "physical_width_mm": physical.w,
+                    "physical_height_mm": physical.h,
+                    "scale": output.current_scale().fractional_scale(),
+                    "transform": transform_name(output.current_transform()),
+                    "current_mode": mode.map(|mode| json!({
+                        "width": mode.size.w,
+                        "height": mode.size.h,
+                        "refresh_millihertz": mode.refresh,
+                        "refresh_hz": f64::from(mode.refresh) / 1_000.0,
+                    })),
+                    "available_modes": output.modes().into_iter().map(|mode| json!({
+                        "width": mode.size.w,
+                        "height": mode.size.h,
+                        "refresh_millihertz": mode.refresh,
+                        "refresh_hz": f64::from(mode.refresh) / 1_000.0,
+                        "preferred": Some(mode) == output.preferred_mode(),
+                    })).collect::<Vec<_>>(),
                 }))
             })
             .collect::<Vec<_>>();
         outputs.sort_by_key(|output| output["id"].as_u64());
         Value::Array(outputs)
+    }
+}
+
+fn transform_name(transform: Transform) -> &'static str {
+    match transform {
+        Transform::Normal => "normal",
+        Transform::_90 => "rotate_90",
+        Transform::_180 => "rotate_180",
+        Transform::_270 => "rotate_270",
+        Transform::Flipped => "flipped",
+        Transform::Flipped90 => "flipped_90",
+        Transform::Flipped180 => "flipped_180",
+        Transform::Flipped270 => "flipped_270",
+    }
+}
+
+fn configured_transform_name(transform: OutputTransform) -> &'static str {
+    match transform {
+        OutputTransform::Normal => "normal",
+        OutputTransform::Rotate90 => "rotate_90",
+        OutputTransform::Rotate180 => "rotate_180",
+        OutputTransform::Rotate270 => "rotate_270",
+        OutputTransform::Flipped => "flipped",
+        OutputTransform::Flipped90 => "flipped_90",
+        OutputTransform::Flipped180 => "flipped_180",
+        OutputTransform::Flipped270 => "flipped_270",
     }
 }
 

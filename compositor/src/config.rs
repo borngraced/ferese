@@ -32,6 +32,72 @@ pub struct Config {
     window_rules: Vec<WindowRuleConfig>,
     #[serde(default)]
     scrolling: ScrollingConfig,
+    #[serde(default)]
+    output_profiles: Vec<OutputProfileConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutputProfile {
+    pub name: String,
+    pub outputs: Vec<OutputSettings>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutputSettings {
+    pub matcher: String,
+    pub enabled: bool,
+    pub mode: Option<OutputModeRequest>,
+    pub scale: f64,
+    pub transform: OutputTransform,
+    pub position: Option<[i32; 2]>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct OutputModeRequest {
+    pub width: u16,
+    pub height: u16,
+    pub refresh_millihertz: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputTransform {
+    #[default]
+    Normal,
+    #[serde(rename = "rotate_90")]
+    Rotate90,
+    #[serde(rename = "rotate_180")]
+    Rotate180,
+    #[serde(rename = "rotate_270")]
+    Rotate270,
+    Flipped,
+    #[serde(rename = "flipped_90")]
+    Flipped90,
+    #[serde(rename = "flipped_180")]
+    Flipped180,
+    #[serde(rename = "flipped_270")]
+    Flipped270,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct OutputProfileConfig {
+    name: String,
+    #[serde(default)]
+    outputs: Vec<OutputConfig>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct OutputConfig {
+    #[serde(rename = "match")]
+    matcher: String,
+    #[serde(default = "default_true")]
+    enabled: bool,
+    mode: Option<String>,
+    #[serde(default = "default_output_scale")]
+    scale: f64,
+    #[serde(default)]
+    transform: OutputTransform,
+    position: Option<[i32; 2]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -427,6 +493,7 @@ pub enum ConfigError {
         field: &'static str,
         value: String,
     },
+    InvalidOutputProfile(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -456,6 +523,9 @@ impl fmt::Display for ConfigError {
             Self::InvalidThemeValue { field, value } => {
                 write!(formatter, "invalid theme.{field} value {value}")
             }
+            Self::InvalidOutputProfile(message) => {
+                write!(formatter, "invalid output profile: {message}")
+            }
         }
     }
 }
@@ -471,7 +541,8 @@ impl Error for ConfigError {
             | Self::InvalidInputValue { .. }
             | Self::InvalidBinding(_)
             | Self::InvalidWindowRule(_)
-            | Self::InvalidThemeValue { .. } => None,
+            | Self::InvalidThemeValue { .. }
+            | Self::InvalidOutputProfile(_) => None,
         }
     }
 }
@@ -620,6 +691,76 @@ impl Config {
 
     pub fn window_rules(&self) -> Result<Vec<WindowRule>, ConfigError> {
         window_rules::validate(&self.window_rules).map_err(ConfigError::InvalidWindowRule)
+    }
+
+    pub fn output_profiles(&self) -> Result<Vec<OutputProfile>, ConfigError> {
+        let mut names = HashSet::new();
+
+        self.output_profiles
+            .iter()
+            .map(|profile| {
+                let name = profile.name.trim();
+                if name.is_empty() {
+                    return Err(ConfigError::InvalidOutputProfile(
+                        "profile names cannot be empty".to_owned(),
+                    ));
+                }
+                if !names.insert(name.to_owned()) {
+                    return Err(ConfigError::InvalidOutputProfile(format!(
+                        "duplicate profile name {name:?}"
+                    )));
+                }
+                if profile.outputs.is_empty() {
+                    return Err(ConfigError::InvalidOutputProfile(format!(
+                        "profile {name:?} has no outputs"
+                    )));
+                }
+
+                let mut matchers = HashSet::new();
+                let outputs = profile
+                    .outputs
+                    .iter()
+                    .map(|output| {
+                        let matcher = output.matcher.trim();
+                        if matcher.is_empty() {
+                            return Err(ConfigError::InvalidOutputProfile(format!(
+                                "profile {name:?} contains an empty output matcher"
+                            )));
+                        }
+                        if !matchers.insert(matcher.to_owned()) {
+                            return Err(ConfigError::InvalidOutputProfile(format!(
+                                "profile {name:?} repeats output matcher {matcher:?}"
+                            )));
+                        }
+                        if !output.scale.is_finite() || output.scale <= 0.0 {
+                            return Err(ConfigError::InvalidOutputProfile(format!(
+                                "profile {name:?} output {matcher:?} has invalid scale {}",
+                                output.scale
+                            )));
+                        }
+
+                        Ok(OutputSettings {
+                            matcher: matcher.to_owned(),
+                            enabled: output.enabled,
+                            mode: output
+                                .mode
+                                .as_deref()
+                                .map(parse_output_mode)
+                                .transpose()
+                                .map_err(ConfigError::InvalidOutputProfile)?,
+                            scale: output.scale,
+                            transform: output.transform,
+                            position: output.position,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ConfigError>>()?;
+
+                Ok(OutputProfile {
+                    name: name.to_owned(),
+                    outputs,
+                })
+            })
+            .collect()
     }
 
     pub fn theme_settings(&self) -> Result<ThemeSettings, ConfigError> {
@@ -1196,6 +1337,53 @@ const fn default_viewport_damping_ratio() -> f64 {
     1.0
 }
 
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_output_scale() -> f64 {
+    1.0
+}
+
+fn parse_output_mode(value: &str) -> Result<OutputModeRequest, String> {
+    let (size, refresh) = value
+        .trim()
+        .split_once('@')
+        .map_or((value.trim(), None), |(size, refresh)| {
+            (size, Some(refresh))
+        });
+    let (width, height) = size
+        .split_once('x')
+        .ok_or_else(|| format!("mode {value:?} must use WIDTHxHEIGHT or WIDTHxHEIGHT@REFRESH"))?;
+    let width = width
+        .parse::<u16>()
+        .map_err(|_| format!("mode {value:?} has an invalid width"))?;
+    let height = height
+        .parse::<u16>()
+        .map_err(|_| format!("mode {value:?} has an invalid height"))?;
+    if width == 0 || height == 0 {
+        return Err(format!("mode {value:?} dimensions must be positive"));
+    }
+    let refresh_millihertz = refresh
+        .map(|refresh| {
+            let hertz = refresh
+                .parse::<f64>()
+                .map_err(|_| format!("mode {value:?} has an invalid refresh rate"))?;
+            if !hertz.is_finite() || hertz <= 0.0 || hertz > u32::MAX as f64 / 1_000.0 {
+                return Err(format!("mode {value:?} has an invalid refresh rate"));
+            }
+
+            Ok((hertz * 1_000.0).round() as u32)
+        })
+        .transpose()?;
+
+    Ok(OutputModeRequest {
+        width,
+        height,
+        refresh_millihertz,
+    })
+}
+
 fn parse_column_width(
     value: &ColumnWidthValue,
     field: &'static str,
@@ -1518,5 +1706,72 @@ mod tests {
         assert_eq!(spring.mass, 1.0);
         assert_eq!(spring.stiffness, 320.0);
         assert!((spring.damping - 35.777_087_64).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn parses_output_profiles() {
+        let config = parse(
+            r#"
+[[output_profiles]]
+name = "docked"
+
+[[output_profiles.outputs]]
+match = "HDMI-A-1"
+mode = "3840x2160@119.998"
+scale = 1.6
+position = [0, 0]
+
+[[output_profiles.outputs]]
+match = "eDP-1"
+enabled = false
+transform = "rotate_90"
+"#,
+        );
+
+        assert_eq!(
+            config.output_profiles().unwrap(),
+            vec![OutputProfile {
+                name: "docked".to_owned(),
+                outputs: vec![
+                    OutputSettings {
+                        matcher: "HDMI-A-1".to_owned(),
+                        enabled: true,
+                        mode: Some(OutputModeRequest {
+                            width: 3840,
+                            height: 2160,
+                            refresh_millihertz: Some(119_998),
+                        }),
+                        scale: 1.6,
+                        transform: OutputTransform::Normal,
+                        position: Some([0, 0]),
+                    },
+                    OutputSettings {
+                        matcher: "eDP-1".to_owned(),
+                        enabled: false,
+                        mode: None,
+                        scale: 1.0,
+                        transform: OutputTransform::Rotate90,
+                        position: None,
+                    },
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_output_profiles() {
+        let invalid_scale = parse(
+            "[[output_profiles]]\nname = \"bad\"\n[[output_profiles.outputs]]\nmatch = \"eDP-1\"\nscale = 0.0",
+        );
+        let invalid_mode = parse(
+            "[[output_profiles]]\nname = \"bad\"\n[[output_profiles.outputs]]\nmatch = \"eDP-1\"\nmode = \"native\"",
+        );
+        let duplicate = parse(
+            "[[output_profiles]]\nname = \"bad\"\n[[output_profiles.outputs]]\nmatch = \"eDP-1\"\n[[output_profiles.outputs]]\nmatch = \"eDP-1\"",
+        );
+
+        assert!(invalid_scale.output_profiles().is_err());
+        assert!(invalid_mode.output_profiles().is_err());
+        assert!(duplicate.output_profiles().is_err());
     }
 }

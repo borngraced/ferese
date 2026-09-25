@@ -1099,6 +1099,7 @@ Configuration has one authoritative representation. Namespace ownership is:
 [commands]        launch command vectors           this document
 [[bindings]]      compositor bindings              this document
 [[window_rules]]  window placement rules           this document
+[[output_profiles]] direct-session output policy   this document
 ```
 
 There is no separate legacy visual namespace. Blur, opacity, radii, shadows,
@@ -1187,6 +1188,19 @@ disabled = true
 [[window_rules]]
 app_id = "org.example.DialogApp"
 floating = true
+
+[[output_profiles]]
+name = "docked"
+
+[[output_profiles.outputs]]
+match = "HDMI-A-1"
+mode = "3840x2160@120"
+scale = 1.6
+position = [0, 0]
+
+[[output_profiles.outputs]]
+match = "eDP-1"
+enabled = false
 ```
 
 Command values are argument arrays, never shell command strings. Binding records
@@ -1380,6 +1394,20 @@ safely.
 Each connected output has a mode, scale, transform, logical position, usable
 region, and one active workspace. v0 MAY choose preferred modes automatically
 but MUST handle hotplug without losing windows.
+
+The direct backend selects the first configured output profile for which every
+listed output matcher is connected. A matcher MAY be a DRM connector name or
+the persistent identity reported by `get-outputs`. Each entry MAY set enabled
+state, `WIDTHxHEIGHT[@REFRESH]` mode, positive fractional scale, transform, and
+logical position. Unspecified connected outputs remain enabled using preferred
+mode, scale `1.0`, normal transform, and automatic horizontal placement.
+Invalid profiles MUST fail startup validation. An unavailable valid mode MUST
+produce a warning and fall back to the preferred mode.
+
+`get-outputs` MUST enumerate disabled as well as enabled connected outputs and
+report connector and persistent identity, active profile, current and available
+modes and refresh rates, scale, transform, logical geometry when enabled, and
+physical dimensions when known.
 
 On startup, the first output creates and activates workspace `1`. Selecting an
 uncreated numeric workspace from `1` through `9` creates it on the focused

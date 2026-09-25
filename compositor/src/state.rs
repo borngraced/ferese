@@ -77,7 +77,7 @@ use smithay::{
 };
 
 use crate::{
-    config::{Binding, InputSettings, ThemeSettings},
+    config::{Binding, InputSettings, OutputProfile, ThemeSettings},
     window_rules::{WindowRule, resolve as resolve_window_rules},
 };
 
@@ -138,6 +138,7 @@ pub struct Ferese {
     animation_speed: f64,
     spring_config: SpringConfig,
     viewport_spring_config: SpringConfig,
+    pub(crate) output_profiles: Vec<OutputProfile>,
     pub cursor_status: CursorImageStatus,
     pub(crate) cursor_theme: xcursor::CursorTheme,
     pub(crate) named_cursors: HashMap<CursorIcon, crate::cursor::NamedCursor>,
@@ -195,6 +196,7 @@ pub struct RuntimeConfig {
     pub animation_speed: f64,
     pub spring_config: SpringConfig,
     pub viewport_spring_config: SpringConfig,
+    pub output_profiles: Vec<OutputProfile>,
 }
 
 impl Ferese {
@@ -446,6 +448,7 @@ impl Ferese {
             animation_speed: config.animation_speed,
             spring_config: config.spring_config,
             viewport_spring_config: config.viewport_spring_config,
+            output_profiles: config.output_profiles,
             cursor_status: CursorImageStatus::default_named(),
             cursor_theme,
             named_cursors,
