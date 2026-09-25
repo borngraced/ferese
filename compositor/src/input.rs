@@ -71,19 +71,31 @@ impl Ferese {
                             return FilterResult::Intercept(());
                         }
 
-                        let direction = if modifiers.logo && !modifiers.ctrl && !modifiers.alt {
-                            match symbol {
-                                keysyms::KEY_h | keysyms::KEY_H => Some(Direction::Left),
-                                keysyms::KEY_j | keysyms::KEY_J => Some(Direction::Down),
-                                keysyms::KEY_k | keysyms::KEY_K => Some(Direction::Up),
-                                keysyms::KEY_l | keysyms::KEY_L => Some(Direction::Right),
-                                _ => None,
-                            }
-                        } else {
-                            None
+                        let direction = match symbol {
+                            keysyms::KEY_h | keysyms::KEY_H => Some(Direction::Left),
+                            keysyms::KEY_j | keysyms::KEY_J => Some(Direction::Down),
+                            keysyms::KEY_k | keysyms::KEY_K => Some(Direction::Up),
+                            keysyms::KEY_l | keysyms::KEY_L => Some(Direction::Right),
+                            _ => None,
                         };
 
-                        if let Some(direction) = direction {
+                        if modifiers.logo
+                            && modifiers.ctrl
+                            && !modifiers.alt
+                            && !modifiers.shift
+                            && let Some(direction) = direction
+                        {
+                            if state == KeyState::Pressed {
+                                data.intercepted_keys.insert(keycode);
+                                data.resize_direction(direction);
+                            }
+
+                            FilterResult::Intercept(())
+                        } else if modifiers.logo
+                            && !modifiers.ctrl
+                            && !modifiers.alt
+                            && let Some(direction) = direction
+                        {
                             if state == KeyState::Pressed {
                                 data.intercepted_keys.insert(keycode);
 
@@ -145,6 +157,38 @@ impl Ferese {
                                 if state == KeyState::Pressed {
                                     data.intercepted_keys.insert(keycode);
                                     data.toggle_layout_mode();
+                                }
+
+                                FilterResult::Intercept(())
+                            } else if !modifiers.shift
+                                && matches!(symbol, keysyms::KEY_r | keysyms::KEY_R)
+                            {
+                                if state == KeyState::Pressed {
+                                    data.intercepted_keys.insert(keycode);
+                                    data.cycle_focused_column_width();
+                                }
+
+                                FilterResult::Intercept(())
+                            } else if !modifiers.shift
+                                && matches!(symbol, keysyms::KEY_c | keysyms::KEY_C)
+                            {
+                                if state == KeyState::Pressed {
+                                    data.intercepted_keys.insert(keycode);
+                                    data.center_focused_column();
+                                }
+
+                                FilterResult::Intercept(())
+                            } else if !modifiers.shift && symbol == keysyms::KEY_bracketleft {
+                                if state == KeyState::Pressed {
+                                    data.intercepted_keys.insert(keycode);
+                                    data.consume_focused_window();
+                                }
+
+                                FilterResult::Intercept(())
+                            } else if !modifiers.shift && symbol == keysyms::KEY_bracketright {
+                                if state == KeyState::Pressed {
+                                    data.intercepted_keys.insert(keycode);
+                                    data.expel_focused_window();
                                 }
 
                                 FilterResult::Intercept(())

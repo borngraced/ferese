@@ -1242,10 +1242,15 @@ Super+Enter             terminal
 Super+Q                 close window
 Super+H/J/K/L           focus left/down/up/right
 Super+Shift+H/J/K/L     move left/down/up/right
+Super+Ctrl+H/J/K/L      resize left/down/up/right
 Super+1..9              switch workspace
 Super+Shift+1..9        move window to workspace
 Super+F                 toggle fullscreen
 Super+M                 toggle scrolling/tree layout
+Super+R                 cycle scrolling column width
+Super+C                 center scrolling column
+Super+[                 consume window into adjacent column
+Super+]                 expel window from column
 Super+Shift+Space       toggle floating
 Super+Space             launcher
 Super+Tab               overview

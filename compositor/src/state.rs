@@ -84,6 +84,7 @@ pub struct Ferese {
     pub window_ids: HashMap<Window, WindowId>,
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
     pub focused_window: Option<WindowId>,
+    column_width_presets: Vec<ColumnWidth>,
     pub cursor_status: CursorImageStatus,
     pub(crate) cursor_theme: xcursor::CursorTheme,
     pub(crate) named_cursors: HashMap<CursorIcon, crate::cursor::NamedCursor>,
@@ -273,6 +274,7 @@ impl Ferese {
         display: Display<Self>,
         default_layout_mode: LayoutMode,
         default_column_width: ColumnWidth,
+        column_width_presets: Vec<ColumnWidth>,
     ) -> Result<Self, Box<dyn Error>> {
         let display_handle = display.handle();
         crate::handlers::screencopy::init_global(&display_handle);
@@ -328,6 +330,7 @@ impl Ferese {
             window_ids: HashMap::new(),
             window_geometry: HashMap::new(),
             focused_window: None,
+            column_width_presets,
             cursor_status: CursorImageStatus::default_named(),
             cursor_theme,
             named_cursors,
@@ -953,6 +956,88 @@ impl Ferese {
             Ok(true) => self.relayout(),
             Ok(false) => {}
             Err(error) => tracing::error!(%error, ?mode, "failed to change layout mode"),
+        }
+    }
+
+    pub fn consume_focused_window(&mut self) {
+        let Some(window) = self.focused_window else {
+            return;
+        };
+        let Some(bounds) = self.output_bounds() else {
+            return;
+        };
+        if self.workspaces.active().layout.mode() != LayoutMode::Scrolling {
+            return;
+        }
+        let target = self
+            .workspaces
+            .active()
+            .layout
+            .directional_neighbor(window, Direction::Left, bounds)
+            .ok()
+            .flatten()
+            .or_else(|| {
+                self.workspaces
+                    .active()
+                    .layout
+                    .directional_neighbor(window, Direction::Right, bounds)
+                    .ok()
+                    .flatten()
+            });
+        let Some(target) = target else {
+            return;
+        };
+
+        if let Err(error) = self.workspaces.stack_window(window, target) {
+            tracing::error!(%error, ?window, ?target, "failed to consume window into column");
+            return;
+        }
+        self.relayout();
+    }
+
+    pub fn expel_focused_window(&mut self) {
+        let Some(window) = self.focused_window else {
+            return;
+        };
+
+        match self.workspaces.extract_window(window) {
+            Ok(true) => self.relayout(),
+            Ok(false) => {}
+            Err(error) => tracing::error!(%error, ?window, "failed to expel window from column"),
+        }
+    }
+
+    pub fn cycle_focused_column_width(&mut self) {
+        let Some(window) = self.focused_window else {
+            return;
+        };
+
+        match self
+            .workspaces
+            .cycle_column_width(window, &self.column_width_presets)
+        {
+            Ok(true) => self.relayout(),
+            Ok(false) => {}
+            Err(error) => tracing::error!(%error, ?window, "failed to cycle column width"),
+        }
+    }
+
+    pub fn center_focused_column(&mut self) {
+        let Some(window) = self.focused_window else {
+            return;
+        };
+        let Some(bounds) = self.output_bounds() else {
+            return;
+        };
+        let constraints = self.window_constraints();
+
+        match self
+            .workspaces
+            .center_window(window, bounds, GapConfig::default(), &constraints)
+        {
+            Ok(true) => self.relayout(),
+            Ok(false) => {}
+            Err(error) => tracing::error!(%error, ?window, "failed to center column"),
         }
     }
 

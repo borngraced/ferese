@@ -31,6 +31,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         display,
         config.layout_mode(),
         config.default_column_width()?,
+        config.width_presets()?,
     )?;
     backends::init(launch.backend, &mut event_loop, &mut state)?;
 

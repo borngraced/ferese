@@ -227,6 +227,55 @@ impl ScrollingLayout {
         Ok(())
     }
 
+    pub fn cycle_column_width(
+        &mut self,
+        window: WindowId,
+        presets: &[ColumnWidth],
+    ) -> Result<bool, LayoutError> {
+        let (column, _) = self
+            .window_location(window)
+            .ok_or(LayoutError::UnknownWindow(window))?;
+        let presets = presets
+            .iter()
+            .copied()
+            .map(normalized_width)
+            .collect::<Vec<_>>();
+        if presets.is_empty() {
+            return Ok(false);
+        }
+
+        let current = normalized_width(self.columns[column].width);
+        let next = presets
+            .iter()
+            .position(|preset| *preset == current)
+            .map(|index| presets[(index + 1) % presets.len()])
+            .unwrap_or(presets[0]);
+        self.columns[column].width = next;
+        Ok(next != current)
+    }
+
+    pub fn center_window(
+        &mut self,
+        window: WindowId,
+        bounds: Rect,
+        gaps: GapConfig,
+        constraints: &HashMap<WindowId, SizeConstraints>,
+    ) -> Result<bool, LayoutError> {
+        let before = self.viewport_x;
+        let result = self.geometry_with_constraints(bounds, gaps, constraints, Some(window))?;
+        let rect = result
+            .geometry
+            .get(&window)
+            .copied()
+            .ok_or(LayoutError::UnknownWindow(window))?;
+        let viewport_center = bounds.x + bounds.width / 2.0;
+        let window_center = rect.x + rect.width / 2.0;
+        self.viewport_x += window_center - viewport_center;
+        self.geometry_with_constraints(bounds, gaps, constraints, Some(window))?;
+
+        Ok(self.viewport_x != before)
+    }
+
     pub fn directional_neighbor(
         &self,
         window: WindowId,
@@ -472,6 +521,16 @@ impl ScrollingLayout {
     }
 
     pub fn validate(&self) -> Result<(), LayoutError> {
+        if !self.viewport_x.is_finite() || self.viewport_x < 0.0 {
+            return Err(LayoutError::InvalidTree(
+                "scrolling viewport offset is invalid",
+            ));
+        }
+        if normalized_width(self.default_width) != self.default_width {
+            return Err(LayoutError::InvalidTree(
+                "scrolling default column width is invalid",
+            ));
+        }
         if self.columns.is_empty() {
             return if self.active_column.is_none() {
                 Ok(())
@@ -492,6 +551,11 @@ impl ScrollingLayout {
 
         let mut windows = HashSet::new();
         for column in &self.columns {
+            if normalized_width(column.width) != column.width {
+                return Err(LayoutError::InvalidTree(
+                    "scrolling column width is invalid",
+                ));
+            }
             if column.windows.is_empty() {
                 return Err(LayoutError::InvalidTree("scrolling column is empty"));
             }
@@ -741,5 +805,134 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(layout.columns()[0].heights, vec![0.6, 0.4]);
+    }
+
+    #[test]
+    fn width_cycle_wraps_through_configured_presets() {
+        let mut layout = ScrollingLayout::default();
+        layout.insert(window(1), None).unwrap();
+        let presets = [
+            ColumnWidth::Proportion(0.5),
+            ColumnWidth::Proportion(2.0 / 3.0),
+            ColumnWidth::Full,
+        ];
+
+        assert!(layout.cycle_column_width(window(1), &presets).unwrap());
+        assert_eq!(
+            layout.columns()[0].width,
+            ColumnWidth::Proportion(2.0 / 3.0)
+        );
+        assert!(layout.cycle_column_width(window(1), &presets).unwrap());
+        assert_eq!(layout.columns()[0].width, ColumnWidth::Full);
+        assert!(layout.cycle_column_width(window(1), &presets).unwrap());
+        assert_eq!(layout.columns()[0].width, ColumnWidth::Proportion(0.5));
+    }
+
+    #[test]
+    fn explicit_center_places_a_middle_column_in_the_viewport_center() {
+        let mut layout = ScrollingLayout::default();
+        for id in 1_u64..=4 {
+            layout
+                .insert(
+                    window(id),
+                    id.checked_sub(1).filter(|id| *id > 0).map(window),
+                )
+                .unwrap();
+        }
+        let bounds = Rect::new(0.0, 0.0, 1_000.0, 800.0);
+        let gaps = GapConfig {
+            inner: 0.0,
+            outer: 0.0,
+            smart: false,
+        };
+        layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(4)))
+            .unwrap();
+
+        assert!(
+            layout
+                .center_window(window(2), bounds, gaps, &HashMap::new())
+                .unwrap()
+        );
+        let result = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(2)))
+            .unwrap();
+        let rect = result.geometry[&window(2)];
+
+        assert_eq!(rect.x + rect.width / 2.0, 500.0);
+    }
+
+    #[test]
+    fn randomized_scrolling_operations_preserve_invariants() {
+        let mut layout = ScrollingLayout::default();
+        let mut windows = Vec::new();
+        let mut next_window = 1_u64;
+        let mut random = 0x5c40_11ab_u64;
+
+        for _ in 0..2_000 {
+            random = random
+                .wrapping_mul(2_862_933_555_777_941_757)
+                .wrapping_add(3_037_000_493);
+
+            match random % 7 {
+                0 if windows.len() < 48 => {
+                    let new_window = window(next_window);
+                    next_window += 1;
+                    let focused = windows.get(random as usize % windows.len().max(1)).copied();
+                    layout.insert(new_window, focused).unwrap();
+                    windows.push(new_window);
+                }
+                1 if !windows.is_empty() => {
+                    let index = random as usize % windows.len();
+                    layout.remove(windows.swap_remove(index)).unwrap();
+                }
+                2 if windows.len() > 1 => {
+                    let first = random as usize % windows.len();
+                    let mut second = random.rotate_left(17) as usize % windows.len();
+                    if first == second {
+                        second = (second + 1) % windows.len();
+                    }
+                    layout
+                        .move_into_column(windows[first], windows[second])
+                        .unwrap();
+                }
+                3 if !windows.is_empty() => {
+                    let index = random as usize % windows.len();
+                    layout.extract_to_column(windows[index]).unwrap();
+                }
+                4 if !windows.is_empty() => {
+                    let index = random as usize % windows.len();
+                    let direction = random_direction(random.rotate_left(9));
+                    layout.move_window(windows[index], direction).unwrap();
+                }
+                5 if !windows.is_empty() => {
+                    let index = random as usize % windows.len();
+                    let direction = random_direction(random.rotate_left(23));
+                    layout
+                        .resize_window(windows[index], direction, 0.05)
+                        .unwrap();
+                }
+                6 if !windows.is_empty() => {
+                    let index = random as usize % windows.len();
+                    layout.focus(windows[index]).unwrap();
+                }
+                _ => {}
+            }
+
+            layout.validate().unwrap();
+            assert_eq!(
+                layout.window_ids().collect::<HashSet<_>>().len(),
+                windows.len()
+            );
+        }
+    }
+
+    fn random_direction(random: u64) -> Direction {
+        match random % 4 {
+            0 => Direction::Left,
+            1 => Direction::Right,
+            2 => Direction::Up,
+            _ => Direction::Down,
+        }
     }
 }

@@ -183,6 +183,45 @@ impl WorkspaceLayout {
         }
     }
 
+    pub fn extract_window(&mut self, window: WindowId) -> Result<bool, LayoutError> {
+        match self {
+            Self::Scrolling(layout) => {
+                let grouped = layout
+                    .columns()
+                    .iter()
+                    .find(|column| column.windows.contains(&window))
+                    .is_some_and(|column| column.windows.len() > 1);
+                layout.extract_to_column(window)?;
+                Ok(grouped)
+            }
+            Self::Tree(_) => Ok(false),
+        }
+    }
+
+    pub fn cycle_column_width(
+        &mut self,
+        window: WindowId,
+        presets: &[ColumnWidth],
+    ) -> Result<bool, LayoutError> {
+        match self {
+            Self::Scrolling(layout) => layout.cycle_column_width(window, presets),
+            Self::Tree(_) => Ok(false),
+        }
+    }
+
+    pub fn center_window(
+        &mut self,
+        window: WindowId,
+        bounds: Rect,
+        gaps: GapConfig,
+        constraints: &HashMap<WindowId, SizeConstraints>,
+    ) -> Result<bool, LayoutError> {
+        match self {
+            Self::Scrolling(layout) => layout.center_window(window, bounds, gaps, constraints),
+            Self::Tree(_) => Ok(false),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), LayoutError> {
         match self {
             Self::Scrolling(layout) => layout.validate(),
@@ -470,6 +509,64 @@ impl WorkspaceSet {
 
         debug_assert!(self.validate().is_ok());
         Ok(())
+    }
+
+    pub fn extract_window(&mut self, window: WindowId) -> Result<bool, WorkspaceError> {
+        if self.workspace_for_window(window) != Some(self.active)
+            || self.placement(window) != Some(WindowPlacement::Tiled)
+        {
+            return Err(WorkspaceError::InvalidState(
+                "extracted window is not tiled on the active workspace",
+            ));
+        }
+
+        let changed = self.active_mut().layout.extract_window(window)?;
+        debug_assert!(self.validate().is_ok());
+        Ok(changed)
+    }
+
+    pub fn cycle_column_width(
+        &mut self,
+        window: WindowId,
+        presets: &[ColumnWidth],
+    ) -> Result<bool, WorkspaceError> {
+        if self.workspace_for_window(window) != Some(self.active)
+            || self.placement(window) != Some(WindowPlacement::Tiled)
+        {
+            return Err(WorkspaceError::InvalidState(
+                "resized window is not tiled on the active workspace",
+            ));
+        }
+
+        let changed = self
+            .active_mut()
+            .layout
+            .cycle_column_width(window, presets)?;
+        debug_assert!(self.validate().is_ok());
+        Ok(changed)
+    }
+
+    pub fn center_window(
+        &mut self,
+        window: WindowId,
+        bounds: Rect,
+        gaps: GapConfig,
+        constraints: &HashMap<WindowId, SizeConstraints>,
+    ) -> Result<bool, WorkspaceError> {
+        if self.workspace_for_window(window) != Some(self.active)
+            || self.placement(window) != Some(WindowPlacement::Tiled)
+        {
+            return Err(WorkspaceError::InvalidState(
+                "centered window is not tiled on the active workspace",
+            ));
+        }
+
+        let changed = self
+            .active_mut()
+            .layout
+            .center_window(window, bounds, gaps, constraints)?;
+        debug_assert!(self.validate().is_ok());
+        Ok(changed)
     }
 
     pub fn ensure_numeric(&mut self, index: u32) -> Result<WorkspaceId, WorkspaceError> {
@@ -1176,6 +1273,34 @@ mod tests {
         );
         assert_eq!(workspaces.active().layout.mode(), LayoutMode::Scrolling);
         assert_eq!(workspaces.active().last_focused, Some(WindowId(2)));
+        assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn scrolling_column_commands_preserve_workspace_state() {
+        let mut workspaces = WorkspaceSet::default();
+        for id in 1..=3 {
+            workspaces
+                .insert_window(WindowId(id), Axis::Horizontal, 0.5)
+                .unwrap();
+        }
+
+        workspaces.stack_window(WindowId(3), WindowId(2)).unwrap();
+        assert!(workspaces.extract_window(WindowId(3)).unwrap());
+        assert!(
+            workspaces
+                .cycle_column_width(
+                    WindowId(3),
+                    &[ColumnWidth::Proportion(0.5), ColumnWidth::Full],
+                )
+                .unwrap()
+        );
+        let bounds = Rect::new(0.0, 0.0, 1_000.0, 800.0);
+        let _ = workspaces
+            .center_window(WindowId(3), bounds, GapConfig::default(), &HashMap::new())
+            .unwrap();
+
+        assert_eq!(workspaces.active().last_focused, Some(WindowId(3)));
         assert!(workspaces.validate().is_ok());
     }
 

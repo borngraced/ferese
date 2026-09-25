@@ -37,6 +37,11 @@ default_column_width = "full"
 `default_column_width = 1.0` is equivalent. `Super+M` switches the active
 workspace between scrolling and tree modes.
 
+Scrolling controls use `Super+R` to cycle configured width presets, `Super+C`
+to center the focused column, `Super+[` to consume the focused window into an
+adjacent column, and `Super+]` to expel it. `Super+Ctrl+H/J/K/L` resizes in the
+corresponding direction.
+
 Text-input-v3 is available to applications by default. Input-method-v2 is
 hidden unless the session explicitly opts in, because an input method can
 request privileged keyboard access. Enable it only when launching a trusted

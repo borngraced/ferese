@@ -32,6 +32,8 @@ enum LayoutModeValue {
 #[derive(Debug, Default, Deserialize)]
 struct ScrollingConfig {
     default_column_width: Option<ColumnWidthValue>,
+    #[serde(default)]
+    width_presets: Vec<ColumnWidthValue>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -51,7 +53,10 @@ pub enum ConfigError {
         path: PathBuf,
         source: toml::de::Error,
     },
-    InvalidColumnWidth(String),
+    InvalidColumnWidth {
+        field: &'static str,
+        value: String,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -63,9 +68,9 @@ impl fmt::Display for ConfigError {
             Self::Parse { path, source } => {
                 write!(formatter, "failed to parse {}: {source}", path.display())
             }
-            Self::InvalidColumnWidth(value) => write!(
+            Self::InvalidColumnWidth { field, value } => write!(
                 formatter,
-                "invalid scrolling.default_column_width {value}; expected a positive number or \"full\""
+                "invalid scrolling.{field} {value}; expected a positive number or \"full\""
             ),
         }
     }
@@ -76,7 +81,7 @@ impl Error for ConfigError {
         match self {
             Self::Read { source, .. } => Some(source),
             Self::Parse { source, .. } => Some(source),
-            Self::InvalidColumnWidth(_) => None,
+            Self::InvalidColumnWidth { .. } => None,
         }
     }
 }
@@ -103,23 +108,51 @@ impl Config {
     }
 
     pub fn default_column_width(&self) -> Result<ColumnWidth, ConfigError> {
-        match self
-            .scrolling
-            .default_column_width
-            .as_ref()
-            .unwrap_or(&ColumnWidthValue::Proportion(0.5))
-        {
-            ColumnWidthValue::Proportion(value) if value.is_finite() && *value > 0.0 => {
-                Ok(ColumnWidth::Proportion(*value))
-            }
-            ColumnWidthValue::Named(value) if value.eq_ignore_ascii_case("full") => {
-                Ok(ColumnWidth::Full)
-            }
-            value => Err(ConfigError::InvalidColumnWidth(match value {
+        parse_column_width(
+            self.scrolling
+                .default_column_width
+                .as_ref()
+                .unwrap_or(&ColumnWidthValue::Proportion(0.5)),
+            "default_column_width",
+        )
+    }
+
+    pub fn width_presets(&self) -> Result<Vec<ColumnWidth>, ConfigError> {
+        if self.scrolling.width_presets.is_empty() {
+            return Ok(vec![
+                ColumnWidth::Proportion(1.0 / 3.0),
+                ColumnWidth::Proportion(0.5),
+                ColumnWidth::Proportion(2.0 / 3.0),
+                ColumnWidth::Full,
+            ]);
+        }
+
+        self.scrolling
+            .width_presets
+            .iter()
+            .map(|value| parse_column_width(value, "width_presets"))
+            .collect()
+    }
+}
+
+fn parse_column_width(
+    value: &ColumnWidthValue,
+    field: &'static str,
+) -> Result<ColumnWidth, ConfigError> {
+    match value {
+        ColumnWidthValue::Proportion(value) if value.is_finite() && *value > 0.0 => {
+            Ok(ColumnWidth::Proportion(*value))
+        }
+        ColumnWidthValue::Named(value) if value.eq_ignore_ascii_case("full") => {
+            Ok(ColumnWidth::Full)
+        }
+        value => Err(ConfigError::InvalidColumnWidth {
+            field,
+            value: match value {
                 ColumnWidthValue::Proportion(value) => value.to_string(),
                 ColumnWidthValue::Named(value) => format!("{value:?}"),
-            })),
-        }
+            },
+        }),
     }
 }
 
@@ -162,6 +195,22 @@ mod tests {
         assert_eq!(
             numeric.default_column_width().unwrap(),
             ColumnWidth::Proportion(1.0)
+        );
+    }
+
+    #[test]
+    fn parses_width_presets_and_supplies_defaults() {
+        let defaults = parse("");
+        let configured = parse("[scrolling]\nwidth_presets = [0.5, 1.0, \"full\"]");
+
+        assert_eq!(defaults.width_presets().unwrap().len(), 4);
+        assert_eq!(
+            configured.width_presets().unwrap(),
+            vec![
+                ColumnWidth::Proportion(0.5),
+                ColumnWidth::Proportion(1.0),
+                ColumnWidth::Full
+            ]
         );
     }
 
