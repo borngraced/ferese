@@ -11,6 +11,7 @@ client = ["dep:wayland-client"]
 server = ["dep:wayland-server"]
 
 [dependencies]
+bitflags.workspace = true
 wayland-backend.workspace = true
 wayland-client = { workspace = true, optional = true }
 wayland-scanner.workspace = true

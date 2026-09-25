@@ -52,6 +52,10 @@ impl LaunchConfig {
                 client_capabilities.insert(ClientCapabilities::EFFECTS);
                 continue;
             }
+            if argument == "--grant-shell-control" {
+                client_capabilities.insert(ClientCapabilities::SHELL_CONTROL);
+                continue;
+            }
             if let Some(value) = argument
                 .to_str()
                 .and_then(|argument| argument.strip_prefix("--backend="))
@@ -159,6 +163,30 @@ mod tests {
         assert_eq!(config.client, [OsString::from("ferese-effects-probe")]);
         assert!(
             config
+                .client_capabilities
+                .contains(ClientCapabilities::EFFECTS)
+        );
+    }
+
+    #[test]
+    fn explicitly_grants_shell_control_to_the_launched_private_client() {
+        let config = LaunchConfig::parse(
+            [
+                OsString::from("--grant-shell-control"),
+                OsString::from("ferese-shell"),
+            ],
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(config.client, [OsString::from("ferese-shell")]);
+        assert!(
+            config
+                .client_capabilities
+                .contains(ClientCapabilities::SHELL_CONTROL)
+        );
+        assert!(
+            !config
                 .client_capabilities
                 .contains(ClientCapabilities::EFFECTS)
         );

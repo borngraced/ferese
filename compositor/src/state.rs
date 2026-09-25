@@ -154,6 +154,13 @@ pub struct Ferese {
     _ipc_socket: Option<crate::ipc::IpcSocketGuard>,
     pending_dmabuf_imports: Vec<(Dmabuf, ImportNotifier)>,
     pub(crate) pending_screencopies: Vec<crate::handlers::screencopy::PendingScreencopy>,
+    pub(crate) shell_resources: Vec<
+        smithay::reexports::wayland_server::Weak<
+            ferese_protocols::shell::v1::server::ferese_shell_v1::FereseShellV1,
+        >,
+    >,
+    pub(crate) shell_snapshot_serial: u32,
+    pub(crate) overview_active: bool,
     next_window_id: u64,
     next_output_id: u64,
     last_animation_tick: Instant,
@@ -360,6 +367,7 @@ impl Ferese {
         let display_handle = display.handle();
         crate::handlers::screencopy::init_global(&display_handle);
         crate::effects::init_global(&display_handle);
+        crate::shell_control::init_global(&display_handle);
         let alpha_modifier_state = AlphaModifierState::new::<Self>(&display_handle);
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
@@ -470,6 +478,9 @@ impl Ferese {
             _ipc_socket: None,
             pending_dmabuf_imports: Vec::new(),
             pending_screencopies: Vec::new(),
+            shell_resources: Vec::new(),
+            shell_snapshot_serial: 0,
+            overview_active: false,
             next_window_id: 1,
             next_output_id: 1,
             last_animation_tick: start_time,
@@ -1132,6 +1143,7 @@ impl Ferese {
         }
         self.scrolling_world_x = scrolling_world_x;
         self.sync_window_stacking();
+        self.send_shell_snapshots();
 
         crate::backends::direct::render_all(self);
     }
@@ -1568,6 +1580,59 @@ impl Ferese {
 
         self.closing_windows.entry(focused).or_default();
         crate::backends::direct::render_all(self);
+    }
+
+    pub(crate) fn close_managed_window(&mut self, id: WindowId) -> bool {
+        if !self.window_ids.values().any(|window_id| *window_id == id) {
+            return false;
+        }
+
+        if self.animations_enabled {
+            self.closing_windows.entry(id).or_default();
+            crate::backends::direct::render_all(self);
+        } else {
+            self.send_window_close(id);
+        }
+
+        true
+    }
+
+    pub(crate) fn activate_managed_window(&mut self, id: WindowId) -> bool {
+        let Some(window) = self
+            .window_ids
+            .iter()
+            .find_map(|(window, window_id)| (*window_id == id).then(|| window.clone()))
+        else {
+            return false;
+        };
+        let Some(workspace) = self.workspaces.workspace_for_window(id) else {
+            return false;
+        };
+
+        if let Some(output) = self.output_workspaces.output_for_workspace(workspace) {
+            self.activate_output_workspace(output, workspace);
+        } else if let Some(output) = self.output_workspaces.focused_output() {
+            if self
+                .output_workspaces
+                .assign_workspace(output, workspace)
+                .is_err()
+            {
+                return false;
+            }
+            self.activate_output_workspace(output, workspace);
+        } else if self.workspaces.activate(workspace).is_err() {
+            return false;
+        }
+
+        if self.workspaces.focus_window(id).is_err() {
+            return false;
+        }
+
+        self.focused_window = Some(id);
+        self.raise_window(&window, true);
+        self.relayout();
+        self.restore_keyboard_focus();
+        true
     }
 
     pub(crate) fn closing_visual(&self, id: WindowId) -> (f64, f32) {

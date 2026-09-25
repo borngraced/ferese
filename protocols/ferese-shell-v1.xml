@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="ferese_shell_v1">
+  <copyright>
+    Copyright 2026 Ferese contributors
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <interface name="ferese_shell_manager_v1" version="1">
+    <description summary="create a capability-scoped Ferese shell controller">
+      This private global is visible only to clients granted the shell-control
+      capability. It does not assign a Wayland surface role.
+    </description>
+
+    <request name="get_shell">
+      <arg name="id" type="new_id" interface="ferese_shell_v1"/>
+    </request>
+
+    <request name="destroy" type="destructor"/>
+  </interface>
+
+  <interface name="ferese_shell_v1" version="1">
+    <description summary="managed-window metadata and shell control">
+      Window and workspace identifiers are unsigned 64-bit values encoded as
+      high and low 32-bit words. Each snapshot atomically replaces the prior
+      managed-window view after snapshot_end.
+    </description>
+
+    <request name="activate_window">
+      <arg name="window_hi" type="uint"/>
+      <arg name="window_lo" type="uint"/>
+    </request>
+
+    <request name="close_window">
+      <arg name="window_hi" type="uint"/>
+      <arg name="window_lo" type="uint"/>
+    </request>
+
+    <request name="enter_overview"/>
+    <request name="exit_overview"/>
+
+    <request name="select_overview_window">
+      <arg name="window_hi" type="uint"/>
+      <arg name="window_lo" type="uint"/>
+    </request>
+
+    <request name="destroy" type="destructor"/>
+
+    <enum name="window_state" bitfield="true">
+      <entry name="focused" value="1"/>
+      <entry name="urgent" value="2"/>
+      <entry name="fullscreen" value="4"/>
+      <entry name="floating" value="8"/>
+    </enum>
+
+    <enum name="failed_request">
+      <entry name="activate_window" value="0"/>
+      <entry name="close_window" value="1"/>
+      <entry name="select_overview_window" value="2"/>
+    </enum>
+
+    <event name="snapshot_begin">
+      <arg name="serial" type="uint"/>
+    </event>
+
+    <event name="window">
+      <arg name="window_hi" type="uint"/>
+      <arg name="window_lo" type="uint"/>
+      <arg name="workspace_hi" type="uint"/>
+      <arg name="workspace_lo" type="uint"/>
+      <arg name="app_id" type="string"/>
+      <arg name="title" type="string"/>
+      <arg name="state" type="uint" enum="window_state"/>
+    </event>
+
+    <event name="snapshot_end">
+      <arg name="serial" type="uint"/>
+    </event>
+
+    <event name="overview_state">
+      <arg name="active" type="uint" summary="one when overview is active"/>
+    </event>
+
+    <event name="request_failed">
+      <arg name="request" type="uint" enum="failed_request"/>
+      <arg name="window_hi" type="uint"/>
+      <arg name="window_lo" type="uint"/>
+      <arg name="reason" type="string"/>
+    </event>
+
+    <event name="capabilities">
+      <description summary="marks completion of initial protocol setup"/>
+      <arg name="version" type="uint"/>
+    </event>
+  </interface>
+</protocol>

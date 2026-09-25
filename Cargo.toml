@@ -9,6 +9,7 @@ members = [
     "crates/ferese-protocols",
     "tools/ferese-effects-probe",
     "tools/ferese-malformed-client",
+    "tools/ferese-shell-control-probe",
     "tools/ferese-shell-spike",
 ]
 resolver = "3"
@@ -20,6 +21,7 @@ license = "MIT"
 rust-version = "1.87"
 
 [workspace.dependencies]
+bitflags = "2.9.4"
 calloop = { version = "0.14.4", features = ["signals"] }
 libc = "0.2.176"
 smithay = { version = "0.7.0", default-features = false, features = [

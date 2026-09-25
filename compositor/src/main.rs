@@ -10,6 +10,7 @@ mod input;
 mod ipc;
 mod metrics;
 mod private_client;
+mod shell_control;
 mod stacking;
 mod state;
 mod window_rules;

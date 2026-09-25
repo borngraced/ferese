@@ -1630,10 +1630,19 @@ version = "0.1.0"
 name = "ferese-protocols"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.13.2",
  "wayland-backend",
  "wayland-client",
  "wayland-scanner",
  "wayland-server",
+]
+
+[[package]]
+name = "ferese-shell-control-probe"
+version = "0.1.0"
+dependencies = [
+ "ferese-protocols",
+ "wayland-client",
 ]
 
 [[package]]
