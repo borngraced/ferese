@@ -7,7 +7,7 @@ use std::{
 };
 
 use ferese_animation::{ClientSize, SpringConfig, WindowGeometry};
-use ferese_core::{WindowPlacement, WorkspaceSet};
+use ferese_core::{OutputGeometry, OutputId, OutputWorkspaceMap, WindowPlacement, WorkspaceSet};
 use ferese_layout::{Axis, Direction, GapConfig, LayoutResult, Rect, SizeConstraints, WindowId};
 
 use smithay::{
@@ -69,6 +69,9 @@ pub struct Ferese {
     pub loop_signal: LoopSignal,
     pub space: Space<Window>,
     pub workspaces: WorkspaceSet,
+    pub output_workspaces: OutputWorkspaceMap,
+    output_ids: HashMap<Output, OutputId>,
+    output_identity_ids: HashMap<String, OutputId>,
     pub window_ids: HashMap<Window, WindowId>,
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
     pub focused_window: Option<WindowId>,
@@ -82,6 +85,7 @@ pub struct Ferese {
     pending_dmabuf_imports: Vec<(Dmabuf, ImportNotifier)>,
     pub(crate) pending_screencopies: Vec<crate::handlers::screencopy::PendingScreencopy>,
     next_window_id: u64,
+    next_output_id: u64,
     last_animation_tick: Instant,
     pub popups: PopupManager,
     pub seat: Seat<Self>,
@@ -112,6 +116,67 @@ pub struct Ferese {
 }
 
 impl Ferese {
+    pub fn register_output(&mut self, output: &Output, identity: String) {
+        let Some(geometry) = self.space.output_geometry(output) else {
+            tracing::error!(output = %output.name(), "cannot register an unmapped output");
+            return;
+        };
+        let output_id = *self.output_identity_ids.entry(identity).or_insert_with(|| {
+            let id = OutputId(self.next_output_id);
+            self.next_output_id = self.next_output_id.saturating_add(1);
+            id
+        });
+        let fallback_workspace = (1..)
+            .find_map(|index| {
+                let workspace = self.workspaces.ensure_numeric(index).ok()?;
+                self.output_workspaces
+                    .output_for_workspace(workspace)
+                    .is_none()
+                    .then_some(workspace)
+            })
+            .expect("numeric workspaces are inexhaustible");
+        let geometry = OutputGeometry::new(
+            geometry.loc.x,
+            geometry.loc.y,
+            geometry.size.w,
+            geometry.size.h,
+        );
+
+        match self
+            .output_workspaces
+            .connect(output_id, geometry, fallback_workspace)
+        {
+            Ok(workspace) => {
+                self.output_ids.insert(output.clone(), output_id);
+                if self.output_workspaces.focused_output() == Some(output_id) {
+                    self.activate_output_workspace(output_id, workspace);
+                }
+            }
+            Err(error) => {
+                tracing::error!(%error, output = %output.name(), "failed to register output")
+            }
+        }
+    }
+
+    fn activate_output_workspace(&mut self, output: OutputId, workspace: ferese_core::WorkspaceId) {
+        if let Err(error) = self.output_workspaces.focus_output(output) {
+            tracing::error!(%error, "failed to focus output");
+            return;
+        }
+
+        match self.workspaces.activate(workspace) {
+            Ok(focus) => self.focused_window = focus,
+            Err(error) => tracing::error!(%error, "failed to activate output workspace"),
+        }
+    }
+
+    fn focused_output(&self) -> Option<&Output> {
+        let focused = self.output_workspaces.focused_output()?;
+        self.output_ids
+            .iter()
+            .find_map(|(output, id)| (*id == focused).then_some(output))
+    }
+
     pub(crate) fn queue_dmabuf_import(&mut self, dmabuf: Dmabuf, notifier: ImportNotifier) {
         self.pending_dmabuf_imports.push((dmabuf, notifier));
     }
@@ -183,6 +248,9 @@ impl Ferese {
             loop_signal: event_loop.get_signal(),
             space: Space::default(),
             workspaces: WorkspaceSet::default(),
+            output_workspaces: OutputWorkspaceMap::default(),
+            output_ids: HashMap::new(),
+            output_identity_ids: HashMap::new(),
             window_ids: HashMap::new(),
             window_geometry: HashMap::new(),
             focused_window: None,
@@ -196,6 +264,7 @@ impl Ferese {
             pending_dmabuf_imports: Vec::new(),
             pending_screencopies: Vec::new(),
             next_window_id: 1,
+            next_output_id: 1,
             last_animation_tick: start_time,
             popups: PopupManager::default(),
             seat,
@@ -864,15 +933,26 @@ impl Ferese {
     }
 
     pub fn switch_workspace(&mut self, index: u32) {
-        let focus = match self.workspaces.switch_to_numeric(index) {
-            Ok(focus) => focus,
+        let workspace = match self.workspaces.ensure_numeric(index) {
+            Ok(workspace) => workspace,
             Err(error) => {
                 tracing::error!(%error, index, "failed to switch workspace");
                 return;
             }
         };
+        let Some(output) = self.output_workspaces.focused_output() else {
+            return;
+        };
+        let owner = match self.output_workspaces.switch_workspace(output, workspace) {
+            Ok(ferese_core::WorkspaceSwitch::Activated(output))
+            | Ok(ferese_core::WorkspaceSwitch::FocusedExisting(output)) => output,
+            Err(error) => {
+                tracing::error!(%error, index, "failed to assign workspace to output");
+                return;
+            }
+        };
+        self.activate_output_workspace(owner, workspace);
 
-        self.focused_window = focus;
         self.relayout();
         self.restore_keyboard_focus();
     }
@@ -923,7 +1003,9 @@ impl Ferese {
     }
 
     fn output_bounds(&self) -> Option<Rect> {
-        let output = self.space.outputs().next()?;
+        let output = self
+            .focused_output()
+            .or_else(|| self.space.outputs().next())?;
         let geometry = self.space.output_geometry(output)?;
         let zone = layer_map_for_output(output).non_exclusive_zone();
 
@@ -936,7 +1018,9 @@ impl Ferese {
     }
 
     fn full_output_bounds(&self) -> Option<Rect> {
-        let output = self.space.outputs().next()?;
+        let output = self
+            .focused_output()
+            .or_else(|| self.space.outputs().next())?;
         let geometry = self.space.output_geometry(output)?;
 
         Some(Rect::new(

@@ -82,6 +82,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
     );
     output.set_preferred(mode);
     state.space.map_output(&output, (0, 0));
+    state.register_output(&output, "nested-primary".to_owned());
 
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let clock = Clock::<Monotonic>::new();

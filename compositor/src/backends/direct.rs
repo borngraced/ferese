@@ -477,6 +477,7 @@ fn select_output(drm: &DrmDevice) -> io::Result<(connector::Info, crtc::Handle, 
 
 fn create_output(state: &mut Ferese, connector: &connector::Info, mode: DrmMode) -> Output {
     let name = connector.to_string();
+    let identity = format!("drm:{name}");
     let physical_size = connector.size().unwrap_or((0, 0));
     let output = Output::new(
         name,
@@ -497,7 +498,15 @@ fn create_output(state: &mut Ferese, connector: &connector::Info, mode: DrmMode)
         Some(Scale::Integer(1)),
         Some((0, 0).into()),
     );
-    state.space.map_output(&output, (0, 0));
+    let x = state
+        .space
+        .outputs()
+        .filter_map(|output| state.space.output_geometry(output))
+        .map(|geometry| geometry.loc.x + geometry.size.w)
+        .max()
+        .unwrap_or(0);
+    state.space.map_output(&output, (x, 0));
+    state.register_output(&output, identity);
     output
 }
 

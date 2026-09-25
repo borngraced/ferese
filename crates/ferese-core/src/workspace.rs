@@ -115,6 +115,17 @@ impl WorkspaceSet {
             .expect("active workspace always exists")
     }
 
+    pub fn activate(&mut self, workspace: WorkspaceId) -> Result<Option<WindowId>, WorkspaceError> {
+        if !self.workspaces.contains_key(&workspace) {
+            return Err(WorkspaceError::UnknownWorkspace(workspace));
+        }
+
+        self.active = workspace;
+
+        debug_assert!(self.validate().is_ok());
+        Ok(self.active().fullscreen.or(self.active().last_focused))
+    }
+
     pub fn workspace(&self, id: WorkspaceId) -> Option<&Workspace> {
         self.workspaces.get(&id)
     }
@@ -236,10 +247,8 @@ impl WorkspaceSet {
     }
 
     pub fn switch_to_numeric(&mut self, index: u32) -> Result<Option<WindowId>, WorkspaceError> {
-        self.active = self.ensure_numeric(index)?;
-
-        debug_assert!(self.validate().is_ok());
-        Ok(self.active().fullscreen.or(self.active().last_focused))
+        let workspace = self.ensure_numeric(index)?;
+        self.activate(workspace)
     }
 
     pub fn insert_window(
