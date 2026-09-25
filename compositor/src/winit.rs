@@ -6,10 +6,10 @@ use std::{
 use smithay::{
     backend::{
         renderer::{
-            Frame, ImportDma, Renderer,
+            Color32F, Frame, ImportDma, Renderer,
             damage::OutputDamageTracker,
             element::{
-                AsRenderElements, Kind as RenderElementKind,
+                AsRenderElements, Kind as RenderElementKind, RenderElement,
                 memory::MemoryRenderBufferRenderElement,
                 render_elements,
                 surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
@@ -19,6 +19,7 @@ use smithay::{
                 },
             },
             gles::GlesRenderer,
+            utils::draw_render_elements,
         },
         winit::{self, WinitEvent},
     },
@@ -143,7 +144,22 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                             &elements,
                             [0.035, 0.04, 0.055, 1.0],
                         )?;
-                        if state.process_screencopies(renderer, &framebuffer, &output) {
+                        let cursorless_capture = state.has_pending_screencopy(&output, false);
+                        let captured_with_cursor =
+                            state.process_screencopies(renderer, &framebuffer, &output, true);
+
+                        if cursorless_capture {
+                            let cursorless_elements =
+                                output_elements(state, renderer, &output, false);
+                            redraw_output(
+                                renderer,
+                                &mut framebuffer,
+                                &output,
+                                &cursorless_elements,
+                            )?;
+                            state.process_screencopies(renderer, &framebuffer, &output, false);
+                            redraw_output(renderer, &mut framebuffer, &output, &elements)?;
+                        } else if captured_with_cursor {
                             let _ = renderer
                                 .render(
                                     &mut framebuffer,
@@ -204,12 +220,33 @@ pub(crate) fn animated_window_elements(
     renderer: &mut GlesRenderer,
     output: &Output,
 ) -> Vec<AnimatedWindowRenderElement> {
+    output_elements(state, renderer, output, true)
+}
+
+pub(crate) fn cursorless_window_elements(
+    state: &Ferese,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+) -> Vec<AnimatedWindowRenderElement> {
+    output_elements(state, renderer, output, false)
+}
+
+fn output_elements(
+    state: &Ferese,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    include_cursor: bool,
+) -> Vec<AnimatedWindowRenderElement> {
     let Some(output_geometry) = state.space.output_geometry(output) else {
         return Vec::new();
     };
     let scale = output.current_scale().fractional_scale();
 
-    let mut elements = cursor_elements(state, renderer, output_geometry, scale);
+    let mut elements = if include_cursor {
+        cursor_elements(state, renderer, output_geometry, scale)
+    } else {
+        Vec::new()
+    };
     elements.extend(layer_elements(
         renderer,
         output,
@@ -262,6 +299,34 @@ pub(crate) fn animated_window_elements(
         &[Layer::Bottom, Layer::Background],
     ));
     elements
+}
+
+pub(crate) fn redraw_output<R, E>(
+    renderer: &mut R,
+    framebuffer: &mut R::Framebuffer<'_>,
+    output: &Output,
+    elements: &[E],
+) -> Result<(), R::Error>
+where
+    R: Renderer,
+    R::TextureId: 'static,
+    E: RenderElement<R>,
+{
+    let mode = output.current_mode().expect("output has a mode");
+    let transform = output.current_transform().invert();
+    let damage = Rectangle::from_size(transform.transform_size(mode.size));
+    let mut frame = renderer.render(framebuffer, mode.size, transform)?;
+
+    frame.clear(Color32F::new(0.035, 0.04, 0.055, 1.0), &[damage])?;
+    draw_render_elements(
+        &mut frame,
+        output.current_scale().fractional_scale(),
+        elements,
+        &[damage],
+    )?;
+    let _ = frame.finish()?;
+
+    Ok(())
 }
 
 fn layer_surfaces(output: &Output) -> Vec<LayerSurface> {

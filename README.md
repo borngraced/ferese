@@ -71,9 +71,8 @@ FERESE_ENABLE_SCREENCOPY=1 cargo run -p ferese
 ```
 
 The current M5 implementation supports one-shot output and region capture into
-ARGB8888 shared-memory buffers. Captures currently include Ferese's software
-cursor even when a client does not request a cursor overlay; cursor-free
-capture remains part of the M5 interoperability acceptance work.
+ARGB8888 shared-memory buffers. Cursor overlays are included only when the
+capture client requests them.
 
 ### Direct DRM session
 

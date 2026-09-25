@@ -38,7 +38,10 @@ use smithay::{
     wayland::presentation::Refresh,
 };
 
-use crate::{Ferese, winit::animated_window_elements};
+use crate::{
+    Ferese,
+    winit::{animated_window_elements, cursorless_window_elements, redraw_output},
+};
 
 pub struct DirectBackendState {
     pub session: LibSeatSession,
@@ -349,7 +352,27 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
             &elements,
             [0.035, 0.04, 0.055, 1.0],
         )?;
-        if state.process_screencopies(&mut device.renderer, &framebuffer, &output.output) {
+        let cursorless_capture = state.has_pending_screencopy(&output.output, false);
+        let captured_with_cursor =
+            state.process_screencopies(&mut device.renderer, &framebuffer, &output.output, true);
+
+        if cursorless_capture {
+            let cursorless_elements =
+                cursorless_window_elements(state, &mut device.renderer, &output.output);
+            redraw_output(
+                &mut device.renderer,
+                &mut framebuffer,
+                &output.output,
+                &cursorless_elements,
+            )?;
+            state.process_screencopies(&mut device.renderer, &framebuffer, &output.output, false);
+            redraw_output(
+                &mut device.renderer,
+                &mut framebuffer,
+                &output.output,
+                &elements,
+            )?;
+        } else if captured_with_cursor {
             let _ = device
                 .renderer
                 .render(

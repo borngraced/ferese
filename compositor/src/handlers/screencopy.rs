@@ -28,6 +28,7 @@ const BYTES_PER_PIXEL: usize = 4;
 pub(crate) struct FrameData {
     output: Option<Output>,
     region: Rectangle<i32, Buffer>,
+    overlay_cursor: bool,
     used: Mutex<bool>,
 }
 
@@ -37,6 +38,7 @@ pub(crate) struct PendingScreencopy {
     buffer: WlBuffer,
     pub(crate) output: Output,
     region: Rectangle<i32, Buffer>,
+    overlay_cursor: bool,
     with_damage: bool,
 }
 
@@ -75,14 +77,14 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Ferese {
         match request {
             zwlr_screencopy_manager_v1::Request::CaptureOutput {
                 frame,
-                overlay_cursor: _,
+                overlay_cursor,
                 output,
             } => {
-                create_frame(data_init, frame, output, None);
+                create_frame(data_init, frame, output, None, overlay_cursor != 0);
             }
             zwlr_screencopy_manager_v1::Request::CaptureOutputRegion {
                 frame,
-                overlay_cursor: _,
+                overlay_cursor,
                 output,
                 x,
                 y,
@@ -94,6 +96,7 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for Ferese {
                     frame,
                     output,
                     Some(Rectangle::new((x, y).into(), (width, height).into())),
+                    overlay_cursor != 0,
                 );
             }
             zwlr_screencopy_manager_v1::Request::Destroy => {}
@@ -161,6 +164,7 @@ impl Ferese {
             buffer,
             output,
             region: data.region,
+            overlay_cursor: data.overlay_cursor,
             with_damage,
         });
         crate::backends::direct::render_all(self);
@@ -171,6 +175,7 @@ impl Ferese {
         renderer: &mut R,
         framebuffer: &R::Framebuffer<'_>,
         output: &Output,
+        overlay_cursor: bool,
     ) -> bool
     where
         R: ExportMem,
@@ -180,7 +185,9 @@ impl Ferese {
         let captures = std::mem::take(&mut self.pending_screencopies);
 
         for capture in captures {
-            if &capture.output != output {
+            if &capture.output != output
+                || !cursor_overlay_matches(capture.overlay_cursor, overlay_cursor)
+            {
                 remaining.push(capture);
                 continue;
             }
@@ -198,6 +205,17 @@ impl Ferese {
         self.pending_screencopies = remaining;
         framebuffer_binding_changed
     }
+
+    pub(crate) fn has_pending_screencopy(&self, output: &Output, overlay_cursor: bool) -> bool {
+        self.pending_screencopies.iter().any(|capture| {
+            capture.output == *output
+                && cursor_overlay_matches(capture.overlay_cursor, overlay_cursor)
+        })
+    }
+}
+
+fn cursor_overlay_matches(requested: bool, rendered: bool) -> bool {
+    requested == rendered
 }
 
 fn create_frame(
@@ -205,6 +223,7 @@ fn create_frame(
     frame: New<ZwlrScreencopyFrameV1>,
     wl_output: smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
     requested: Option<Rectangle<i32, Logical>>,
+    overlay_cursor: bool,
 ) {
     let Some(output) = Output::from_resource(&wl_output) else {
         let frame = data_init.init(
@@ -212,6 +231,7 @@ fn create_frame(
             Arc::new(FrameData {
                 output: None,
                 region: Rectangle::from_size((1, 1).into()),
+                overlay_cursor,
                 used: Mutex::new(true),
             }),
         );
@@ -224,6 +244,7 @@ fn create_frame(
             Arc::new(FrameData {
                 output: Some(output),
                 region: Rectangle::from_size((1, 1).into()),
+                overlay_cursor,
                 used: Mutex::new(true),
             }),
         );
@@ -235,6 +256,7 @@ fn create_frame(
     let data = Arc::new(FrameData {
         output: Some(output),
         region,
+        overlay_cursor,
         used: Mutex::new(false),
     });
     let frame = data_init.init(frame, data);
@@ -391,5 +413,13 @@ mod tests {
         assert!(
             capture_region_for_geometry(mode, 2.0, Transform::Normal, Some(requested),).is_none()
         );
+    }
+
+    #[test]
+    fn cursor_overlay_requests_use_only_the_matching_render_pass() {
+        assert!(cursor_overlay_matches(false, false));
+        assert!(cursor_overlay_matches(true, true));
+        assert!(!cursor_overlay_matches(false, true));
+        assert!(!cursor_overlay_matches(true, false));
     }
 }
