@@ -81,6 +81,31 @@ use crate::{
     window_rules::{WindowRule, resolve as resolve_window_rules},
 };
 
+const CLOSE_ANIMATION_DURATION: Duration = Duration::from_millis(140);
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ClosingAnimation {
+    progress: f64,
+    close_sent: bool,
+}
+
+impl ClosingAnimation {
+    fn advance(&mut self, delta: Duration) -> bool {
+        if self.close_sent {
+            return false;
+        }
+
+        self.progress =
+            (self.progress + delta.as_secs_f64() / CLOSE_ANIMATION_DURATION.as_secs_f64()).min(1.0);
+        if self.progress < 1.0 {
+            return false;
+        }
+
+        self.close_sent = true;
+        true
+    }
+}
+
 pub struct Ferese {
     pub start_time: Instant,
     pub socket_name: OsString,
@@ -96,6 +121,7 @@ pub struct Ferese {
     pub(crate) window_borders: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
     pub(crate) window_shadows: HashMap<WindowId, crate::winit::WindowShadowBuffers>,
     pub(crate) rounded_clip_programs: HashMap<ErasedContextId, crate::winit::RoundedClipPrograms>,
+    closing_windows: HashMap<WindowId, ClosingAnimation>,
     viewport_animations: HashMap<WorkspaceId, AnimatedValue>,
     scrolling_world_x: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
     pub focused_window: Option<WindowId>,
@@ -401,6 +427,7 @@ impl Ferese {
             window_borders: HashMap::new(),
             window_shadows: HashMap::new(),
             rounded_clip_programs: HashMap::new(),
+            closing_windows: HashMap::new(),
             viewport_animations: HashMap::new(),
             scrolling_world_x: HashMap::new(),
             focused_window: None,
@@ -787,6 +814,7 @@ impl Ferese {
         self.window_geometry.remove(&id);
         self.window_borders.remove(&id);
         self.window_shadows.remove(&id);
+        self.closing_windows.remove(&id);
         self.window_rules_applied.remove(&id);
         self.scrolling_world_x.remove(&id);
         if let Err(error) = self.workspaces.remove_window(id) {
@@ -1044,6 +1072,18 @@ impl Ferese {
             })
             .collect::<Vec<_>>();
         let mut active_animation = false;
+
+        let mut ready_to_close = Vec::new();
+        for (id, animation) in &mut self.closing_windows {
+            if animation.advance(delta) {
+                ready_to_close.push(*id);
+            } else if !animation.close_sent {
+                active_animation = true;
+            }
+        }
+        for id in ready_to_close {
+            self.send_window_close(id);
+        }
 
         for (workspace, viewport) in &mut self.viewport_animations {
             if !visible_workspaces.contains(workspace) {
@@ -1352,15 +1392,33 @@ impl Ferese {
         self.relayout();
     }
 
-    pub fn close_focused_window(&self) {
+    pub fn close_focused_window(&mut self) {
         let Some(focused) = self.focused_window else {
             return;
         };
-        let Some(toplevel) = self
-            .window_ids
-            .iter()
-            .find_map(|(window, id)| (*id == focused).then(|| window.toplevel()).flatten())
-        else {
+
+        if !self.animations_enabled {
+            self.send_window_close(focused);
+            return;
+        }
+
+        self.closing_windows.entry(focused).or_default();
+        crate::backends::direct::render_all(self);
+    }
+
+    pub(crate) fn closing_visual(&self, id: WindowId) -> (f64, f32) {
+        let Some(animation) = self.closing_windows.get(&id) else {
+            return (1.0, 1.0);
+        };
+        let eased = smoothstep(animation.progress);
+
+        (1.0 - eased * 0.02, (1.0 - eased) as f32)
+    }
+
+    fn send_window_close(&self, id: WindowId) {
+        let Some(toplevel) = self.window_ids.iter().find_map(|(window, window_id)| {
+            (*window_id == id).then(|| window.toplevel()).flatten()
+        }) else {
             return;
         };
 
@@ -1591,6 +1649,12 @@ fn centered_floating_rect(bounds: Rect) -> Rect {
     )
 }
 
+fn smoothstep(progress: f64) -> f64 {
+    let progress = progress.clamp(0.0, 1.0);
+
+    progress * progress * (3.0 - 2.0 * progress)
+}
+
 fn centered_transient_rect(parent: Rect) -> Rect {
     let width = (parent.width * 0.75).clamp(1.0, 640.0);
     let height = (parent.height * 0.75).clamp(1.0, 480.0);
@@ -1632,5 +1696,23 @@ mod tests {
         let transient = centered_transient_rect(parent);
 
         assert_eq!(transient, Rect::new(280.0, 210.0, 640.0, 480.0));
+    }
+
+    #[test]
+    fn close_easing_is_bounded_and_symmetric() {
+        assert_eq!(smoothstep(-1.0), 0.0);
+        assert_eq!(smoothstep(0.5), 0.5);
+        assert_eq!(smoothstep(2.0), 1.0);
+    }
+
+    #[test]
+    fn close_animation_delays_the_protocol_close_until_it_finishes() {
+        let mut animation = ClosingAnimation::default();
+
+        assert!(!animation.advance(Duration::from_millis(70)));
+        assert_eq!(animation.progress, 0.5);
+        assert!(animation.advance(Duration::from_millis(70)));
+        assert!(animation.close_sent);
+        assert!(!animation.advance(Duration::from_secs(1)));
     }
 }

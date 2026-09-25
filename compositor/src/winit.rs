@@ -547,17 +547,19 @@ fn output_elements(
         .filter_map(|window| {
             let id = *state.window_ids.get(window)?;
             let visual = state.window_geometry.get(&id)?.visual.current;
+            let (close_scale, close_alpha) = state.closing_visual(id);
+            let visual = scaled_visual_rect(visual, close_scale);
             let fullscreen = state
                 .workspaces
                 .workspace_for_window(id)
                 .and_then(|workspace| state.workspaces.workspace(workspace))
                 .is_some_and(|workspace| workspace.fullscreen == Some(id));
 
-            Some((window.clone(), id, visual, fullscreen))
+            Some((window.clone(), id, visual, fullscreen, close_alpha))
         })
         .collect::<Vec<_>>();
 
-    for (window, id, visual, fullscreen) in windows {
+    for (window, id, visual, fullscreen, close_alpha) in windows {
         let constrain = Rectangle::<i32, Logical>::new(
             (
                 (visual.x - f64::from(output_geometry.loc.x)).round() as i32,
@@ -588,6 +590,7 @@ fn output_elements(
             } else {
                 state.theme_settings.border_color.0
             };
+            let border_color = color_with_alpha(border_color, close_alpha);
 
             if let Some(border) = window_border_element(
                 state,
@@ -612,7 +615,7 @@ fn output_elements(
                 window_radius,
                 shadow_offset_y,
                 shadow_blur,
-                shadow_opacity,
+                shadow_opacity * f64::from(close_alpha),
                 shadow_color,
                 output,
                 &programs,
@@ -623,6 +626,7 @@ fn output_elements(
                 constrain,
                 scale,
                 window_radius,
+                close_alpha,
                 output,
                 programs.texture.clone(),
             ));
@@ -886,6 +890,7 @@ fn rounded_window_elements(
     constrain: Rectangle<i32, Logical>,
     scale: f64,
     requested_radius: f64,
+    alpha: f32,
     output: &Output,
     program: GlesTexProgram,
 ) -> Vec<AnimatedWindowRenderElement> {
@@ -921,7 +926,7 @@ fn rounded_window_elements(
                 popup.wl_surface(),
                 location + offset,
                 scale,
-                1.0,
+                alpha,
                 RenderElementKind::Unspecified,
             )
             .into_iter()
@@ -937,7 +942,7 @@ fn rounded_window_elements(
             surface,
             location,
             scale,
-            1.0,
+            alpha,
             RenderElementKind::Unspecified,
         )
         .into_iter()
@@ -963,6 +968,24 @@ fn rounded_window_elements(
     )
     .map(Into::into)
     .collect()
+}
+
+fn scaled_visual_rect(rect: ferese_layout::Rect, scale: f64) -> ferese_layout::Rect {
+    let scale = scale.clamp(0.0, 1.0);
+    let width = rect.width * scale;
+    let height = rect.height * scale;
+
+    ferese_layout::Rect::new(
+        rect.x + (rect.width - width) / 2.0,
+        rect.y + (rect.height - height) / 2.0,
+        width,
+        height,
+    )
+}
+
+fn color_with_alpha(mut color: [f32; 4], alpha: f32) -> [f32; 4] {
+    color[3] *= alpha;
+    color
 }
 
 fn framebuffer_clip_rect(
@@ -1148,7 +1171,10 @@ fn normalized_scale(scale: f64) -> f64 {
 mod tests {
     use smithay::utils::{Logical, Physical, Rectangle, Transform};
 
-    use super::{framebuffer_clip_rect, normalized_scale, shadow_bounds};
+    use super::{
+        color_with_alpha, framebuffer_clip_rect, normalized_scale, scaled_visual_rect,
+        shadow_bounds,
+    };
 
     #[test]
     fn accepts_positive_finite_scale() {
@@ -1197,6 +1223,25 @@ mod tests {
         assert_eq!(
             shadow_bounds(geometry, -6.0, 10.0),
             Rectangle::new((80, 54).into(), (440, 340).into())
+        );
+    }
+
+    #[test]
+    fn close_transform_scales_about_the_window_center() {
+        let rect = ferese_layout::Rect::new(100.0, 50.0, 400.0, 300.0);
+
+        assert_eq!(
+            scaled_visual_rect(rect, 0.98),
+            ferese_layout::Rect::new(104.0, 53.0, 392.0, 294.0)
+        );
+        assert_eq!(scaled_visual_rect(rect, 1.0), rect);
+    }
+
+    #[test]
+    fn close_opacity_only_changes_the_alpha_channel() {
+        assert_eq!(
+            color_with_alpha([0.2, 0.4, 0.6, 0.8], 0.5),
+            [0.2, 0.4, 0.6, 0.4]
         );
     }
 }
