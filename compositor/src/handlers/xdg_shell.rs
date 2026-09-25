@@ -273,21 +273,32 @@ fn check_grab(
 
 impl XdgDecorationHandler for Ferese {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        set_decoration_mode(&toplevel, Mode::ClientSide);
+        let mode = self.decoration_mode_for(&toplevel);
+        set_decoration_mode(&toplevel, mode);
     }
 
-    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: Mode) {
-        // Phase 1 negotiates decorations but does not yet draw a server frame.
-        // Honor CSD and safely fall back to CSD for premature SSD requests.
-        let mode = match mode {
-            Mode::ClientSide | Mode::ServerSide => Mode::ClientSide,
-            _ => Mode::ClientSide,
-        };
+    fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: Mode) {
+        let mode = self.decoration_mode_for(&toplevel);
         set_decoration_mode(&toplevel, mode);
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        set_decoration_mode(&toplevel, Mode::ClientSide);
+        let mode = self.decoration_mode_for(&toplevel);
+        set_decoration_mode(&toplevel, mode);
+    }
+}
+
+impl Ferese {
+    fn decoration_mode_for(&self, toplevel: &ToplevelSurface) -> Mode {
+        self.space
+            .elements()
+            .find(|window| {
+                window
+                    .toplevel()
+                    .is_some_and(|candidate| candidate.wl_surface() == toplevel.wl_surface())
+            })
+            .filter(|window| self.is_floating_window(window))
+            .map_or(Mode::ServerSide, |_| Mode::ClientSide)
     }
 }
 

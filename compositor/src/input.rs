@@ -122,6 +122,15 @@ impl Ferese {
 
                                 FilterResult::Intercept(())
                             } else if !modifiers.shift
+                                && matches!(symbol, keysyms::KEY_q | keysyms::KEY_Q)
+                            {
+                                if state == KeyState::Pressed {
+                                    data.intercepted_keys.insert(keycode);
+                                    data.close_focused_window();
+                                }
+
+                                FilterResult::Intercept(())
+                            } else if !modifiers.shift
                                 && matches!(symbol, keysyms::KEY_f | keysyms::KEY_F)
                             {
                                 if state == KeyState::Pressed {

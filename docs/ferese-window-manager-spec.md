@@ -630,6 +630,11 @@ decorations, Ferese MUST provide usable move, resize, and close interactions.
 Shadows, masks, and focus borders are compositor effects and may apply in either
 mode.
 
+Tiled and fullscreen windows default to borderless server-side decoration so
+application title bars do not consume layout space. Floating windows and
+dialogs default to client-side decoration until Ferese provides a complete
+compositor-drawn floating frame.
+
 ### 8.3 XWayland
 
 The desktop tier SHOULD use `xwayland-satellite`, launched on demand, so X11

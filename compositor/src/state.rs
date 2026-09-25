@@ -23,7 +23,10 @@ use smithay::{
     output::Output,
     reexports::{
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
-        wayland_protocols::xdg::shell::server::xdg_toplevel,
+        wayland_protocols::xdg::{
+            decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
+            shell::server::xdg_toplevel,
+        },
         wayland_server::{
             Display, DisplayHandle,
             backend::{ClientData, ClientId, DisconnectReason},
@@ -511,13 +514,19 @@ impl Ferese {
                     }
                 };
 
-                Some((window.clone(), *id, rect, fullscreen == Some(*id)))
+                let is_fullscreen = fullscreen == Some(*id);
+                let is_floating = matches!(
+                    self.workspaces.placement(*id),
+                    Some(WindowPlacement::Floating { .. })
+                );
+
+                Some((window.clone(), *id, rect, is_fullscreen, is_floating))
             })
             .collect::<Vec<_>>();
 
         let now = self.start_time.elapsed();
 
-        for (window, id, rect, is_fullscreen) in placements {
+        for (window, id, rect, is_fullscreen, is_floating) in placements {
             let committed_size = client_size(&window);
             let geometry = self
                 .window_geometry
@@ -534,11 +543,21 @@ impl Ferese {
                         state.size = Some((size.width, size.height).into());
                     }
 
-                    if is_fullscreen {
+                    let fullscreen_changed = if is_fullscreen {
                         state.states.set(xdg_toplevel::State::Fullscreen)
                     } else {
                         state.states.unset(xdg_toplevel::State::Fullscreen)
-                    }
+                    };
+
+                    let decoration_mode = if is_floating && !is_fullscreen {
+                        DecorationMode::ClientSide
+                    } else {
+                        DecorationMode::ServerSide
+                    };
+                    let decoration_changed = state.decoration_mode != Some(decoration_mode);
+                    state.decoration_mode = Some(decoration_mode);
+
+                    fullscreen_changed || decoration_changed
                 });
 
                 if requested_size.is_some() || state_changed {
@@ -761,6 +780,21 @@ impl Ferese {
         }
 
         self.relayout();
+    }
+
+    pub fn close_focused_window(&self) {
+        let Some(focused) = self.focused_window else {
+            return;
+        };
+        let Some(toplevel) = self
+            .window_ids
+            .iter()
+            .find_map(|(window, id)| (*id == focused).then(|| window.toplevel()).flatten())
+        else {
+            return;
+        };
+
+        toplevel.send_close();
     }
 
     pub fn set_window_fullscreen(&mut self, window: WindowId, enabled: bool) {
