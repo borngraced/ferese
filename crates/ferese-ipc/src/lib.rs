@@ -121,17 +121,36 @@ pub fn write_frame<T: Serialize>(writer: &mut impl Write, value: &T) -> Result<(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
+
+    struct ChunkedReader<R> {
+        inner: R,
+        chunk_size: usize,
+    }
+
+    impl<R: Read> Read for ChunkedReader<R> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let limit = buffer.len().min(self.chunk_size);
+            self.inner.read(&mut buffer[..limit])
+        }
+    }
+
+    fn request(id: u64, command: &str) -> Request {
+        Request {
+            version: VERSION,
+            id,
+            kind: "command".to_owned(),
+            command: command.to_owned(),
+            args: serde_json::json!({}),
+        }
+    }
 
     #[test]
     fn framed_json_round_trips() {
-        let request = Request {
-            version: VERSION,
-            id: 42,
-            kind: "command".to_owned(),
-            command: "focus".to_owned(),
-            args: serde_json::json!({ "direction": "left" }),
-        };
+        let mut request = request(42, "focus");
+        request.args = serde_json::json!({ "direction": "left" });
         let mut bytes = Vec::new();
         write_frame(&mut bytes, &request).unwrap();
         let decoded: Request = read_frame(&mut bytes.as_slice()).unwrap();
@@ -140,6 +159,41 @@ mod tests {
         assert_eq!(decoded.id, 42);
         assert_eq!(decoded.command, "focus");
         assert_eq!(decoded.args["direction"], "left");
+    }
+
+    #[test]
+    fn reads_fragmented_frames_and_preserves_frame_boundaries() {
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, &request(1, "get-workspaces")).unwrap();
+        write_frame(&mut bytes, &request(2, "get-outputs")).unwrap();
+        let mut reader = ChunkedReader {
+            inner: Cursor::new(bytes),
+            chunk_size: 3,
+        };
+
+        let first: Request = read_frame(&mut reader).unwrap();
+        let second: Request = read_frame(&mut reader).unwrap();
+
+        assert_eq!((first.id, first.command.as_str()), (1, "get-workspaces"));
+        assert_eq!((second.id, second.command.as_str()), (2, "get-outputs"));
+    }
+
+    #[test]
+    fn rejects_invalid_and_truncated_payloads_without_panicking() {
+        let invalid = b"not-json";
+        let mut invalid_frame = Vec::from((invalid.len() as u32).to_be_bytes());
+        invalid_frame.extend_from_slice(invalid);
+        assert!(matches!(
+            read_frame::<Request>(&mut invalid_frame.as_slice()),
+            Err(FrameError::InvalidJson(_))
+        ));
+
+        let mut truncated = Vec::from(32_u32.to_be_bytes());
+        truncated.extend_from_slice(b"short");
+        assert!(matches!(
+            read_frame::<Request>(&mut truncated.as_slice()),
+            Err(FrameError::Io(error)) if error.kind() == io::ErrorKind::UnexpectedEof
+        ));
     }
 
     #[test]
