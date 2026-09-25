@@ -122,6 +122,7 @@ pub struct Ferese {
     pub(crate) window_borders: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
     pub(crate) window_shadows: HashMap<WindowId, crate::winit::WindowShadowBuffers>,
     pub(crate) rounded_clip_programs: HashMap<ErasedContextId, crate::winit::RoundedClipPrograms>,
+    pub(crate) overview_scrims: HashMap<OutputId, crate::winit::OverviewScrim>,
     pub(crate) material_programs: HashMap<ErasedContextId, crate::winit::MaterialProgram>,
     pub(crate) backdrop_programs: HashMap<ErasedContextId, crate::winit::BackdropProgram>,
     pub(crate) material_buffers: HashMap<WlSurface, crate::winit::MaterialBuffers>,
@@ -160,7 +161,7 @@ pub struct Ferese {
         >,
     >,
     pub(crate) shell_snapshot_serial: u32,
-    pub(crate) overview_active: bool,
+    pub(crate) overview: crate::overview::OverviewState,
     next_window_id: u64,
     next_output_id: u64,
     last_animation_tick: Instant,
@@ -259,6 +260,7 @@ impl Ferese {
             return;
         };
 
+        self.overview_scrims.remove(&output_id);
         self.pending_screencopies.retain(|capture| {
             if capture.output == *output {
                 capture.frame.failed();
@@ -446,6 +448,7 @@ impl Ferese {
             window_borders: HashMap::new(),
             window_shadows: HashMap::new(),
             rounded_clip_programs: HashMap::new(),
+            overview_scrims: HashMap::new(),
             material_programs: HashMap::new(),
             backdrop_programs: HashMap::new(),
             material_buffers: HashMap::new(),
@@ -480,7 +483,7 @@ impl Ferese {
             pending_screencopies: Vec::new(),
             shell_resources: Vec::new(),
             shell_snapshot_serial: 0,
-            overview_active: false,
+            overview: crate::overview::OverviewState::default(),
             next_window_id: 1,
             next_output_id: 1,
             last_animation_tick: start_time,
@@ -575,10 +578,13 @@ impl Ferese {
         &self,
         position: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        if self.overview.is_active() {
+            return None;
+        }
+
         self.space.elements().rev().find_map(|window| {
             let id = self.window_ids.get(window)?;
-            let geometry = self.window_geometry.get(id)?;
-            let visual = geometry.visual.current;
+            let visual = self.presented_window_rect(*id)?;
             let inside_visual = position.x >= visual.x
                 && position.y >= visual.y
                 && position.x < visual.x + visual.width
@@ -587,7 +593,8 @@ impl Ferese {
                 return None;
             }
 
-            let (source_x, source_y) = geometry.inverse_visual_point(position.x, position.y)?;
+            let (source_x, source_y) =
+                self.inverse_presented_window_point(*id, position.x, position.y)?;
             let source_point = Point::from((source_x, source_y)) + window.geometry().loc.to_f64();
 
             window
@@ -644,7 +651,7 @@ impl Ferese {
     pub fn window_under_visual(&self, position: Point<f64, Logical>) -> Option<Window> {
         self.space.elements().rev().find_map(|window| {
             let id = self.window_ids.get(window)?;
-            let visual = self.window_geometry.get(id)?.visual.current;
+            let visual = self.presented_window_rect(*id)?;
 
             (position.x >= visual.x
                 && position.y >= visual.y
@@ -681,7 +688,18 @@ impl Ferese {
 
     pub fn visual_scale_for_window(&self, window: &Window) -> Option<(f64, f64)> {
         let id = self.window_ids.get(window)?;
-        self.window_geometry.get(id)?.visual_scale()
+        let geometry = self.window_geometry.get(id)?;
+        let source = geometry.client.committed_size?;
+        let presented = self.presented_window_rect(*id)?;
+
+        if source.width <= 0 || source.height <= 0 {
+            return None;
+        }
+
+        Some((
+            presented.width / f64::from(source.width),
+            presented.height / f64::from(source.height),
+        ))
     }
 
     pub(crate) fn visual_rect_for_window(
@@ -689,7 +707,7 @@ impl Ferese {
         window: &Window,
     ) -> Option<Rectangle<i32, Logical>> {
         let id = self.window_ids.get(window)?;
-        let rect = self.window_geometry.get(id)?.visual.current;
+        let rect = self.presented_window_rect(*id)?;
         let size = ClientSize::from_rect(rect);
         Some(Rectangle::new(
             (rect.x.round() as i32, rect.y.round() as i32).into(),
@@ -1143,6 +1161,7 @@ impl Ferese {
         }
         self.scrolling_world_x = scrolling_world_x;
         self.sync_window_stacking();
+        self.retarget_overview();
         self.send_shell_snapshots();
 
         crate::backends::direct::render_all(self);
@@ -1290,6 +1309,9 @@ impl Ferese {
         for id in settled_coupled_widths {
             self.viewport_coupled_widths.remove(&id);
         }
+        active_animation |=
+            self.overview
+                .advance(delta, self.spring_config, self.animations_enabled);
         self.sync_window_stacking();
 
         if active_animation {
@@ -1305,6 +1327,10 @@ impl Ferese {
 
     pub(crate) fn material_scene_generation(&self) -> u64 {
         self.material_scene_generation
+    }
+
+    pub(crate) fn animations_enabled(&self) -> bool {
+        self.animations_enabled
     }
 
     pub fn record_client_commit(&mut self, window: &Window) {
@@ -1328,6 +1354,10 @@ impl Ferese {
     }
 
     pub fn focus_direction(&mut self, direction: Direction) {
+        if self.focus_overview_direction(direction) {
+            return;
+        }
+
         let Some(current) = self.focused_window else {
             return;
         };
@@ -1798,7 +1828,7 @@ impl Ferese {
         self.output_bounds_for(output)
     }
 
-    fn output_bounds_for(&self, output: &Output) -> Option<Rect> {
+    pub(crate) fn output_bounds_for(&self, output: &Output) -> Option<Rect> {
         let geometry = self.space.output_geometry(output)?;
         let zone = layer_map_for_output(output).non_exclusive_zone();
 

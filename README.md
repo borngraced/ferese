@@ -116,6 +116,11 @@ to center the focused column, `Super+[` to consume the focused window into an
 adjacent column, and `Super+]` to expel it. `Super+Ctrl+H/J/K/L` resizes in the
 corresponding direction.
 
+`Super+Tab` toggles the compositor overview. Its live window previews retain
+their client surfaces, `Super+H/J/K/L` moves the selection using the presented
+preview geometry, and clicking a preview activates it without forwarding the
+selection click to the application.
+
 Keyboard and direct-session touchpad settings are applied at startup:
 
 ```toml

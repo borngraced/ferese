@@ -167,6 +167,17 @@ impl Ferese {
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
                 let serial = SERIAL_COUNTER.next_serial();
 
+                if self.overview.is_active() {
+                    if event.state() == ButtonState::Pressed
+                        && let Some(window) = self.window_under_visual(pointer.current_location())
+                        && let Some(id) = self.window_ids.get(&window).copied()
+                    {
+                        self.select_overview_window(id);
+                    }
+
+                    return;
+                }
+
                 if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
                     self.focus_window_at(pointer.current_location(), serial);
                 }
@@ -334,7 +345,10 @@ impl Ferese {
         pointer: &PointerHandle<Self>,
         position: Point<f64, Logical>,
     ) {
-        if !self.input_settings.focus_follows_mouse || pointer.is_grabbed() {
+        if self.overview.is_active()
+            || !self.input_settings.focus_follows_mouse
+            || pointer.is_grabbed()
+        {
             return;
         }
 
@@ -467,6 +481,7 @@ impl Ferese {
             BindingAction::Consume => self.consume_focused_window(),
             BindingAction::Expel => self.expel_focused_window(),
             BindingAction::ToggleFloating => self.toggle_focused_floating(),
+            BindingAction::ToggleOverview => self.toggle_overview(),
         }
     }
 }

@@ -52,7 +52,7 @@ impl Dispatch<FereseShellManagerV1, ()> for Ferese {
                 let shell = data_init.init(id, ());
 
                 shell.capabilities(1);
-                shell.overview_state(u32::from(state.overview_active));
+                shell.overview_state(u32::from(state.overview.is_active()));
                 state.send_shell_snapshot(&shell);
                 state.shell_resources.push(shell.downgrade());
             }
@@ -99,9 +99,7 @@ impl Dispatch<FereseShellV1, ()> for Ferese {
             } => {
                 let id = join_id(window_hi, window_lo);
 
-                if state.activate_managed_window(id) {
-                    state.set_overview_active(false);
-                } else {
+                if !state.select_overview_window(id) {
                     send_request_failed(
                         shell,
                         ferese_shell_v1::FailedRequest::SelectOverviewWindow,
@@ -218,19 +216,15 @@ impl Ferese {
         }
     }
 
-    fn set_overview_active(&mut self, active: bool) {
-        if self.overview_active == active {
-            return;
-        }
+    pub(crate) fn notify_overview_state(&mut self) {
+        let active = self.overview.is_active();
 
-        self.overview_active = active;
         self.shell_resources.retain(|resource| {
             resource.upgrade().is_ok_and(|shell| {
                 shell.overview_state(u32::from(active));
                 true
             })
         });
-        crate::backends::direct::render_all(self);
     }
 }
 

@@ -9,6 +9,7 @@ mod handlers;
 mod input;
 mod ipc;
 mod metrics;
+mod overview;
 mod private_client;
 mod shell_control;
 mod stacking;

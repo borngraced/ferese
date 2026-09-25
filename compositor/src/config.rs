@@ -247,6 +247,7 @@ pub enum BindingAction {
     Consume,
     Expel,
     ToggleFloating,
+    ToggleOverview,
 }
 
 impl Binding {
@@ -1097,6 +1098,10 @@ fn parse_action(
             no_argument()?;
             Ok(BindingAction::ToggleFloating)
         }
+        "toggle-overview" => {
+            no_argument()?;
+            Ok(BindingAction::ToggleOverview)
+        }
         _ => Err(ConfigError::InvalidBinding(format!(
             "unknown action {action:?}"
         ))),
@@ -1135,6 +1140,7 @@ fn default_bindings() -> Vec<BindingConfig> {
         binding("Super+[", "consume", None),
         binding("Super+]", "expel", None),
         binding("Super+Shift+Space", "toggle-floating", None),
+        binding("Super+Tab", "toggle-overview", None),
     ];
 
     for (key, direction) in [("H", "left"), ("J", "down"), ("K", "up"), ("L", "right")] {
@@ -1622,11 +1628,16 @@ mod tests {
         let input = config.input_settings().unwrap();
         let bindings = config.bindings(&input).unwrap();
 
-        assert_eq!(bindings.len(), 39);
+        assert_eq!(bindings.len(), 40);
         assert!(bindings.iter().any(|binding| {
             binding.modifiers.logo
                 && binding.trigger == BindingTrigger::Keysym(keysyms::KEY_Return)
                 && binding.action == BindingAction::Spawn(vec!["foot".to_owned()])
+        }));
+        assert!(bindings.iter().any(|binding| {
+            binding.modifiers.logo
+                && binding.trigger == BindingTrigger::Keysym(keysyms::KEY_Tab)
+                && binding.action == BindingAction::ToggleOverview
         }));
     }
 
@@ -1639,7 +1650,7 @@ mod tests {
 
         let input = replaced.input_settings().unwrap();
         let bindings = replaced.bindings(&input).unwrap();
-        assert_eq!(bindings.len(), 39);
+        assert_eq!(bindings.len(), 40);
         assert!(bindings.iter().any(|binding| {
             binding.action
                 == BindingAction::Spawn(vec![
@@ -1651,7 +1662,7 @@ mod tests {
 
         let input = unbound.input_settings().unwrap();
         let bindings = unbound.bindings(&input).unwrap();
-        assert_eq!(bindings.len(), 38);
+        assert_eq!(bindings.len(), 39);
         assert!(
             !bindings
                 .iter()

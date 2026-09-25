@@ -15,6 +15,7 @@ use smithay::{
                 UnderlyingStorage,
                 memory::MemoryRenderBufferRenderElement,
                 render_elements,
+                solid::{SolidColorBuffer, SolidColorRenderElement},
                 surface::{
                     WaylandSurfaceRenderElement, WaylandSurfaceTexture,
                     render_elements_from_surface_tree,
@@ -43,7 +44,7 @@ use smithay::{
     reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind as PresentationKind,
     reexports::wayland_server::Resource,
     utils::{
-        Buffer, Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale as RenderScale,
+        Buffer, Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale as RenderScale, Size,
         Transform,
     },
     wayland::shell::wlr_layer::Layer,
@@ -74,6 +75,7 @@ render_elements! {
     Window=WindowRenderElement,
     Surface=SurfaceRenderElement,
     Memory=MemoryRenderElement,
+    Solid=SolidColorRenderElement,
     Border=PixelShaderElement,
     Backdrop=BackdropRenderElement,
 }
@@ -308,6 +310,19 @@ pub(crate) struct RoundedClipPrograms {
     texture: GlesTexProgram,
     border: GlesPixelProgram,
     shadow: GlesPixelProgram,
+}
+
+#[derive(Debug)]
+pub(crate) struct OverviewScrim {
+    buffer: SolidColorBuffer,
+}
+
+impl OverviewScrim {
+    fn new(size: Size<i32, Logical>) -> Self {
+        Self {
+            buffer: SolidColorBuffer::new(size, [0.02, 0.025, 0.035, 0.62]),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -864,7 +879,7 @@ fn output_elements(
         .rev()
         .filter_map(|window| {
             let id = *state.window_ids.get(window)?;
-            let visual = state.window_geometry.get(&id)?.visual.current;
+            let visual = state.presented_window_rect(id)?;
             let (close_scale, close_alpha) = state.closing_visual(id);
             let visual = scaled_visual_rect(visual, close_scale);
             let decoration_progress = state
@@ -885,7 +900,11 @@ fn output_elements(
             let shadow_blur = state.theme_settings.shadow_blur;
             let shadow_opacity = state.theme_settings.shadow_opacity;
             let shadow_color = state.theme_settings.shadow_color.0;
-            let focused = state.focused_window == Some(id);
+            let focused = if state.overview.is_active() {
+                state.overview_selected(id)
+            } else {
+                state.focused_window == Some(id)
+            };
             let border_width = if focused {
                 state.theme_settings.focus_ring_width
             } else {
@@ -964,6 +983,11 @@ fn output_elements(
             ));
         }
     }
+    if state.overview.is_presenting()
+        && let Some(scrim) = overview_scrim_element(state, output, output_geometry, scale)
+    {
+        elements.push(scrim.into());
+    }
     elements.extend(layer_elements(
         state,
         renderer,
@@ -971,6 +995,31 @@ fn output_elements(
         &[Layer::Bottom, Layer::Background],
     ));
     elements
+}
+
+fn overview_scrim_element(
+    state: &mut Ferese,
+    output: &Output,
+    output_geometry: Rectangle<i32, Logical>,
+    scale: f64,
+) -> Option<SolidColorRenderElement> {
+    let output_id = state.output_id(output)?;
+    let scrim = state
+        .overview_scrims
+        .entry(output_id)
+        .or_insert_with(|| OverviewScrim::new(output_geometry.size));
+
+    scrim
+        .buffer
+        .update(output_geometry.size, [0.02, 0.025, 0.035, 0.62]);
+
+    Some(SolidColorRenderElement::from_buffer(
+        &scrim.buffer,
+        Point::<i32, Physical>::default(),
+        scale,
+        1.0,
+        RenderElementKind::Unspecified,
+    ))
 }
 
 fn rounded_clip_program(
