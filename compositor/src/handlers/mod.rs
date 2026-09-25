@@ -2,6 +2,7 @@ mod activation;
 mod compositor;
 mod input_method;
 mod layer_shell;
+pub(crate) mod screencopy;
 mod xdg_shell;
 
 use smithay::{

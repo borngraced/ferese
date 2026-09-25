@@ -80,6 +80,7 @@ pub struct Ferese {
     pub active_shortcuts_inhibitor: Option<KeyboardShortcutsInhibitor>,
     pub direct_backend: Option<crate::backends::direct::DirectBackendState>,
     pending_dmabuf_imports: Vec<(Dmabuf, ImportNotifier)>,
+    pub(crate) pending_screencopies: Vec<crate::handlers::screencopy::PendingScreencopy>,
     next_window_id: u64,
     last_animation_tick: Instant,
     pub popups: PopupManager,
@@ -135,6 +136,7 @@ impl Ferese {
         display: Display<Self>,
     ) -> Result<Self, Box<dyn Error>> {
         let display_handle = display.handle();
+        crate::handlers::screencopy::init_global(&display_handle);
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
@@ -192,6 +194,7 @@ impl Ferese {
             active_shortcuts_inhibitor: None,
             direct_backend: None,
             pending_dmabuf_imports: Vec::new(),
+            pending_screencopies: Vec::new(),
             next_window_id: 1,
             last_animation_tick: start_time,
             popups: PopupManager::default(),

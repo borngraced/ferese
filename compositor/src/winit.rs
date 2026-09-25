@@ -6,7 +6,7 @@ use std::{
 use smithay::{
     backend::{
         renderer::{
-            ImportDma,
+            Frame, ImportDma, Renderer,
             damage::OutputDamageTracker,
             element::{
                 AsRenderElements, Kind as RenderElementKind,
@@ -142,6 +142,15 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                             &elements,
                             [0.035, 0.04, 0.055, 1.0],
                         )?;
+                        if state.process_screencopies(renderer, &framebuffer, &output) {
+                            let _ = renderer
+                                .render(
+                                    &mut framebuffer,
+                                    output.current_mode().expect("output has a mode").size,
+                                    output.current_transform(),
+                                )?
+                                .finish()?;
+                        }
                     }
                     backend.submit(Some(&[damage]))?;
                     Ok(())

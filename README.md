@@ -34,6 +34,18 @@ FERESE_ENABLE_INPUT_METHOD=1 cargo run -p ferese
 
 `Ctrl+Alt+Escape` always releases an active client shortcut inhibitor.
 
+Screen capture is hidden by default. A session that has already made an
+explicit capture-policy decision can expose screencopy-v1 to its clients with:
+
+```bash
+FERESE_ENABLE_SCREENCOPY=1 cargo run -p ferese
+```
+
+The current M5 implementation supports one-shot output and region capture into
+ARGB8888 shared-memory buffers. Captures currently include Ferese's software
+cursor even when a client does not request a cursor overlay; cursor-free
+capture remains part of the M5 interoperability acceptance work.
+
 ### Direct DRM session
 
 Run the hardware backend from a spare TTY, outside another graphical session:

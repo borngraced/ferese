@@ -9,7 +9,10 @@ use smithay::{
         drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode, GbmBufferedSurface},
         egl::{EGLContext, EGLDisplay},
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{Bind, ImportDma, ImportMemWl, damage::OutputDamageTracker, gles::GlesRenderer},
+        renderer::{
+            Bind, Frame, ImportDma, ImportMemWl, Renderer, damage::OutputDamageTracker,
+            gles::GlesRenderer,
+        },
         session::{Event as SessionEvent, Session, libseat::LibSeatSession},
         udev::{UdevBackend, UdevEvent, primary_gpu},
     },
@@ -315,6 +318,20 @@ fn render_device(state: &mut Ferese, node: DrmNode) {
             &elements,
             [0.035, 0.04, 0.055, 1.0],
         )?;
+        if state.process_screencopies(&mut device.renderer, &framebuffer, &device.output) {
+            let _ = device
+                .renderer
+                .render(
+                    &mut framebuffer,
+                    device
+                        .output
+                        .current_mode()
+                        .expect("output has a mode")
+                        .size,
+                    device.output.current_transform(),
+                )?
+                .finish()?;
+        }
         let Some(damage) = result.damage.cloned() else {
             return Ok(false);
         };
