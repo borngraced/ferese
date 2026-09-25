@@ -174,10 +174,10 @@ impl Ferese {
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
                 let position = pointer.current_location();
                 let focus = self.surface_under(position);
-                let scale = self
+                let (scale_x, scale_y) = self
                     .window_under_visual(position)
                     .and_then(|window| self.visual_scale_for_window(&window))
-                    .unwrap_or(1.0);
+                    .unwrap_or((1.0, 1.0));
                 let delta = event.delta();
                 let delta_unaccel = event.delta_unaccel();
 
@@ -185,8 +185,9 @@ impl Ferese {
                     self,
                     focus,
                     &RelativeMotionEvent {
-                        delta: (delta.x / scale, delta.y / scale).into(),
-                        delta_unaccel: (delta_unaccel.x / scale, delta_unaccel.y / scale).into(),
+                        delta: (delta.x / scale_x, delta.y / scale_y).into(),
+                        delta_unaccel: (delta_unaccel.x / scale_x, delta_unaccel.y / scale_y)
+                            .into(),
                         utime: (event.time_msec() as u64).saturating_mul(1_000),
                     },
                 );

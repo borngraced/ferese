@@ -332,7 +332,7 @@ impl Ferese {
         })
     }
 
-    pub fn visual_scale_for_window(&self, window: &Window) -> Option<f64> {
+    pub fn visual_scale_for_window(&self, window: &Window) -> Option<(f64, f64)> {
         let id = self.window_ids.get(window)?;
         self.window_geometry.get(id)?.visual_scale()
     }

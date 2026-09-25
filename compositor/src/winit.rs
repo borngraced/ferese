@@ -232,7 +232,7 @@ pub(crate) fn animated_window_elements(
                     constrain,
                     ConstrainBehavior {
                         reference: ConstrainReference::Geometry,
-                        behavior: ConstrainScaleBehavior::Zoom,
+                        behavior: ConstrainScaleBehavior::Stretch,
                         align: ConstrainAlign::TOP | ConstrainAlign::LEFT,
                     },
                 ))

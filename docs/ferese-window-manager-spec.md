@@ -549,12 +549,14 @@ to avoid a visible source-size discontinuity. Whether using a live committed
 buffer or snapshot, client content MUST remain aligned with the visual geometry
 used for hit testing.
 
-During a non-interactive resize, committed content is scaled uniformly to cover
-the visual content box and clipped to that box, anchored at its top-left content
-origin. Ferese MUST NOT expose uninitialized regions. When a matching commit
-arrives it replaces the scaled source without restarting the animation. A commit
-is matching when its acknowledged configure and effective buffer geometry match
-the requested client size after scale and transform.
+During a non-interactive resize, committed content is scaled independently on
+each axis to fill the visual content box and clipped to that box, anchored at
+its top-left content origin. This avoids the oversized crop produced by uniform
+cover scaling when only one dimension changes. Ferese MUST NOT expose
+uninitialized regions. When a matching commit arrives it replaces the scaled
+source without restarting the animation. A commit is matching when its
+acknowledged configure and effective buffer geometry match the requested client
+size after scale and transform.
 
 If a client has not acknowledged and committed the final configure within 500
 ms, Ferese MUST stop waiting for visual completion, retain the target layout,

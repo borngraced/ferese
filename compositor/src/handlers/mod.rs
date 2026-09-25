@@ -194,14 +194,14 @@ impl PointerConstraintsHandler for Ferese {
         };
         if focused_surface == *surface {
             let current = pointer.current_location();
-            let scale = self
+            let (scale_x, scale_y) = self
                 .window_under_visual(current)
                 .and_then(|window| self.visual_scale_for_window(&window))
-                .unwrap_or(1.0);
+                .unwrap_or((1.0, 1.0));
             let current_surface_location = current - origin;
             let offset = location - current_surface_location;
 
-            pointer.set_location(current + Point::from((offset.x * scale, offset.y * scale)));
+            pointer.set_location(current + Point::from((offset.x * scale_x, offset.y * scale_y)));
         }
     }
 }
