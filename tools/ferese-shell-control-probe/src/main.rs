@@ -53,8 +53,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     println!(
-        "PASS shell-control snapshot={} windows={} overview round-trip and stale-id rejection",
+        "PASS shell-control snapshot={} outputs={} workspaces={} windows={} overview round-trip and stale-id rejection",
         state.snapshot_serial.unwrap_or_default(),
+        state.output_count,
+        state.workspace_count,
         state.window_count
     );
     Ok(())
@@ -68,6 +70,8 @@ struct ProbeState {
     snapshot_serial: Option<u32>,
     snapshot_complete: bool,
     window_count: usize,
+    output_count: usize,
+    workspace_count: usize,
     overview_active: Option<bool>,
     overview_events: usize,
     invalid_window_rejected: bool,
@@ -77,6 +81,8 @@ impl ProbeState {
     fn initialized(&self) -> bool {
         self.capabilities == Some(1)
             && self.snapshot_complete
+            && self.output_count > 0
+            && self.workspace_count > 0
             && self.overview_active == Some(false)
     }
 }
@@ -122,9 +128,17 @@ impl Dispatch<FereseShellV1, ()> for ProbeState {
                 state.snapshot_serial = Some(serial);
                 state.snapshot_complete = false;
                 state.window_count = 0;
+                state.output_count = 0;
+                state.workspace_count = 0;
             }
             ferese_shell_v1::Event::Window { .. } => {
                 state.window_count += 1;
+            }
+            ferese_shell_v1::Event::Output { .. } => {
+                state.output_count += 1;
+            }
+            ferese_shell_v1::Event::Workspace { .. } => {
+                state.workspace_count += 1;
             }
             ferese_shell_v1::Event::SnapshotEnd { serial } => {
                 state.snapshot_complete = state.snapshot_serial == Some(serial);
@@ -135,14 +149,14 @@ impl Dispatch<FereseShellV1, ()> for ProbeState {
             }
             ferese_shell_v1::Event::RequestFailed {
                 request,
-                window_hi,
-                window_lo,
+                object_hi,
+                object_lo,
                 ..
             } => {
                 state.invalid_window_rejected = request
                     == WEnum::Value(ferese_shell_v1::FailedRequest::ActivateWindow)
-                    && window_hi == u32::MAX
-                    && window_lo == u32::MAX;
+                    && object_hi == u32::MAX
+                    && object_lo == u32::MAX;
             }
             _ => {}
         }

@@ -1,3 +1,4 @@
+use ferese_core::{OutputId, WorkspaceId};
 use ferese_layout::WindowId;
 use ferese_protocols::shell::v1::server::{
     ferese_shell_manager_v1::{self, FereseShellManagerV1},
@@ -91,6 +92,20 @@ impl Dispatch<FereseShellV1, ()> for Ferese {
                 join_id(window_hi, window_lo),
                 ShellWindowAction::Close,
             ),
+            ferese_shell_v1::Request::ActivateWorkspace {
+                workspace_hi,
+                workspace_lo,
+            } => {
+                let workspace = WorkspaceId(join_u64(workspace_hi, workspace_lo));
+
+                if !state.activate_managed_workspace(workspace) {
+                    send_request_failed(
+                        shell,
+                        ferese_shell_v1::FailedRequest::ActivateWorkspace,
+                        workspace.0,
+                    );
+                }
+            }
             ferese_shell_v1::Request::EnterOverview => state.set_overview_active(true),
             ferese_shell_v1::Request::ExitOverview => state.set_overview_active(false),
             ferese_shell_v1::Request::SelectOverviewWindow {
@@ -103,7 +118,7 @@ impl Dispatch<FereseShellV1, ()> for Ferese {
                     send_request_failed(
                         shell,
                         ferese_shell_v1::FailedRequest::SelectOverviewWindow,
-                        id,
+                        id.0,
                     );
                 }
             }
@@ -128,9 +143,40 @@ impl Ferese {
     fn send_shell_snapshot(&mut self, shell: &FereseShellV1) {
         self.shell_snapshot_serial = self.shell_snapshot_serial.wrapping_add(1);
         let serial = self.shell_snapshot_serial;
+        let outputs = self.output_snapshots();
+        let workspaces = self.workspace_snapshots();
         let snapshots = self.managed_window_snapshots();
 
         shell.snapshot_begin(serial);
+        for output in outputs {
+            let (output_hi, output_lo) = split_id(output.id.0);
+            let (workspace_hi, workspace_lo) = split_id(output.active_workspace.0);
+
+            shell.output(
+                output_hi,
+                output_lo,
+                output.name,
+                workspace_hi,
+                workspace_lo,
+                u32::from(output.focused),
+            );
+        }
+        for workspace in workspaces {
+            let (workspace_hi, workspace_lo) = split_id(workspace.id.0);
+            let (output_hi, output_lo) = workspace
+                .output
+                .map(|output| split_id(output.0))
+                .unwrap_or_default();
+
+            shell.workspace(
+                workspace_hi,
+                workspace_lo,
+                output_hi,
+                output_lo,
+                workspace.name,
+                u32::from(workspace.active),
+            );
+        }
         for snapshot in snapshots {
             let (window_hi, window_lo) = split_id(snapshot.id.0);
             let (workspace_hi, workspace_lo) = split_id(snapshot.workspace);
@@ -146,6 +192,48 @@ impl Ferese {
             );
         }
         shell.snapshot_end(serial);
+    }
+
+    fn output_snapshots(&self) -> Vec<OutputSnapshot> {
+        let focused = self.output_workspaces.focused_output();
+        let mut outputs = self
+            .output_ids
+            .iter()
+            .filter_map(|(output, id)| {
+                Some(OutputSnapshot {
+                    id: *id,
+                    name: output.name(),
+                    active_workspace: self.output_workspaces.active_workspace(*id)?,
+                    focused: focused == Some(*id),
+                })
+            })
+            .collect::<Vec<_>>();
+
+        outputs.sort_by_key(|output| output.id.0);
+        outputs
+    }
+
+    fn workspace_snapshots(&self) -> Vec<WorkspaceSnapshot> {
+        let mut workspaces = self
+            .workspaces
+            .iter()
+            .map(|workspace| {
+                let output = self.output_workspaces.output_for_workspace(workspace.id);
+                let active = output.is_some_and(|output| {
+                    self.output_workspaces.active_workspace(output) == Some(workspace.id)
+                });
+
+                WorkspaceSnapshot {
+                    id: workspace.id,
+                    output,
+                    name: workspace.name.clone(),
+                    active,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        workspaces.sort_by_key(|workspace| workspace.id.0);
+        workspaces
     }
 
     fn managed_window_snapshots(&self) -> Vec<ManagedWindowSnapshot> {
@@ -212,7 +300,7 @@ impl Ferese {
         };
 
         if !succeeded {
-            send_request_failed(shell, request, id);
+            send_request_failed(shell, request, id.0);
         }
     }
 
@@ -242,26 +330,40 @@ struct ManagedWindowSnapshot {
     state: ferese_shell_v1::WindowState,
 }
 
+struct OutputSnapshot {
+    id: OutputId,
+    name: String,
+    active_workspace: WorkspaceId,
+    focused: bool,
+}
+
+struct WorkspaceSnapshot {
+    id: WorkspaceId,
+    output: Option<OutputId>,
+    name: String,
+    active: bool,
+}
+
 fn split_id(id: u64) -> (u32, u32) {
     ((id >> 32) as u32, id as u32)
 }
 
 fn join_id(hi: u32, lo: u32) -> WindowId {
-    WindowId((u64::from(hi) << 32) | u64::from(lo))
+    WindowId(join_u64(hi, lo))
 }
 
-fn send_request_failed(
-    shell: &FereseShellV1,
-    request: ferese_shell_v1::FailedRequest,
-    id: WindowId,
-) {
-    let (window_hi, window_lo) = split_id(id.0);
+fn join_u64(hi: u32, lo: u32) -> u64 {
+    (u64::from(hi) << 32) | u64::from(lo)
+}
+
+fn send_request_failed(shell: &FereseShellV1, request: ferese_shell_v1::FailedRequest, id: u64) {
+    let (object_hi, object_lo) = split_id(id);
 
     shell.request_failed(
         request,
-        window_hi,
-        window_lo,
-        "unknown or unavailable managed window".to_owned(),
+        object_hi,
+        object_lo,
+        "unknown or unavailable shell object".to_owned(),
     );
 }
 

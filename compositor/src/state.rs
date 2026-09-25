@@ -114,7 +114,7 @@ pub struct Ferese {
     pub space: Space<Window>,
     pub workspaces: WorkspaceSet,
     pub output_workspaces: OutputWorkspaceMap,
-    output_ids: HashMap<Output, OutputId>,
+    pub(crate) output_ids: HashMap<Output, OutputId>,
     output_identity_ids: HashMap<String, OutputId>,
     pub window_ids: HashMap<Window, WindowId>,
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
@@ -239,18 +239,20 @@ impl Ferese {
             geometry.size.h,
         );
 
-        match self
+        let registration = self
             .output_workspaces
-            .connect(output_id, geometry, fallback_workspace)
-        {
+            .connect(output_id, geometry, fallback_workspace);
+
+        match registration {
             Ok(workspace) => {
                 self.output_ids.insert(output.clone(), output_id);
                 if self.output_workspaces.focused_output() == Some(output_id) {
                     self.activate_output_workspace(output_id, workspace);
                 }
+                self.send_shell_snapshots();
             }
             Err(error) => {
-                tracing::error!(%error, output = %output.name(), "failed to register output")
+                tracing::error!(%error, output = %output.name(), "failed to register output");
             }
         }
     }
@@ -1660,6 +1662,37 @@ impl Ferese {
 
         self.focused_window = Some(id);
         self.raise_window(&window, true);
+        self.relayout();
+        self.restore_keyboard_focus();
+        true
+    }
+
+    pub(crate) fn activate_managed_workspace(&mut self, workspace: WorkspaceId) -> bool {
+        if self.workspaces.workspace(workspace).is_none() {
+            return false;
+        }
+
+        let output = self
+            .output_workspaces
+            .output_for_workspace(workspace)
+            .or_else(|| self.output_workspaces.focused_output());
+        let Some(output) = output else {
+            return false;
+        };
+
+        if self
+            .output_workspaces
+            .output_for_workspace(workspace)
+            .is_none()
+            && self
+                .output_workspaces
+                .assign_workspace(output, workspace)
+                .is_err()
+        {
+            return false;
+        }
+
+        self.activate_output_workspace(output, workspace);
         self.relayout();
         self.restore_keyboard_focus();
         true

@@ -37,9 +37,9 @@
 
   <interface name="ferese_shell_v1" version="1">
     <description summary="managed-window metadata and shell control">
-      Window and workspace identifiers are unsigned 64-bit values encoded as
-      high and low 32-bit words. Each snapshot atomically replaces the prior
-      managed-window view after snapshot_end.
+      Window, workspace, and output identifiers are unsigned 64-bit values
+      encoded as high and low 32-bit words. Each snapshot atomically replaces
+      the prior shell view after snapshot_end.
     </description>
 
     <request name="activate_window">
@@ -50,6 +50,11 @@
     <request name="close_window">
       <arg name="window_hi" type="uint"/>
       <arg name="window_lo" type="uint"/>
+    </request>
+
+    <request name="activate_workspace">
+      <arg name="workspace_hi" type="uint"/>
+      <arg name="workspace_lo" type="uint"/>
     </request>
 
     <request name="enter_overview"/>
@@ -73,6 +78,7 @@
       <entry name="activate_window" value="0"/>
       <entry name="close_window" value="1"/>
       <entry name="select_overview_window" value="2"/>
+      <entry name="activate_workspace" value="3"/>
     </enum>
 
     <event name="snapshot_begin">
@@ -89,6 +95,24 @@
       <arg name="state" type="uint" enum="window_state"/>
     </event>
 
+    <event name="output">
+      <arg name="output_hi" type="uint"/>
+      <arg name="output_lo" type="uint"/>
+      <arg name="name" type="string"/>
+      <arg name="active_workspace_hi" type="uint"/>
+      <arg name="active_workspace_lo" type="uint"/>
+      <arg name="focused" type="uint" summary="one when this is the focused output"/>
+    </event>
+
+    <event name="workspace">
+      <arg name="workspace_hi" type="uint"/>
+      <arg name="workspace_lo" type="uint"/>
+      <arg name="output_hi" type="uint" summary="zero when the workspace has no output"/>
+      <arg name="output_lo" type="uint" summary="zero when the workspace has no output"/>
+      <arg name="name" type="string"/>
+      <arg name="active" type="uint" summary="one when visible on its output"/>
+    </event>
+
     <event name="snapshot_end">
       <arg name="serial" type="uint"/>
     </event>
@@ -99,8 +123,8 @@
 
     <event name="request_failed">
       <arg name="request" type="uint" enum="failed_request"/>
-      <arg name="window_hi" type="uint"/>
-      <arg name="window_lo" type="uint"/>
+      <arg name="object_hi" type="uint"/>
+      <arg name="object_lo" type="uint"/>
       <arg name="reason" type="string"/>
     </event>
 
