@@ -39,6 +39,18 @@ cargo build -p ferese-effects-probe
 cargo run -p ferese -- --grant-effects -- target/debug/ferese-effects-probe
 ```
 
+Add `--preview` to keep a glass popover visible in the nested compositor:
+
+```bash
+cargo build -p ferese-effects-probe
+cargo run -p ferese -- --backend nested --grant-effects -- \
+  target/debug/ferese-effects-probe --preview
+```
+
+Press `Super+Enter` in the Ferese window to open `foot`, then move or update the
+terminal beneath the popover to see backdrop capture, blur, tint, and damage
+invalidation. Stop the preview with `Ctrl+C` in the host terminal.
+
 To verify that the private global is absent from the public Wayland socket:
 
 ```bash
