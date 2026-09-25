@@ -12,6 +12,7 @@ use smithay::{
                 AsRenderElements, Kind as RenderElementKind, RenderElement,
                 memory::MemoryRenderBufferRenderElement,
                 render_elements,
+                solid::{SolidColorBuffer, SolidColorRenderElement},
                 surface::{WaylandSurfaceRenderElement, render_elements_from_surface_tree},
                 utils::{
                     ConstrainAlign, ConstrainScaleBehavior, CropRenderElement, Relocate,
@@ -51,6 +52,20 @@ render_elements! {
     pub(crate) AnimatedWindowRenderElement<=GlesRenderer>;
     Surface=SurfaceRenderElement,
     Memory=MemoryRenderElement,
+    Solid=SolidColorRenderElement,
+}
+
+#[derive(Debug)]
+pub(crate) struct WindowBorderBuffers {
+    edges: [SolidColorBuffer; 4],
+}
+
+impl Default for WindowBorderBuffers {
+    fn default() -> Self {
+        Self {
+            edges: std::array::from_fn(|_| SolidColorBuffer::default()),
+        }
+    }
 }
 
 pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<(), Box<dyn Error>> {
@@ -216,7 +231,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
 }
 
 pub(crate) fn animated_window_elements(
-    state: &Ferese,
+    state: &mut Ferese,
     renderer: &mut GlesRenderer,
     output: &Output,
 ) -> Vec<AnimatedWindowRenderElement> {
@@ -224,7 +239,7 @@ pub(crate) fn animated_window_elements(
 }
 
 pub(crate) fn cursorless_window_elements(
-    state: &Ferese,
+    state: &mut Ferese,
     renderer: &mut GlesRenderer,
     output: &Output,
 ) -> Vec<AnimatedWindowRenderElement> {
@@ -232,7 +247,7 @@ pub(crate) fn cursorless_window_elements(
 }
 
 fn output_elements(
-    state: &Ferese,
+    state: &mut Ferese,
     renderer: &mut GlesRenderer,
     output: &Output,
     include_cursor: bool,
@@ -252,53 +267,146 @@ fn output_elements(
         output,
         &[Layer::Overlay, Layer::Top],
     ));
-    elements.extend(
-        state
-            .space
-            .elements()
-            .rev()
-            .filter_map(|window| {
-                let id = state.window_ids.get(window)?;
-                let visual = state.window_geometry.get(id)?.visual.current;
-                let constrain = Rectangle::<i32, Logical>::new(
-                    (
-                        (visual.x - f64::from(output_geometry.loc.x)).round() as i32,
-                        (visual.y - f64::from(output_geometry.loc.y)).round() as i32,
-                    )
-                        .into(),
-                    (
-                        visual.width.round().max(1.0) as i32,
-                        visual.height.round().max(1.0) as i32,
-                    )
-                        .into(),
-                );
+    let windows = state
+        .space
+        .elements()
+        .rev()
+        .filter_map(|window| {
+            let id = *state.window_ids.get(window)?;
+            let visual = state.window_geometry.get(&id)?.visual.current;
+            let fullscreen = state
+                .workspaces
+                .workspace_for_window(id)
+                .and_then(|workspace| state.workspaces.workspace(workspace))
+                .is_some_and(|workspace| workspace.fullscreen == Some(id));
 
-                Some(constrain_space_element::<
-                    GlesRenderer,
-                    _,
-                    AnimatedWindowRenderElement,
-                >(
-                    renderer,
-                    window,
-                    constrain.loc,
-                    1.0,
-                    scale,
-                    constrain,
-                    ConstrainBehavior {
-                        reference: ConstrainReference::Geometry,
-                        behavior: ConstrainScaleBehavior::Stretch,
-                        align: ConstrainAlign::TOP | ConstrainAlign::LEFT,
-                    },
-                ))
-            })
-            .flatten(),
-    );
+            Some((window.clone(), id, visual, fullscreen))
+        })
+        .collect::<Vec<_>>();
+
+    for (window, id, visual, fullscreen) in windows {
+        let constrain = Rectangle::<i32, Logical>::new(
+            (
+                (visual.x - f64::from(output_geometry.loc.x)).round() as i32,
+                (visual.y - f64::from(output_geometry.loc.y)).round() as i32,
+            )
+                .into(),
+            (
+                visual.width.round().max(1.0) as i32,
+                visual.height.round().max(1.0) as i32,
+            )
+                .into(),
+        );
+
+        if !fullscreen {
+            elements.extend(window_border_elements(state, id, constrain, scale));
+        }
+        elements.extend(constrain_space_element::<
+            GlesRenderer,
+            _,
+            AnimatedWindowRenderElement,
+        >(
+            renderer,
+            &window,
+            constrain.loc,
+            1.0,
+            scale,
+            constrain,
+            ConstrainBehavior {
+                reference: ConstrainReference::Geometry,
+                behavior: ConstrainScaleBehavior::Stretch,
+                align: ConstrainAlign::TOP | ConstrainAlign::LEFT,
+            },
+        ));
+    }
     elements.extend(layer_elements(
         renderer,
         output,
         &[Layer::Bottom, Layer::Background],
     ));
     elements
+}
+
+fn window_border_elements(
+    state: &mut Ferese,
+    id: ferese_layout::WindowId,
+    geometry: Rectangle<i32, Logical>,
+    scale: f64,
+) -> Vec<AnimatedWindowRenderElement> {
+    let focused = state.focused_window == Some(id);
+    let width = if focused {
+        state.theme_settings.focus_ring_width
+    } else {
+        state.theme_settings.border_width
+    };
+    let rectangles = border_rectangles(geometry, width);
+    if rectangles.is_empty() {
+        return Vec::new();
+    }
+
+    let color = if focused {
+        state.theme_settings.accent_color.0
+    } else {
+        state.theme_settings.border_color.0
+    };
+    let buffers = state.window_borders.entry(id).or_default();
+
+    buffers
+        .edges
+        .iter_mut()
+        .zip(rectangles)
+        .map(|(buffer, rectangle)| {
+            buffer.update(rectangle.size, color);
+            SolidColorRenderElement::from_buffer(
+                buffer,
+                rectangle.loc.to_physical_precise_round(scale),
+                scale,
+                1.0,
+                RenderElementKind::Unspecified,
+            )
+            .into()
+        })
+        .collect()
+}
+
+fn border_rectangles(
+    geometry: Rectangle<i32, Logical>,
+    requested_width: f64,
+) -> Vec<Rectangle<i32, Logical>> {
+    let width = requested_width
+        .ceil()
+        .max(0.0)
+        .min(f64::from(geometry.size.w.min(geometry.size.h)) / 2.0) as i32;
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let inner_height = geometry.size.h - width * 2;
+    let mut rectangles = vec![
+        Rectangle::new(geometry.loc, (geometry.size.w, width).into()),
+        Rectangle::new(
+            (geometry.loc.x, geometry.loc.y + geometry.size.h - width).into(),
+            (geometry.size.w, width).into(),
+        ),
+    ];
+    if inner_height > 0 {
+        rectangles.extend([
+            Rectangle::new(
+                (geometry.loc.x, geometry.loc.y + width).into(),
+                (width, inner_height).into(),
+            ),
+            Rectangle::new(
+                (
+                    geometry.loc.x + geometry.size.w - width,
+                    geometry.loc.y + width,
+                )
+                    .into(),
+                (width, inner_height).into(),
+            ),
+        ]);
+    }
+
+    rectangles
 }
 
 pub(crate) fn redraw_output<R, E>(
@@ -465,7 +573,9 @@ fn normalized_scale(scale: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use super::normalized_scale;
+    use smithay::utils::{Logical, Rectangle};
+
+    use super::{border_rectangles, normalized_scale};
 
     #[test]
     fn accepts_positive_finite_scale() {
@@ -477,5 +587,33 @@ mod tests {
         assert_eq!(normalized_scale(0.0), 1.0);
         assert_eq!(normalized_scale(f64::NAN), 1.0);
         assert_eq!(normalized_scale(f64::INFINITY), 1.0);
+    }
+
+    #[test]
+    fn border_rectangles_stay_inside_window_geometry() {
+        let geometry = Rectangle::<i32, Logical>::new((10, 20).into(), (100, 80).into());
+
+        assert_eq!(
+            border_rectangles(geometry, 2.0),
+            vec![
+                Rectangle::new((10, 20).into(), (100, 2).into()),
+                Rectangle::new((10, 98).into(), (100, 2).into()),
+                Rectangle::new((10, 22).into(), (2, 76).into()),
+                Rectangle::new((108, 22).into(), (2, 76).into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn border_width_is_clamped_for_tiny_windows() {
+        let geometry = Rectangle::<i32, Logical>::new((0, 0).into(), (3, 2).into());
+        let rectangles = border_rectangles(geometry, 20.0);
+
+        assert_eq!(rectangles.len(), 2);
+        assert!(
+            rectangles
+                .iter()
+                .all(|rectangle| geometry.contains_rect(*rectangle))
+        );
     }
 }

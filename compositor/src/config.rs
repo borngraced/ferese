@@ -23,6 +23,8 @@ pub struct Config {
     #[serde(default)]
     input: InputConfig,
     #[serde(default)]
+    theme: ThemeConfig,
+    #[serde(default)]
     commands: HashMap<String, Vec<String>>,
     #[serde(default)]
     bindings: Vec<BindingConfig>,
@@ -30,6 +32,63 @@ pub struct Config {
     window_rules: Vec<WindowRuleConfig>,
     #[serde(default)]
     scrolling: ScrollingConfig,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RgbaColor(pub [f32; 4]);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ThemeSettings {
+    pub border_width: f64,
+    pub focus_ring_width: f64,
+    pub border_color: RgbaColor,
+    pub accent_color: RgbaColor,
+    pub window_radius: f64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ThemeConfig {
+    #[serde(default)]
+    colors: ThemeColorsConfig,
+    #[serde(default)]
+    geometry: ThemeGeometryConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct ThemeColorsConfig {
+    #[serde(default = "default_border_color")]
+    border: String,
+    #[serde(default = "default_accent_color")]
+    accent: String,
+}
+
+impl Default for ThemeColorsConfig {
+    fn default() -> Self {
+        Self {
+            border: default_border_color(),
+            accent: default_accent_color(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ThemeGeometryConfig {
+    #[serde(default = "default_border_width")]
+    border_width: f64,
+    #[serde(default = "default_focus_ring_width")]
+    focus_ring_width: f64,
+    #[serde(default = "default_window_radius")]
+    window_radius: f64,
+}
+
+impl Default for ThemeGeometryConfig {
+    fn default() -> Self {
+        Self {
+            border_width: default_border_width(),
+            focus_ring_width: default_focus_ring_width(),
+            window_radius: default_window_radius(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -329,6 +388,10 @@ pub enum ConfigError {
     },
     InvalidBinding(String),
     InvalidWindowRule(String),
+    InvalidThemeValue {
+        field: &'static str,
+        value: String,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -355,6 +418,9 @@ impl fmt::Display for ConfigError {
             }
             Self::InvalidBinding(message) => write!(formatter, "invalid binding: {message}"),
             Self::InvalidWindowRule(message) => write!(formatter, "invalid window rule: {message}"),
+            Self::InvalidThemeValue { field, value } => {
+                write!(formatter, "invalid theme.{field} value {value}")
+            }
         }
     }
 }
@@ -369,7 +435,8 @@ impl Error for ConfigError {
             | Self::InvalidLayoutValue { .. }
             | Self::InvalidInputValue { .. }
             | Self::InvalidBinding(_)
-            | Self::InvalidWindowRule(_) => None,
+            | Self::InvalidWindowRule(_)
+            | Self::InvalidThemeValue { .. } => None,
         }
     }
 }
@@ -518,6 +585,25 @@ impl Config {
 
     pub fn window_rules(&self) -> Result<Vec<WindowRule>, ConfigError> {
         window_rules::validate(&self.window_rules).map_err(ConfigError::InvalidWindowRule)
+    }
+
+    pub fn theme_settings(&self) -> Result<ThemeSettings, ConfigError> {
+        let border_width =
+            nonnegative_theme_value(self.theme.geometry.border_width, "geometry.border_width")?;
+        let focus_ring_width = nonnegative_theme_value(
+            self.theme.geometry.focus_ring_width,
+            "geometry.focus_ring_width",
+        )?;
+        let window_radius =
+            nonnegative_theme_value(self.theme.geometry.window_radius, "geometry.window_radius")?;
+
+        Ok(ThemeSettings {
+            border_width,
+            focus_ring_width,
+            border_color: parse_color(&self.theme.colors.border, "colors.border")?,
+            accent_color: parse_color(&self.theme.colors.accent, "colors.accent")?,
+            window_radius,
+        })
     }
 
     pub fn animations_enabled(&self) -> bool {
@@ -908,6 +994,54 @@ fn nonnegative_layout_value(value: f64, field: &'static str) -> Result<f64, Conf
     }
 }
 
+fn nonnegative_theme_value(value: f64, field: &'static str) -> Result<f64, ConfigError> {
+    if value.is_finite() && value >= 0.0 {
+        Ok(value)
+    } else {
+        Err(ConfigError::InvalidThemeValue {
+            field,
+            value: value.to_string(),
+        })
+    }
+}
+
+fn parse_color(value: &str, field: &'static str) -> Result<RgbaColor, ConfigError> {
+    let digits = value.strip_prefix('#').unwrap_or(value);
+    if !digits.is_ascii() || !matches!(digits.len(), 6 | 8) {
+        return Err(ConfigError::InvalidThemeValue {
+            field,
+            value: value.to_owned(),
+        });
+    }
+
+    let parse_channel = |offset| u8::from_str_radix(&digits[offset..offset + 2], 16).ok();
+    let Some((red, green, blue)) = parse_channel(0)
+        .zip(parse_channel(2))
+        .zip(parse_channel(4))
+        .map(|((red, green), blue)| (red, green, blue))
+    else {
+        return Err(ConfigError::InvalidThemeValue {
+            field,
+            value: value.to_owned(),
+        });
+    };
+    let alpha = if digits.len() == 8 {
+        parse_channel(6).ok_or_else(|| ConfigError::InvalidThemeValue {
+            field,
+            value: value.to_owned(),
+        })?
+    } else {
+        u8::MAX
+    };
+
+    Ok(RgbaColor([
+        f32::from(red) / 255.0,
+        f32::from(green) / 255.0,
+        f32::from(blue) / 255.0,
+        f32::from(alpha) / 255.0,
+    ]))
+}
+
 const fn enabled_by_default() -> bool {
     true
 }
@@ -918,6 +1052,26 @@ const fn default_inner_gap() -> f64 {
 
 const fn default_outer_gap() -> f64 {
     10.0
+}
+
+fn default_border_color() -> String {
+    "#FFFFFF18".to_owned()
+}
+
+fn default_accent_color() -> String {
+    "#5B8CFF".to_owned()
+}
+
+const fn default_border_width() -> f64 {
+    1.0
+}
+
+const fn default_focus_ring_width() -> f64 {
+    2.0
+}
+
+const fn default_window_radius() -> f64 {
+    14.0
 }
 
 fn default_xkb_layout() -> String {
@@ -1106,6 +1260,28 @@ mod tests {
             }
         );
         assert!(invalid.gap_config().is_err());
+    }
+
+    #[test]
+    fn parses_and_validates_theme_window_tokens() {
+        let configured = parse(
+            "[theme.colors]\nborder = \"#11223344\"\naccent = \"#AABBCC\"\n\n[theme.geometry]\nborder_width = 1.5\nfocus_ring_width = 3.0\nwindow_radius = 12.0",
+        );
+        let invalid_color = parse("[theme.colors]\naccent = \"blue\"");
+        let invalid_radius = parse("[theme.geometry]\nwindow_radius = -1.0");
+
+        assert_eq!(
+            configured.theme_settings().unwrap(),
+            ThemeSettings {
+                border_width: 1.5,
+                focus_ring_width: 3.0,
+                border_color: RgbaColor([17.0 / 255.0, 34.0 / 255.0, 51.0 / 255.0, 68.0 / 255.0,]),
+                accent_color: RgbaColor([170.0 / 255.0, 187.0 / 255.0, 0.8, 1.0]),
+                window_radius: 12.0,
+            }
+        );
+        assert!(invalid_color.theme_settings().is_err());
+        assert!(invalid_radius.theme_settings().is_err());
     }
 
     #[test]

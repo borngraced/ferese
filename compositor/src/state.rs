@@ -76,7 +76,7 @@ use smithay::{
 };
 
 use crate::{
-    config::{Binding, InputSettings},
+    config::{Binding, InputSettings, ThemeSettings},
     window_rules::{WindowRule, resolve as resolve_window_rules},
 };
 
@@ -92,6 +92,7 @@ pub struct Ferese {
     output_identity_ids: HashMap<String, OutputId>,
     pub window_ids: HashMap<Window, WindowId>,
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
+    pub(crate) window_borders: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
     viewport_animations: HashMap<WorkspaceId, AnimatedValue>,
     scrolling_world_x: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
     pub focused_window: Option<WindowId>,
@@ -101,6 +102,7 @@ pub struct Ferese {
     pub(crate) bindings: Vec<Binding>,
     window_rules: Vec<WindowRule>,
     window_rules_applied: HashSet<WindowId>,
+    pub(crate) theme_settings: ThemeSettings,
     animations_enabled: bool,
     animation_speed: f64,
     spring_config: SpringConfig,
@@ -153,6 +155,7 @@ pub struct RuntimeConfig {
     pub input_settings: InputSettings,
     pub bindings: Vec<Binding>,
     pub window_rules: Vec<WindowRule>,
+    pub theme_settings: ThemeSettings,
     pub default_column_width: ColumnWidth,
     pub scrolling_focus_strategy: ViewportFocusStrategy,
     pub column_width_presets: Vec<ColumnWidth>,
@@ -390,6 +393,7 @@ impl Ferese {
             output_identity_ids: HashMap::new(),
             window_ids: HashMap::new(),
             window_geometry: HashMap::new(),
+            window_borders: HashMap::new(),
             viewport_animations: HashMap::new(),
             scrolling_world_x: HashMap::new(),
             focused_window: None,
@@ -399,6 +403,7 @@ impl Ferese {
             bindings: config.bindings,
             window_rules: config.window_rules,
             window_rules_applied: HashSet::new(),
+            theme_settings: config.theme_settings,
             animations_enabled: config.animations_enabled,
             animation_speed: config.animation_speed,
             spring_config: config.spring_config,
@@ -772,6 +777,7 @@ impl Ferese {
 
         self.space.unmap_elem(window);
         self.window_geometry.remove(&id);
+        self.window_borders.remove(&id);
         self.window_rules_applied.remove(&id);
         self.scrolling_world_x.remove(&id);
         if let Err(error) = self.workspaces.remove_window(id) {

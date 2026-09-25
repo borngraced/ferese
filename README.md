@@ -45,6 +45,23 @@ them for a lone tiled window:
 smart_gaps = true
 ```
 
+Managed-window borders use theme tokens and overlay the window edge without
+adding inner padding or changing client geometry:
+
+```toml
+[theme.colors]
+border = "#FFFFFF18"
+accent = "#5B8CFF"
+
+[theme.geometry]
+border_width = 1.0
+focus_ring_width = 2.0
+window_radius = 14.0
+```
+
+Fullscreen windows are borderless. `window_radius` is validated now and is used
+by the rounded-clipping pass described below in the M6 rendering work.
+
 Scrolling keeps windows in stable workspace coordinates and animates the
 viewport only when focus must be revealed. Set
 `focus_strategy = "center_on_focus"` under `[scrolling]` to center focused

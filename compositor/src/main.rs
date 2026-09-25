@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         input_settings,
         bindings,
         window_rules,
+        theme_settings: config.theme_settings()?,
         default_column_width: config.default_column_width()?,
         scrolling_focus_strategy: config.scrolling_focus_strategy(),
         column_width_presets: config.width_presets()?,
