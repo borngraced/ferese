@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::AsFd;
+use std::time::Duration;
 
 use ferese_protocols::effects::v1::client::{
     ferese_effects_manager_v1::FereseEffectsManagerV1,
@@ -60,6 +61,12 @@ fn main() -> Result<(), Box<dyn Error>> {
             return Err(format!("semantic role {role:?} changed layer geometry").into());
         }
     }
+
+    // Keep the final glass role mapped long enough for the compositor to run
+    // at least one presentation. This turns shader and capture failures into
+    // probe failures instead of disconnecting before the first rendered frame.
+    std::thread::sleep(Duration::from_millis(100));
+
     effects.clear_role();
     queue.roundtrip(&mut state)?;
     if state.configure_count != initial_configures {

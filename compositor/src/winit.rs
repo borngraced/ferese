@@ -6,8 +6,9 @@ use std::{
 
 use smithay::{
     backend::{
+        allocator::Fourcc,
         renderer::{
-            Color32F, ErasedContextId, Frame, ImportDma, Renderer,
+            Color32F, ErasedContextId, Frame, ImportDma, Offscreen, Renderer, Texture,
             damage::OutputDamageTracker,
             element::{
                 AsRenderElements, Element, Id, Kind as RenderElementKind, RenderElement,
@@ -24,8 +25,8 @@ use smithay::{
                 },
             },
             gles::{
-                GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, Uniform,
-                UniformName, UniformType, element::PixelShaderElement,
+                GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, GlesTexture,
+                Uniform, UniformName, UniformType, element::PixelShaderElement,
             },
             utils::{CommitCounter, DamageSet, OpaqueRegions, draw_render_elements},
         },
@@ -71,6 +72,7 @@ render_elements! {
     Surface=SurfaceRenderElement,
     Memory=MemoryRenderElement,
     Border=PixelShaderElement,
+    Backdrop=BackdropRenderElement,
 }
 
 render_elements! {
@@ -231,6 +233,62 @@ void main() {
 }
 "#;
 
+const BACKDROP_SHADER: &str = r#"#version 100
+
+//_DEFINES_
+
+#if defined(EXTERNAL)
+#extension GL_OES_EGL_image_external : require
+#endif
+
+precision mediump float;
+#if defined(EXTERNAL)
+uniform samplerExternalOES tex;
+#else
+uniform sampler2D tex;
+#endif
+uniform float alpha;
+uniform vec4 visible_rect;
+uniform vec2 texture_size;
+uniform float blur_radius;
+uniform float saturation;
+uniform float brightness;
+uniform vec4 tint;
+uniform float noise_amount;
+varying vec2 v_coords;
+
+float random(vec2 point) {
+    return fract(sin(dot(point, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+void main() {
+    vec2 point = gl_FragCoord.xy;
+    vec2 visible_max = visible_rect.xy + visible_rect.zw;
+    if (point.x < visible_rect.x || point.y < visible_rect.y
+            || point.x >= visible_max.x || point.y >= visible_max.y) {
+        gl_FragColor = vec4(0.0);
+        return;
+    }
+
+    vec2 step_size = vec2(blur_radius) / max(texture_size, vec2(1.0));
+    vec4 color = texture2D(tex, v_coords) * 0.20;
+    color += texture2D(tex, v_coords + vec2(step_size.x, 0.0)) * 0.12;
+    color += texture2D(tex, v_coords - vec2(step_size.x, 0.0)) * 0.12;
+    color += texture2D(tex, v_coords + vec2(0.0, step_size.y)) * 0.12;
+    color += texture2D(tex, v_coords - vec2(0.0, step_size.y)) * 0.12;
+    color += texture2D(tex, v_coords + step_size) * 0.08;
+    color += texture2D(tex, v_coords - step_size) * 0.08;
+    color += texture2D(tex, v_coords + vec2(step_size.x, -step_size.y)) * 0.08;
+    color += texture2D(tex, v_coords + vec2(-step_size.x, step_size.y)) * 0.08;
+
+    float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+    vec3 adjusted = mix(vec3(luma), color.rgb, saturation) * brightness;
+    adjusted = mix(adjusted, tint.rgb, tint.a);
+    adjusted += vec3((random(point) - 0.5) * noise_amount);
+    gl_FragColor = vec4(clamp(adjusted, 0.0, 1.0) * alpha, alpha);
+}
+"#;
+
 #[derive(Clone, Debug)]
 pub(crate) struct RoundedClipPrograms {
     texture: GlesTexProgram,
@@ -241,6 +299,9 @@ pub(crate) struct RoundedClipPrograms {
 #[derive(Clone, Debug)]
 pub(crate) struct MaterialProgram(GlesPixelProgram);
 
+#[derive(Clone, Debug)]
+pub(crate) struct BackdropProgram(GlesTexProgram);
+
 #[derive(Clone, Debug, PartialEq)]
 struct MaterialParameters {
     geometry: Rectangle<i32, Logical>,
@@ -249,17 +310,160 @@ struct MaterialParameters {
     generation: u64,
     scene_generation: u64,
     opaque: bool,
+    blur: f32,
+    saturation: f32,
+    brightness: f32,
+    sample_geometry: Rectangle<i32, Logical>,
+    sample_physical: Rectangle<i32, Physical>,
+    visible_framebuffer: [f32; 4],
+    sample_framebuffer: [f32; 4],
 }
 
 #[derive(Debug)]
 struct CachedMaterial {
-    element: PixelShaderElement,
+    element: CachedMaterialElement,
     parameters: MaterialParameters,
+}
+
+#[derive(Clone, Debug)]
+enum CachedMaterialElement {
+    Tint(PixelShaderElement),
+    Backdrop(BackdropRenderElement),
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct MaterialBuffers {
     contexts: HashMap<ErasedContextId, CachedMaterial>,
+}
+
+#[derive(Clone, Debug)]
+struct BackdropRenderElement {
+    texture: GlesTexture,
+    program: GlesTexProgram,
+    id: Id,
+    commit: CommitCounter,
+    geometry: Rectangle<i32, Logical>,
+    capture_rect: [i32; 4],
+    uniforms: Vec<Uniform<'static>>,
+}
+
+impl BackdropRenderElement {
+    fn new(texture: GlesTexture, program: GlesTexProgram, parameters: &MaterialParameters) -> Self {
+        Self {
+            texture,
+            program,
+            id: Id::new(),
+            commit: CommitCounter::default(),
+            geometry: parameters.sample_geometry,
+            capture_rect: framebuffer_capture_rect(parameters.sample_framebuffer),
+            uniforms: backdrop_uniforms(parameters),
+        }
+    }
+
+    fn update(&mut self, parameters: &MaterialParameters) {
+        self.geometry = parameters.sample_geometry;
+        self.capture_rect = framebuffer_capture_rect(parameters.sample_framebuffer);
+        self.uniforms = backdrop_uniforms(parameters);
+        self.commit.increment();
+    }
+}
+
+impl Element for BackdropRenderElement {
+    fn id(&self) -> &Id {
+        &self.id
+    }
+
+    fn current_commit(&self) -> CommitCounter {
+        self.commit
+    }
+
+    fn src(&self) -> Rectangle<f64, Buffer> {
+        Rectangle::from_size(self.texture.size().to_f64())
+    }
+
+    fn geometry(&self, scale: RenderScale<f64>) -> Rectangle<i32, Physical> {
+        self.geometry.to_physical_precise_round(scale)
+    }
+
+    fn damage_since(
+        &self,
+        scale: RenderScale<f64>,
+        commit: Option<CommitCounter>,
+    ) -> DamageSet<i32, Physical> {
+        if commit == Some(self.commit) {
+            DamageSet::default()
+        } else {
+            DamageSet::from_slice(&[Rectangle::from_size(self.geometry(scale).size)])
+        }
+    }
+
+    fn opaque_regions(&self, _scale: RenderScale<f64>) -> OpaqueRegions<i32, Physical> {
+        // Backdrop dependencies must remain visible to damage tracking even
+        // though the shader produces opaque pixels inside the visible region.
+        OpaqueRegions::default()
+    }
+
+    fn alpha(&self) -> f32 {
+        1.0
+    }
+
+    fn kind(&self) -> RenderElementKind {
+        RenderElementKind::Unspecified
+    }
+}
+
+impl RenderElement<GlesRenderer> for BackdropRenderElement {
+    fn draw(
+        &self,
+        frame: &mut GlesFrame<'_, '_>,
+        src: Rectangle<f64, Buffer>,
+        dst: Rectangle<i32, Physical>,
+        damage: &[Rectangle<i32, Physical>],
+        opaque_regions: &[Rectangle<i32, Physical>],
+    ) -> Result<(), GlesError> {
+        let texture = self.texture.tex_id();
+        let [x, y, width, height] = self.capture_rect;
+        frame.with_context(|gl| unsafe {
+            gl.BindTexture(smithay::backend::renderer::gles::ffi::TEXTURE_2D, texture);
+            gl.TexParameteri(
+                smithay::backend::renderer::gles::ffi::TEXTURE_2D,
+                smithay::backend::renderer::gles::ffi::TEXTURE_WRAP_S,
+                smithay::backend::renderer::gles::ffi::CLAMP_TO_EDGE as i32,
+            );
+            gl.TexParameteri(
+                smithay::backend::renderer::gles::ffi::TEXTURE_2D,
+                smithay::backend::renderer::gles::ffi::TEXTURE_WRAP_T,
+                smithay::backend::renderer::gles::ffi::CLAMP_TO_EDGE as i32,
+            );
+            gl.CopyTexSubImage2D(
+                smithay::backend::renderer::gles::ffi::TEXTURE_2D,
+                0,
+                0,
+                0,
+                x,
+                y,
+                width,
+                height,
+            );
+            gl.BindTexture(smithay::backend::renderer::gles::ffi::TEXTURE_2D, 0);
+        })?;
+
+        frame.render_texture_from_to(
+            &self.texture,
+            src,
+            dst,
+            damage,
+            opaque_regions,
+            Transform::Normal,
+            1.0,
+            Some(&self.program),
+            &self.uniforms,
+        )
+    }
+
+    fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1179,8 +1383,8 @@ fn layer_elements(
             }),
         );
 
-        if let Some(material) = material_element(state, renderer, &layer, geometry) {
-            elements.push(material.into());
+        if let Some(material) = material_element(state, renderer, output, &layer, geometry) {
+            elements.push(material);
         }
     }
 
@@ -1190,44 +1394,101 @@ fn layer_elements(
 fn material_element(
     state: &mut Ferese,
     renderer: &mut GlesRenderer,
+    output: &Output,
     layer: &LayerSurface,
     geometry: Rectangle<i32, Logical>,
-) -> Option<PixelShaderElement> {
+) -> Option<AnimatedWindowRenderElement> {
     let surface = layer.wl_surface();
     let (role, generation) = crate::effects::surface_role(surface)?;
     let material = crate::effects::resolve_material(role, state.theme_settings.material_style);
-    let program = material_program(state, renderer)?;
-    let tint = match material.style {
-        crate::config::MaterialStyle::Solid => [0.067, 0.094, 0.129, material.opacity],
-        crate::config::MaterialStyle::Glass | crate::config::MaterialStyle::Translucent => {
-            [0.067, 0.094, 0.129, material.opacity]
-        }
-    };
+    let mode = output.current_mode()?;
+    let scale = output.current_scale().fractional_scale();
+    let output_logical = smithay::utils::Size::<i32, Logical>::from((
+        (f64::from(mode.size.w) / scale).ceil() as i32,
+        (f64::from(mode.size.h) / scale).ceil() as i32,
+    ));
+    let sample_geometry =
+        expanded_blur_region(geometry, material.blur.ceil() as i32, output_logical);
+    let sample_physical = sample_geometry.to_physical_precise_round(scale);
+    let transform = output.current_transform().invert();
+    let tint = [0.067, 0.094, 0.129, material.opacity];
     let parameters = MaterialParameters {
         geometry,
         tint,
         noise: material.noise,
         generation,
-        scene_generation: state.material_scene_generation(),
+        scene_generation: matches!(material.style, crate::config::MaterialStyle::Glass)
+            .then(|| state.material_scene_generation())
+            .unwrap_or(0),
         opaque: material.opacity == 1.0,
+        blur: material.blur * scale as f32,
+        saturation: material.saturation,
+        brightness: material.brightness,
+        sample_geometry,
+        sample_physical,
+        visible_framebuffer: framebuffer_clip_rect(
+            geometry.to_physical_precise_round(scale),
+            mode.size,
+            transform,
+        ),
+        sample_framebuffer: framebuffer_clip_rect(sample_physical, mode.size, transform),
     };
     let context = renderer.context_id().erased();
+    let needs_replacement = state
+        .material_buffers
+        .get(surface)
+        .and_then(|buffers| buffers.contexts.get(&context))
+        .is_none_or(|cached| match (&cached.element, material.style) {
+            (CachedMaterialElement::Backdrop(_), crate::config::MaterialStyle::Glass) => {
+                cached.parameters.sample_physical.size != parameters.sample_physical.size
+            }
+            (
+                CachedMaterialElement::Tint(_),
+                crate::config::MaterialStyle::Translucent | crate::config::MaterialStyle::Solid,
+            ) => false,
+            _ => true,
+        });
+    let mut replacement = needs_replacement
+        .then(|| match material.style {
+            crate::config::MaterialStyle::Glass => {
+                let program = backdrop_program(state, renderer)?;
+                let texture_size = smithay::utils::Size::<i32, Buffer>::from((
+                    sample_physical.size.w,
+                    sample_physical.size.h,
+                ));
+                let texture = Offscreen::<GlesTexture>::create_buffer(
+                    renderer,
+                    Fourcc::Abgr8888,
+                    texture_size,
+                )
+                .ok()?;
+                Some(CachedMaterialElement::Backdrop(BackdropRenderElement::new(
+                    texture,
+                    program.0,
+                    &parameters,
+                )))
+            }
+            crate::config::MaterialStyle::Translucent | crate::config::MaterialStyle::Solid => {
+                let program = material_program(state, renderer)?;
+                Some(CachedMaterialElement::Tint(PixelShaderElement::new(
+                    program.0,
+                    geometry,
+                    parameters
+                        .opaque
+                        .then(|| vec![Rectangle::from_size(geometry.size)]),
+                    1.0,
+                    material_uniforms(&parameters),
+                    RenderElementKind::Unspecified,
+                )))
+            }
+        })
+        .flatten();
     let buffers = state.material_buffers.entry(surface.clone()).or_default();
     if !buffers.contexts.contains_key(&context) {
-        let element = PixelShaderElement::new(
-            program.0,
-            geometry,
-            parameters
-                .opaque
-                .then(|| vec![Rectangle::from_size(geometry.size)]),
-            1.0,
-            material_uniforms(&parameters),
-            RenderElementKind::Unspecified,
-        );
         buffers.contexts.insert(
             context.clone(),
             CachedMaterial {
-                element,
+                element: replacement.take()?,
                 parameters: parameters.clone(),
             },
         );
@@ -1235,21 +1496,32 @@ fn material_element(
 
     let cached = buffers.contexts.get_mut(&context)?;
     if cached.parameters != parameters {
-        if cached.parameters.geometry != parameters.geometry
-            || cached.parameters.opaque != parameters.opaque
-        {
-            let opaque = parameters
-                .opaque
-                .then(|| vec![Rectangle::from_size(parameters.geometry.size)]);
-            cached.element.resize(parameters.geometry, opaque);
+        match &mut cached.element {
+            CachedMaterialElement::Tint(element) => {
+                if cached.parameters.geometry != parameters.geometry
+                    || cached.parameters.opaque != parameters.opaque
+                {
+                    let opaque = parameters
+                        .opaque
+                        .then(|| vec![Rectangle::from_size(parameters.geometry.size)]);
+                    element.resize(parameters.geometry, opaque);
+                }
+                element.update_uniforms(material_uniforms(&parameters));
+            }
+            CachedMaterialElement::Backdrop(element)
+                if cached.parameters.sample_physical.size == parameters.sample_physical.size =>
+            {
+                element.update(&parameters);
+            }
+            _ => cached.element = replacement.take()?,
         }
-        cached
-            .element
-            .update_uniforms(material_uniforms(&parameters));
         cached.parameters = parameters;
     }
 
-    Some(cached.element.clone())
+    Some(match &cached.element {
+        CachedMaterialElement::Tint(element) => element.clone().into(),
+        CachedMaterialElement::Backdrop(element) => element.clone().into(),
+    })
 }
 
 fn material_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<MaterialProgram> {
@@ -1275,11 +1547,84 @@ fn material_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<M
     }
 }
 
+fn backdrop_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<BackdropProgram> {
+    let context = renderer.context_id().erased();
+    if let Some(program) = state.backdrop_programs.get(&context) {
+        return Some(program.clone());
+    }
+
+    let uniforms = [
+        UniformName::new("visible_rect", UniformType::_4f),
+        UniformName::new("texture_size", UniformType::_2f),
+        UniformName::new("blur_radius", UniformType::_1f),
+        UniformName::new("saturation", UniformType::_1f),
+        UniformName::new("brightness", UniformType::_1f),
+        UniformName::new("tint", UniformType::_4f),
+        UniformName::new("noise_amount", UniformType::_1f),
+    ];
+    match renderer.compile_custom_texture_shader(BACKDROP_SHADER, &uniforms) {
+        Ok(program) => {
+            let program = BackdropProgram(program);
+            state.backdrop_programs.insert(context, program.clone());
+            Some(program)
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to compile backdrop material shader");
+            None
+        }
+    }
+}
+
 fn material_uniforms(parameters: &MaterialParameters) -> Vec<Uniform<'static>> {
     vec![
         Uniform::new("tint", parameters.tint).into_owned(),
         Uniform::new("noise_amount", parameters.noise).into_owned(),
     ]
+}
+
+fn backdrop_uniforms(parameters: &MaterialParameters) -> Vec<Uniform<'static>> {
+    vec![
+        Uniform::new("visible_rect", parameters.visible_framebuffer).into_owned(),
+        Uniform::new(
+            "texture_size",
+            [
+                parameters.sample_physical.size.w as f32,
+                parameters.sample_physical.size.h as f32,
+            ],
+        )
+        .into_owned(),
+        Uniform::new("blur_radius", parameters.blur).into_owned(),
+        Uniform::new("saturation", parameters.saturation).into_owned(),
+        Uniform::new("brightness", parameters.brightness).into_owned(),
+        Uniform::new("tint", parameters.tint).into_owned(),
+        Uniform::new("noise_amount", parameters.noise).into_owned(),
+    ]
+}
+
+fn framebuffer_capture_rect(rect: [f32; 4]) -> [i32; 4] {
+    [
+        rect[0].round() as i32,
+        rect[1].round() as i32,
+        rect[2].round() as i32,
+        rect[3].round() as i32,
+    ]
+}
+
+fn expanded_blur_region(
+    visible: Rectangle<i32, Logical>,
+    radius: i32,
+    output_size: smithay::utils::Size<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let radius = radius.max(0);
+    let left = (visible.loc.x - radius).max(0);
+    let top = (visible.loc.y - radius).max(0);
+    let right = (visible.loc.x + visible.size.w + radius).min(output_size.w);
+    let bottom = (visible.loc.y + visible.size.h + radius).min(output_size.h);
+
+    Rectangle::new(
+        (left, top).into(),
+        ((right - left).max(1), (bottom - top).max(1)).into(),
+    )
 }
 
 fn cursor_elements(
@@ -1377,8 +1722,8 @@ mod tests {
     };
 
     use super::{
-        color_with_alpha, framebuffer_clip_rect, normalized_scale, rounded_visual_rect,
-        scaled_visual_rect, shadow_bounds,
+        color_with_alpha, expanded_blur_region, framebuffer_capture_rect, framebuffer_clip_rect,
+        normalized_scale, rounded_visual_rect, scaled_visual_rect, shadow_bounds,
     };
 
     #[derive(Debug)]
@@ -1452,6 +1797,34 @@ mod tests {
         assert_eq!(
             framebuffer_clip_rect(geometry, (100, 80).into(), Transform::_180),
             [60.0, 5.0, 30.0, 40.0]
+        );
+    }
+
+    #[test]
+    fn blur_sampling_expands_around_the_visible_surface() {
+        let visible = Rectangle::<i32, Logical>::new((100, 80).into(), (400, 300).into());
+
+        assert_eq!(
+            expanded_blur_region(visible, 24, (1_000, 800).into()),
+            Rectangle::new((76, 56).into(), (448, 348).into())
+        );
+    }
+
+    #[test]
+    fn blur_sampling_clips_to_output_edges() {
+        let visible = Rectangle::<i32, Logical>::new((0, 760).into(), (300, 40).into());
+
+        assert_eq!(
+            expanded_blur_region(visible, 24, (1_000, 800).into()),
+            Rectangle::new((0, 736).into(), (324, 64).into())
+        );
+    }
+
+    #[test]
+    fn framebuffer_capture_rounds_fractional_bounds() {
+        assert_eq!(
+            framebuffer_capture_rect([10.4, 20.6, 300.2, 199.8]),
+            [10, 21, 300, 200]
         );
     }
 

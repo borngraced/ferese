@@ -31,7 +31,6 @@ pub(crate) enum SemanticRole {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-#[allow(dead_code)] // Used by the material renderer in the next M7 slice.
 pub(crate) struct ResolvedMaterial {
     pub style: MaterialStyle,
     pub opacity: f32,
@@ -41,7 +40,6 @@ pub(crate) struct ResolvedMaterial {
     pub noise: f32,
 }
 
-#[allow(dead_code)] // Used by the material renderer in the next M7 slice.
 pub(crate) fn resolve_material(role: SemanticRole, style: MaterialStyle) -> ResolvedMaterial {
     let (opacity, blur, saturation, brightness, noise) = match role {
         SemanticRole::Panel => (0.78, 24.0, 1.08, 1.02, 0.012),
