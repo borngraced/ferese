@@ -9,7 +9,10 @@ use smithay::{
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
     utils::{Logical, Point, SERIAL_COUNTER, Serial},
-    wayland::pointer_constraints::{PointerConstraint, with_pointer_constraint},
+    wayland::{
+        keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat,
+        pointer_constraints::{PointerConstraint, with_pointer_constraint},
+    },
 };
 
 use crate::Ferese;
@@ -38,6 +41,22 @@ impl Ferese {
                         }
 
                         let symbol = keysym.modified_sym().raw();
+                        if emergency_shortcut_escape(symbol, modifiers.ctrl, modifiers.alt) {
+                            if state == KeyState::Pressed {
+                                data.intercepted_keys.insert(keycode);
+
+                                if let Some(inhibitor) = data.active_shortcuts_inhibitor.take() {
+                                    inhibitor.inactivate();
+                                }
+                            }
+
+                            return FilterResult::Intercept(());
+                        }
+
+                        if data.seat.keyboard_shortcuts_inhibited() {
+                            return FilterResult::Forward;
+                        }
+
                         if let Some(vt) = virtual_terminal(
                             symbol,
                             modifiers.ctrl,
@@ -383,9 +402,20 @@ fn virtual_terminal(symbol: u32, ctrl: bool, alt: bool, direct: bool) -> Option<
         .then_some((symbol - keysyms::KEY_F1 + 1) as i32)
 }
 
+fn emergency_shortcut_escape(symbol: u32, ctrl: bool, alt: bool) -> bool {
+    ctrl && alt && symbol == keysyms::KEY_Escape
+}
+
 #[cfg(test)]
 mod tests {
-    use super::virtual_terminal;
+    use super::{emergency_shortcut_escape, virtual_terminal};
+
+    #[test]
+    fn emergency_escape_requires_control_alt_escape() {
+        assert!(emergency_shortcut_escape(keysyms::KEY_Escape, true, true));
+        assert!(!emergency_shortcut_escape(keysyms::KEY_Escape, true, false));
+        assert!(!emergency_shortcut_escape(keysyms::KEY_q, true, true));
+    }
     use smithay::input::keyboard::keysyms;
 
     #[test]

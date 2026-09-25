@@ -37,6 +37,7 @@ use smithay::{
         fractional_scale::FractionalScaleManagerState,
         idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
+        keyboard_shortcuts_inhibit::{KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor},
         output::OutputManagerState,
         pointer_constraints::PointerConstraintsState,
         presentation::PresentationState,
@@ -70,6 +71,7 @@ pub struct Ferese {
     pub(crate) named_cursors: HashMap<CursorIcon, crate::cursor::NamedCursor>,
     pub intercepted_keys: HashSet<smithay::input::keyboard::Keycode>,
     pub idle_inhibitors: HashMap<WlSurface, usize>,
+    pub active_shortcuts_inhibitor: Option<KeyboardShortcutsInhibitor>,
     pub direct_backend: Option<crate::backends::direct::DirectBackendState>,
     next_window_id: u64,
     last_animation_tick: Instant,
@@ -82,6 +84,7 @@ pub struct Ferese {
     pub fractional_scale_state: FractionalScaleManagerState,
     pub idle_inhibit_state: IdleInhibitManagerState,
     pub idle_notifier_state: IdleNotifierState<Self>,
+    pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
     pub output_manager_state: OutputManagerState,
     pub pointer_constraints_state: PointerConstraintsState,
     pub presentation_state: PresentationState,
@@ -110,6 +113,8 @@ impl Ferese {
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&display_handle);
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&display_handle);
         let idle_notifier_state = IdleNotifierState::new(&display_handle, event_loop.handle());
+        let keyboard_shortcuts_inhibit_state =
+            KeyboardShortcutsInhibitState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, Vec::new());
         let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&display_handle);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
@@ -149,6 +154,7 @@ impl Ferese {
             named_cursors,
             intercepted_keys: HashSet::new(),
             idle_inhibitors: HashMap::new(),
+            active_shortcuts_inhibitor: None,
             direct_backend: None,
             next_window_id: 1,
             last_animation_tick: start_time,
@@ -161,6 +167,7 @@ impl Ferese {
             fractional_scale_state,
             idle_inhibit_state,
             idle_notifier_state,
+            keyboard_shortcuts_inhibit_state,
             output_manager_state,
             pointer_constraints_state,
             presentation_state,
@@ -346,6 +353,10 @@ impl Ferese {
         }
         self.space.map_element(window, (0, 0), focus_new_window);
         self.relayout();
+
+        if focus_new_window {
+            self.restore_keyboard_focus();
+        }
     }
 
     pub fn add_transient_window(&mut self, window: Window, parent: WindowId) {

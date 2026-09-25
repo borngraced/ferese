@@ -15,6 +15,10 @@ use smithay::{
         fractional_scale::{FractionalScaleHandler, with_fractional_scale},
         idle_inhibit::IdleInhibitHandler,
         idle_notify::{IdleNotifierHandler, IdleNotifierState},
+        keyboard_shortcuts_inhibit::{
+            KeyboardShortcutsInhibitHandler, KeyboardShortcutsInhibitState,
+            KeyboardShortcutsInhibitor, KeyboardShortcutsInhibitorSeat,
+        },
         output::OutputHandler,
         pointer_constraints::{
             PointerConstraint, PointerConstraintsHandler, with_pointer_constraint,
@@ -56,6 +60,18 @@ impl SeatHandler for Ferese {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+        if let Some(inhibitor) = self.active_shortcuts_inhibitor.take()
+            && inhibitor.is_active()
+        {
+            inhibitor.inactivate();
+        }
+        if let Some(inhibitor) =
+            focused.and_then(|surface| seat.keyboard_shortcuts_inhibitor_for_surface(surface))
+        {
+            inhibitor.activate();
+            self.active_shortcuts_inhibitor = Some(inhibitor);
+        }
+
         let client = focused.and_then(|surface| self.display_handle.get_client(surface.id()).ok());
         set_data_device_focus(&self.display_handle, seat, client.clone());
         set_primary_focus(&self.display_handle, seat, client);
@@ -103,6 +119,30 @@ impl IdleInhibitHandler for Ferese {
         }
         self.idle_notifier_state
             .set_is_inhibited(!self.idle_inhibitors.is_empty());
+    }
+}
+
+impl KeyboardShortcutsInhibitHandler for Ferese {
+    fn keyboard_shortcuts_inhibit_state(&mut self) -> &mut KeyboardShortcutsInhibitState {
+        &mut self.keyboard_shortcuts_inhibit_state
+    }
+
+    fn new_inhibitor(&mut self, inhibitor: KeyboardShortcutsInhibitor) {
+        let focused = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
+
+        if focused.as_ref() == Some(inhibitor.wl_surface()) {
+            inhibitor.activate();
+            self.active_shortcuts_inhibitor = Some(inhibitor);
+        }
+    }
+
+    fn inhibitor_destroyed(&mut self, inhibitor: KeyboardShortcutsInhibitor) {
+        if self.active_shortcuts_inhibitor.as_ref() == Some(&inhibitor) {
+            self.active_shortcuts_inhibitor = None;
+        }
     }
 }
 
@@ -197,6 +237,7 @@ smithay::delegate_data_device!(Ferese);
 smithay::delegate_fractional_scale!(Ferese);
 smithay::delegate_idle_inhibit!(Ferese);
 smithay::delegate_idle_notify!(Ferese);
+smithay::delegate_keyboard_shortcuts_inhibit!(Ferese);
 smithay::delegate_layer_shell!(Ferese);
 smithay::delegate_output!(Ferese);
 smithay::delegate_pointer_constraints!(Ferese);
