@@ -1,9 +1,11 @@
 # Ferese
 
-Ferese is an experimental Wayland tiling compositor written in Rust with
-Smithay. The nested M0–M3 path is complete, including tiling, workspaces, and
-timestamp-driven animated geometry. Development now targets the M4 early
-hardware-session acceptance pass and M5 native interoperability in the
+Ferese is an experimental Wayland scrolling compositor written in Rust with
+Smithay. The current implementation includes the original tree layout,
+workspaces, and timestamp-driven animated geometry. The specification now makes
+scrolling columns the default and retains tree tiling as an optional mode. DRM
+multi-output and native interoperability are being completed before that layout
+transition in the
 [window-manager specification](docs/ferese-window-manager-spec.md).
 
 ## Development

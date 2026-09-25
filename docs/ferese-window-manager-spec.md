@@ -7,7 +7,7 @@ Display protocol: Wayland
 
 ## 1. Purpose
 
-Ferese is a Wayland tiling compositor for a conventional, keyboard-friendly
+Ferese is a Wayland scrolling compositor for a conventional, keyboard-friendly
 desktop. It combines predictable window management with compositor-owned rounded
 geometry, shadows, animation, transparency, and semantic surface materials.
 
@@ -52,7 +52,7 @@ Ferese v0 is the smallest independently usable native-Wayland release. It MUST
 provide:
 
 - native Wayland compositing;
-- automatic and manually adjustable tiling;
+- automatic scrolling columns with optional tree tiling;
 - floating and fullscreen windows;
 - multiple workspaces and outputs;
 - keyboard and pointer input;
@@ -294,18 +294,18 @@ pub struct Window {
 }
 
 pub enum WindowPlacement {
-    Tiled,
+    Layout,
     Floating { rect: RectF },
 }
 ```
 
-Fullscreen is a presentation state layered over the preserved tiled or floating
-placement. Entering fullscreen MUST NOT remove a tiled window from its layout
-tree or a floating window from its floating list. At most one window may be
-fullscreen on a workspace. While fullscreen is active, that window is the sole
-normal managed-window content presented for the workspace, although permitted
-shell overlays and popups may still appear. Leaving fullscreen restores the
-preserved placement without reconstructing it.
+Fullscreen is a presentation state layered over the preserved layout or floating
+placement. Entering fullscreen MUST NOT remove a managed window from its
+workspace layout or a floating window from its floating list. At most one window
+may be fullscreen on a workspace. While fullscreen is active, that window is the
+sole normal managed-window content presented for the workspace, although
+permitted shell overlays and popups may still appear. Leaving fullscreen
+restores the preserved placement without reconstructing it.
 
 A window MUST NOT independently store an output. Its output is derived from its
 workspace, preventing stale ownership after workspace migration. Authoritative
@@ -319,7 +319,7 @@ pub struct Workspace {
     pub id: WorkspaceId,
     pub name: String,
     pub output: Option<OutputId>,
-    pub root: Option<NodeId>,
+    pub layout: WorkspaceLayout,
     pub floating: Vec<WindowId>,
     pub last_focused: Option<WindowId>,
 }
@@ -348,10 +348,10 @@ These invariants MUST hold after every state transaction:
 2. Every attached workspace belongs to exactly one connected output; only a
    workspace awaiting an output may contain `None`.
 3. An output exposes exactly one active workspace.
-4. A window with `WindowPlacement::Tiled` appears exactly once in its workspace
-   tree and not in the floating list.
+4. A window with `WindowPlacement::Layout` appears exactly once in its active
+   workspace layout and not in the floating list.
 5. A window with `WindowPlacement::Floating` appears exactly once in the
-   floating list and not in the tree.
+   floating list and not in the workspace layout.
 6. Fullscreen does not alter the window's underlying placement membership.
 7. A `FocusTarget::Window` refers to a managed window on
    `seat.focused_workspace`; a `FocusTarget::Shell` refers to a live, authorized
@@ -426,6 +426,80 @@ policy.
 
 ## 6. Layout
 
+Each workspace has an independent layout mode. `Scrolling` is the default;
+`Tree` is an optional traditional tiling mode. Changing modes MUST preserve
+window membership, focus history, floating geometry, and fullscreen state.
+
+```rust
+pub enum WorkspaceLayout {
+    Scrolling(ScrollingLayout),
+    Tree(LayoutTree),
+}
+
+pub struct ScrollingLayout {
+    pub columns: Vec<Column>,
+    pub active_column: Option<usize>,
+    pub viewport_x: f64,
+}
+
+pub struct Column {
+    pub windows: Vec<WindowId>,
+    pub active: usize,
+    pub width: ColumnWidth,
+    pub heights: Vec<f32>,
+}
+
+pub enum ColumnWidth {
+    Proportion(f32),
+    Fixed(f32),
+    Full,
+}
+```
+
+Scrolling layouts maintain these invariants after every transaction:
+
+1. Empty columns do not exist, and every managed non-floating window appears in
+   exactly one column.
+2. `active_column` is `None` exactly when the workspace has no columns;
+   otherwise it and every column's `active` index are in bounds.
+3. Proportional and fixed widths are positive and finite. Height weights are
+   positive, finite, match the column's window count, and normalize
+   deterministically.
+4. `viewport_x` is finite and clamped to the strip, while permitting the final
+   column to align with either viewport edge.
+
+Scrolling columns form a horizontal strip that MAY be wider than the usable
+output. Windows within a column divide its height. The viewport follows focus
+only as far as required to reveal the focused window and SHOULD retain part of
+an adjacent column when space permits. It MUST NOT recenter on every focus
+change. An explicit center command MAY center the focused column.
+
+Opening, closing, moving, or resizing a window MUST preserve a stable visual
+anchor: columns before the focused column do not jump merely because a later
+column changed. Each workspace stores and restores its own viewport. Output
+resize or migration clamps that viewport without discarding it. Constraint
+resolution MUST prefer the focused column, preserve user-selected widths where
+possible, and report conflicts rather than silently compressing every column to
+fit. These stable anchors, deterministic constraints, and retained neighboring
+context are required Ferese behavior, not optional polish.
+
+The first normal window creates the first column. A new normal window creates a
+column after the focused column by default. Commands and drag targets can insert
+before or after a column, move a window into an existing column, extract it into
+a new column, cycle standard widths, set a precise width, or redistribute
+heights within a column. Full-width columns occupy the viewport but do not alter
+neighboring column widths.
+
+Mode conversion is deterministic. Scrolling-to-tree conversion builds
+horizontal structure from columns and vertical structure from windows within a
+column, preserving reading order and size proportions. Tree-to-scrolling
+conversion traverses visible leaves in left-to-right, top-to-bottom order and
+initially creates one column per leaf. Conversion preserves membership and
+focus, but users should not expect mode-specific grouping metadata to survive a
+round trip.
+
+Tree mode uses the following node model:
+
 ```rust
 pub enum Node {
     Window(WindowId),
@@ -451,9 +525,10 @@ Split ratios MUST be finite and clamped so descendants satisfy their minimum
 sizes where possible. If all constraints cannot be met, the focused window takes
 priority and the conflict MUST be logged.
 
-The engine consumes a layout tree, usable logical geometry, size constraints,
-and tiling configuration. It returns a deterministic `WindowId -> RectF` map and
-constraint warnings. Identical input MUST produce identical output.
+The engine consumes a workspace layout, usable logical geometry, size
+constraints, and mode-specific configuration. It returns a deterministic
+`WindowId -> RectF` map, viewport metadata, and constraint warnings. Identical
+input MUST produce identical output.
 
 The following tree invariants MUST hold after every layout transaction:
 
@@ -468,7 +543,7 @@ The following tree invariants MUST hold after every layout transaction:
 6. The focused leaf inside a stack is the active child's recursively focused
    window; directional operations enter a stack through its active child.
 
-### 6.1 Automatic insertion
+### 6.1 Tree-mode insertion
 
 1. The first tiled window becomes the root.
 2. A later window splits the focused leaf.
@@ -478,18 +553,21 @@ The following tree invariants MUST hold after every layout transaction:
 
 ### 6.2 Required operations
 
-Ferese MUST support directional focus, movement and resizing; explicit split
-direction; floating and fullscreen toggles; tiled-divider resize; floating
-move/resize; and tiled drag-and-drop.
+Ferese MUST support directional focus, movement and resizing; scrolling-column
+insertion, extraction, grouping, width cycling, and viewport centering; optional
+tree split direction and divider resize; floating and fullscreen toggles;
+floating move/resize; and layout-aware drag-and-drop.
 
-Drag targets are `left`, `right`, `top`, `bottom`, and `center`. A drag MUST show
-a live preview. Center creates or joins a stack; an edge creates a split.
+Drag targets are mode-specific and MUST show a live preview. In scrolling mode,
+left/right inserts a column and top/bottom/center inserts into a column. In tree
+mode, center creates or joins a stack and an edge creates a split.
 
 ### 6.3 Gaps
 
-Gaps belong exclusively to `[tiling]`. `inner_gap` separates tiles and
-`outer_gap` separates tiles from output bounds. With `smart_gaps = true`, a lone
-tiled window has no outer gap.
+Shared gap defaults live under `[layout]`; mode-specific behavior lives under
+`[scrolling]` and `[tiling]`. `inner_gap` separates managed windows and
+`outer_gap` separates the layout from output bounds. With `smart_gaps = true`,
+a lone managed window has no outer gap.
 
 ## 7. Geometry and animation
 
@@ -799,7 +877,7 @@ workspace space.
 Fullscreen is a presentation state over the preserved underlying workspace
 layout. Entering fullscreen MUST hide the Ferese top bar visually without
 changing the underlying workspace usable layout region. Leaving fullscreen MUST
-restore the bar without reconfiguring hidden tiled windows merely because the
+restore the bar without reconfiguring hidden managed windows merely because the
 bar reappears.
 
 A temporary top-bar reveal over fullscreen MUST use overlay presentation and
@@ -809,7 +887,7 @@ underlying workspace layout.
 If `ferese-shell` disconnects unexpectedly, the compositor SHOULD retain the
 last valid Ferese-owned top-bar reservation for a short bounded grace period.
 If the shell reconnects with a compatible reservation before the lease expires,
-tiled windows MUST NOT reflow. If the grace period expires, Ferese removes the
+managed windows MUST NOT reflow. If the grace period expires, Ferese removes the
 reservation and performs at most one ordinary layout reflow.
 
 ### 11.3 Private shell control protocol
@@ -912,7 +990,9 @@ Configuration has one authoritative representation. Namespace ownership is:
 [shell.*]         shell behavior                   ferese-shell-design.md
 
 [animations]      compositor animation policy      this document
-[tiling]          layout policy                    this document
+[layout]          shared layout policy             this document
+[scrolling]       scrolling layout policy          this document
+[tiling]          optional tree-layout policy      this document
 [input]           input policy                     this document
 [commands]        launch command vectors           this document
 [[bindings]]      compositor bindings              this document
@@ -936,10 +1016,19 @@ stiffness = 700.0
 damping = 53.0
 mass = 1.0
 
-[tiling]
+[layout]
+mode = "scrolling"
 inner_gap = 10.0
 outer_gap = 10.0
 smart_gaps = true
+
+[scrolling]
+default_column_width = 0.5
+width_presets = [0.333333, 0.5, 0.666667, 1.0]
+neighbor_context = 48.0
+new_window = "column_after_focused"
+
+[tiling]
 default_split = "automatic"
 
 [input]
@@ -1219,12 +1308,14 @@ animations. Performance tracing MUST be optional. Suggested targets are
 
 ### 17.1 Layout
 
-Unit tests MUST cover insertion, deletion, focus, movement, ratios, constraints,
-resize, stacks, floating transitions, fullscreen placement preservation,
-workspace migration and restoration, gaps, shared-edge rounding, and
-deterministic geometry. They MUST NOT require Wayland. Property tests SHOULD
-prove arbitrary operation sequences preserve acyclic trees, valid parentage and
-stack cardinality, and do not duplicate or lose windows.
+Unit tests MUST cover scrolling-column insertion, extraction, grouping, focus,
+viewport clamping and stable anchors; tree insertion, deletion, movement,
+ratios, constraints, resize and stacks; floating transitions, fullscreen
+placement preservation, workspace migration and restoration, gaps, shared-edge
+rounding, layout-mode conversion, and deterministic geometry. They MUST NOT
+require Wayland. Property tests SHOULD prove arbitrary operation sequences do
+not duplicate or lose windows and preserve scrolling column membership or tree
+acyclicity, valid parentage and stack cardinality as applicable.
 
 ### 17.2 Configuration
 
@@ -1278,14 +1369,16 @@ Acceptance: text copies between native clients; drag-and-drop completes;
 decorated and undecorated clients can move and resize; scaled hit testing matches
 rendered content; a user-initiated test launch receives a valid activation token.
 
-### M2: Tiling and workspaces
+### M2: Layout and workspaces
 
-Implement identifiers, layout trees, insertion, focus, movement, resize, gaps,
-floating, fullscreen, and workspaces.
+Implement identifiers, default scrolling columns, optional layout trees,
+insertion, focus, movement, resize, gaps, floating, fullscreen, and workspaces.
 
-Acceptance: five terminals tile without overlap; navigation works in all
-directions; close reflows layout; modes restore correctly; randomized tests
-preserve all invariants.
+Acceptance: five terminals populate a horizontally scrollable column strip
+without overlap; focus reveals columns without unnecessary recentering; tree
+mode remains selectable; navigation works in all directions; close reflows the
+active layout; modes restore correctly; randomized tests preserve all
+invariants.
 
 ### M3: Animated geometry
 
@@ -1390,16 +1483,16 @@ resource growth; all Section 3.2 desktop-tier requirements pass.
 ```text
 nested Smithay compositor
   -> two xdg-shell terminals
-  -> deterministic two-window tiling
+  -> deterministic two-column scrolling layout
   -> logical/visual/client geometry separation
   -> spring reflow with coalesced final configure
 ```
 
-The slice succeeds when A and B tile automatically; closing B immediately updates
-the logical layout while A expands visually; A receives no per-frame configure
-flood; pointer input remains aligned through inverse transforms; shared edges
-round identically; terminal changes damage the correct regions; and all
-interaction remains responsive.
+The slice succeeds when A and B form columns automatically; closing B
+immediately updates the logical layout while A expands visually; A receives no
+per-frame configure flood; pointer input remains aligned through inverse
+transforms; shared edges round identically; terminal changes damage the correct
+regions; and all interaction remains responsive.
 
 M4 follows this nested slice immediately so frame pacing is validated on real
 hardware. Semantic materials, GPUI, Settings, XWayland, notifications, portals, and the
@@ -1412,7 +1505,8 @@ Ferese v0 is complete when a user can:
 1. start a direct Ferese session;
 2. run ordinary native Wayland applications and layer-shell utilities;
 3. copy, paste, drag, and use application popups;
-4. tile, focus, move, resize, float, fullscreen, and close windows;
+4. scroll, focus, move, resize, group, float, fullscreen, and close windows,
+   with optional tree tiling;
 5. use multiple workspaces and outputs;
 6. configure input, bindings, rules, gaps, corners, borders, shadows, and
    animations through validated live reload;
@@ -1423,7 +1517,8 @@ Ferese v0 is complete when a user can:
 10. perform routine native-Wayland programming work without regular compositor
     restarts.
 
-The intended v0 result is a low-latency, independently usable tiling compositor.
+The intended v0 result is a low-latency, independently usable scrolling
+compositor with optional tree tiling.
 The desktop tier adds a coherent Ferese shell, semantic surface materials,
 graphical settings,
 portals, and X11 compatibility without redefining core correctness. Visual
