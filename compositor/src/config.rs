@@ -43,7 +43,11 @@ pub struct ThemeSettings {
     pub focus_ring_width: f64,
     pub border_color: RgbaColor,
     pub accent_color: RgbaColor,
+    pub shadow_color: RgbaColor,
     pub window_radius: f64,
+    pub shadow_offset_y: f64,
+    pub shadow_blur: f64,
+    pub shadow_opacity: f64,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -52,6 +56,8 @@ struct ThemeConfig {
     colors: ThemeColorsConfig,
     #[serde(default)]
     geometry: ThemeGeometryConfig,
+    #[serde(default)]
+    shadow: ThemeShadowConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +66,8 @@ struct ThemeColorsConfig {
     border: String,
     #[serde(default = "default_accent_color")]
     accent: String,
+    #[serde(default = "default_shadow_color")]
+    shadow: String,
 }
 
 impl Default for ThemeColorsConfig {
@@ -67,6 +75,33 @@ impl Default for ThemeColorsConfig {
         Self {
             border: default_border_color(),
             accent: default_accent_color(),
+            shadow: default_shadow_color(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ThemeShadowConfig {
+    #[serde(default)]
+    soft: SoftShadowConfig,
+}
+
+#[derive(Debug, Deserialize)]
+struct SoftShadowConfig {
+    #[serde(default = "default_shadow_offset_y")]
+    offset_y: f64,
+    #[serde(default = "default_shadow_blur")]
+    blur: f64,
+    #[serde(default = "default_shadow_opacity")]
+    opacity: f64,
+}
+
+impl Default for SoftShadowConfig {
+    fn default() -> Self {
+        Self {
+            offset_y: default_shadow_offset_y(),
+            blur: default_shadow_blur(),
+            opacity: default_shadow_opacity(),
         }
     }
 }
@@ -596,13 +631,22 @@ impl Config {
         )?;
         let window_radius =
             nonnegative_theme_value(self.theme.geometry.window_radius, "geometry.window_radius")?;
+        let shadow_offset_y =
+            finite_theme_value(self.theme.shadow.soft.offset_y, "shadow.soft.offset_y")?;
+        let shadow_blur = nonnegative_theme_value(self.theme.shadow.soft.blur, "shadow.soft.blur")?;
+        let shadow_opacity =
+            unit_theme_value(self.theme.shadow.soft.opacity, "shadow.soft.opacity")?;
 
         Ok(ThemeSettings {
             border_width,
             focus_ring_width,
             border_color: parse_color(&self.theme.colors.border, "colors.border")?,
             accent_color: parse_color(&self.theme.colors.accent, "colors.accent")?,
+            shadow_color: parse_color(&self.theme.colors.shadow, "colors.shadow")?,
             window_radius,
+            shadow_offset_y,
+            shadow_blur,
+            shadow_opacity,
         })
     }
 
@@ -1005,6 +1049,28 @@ fn nonnegative_theme_value(value: f64, field: &'static str) -> Result<f64, Confi
     }
 }
 
+fn finite_theme_value(value: f64, field: &'static str) -> Result<f64, ConfigError> {
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(ConfigError::InvalidThemeValue {
+            field,
+            value: value.to_string(),
+        })
+    }
+}
+
+fn unit_theme_value(value: f64, field: &'static str) -> Result<f64, ConfigError> {
+    if value.is_finite() && (0.0..=1.0).contains(&value) {
+        Ok(value)
+    } else {
+        Err(ConfigError::InvalidThemeValue {
+            field,
+            value: value.to_string(),
+        })
+    }
+}
+
 fn parse_color(value: &str, field: &'static str) -> Result<RgbaColor, ConfigError> {
     let digits = value.strip_prefix('#').unwrap_or(value);
     if !digits.is_ascii() || !matches!(digits.len(), 6 | 8) {
@@ -1062,6 +1128,10 @@ fn default_accent_color() -> String {
     "#5B8CFF".to_owned()
 }
 
+fn default_shadow_color() -> String {
+    "#00000055".to_owned()
+}
+
 const fn default_border_width() -> f64 {
     1.0
 }
@@ -1072,6 +1142,18 @@ const fn default_focus_ring_width() -> f64 {
 
 const fn default_window_radius() -> f64 {
     14.0
+}
+
+const fn default_shadow_offset_y() -> f64 {
+    4.0
+}
+
+const fn default_shadow_blur() -> f64 {
+    18.0
+}
+
+const fn default_shadow_opacity() -> f64 {
+    0.20
 }
 
 fn default_xkb_layout() -> String {
@@ -1265,10 +1347,11 @@ mod tests {
     #[test]
     fn parses_and_validates_theme_window_tokens() {
         let configured = parse(
-            "[theme.colors]\nborder = \"#11223344\"\naccent = \"#AABBCC\"\n\n[theme.geometry]\nborder_width = 1.5\nfocus_ring_width = 3.0\nwindow_radius = 12.0",
+            "[theme.colors]\nborder = \"#11223344\"\naccent = \"#AABBCC\"\nshadow = \"#01020380\"\n\n[theme.geometry]\nborder_width = 1.5\nfocus_ring_width = 3.0\nwindow_radius = 12.0\n\n[theme.shadow.soft]\noffset_y = -2.0\nblur = 24.0\nopacity = 0.4",
         );
         let invalid_color = parse("[theme.colors]\naccent = \"blue\"");
         let invalid_radius = parse("[theme.geometry]\nwindow_radius = -1.0");
+        let invalid_opacity = parse("[theme.shadow.soft]\nopacity = 1.1");
 
         assert_eq!(
             configured.theme_settings().unwrap(),
@@ -1277,11 +1360,16 @@ mod tests {
                 focus_ring_width: 3.0,
                 border_color: RgbaColor([17.0 / 255.0, 34.0 / 255.0, 51.0 / 255.0, 68.0 / 255.0,]),
                 accent_color: RgbaColor([170.0 / 255.0, 187.0 / 255.0, 0.8, 1.0]),
+                shadow_color: RgbaColor([1.0 / 255.0, 2.0 / 255.0, 3.0 / 255.0, 128.0 / 255.0]),
                 window_radius: 12.0,
+                shadow_offset_y: -2.0,
+                shadow_blur: 24.0,
+                shadow_opacity: 0.4,
             }
         );
         assert!(invalid_color.theme_settings().is_err());
         assert!(invalid_radius.theme_settings().is_err());
+        assert!(invalid_opacity.theme_settings().is_err());
     }
 
     #[test]

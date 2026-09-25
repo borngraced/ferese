@@ -52,15 +52,22 @@ adding inner padding or changing client geometry:
 [theme.colors]
 border = "#FFFFFF18"
 accent = "#5B8CFF"
+shadow = "#00000055"
 
 [theme.geometry]
 border_width = 1.0
 focus_ring_width = 2.0
 window_radius = 14.0
+
+[theme.shadow.soft]
+offset_y = 4.0
+blur = 18.0
+opacity = 0.20
 ```
 
-Fullscreen windows are borderless. `window_radius` is validated now and is used
-by the rounded-clipping pass described below in the M6 rendering work.
+Fullscreen windows are borderless and shadowless. Other managed windows use GPU
+rounded clipping, matching rounded focus rings, and an analytic soft shadow.
+These effects overlay or surround the allocation without adding client padding.
 
 Scrolling keeps windows in stable workspace coordinates and animates the
 viewport only when focus must be revealed. Set

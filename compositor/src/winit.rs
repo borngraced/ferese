@@ -170,10 +170,48 @@ void main() {
 }
 "#;
 
+const WINDOW_SHADOW_SHADER: &str = r#"
+precision mediump float;
+
+uniform float alpha;
+uniform vec4 shadow_rect;
+uniform float radius;
+uniform float blur;
+uniform float opacity;
+uniform vec4 shadow_color;
+varying vec2 v_coords;
+
+#if defined(DEBUG_FLAGS)
+uniform float tint;
+#endif
+
+void main() {
+    vec2 point = gl_FragCoord.xy - shadow_rect.xy;
+    vec2 half_size = shadow_rect.zw * 0.5;
+    vec2 distance = abs(point - half_size) - (half_size - vec2(radius));
+    float signed_distance = length(max(distance, 0.0))
+        + min(max(distance.x, distance.y), 0.0)
+        - radius;
+    float sigma = max(blur * 0.5, 0.5);
+    float normalized_distance = max(signed_distance, 0.0) / sigma;
+    float coverage = exp(-0.5 * normalized_distance * normalized_distance);
+    vec4 color = vec4(shadow_color.rgb * shadow_color.a, shadow_color.a)
+        * coverage * opacity * alpha;
+
+#if defined(DEBUG_FLAGS)
+    if (tint == 1.0)
+        color = vec4(0.0, 0.2, 0.0, 0.2) + color * 0.8;
+#endif
+
+    gl_FragColor = color;
+}
+"#;
+
 #[derive(Clone, Debug)]
 pub(crate) struct RoundedClipPrograms {
     texture: GlesTexProgram,
     border: GlesPixelProgram,
+    shadow: GlesPixelProgram,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -194,6 +232,27 @@ struct CachedBorder {
 #[derive(Debug, Default)]
 pub(crate) struct WindowBorderBuffers {
     contexts: HashMap<ErasedContextId, CachedBorder>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ShadowParameters {
+    bounds: Rectangle<i32, Logical>,
+    shadow_rect: [f32; 4],
+    radius: f32,
+    blur: f32,
+    opacity: f32,
+    color: [f32; 4],
+}
+
+#[derive(Debug)]
+struct CachedShadow {
+    element: PixelShaderElement,
+    parameters: ShadowParameters,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct WindowShadowBuffers {
+    contexts: HashMap<ErasedContextId, CachedShadow>,
 }
 
 #[derive(Debug)]
@@ -513,6 +572,11 @@ fn output_elements(
         );
 
         if !fullscreen && let Some(programs) = rounded_clip_program.clone() {
+            let window_radius = state.theme_settings.window_radius;
+            let shadow_offset_y = state.theme_settings.shadow_offset_y;
+            let shadow_blur = state.theme_settings.shadow_blur;
+            let shadow_opacity = state.theme_settings.shadow_opacity;
+            let shadow_color = state.theme_settings.shadow_color.0;
             let focused = state.focused_window == Some(id);
             let border_width = if focused {
                 state.theme_settings.focus_ring_width
@@ -531,7 +595,7 @@ fn output_elements(
                 id,
                 constrain,
                 scale,
-                state.theme_settings.window_radius,
+                window_radius,
                 border_width,
                 border_color,
                 output,
@@ -539,15 +603,32 @@ fn output_elements(
             ) {
                 elements.push(border.into());
             }
+            let shadow = window_shadow_element(
+                state,
+                renderer,
+                id,
+                constrain,
+                scale,
+                window_radius,
+                shadow_offset_y,
+                shadow_blur,
+                shadow_opacity,
+                shadow_color,
+                output,
+                &programs,
+            );
             elements.extend(rounded_window_elements(
                 renderer,
                 &window,
                 constrain,
                 scale,
-                state.theme_settings.window_radius,
+                window_radius,
                 output,
-                programs.texture,
+                programs.texture.clone(),
             ));
+            if let Some(shadow) = shadow {
+                elements.push(shadow.into());
+            }
         } else {
             elements.extend(constrain_space_element::<
                 GlesRenderer,
@@ -595,11 +676,26 @@ fn rounded_clip_program(
         UniformName::new("border_width", UniformType::_1f),
         UniformName::new("border_color", UniformType::_4f),
     ];
+    let shadow_uniforms = [
+        UniformName::new("shadow_rect", UniformType::_4f),
+        UniformName::new("radius", UniformType::_1f),
+        UniformName::new("blur", UniformType::_1f),
+        UniformName::new("opacity", UniformType::_1f),
+        UniformName::new("shadow_color", UniformType::_4f),
+    ];
     let texture = renderer.compile_custom_texture_shader(ROUNDED_TEXTURE_SHADER, &texture_uniforms);
     let border = renderer.compile_custom_pixel_shader(ROUNDED_BORDER_SHADER, &border_uniforms);
-    match texture.and_then(|texture| border.map(|border| (texture, border))) {
-        Ok((texture, border)) => {
-            let programs = RoundedClipPrograms { texture, border };
+    let shadow = renderer.compile_custom_pixel_shader(WINDOW_SHADOW_SHADER, &shadow_uniforms);
+    let compiled = texture.and_then(|texture| {
+        border.and_then(|border| shadow.map(|shadow| (texture, border, shadow)))
+    });
+    match compiled {
+        Ok((texture, border, shadow)) => {
+            let programs = RoundedClipPrograms {
+                texture,
+                border,
+                shadow,
+            };
             state
                 .rounded_clip_programs
                 .insert(context, programs.clone());
@@ -681,6 +777,99 @@ fn border_uniforms(parameters: &BorderParameters) -> Vec<Uniform<'static>> {
         Uniform::new("border_width", parameters.width).into_owned(),
         Uniform::new("border_color", parameters.color).into_owned(),
     ]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn window_shadow_element(
+    state: &mut Ferese,
+    renderer: &GlesRenderer,
+    id: ferese_layout::WindowId,
+    geometry: Rectangle<i32, Logical>,
+    scale: f64,
+    requested_radius: f64,
+    offset_y: f64,
+    blur: f64,
+    opacity: f64,
+    color: [f32; 4],
+    output: &Output,
+    programs: &RoundedClipPrograms,
+) -> Option<PixelShaderElement> {
+    let mode = output.current_mode()?;
+    if opacity == 0.0 || color[3] == 0.0 {
+        return None;
+    }
+
+    let shadow_geometry = Rectangle::new(
+        (geometry.loc.x, geometry.loc.y + offset_y.round() as i32).into(),
+        geometry.size,
+    );
+    let bounds = shadow_bounds(geometry, offset_y, blur);
+    let parameters = ShadowParameters {
+        bounds,
+        shadow_rect: framebuffer_clip_rect(
+            shadow_geometry.to_physical_precise_round(scale),
+            mode.size,
+            output.current_transform().invert(),
+        ),
+        radius: scaled_effect_value(requested_radius, geometry, scale),
+        blur: (blur * scale) as f32,
+        opacity: opacity as f32,
+        color,
+    };
+    let context = renderer.context_id().erased();
+    let buffers = state.window_shadows.entry(id).or_default();
+    if !buffers.contexts.contains_key(&context) {
+        let element = PixelShaderElement::new(
+            programs.shadow.clone(),
+            bounds,
+            None,
+            1.0,
+            shadow_uniforms(&parameters),
+            RenderElementKind::Unspecified,
+        );
+        buffers.contexts.insert(
+            context.clone(),
+            CachedShadow {
+                element,
+                parameters: parameters.clone(),
+            },
+        );
+    }
+
+    let cached = buffers.contexts.get_mut(&context)?;
+    if cached.parameters != parameters {
+        if cached.parameters.bounds != parameters.bounds {
+            cached.element.resize(parameters.bounds, None);
+        }
+        cached.element.update_uniforms(shadow_uniforms(&parameters));
+        cached.parameters = parameters;
+    }
+
+    Some(cached.element.clone())
+}
+
+fn shadow_uniforms(parameters: &ShadowParameters) -> Vec<Uniform<'static>> {
+    vec![
+        Uniform::new("shadow_rect", parameters.shadow_rect).into_owned(),
+        Uniform::new("radius", parameters.radius).into_owned(),
+        Uniform::new("blur", parameters.blur).into_owned(),
+        Uniform::new("opacity", parameters.opacity).into_owned(),
+        Uniform::new("shadow_color", parameters.color).into_owned(),
+    ]
+}
+
+fn shadow_bounds(
+    geometry: Rectangle<i32, Logical>,
+    offset_y: f64,
+    blur: f64,
+) -> Rectangle<i32, Logical> {
+    let extent = (blur * 2.0).ceil() as i32;
+    let offset_y = offset_y.round() as i32;
+
+    Rectangle::new(
+        (geometry.loc.x - extent, geometry.loc.y + offset_y - extent).into(),
+        (geometry.size.w + extent * 2, geometry.size.h + extent * 2).into(),
+    )
 }
 
 fn scaled_effect_value(requested: f64, geometry: Rectangle<i32, Logical>, scale: f64) -> f32 {
@@ -957,9 +1146,9 @@ fn normalized_scale(scale: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use smithay::utils::{Physical, Rectangle, Transform};
+    use smithay::utils::{Logical, Physical, Rectangle, Transform};
 
-    use super::{framebuffer_clip_rect, normalized_scale};
+    use super::{framebuffer_clip_rect, normalized_scale, shadow_bounds};
 
     #[test]
     fn accepts_positive_finite_scale() {
@@ -994,6 +1183,20 @@ mod tests {
         assert_eq!(
             framebuffer_clip_rect(geometry, (100, 80).into(), Transform::_180),
             [60.0, 5.0, 30.0, 40.0]
+        );
+    }
+
+    #[test]
+    fn shadow_bounds_include_blur_and_offset() {
+        let geometry = Rectangle::<i32, Logical>::new((100, 80).into(), (400, 300).into());
+
+        assert_eq!(
+            shadow_bounds(geometry, 4.0, 18.0),
+            Rectangle::new((64, 48).into(), (472, 372).into())
+        );
+        assert_eq!(
+            shadow_bounds(geometry, -6.0, 10.0),
+            Rectangle::new((80, 54).into(), (440, 340).into())
         );
     }
 }
