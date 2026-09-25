@@ -1,0 +1,11 @@
+[package]
+name = "ferese-shell-spike"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version = "1.93"
+
+[dependencies]
+ferese-protocols = { path = "../../crates/ferese-protocols", default-features = false, features = ["client"] }
+libcosmic = { git = "https://github.com/pop-os/libcosmic", rev = "03d7dcb832bc6d15bc1bb07327a1aa426b2d5bc0", default-features = false, features = ["multi-window", "tokio", "wayland"] }
+wayland-client.workspace = true

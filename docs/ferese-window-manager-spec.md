@@ -1591,9 +1591,11 @@ budget on the reference integrated GPU.
 
 ### M8: Overview and shell
 
-First spike GPUI layer-surface creation, output discovery, focus, configure, and
-shutdown behavior. If the spike fails its lifecycle tests, use a thin native
-Wayland shell adapter or record a toolkit decision before proceeding. Implement
+First spike the selected shell toolkit's layer-surface creation, output discovery,
+focus, configure, and shutdown behavior. The initial selection is libcosmic,
+pinned to a reviewed Git revision because it has not published a current crates.io
+release. If the spike fails its lifecycle tests, use a thin native Wayland shell
+adapter or record a new toolkit decision before proceeding. Implement
 the compositor overview scene, minimal `ferese-shell-v1` control/metadata
 protocol, top bar, apps-only launcher UI, workspace UI, OSD, and the standard
 notifications D-Bus service.

@@ -9,6 +9,7 @@ members = [
     "crates/ferese-protocols",
     "tools/ferese-effects-probe",
     "tools/ferese-malformed-client",
+    "tools/ferese-shell-spike",
 ]
 resolver = "3"
 
