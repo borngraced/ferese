@@ -1,4 +1,10 @@
-use std::error::Error;
+use std::{
+    error::Error,
+    os::{
+        fd::{FromRawFd, RawFd},
+        unix::net::UnixStream,
+    },
+};
 
 use ferese_protocols::shell::v1::client::{
     ferese_shell_manager_v1::FereseShellManagerV1,
@@ -10,7 +16,7 @@ use wayland_client::{
 
 fn main() -> Result<(), Box<dyn Error>> {
     let expect_hidden = std::env::args_os().any(|argument| argument == "--expect-hidden");
-    let connection = Connection::connect_to_env()?;
+    let connection = control_connection()?;
     let mut queue = connection.new_event_queue();
     let qh = queue.handle();
     connection.display().get_registry(&qh, ());
@@ -60,6 +66,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         state.window_count
     );
     Ok(())
+}
+
+fn control_connection() -> Result<Connection, Box<dyn Error>> {
+    let Some(raw_fd) = std::env::var_os("FERESE_SHELL_CONTROL_SOCKET") else {
+        return Ok(Connection::connect_to_env()?);
+    };
+    let fd = raw_fd
+        .to_str()
+        .ok_or("FERESE_SHELL_CONTROL_SOCKET is not valid UTF-8")?
+        .parse::<RawFd>()?;
+    // SAFETY: Ferese passes ownership of this inherited descriptor to the
+    // launched shell process. This function consumes it exactly once.
+    let socket = unsafe { UnixStream::from_raw_fd(fd) };
+
+    Ok(Connection::from_socket(socket)?)
 }
 
 #[derive(Default)]

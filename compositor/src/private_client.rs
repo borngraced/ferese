@@ -34,8 +34,55 @@ pub(crate) fn prepare_command(
     state: &mut Ferese,
     command: &mut Command,
     capabilities: ClientCapabilities,
+) -> io::Result<Vec<UnixStream>> {
+    let split_shell_control = capabilities.contains(ClientCapabilities::EFFECTS)
+        && capabilities.contains(ClientCapabilities::SHELL_CONTROL);
+    let primary_capabilities = if split_shell_control {
+        ClientCapabilities::EFFECTS
+    } else {
+        capabilities
+    };
+    let primary = insert_private_client(state, primary_capabilities)?;
+    let mut clients = vec![primary];
+
+    command.env_remove("WAYLAND_DISPLAY");
+    command.env_remove("FERESE_SHELL_CONTROL_SOCKET");
+    command.env("WAYLAND_SOCKET", clients[0].as_raw_fd().to_string());
+
+    if split_shell_control {
+        let control = insert_private_client(state, ClientCapabilities::SHELL_CONTROL)?;
+
+        command.env(
+            "FERESE_SHELL_CONTROL_SOCKET",
+            control.as_raw_fd().to_string(),
+        );
+        clients.push(control);
+    }
+
+    let inherited_fds = clients.iter().map(AsRawFd::as_raw_fd).collect::<Vec<_>>();
+    // SAFETY: fcntl(F_SETFD) is async-signal-safe. The closure only clears
+    // CLOEXEC on sockets already owned by this Command's parent process.
+    unsafe {
+        command.pre_exec(move || {
+            for fd in &inherited_fds {
+                if libc::fcntl(*fd, libc::F_SETFD, 0) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+
+            Ok(())
+        });
+    }
+
+    Ok(clients)
+}
+
+fn insert_private_client(
+    state: &mut Ferese,
+    capabilities: ClientCapabilities,
 ) -> io::Result<UnixStream> {
     let (server, client) = UnixStream::pair()?;
+
     state.display_handle.insert_client(
         server,
         Arc::new(ClientState {
@@ -43,20 +90,6 @@ pub(crate) fn prepare_command(
             ..ClientState::default()
         }),
     )?;
-
-    let client_fd = client.as_raw_fd();
-    command.env_remove("WAYLAND_DISPLAY");
-    command.env("WAYLAND_SOCKET", client_fd.to_string());
-    // SAFETY: fcntl(F_SETFD) is async-signal-safe. The closure only clears
-    // CLOEXEC on the socket already owned by this Command's parent process.
-    unsafe {
-        command.pre_exec(move || {
-            if libc::fcntl(client_fd, libc::F_SETFD, 0) == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
 
     Ok(client)
 }
