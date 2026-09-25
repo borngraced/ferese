@@ -689,6 +689,10 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                 }
 
                 state.relayout();
+                if let Err(error) = state.display_handle.flush_clients() {
+                    tracing::debug!(%error, "failed to flush output-resize configure");
+                }
+                backend.window().request_redraw();
             }
             WinitEvent::Input(event) => state.process_input_event(event),
             WinitEvent::Redraw => {
