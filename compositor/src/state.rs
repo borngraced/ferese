@@ -11,7 +11,11 @@ use ferese_core::{OutputGeometry, OutputId, OutputWorkspaceMap, WindowPlacement,
 use ferese_layout::{Axis, Direction, GapConfig, LayoutResult, Rect, SizeConstraints, WindowId};
 
 use smithay::{
-    backend::{allocator::dmabuf::Dmabuf, drm::DrmEventTime, renderer::ImportDma},
+    backend::{
+        allocator::dmabuf::Dmabuf,
+        drm::{DrmEventTime, DrmNode},
+        renderer::ImportDma,
+    },
     desktop::{
         LayerSurface, PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output,
         utils::send_frames_surface_tree,
@@ -23,6 +27,7 @@ use smithay::{
     output::Output,
     reexports::{
         calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
+        drm::control::crtc,
         wayland_protocols::xdg::{
             decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
             shell::server::xdg_toplevel,
@@ -156,6 +161,43 @@ impl Ferese {
                 tracing::error!(%error, output = %output.name(), "failed to register output")
             }
         }
+    }
+
+    pub fn unregister_output(&mut self, output: &Output) {
+        let Some(output_id) = self.output_ids.remove(output) else {
+            return;
+        };
+
+        self.pending_screencopies.retain(|capture| {
+            if capture.output == *output {
+                capture.frame.failed();
+                false
+            } else {
+                true
+            }
+        });
+        self.space.unmap_output(output);
+
+        match self.output_workspaces.disconnect(output_id) {
+            Ok(Some(target)) => {
+                if let Some(workspace) = self.output_workspaces.active_workspace(target) {
+                    self.activate_output_workspace(target, workspace);
+                }
+            }
+            Ok(None) => {
+                self.focused_window = None;
+                self.restore_keyboard_focus();
+            }
+            Err(error) => {
+                tracing::error!(%error, output = %output.name(), "failed to unregister output")
+            }
+        }
+
+        self.relayout();
+    }
+
+    pub(crate) fn is_focused_output(&self, output: &Output) -> bool {
+        self.output_ids.get(output).copied() == self.output_workspaces.focused_output()
     }
 
     fn activate_output_workspace(&mut self, output: OutputId, workspace: ferese_core::WorkspaceId) {
@@ -672,11 +714,17 @@ impl Ferese {
         self.advance_animations_by(delta)
     }
 
-    pub fn record_drm_presentation(&mut self, time: DrmEventTime, sequence: u32) {
+    pub fn record_drm_presentation(
+        &mut self,
+        node: DrmNode,
+        crtc: crtc::Handle,
+        time: DrmEventTime,
+        sequence: u32,
+    ) {
         let delta = self
             .direct_backend
             .as_mut()
-            .and_then(|backend| backend.record_presentation(time, sequence));
+            .and_then(|backend| backend.record_presentation(node, crtc, time, sequence));
         if let Some(delta) = delta {
             self.advance_animations_by(delta);
         }

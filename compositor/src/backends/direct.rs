@@ -1,4 +1,10 @@
-use std::{collections::HashMap, error::Error, io, path::Path, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    io,
+    path::Path,
+    time::Duration,
+};
 
 use smithay::{
     backend::{
@@ -24,6 +30,7 @@ use smithay::{
         input::Libinput,
         rustix::fs::OFlags,
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind,
+        wayland_server::backend::GlobalId,
     },
     utils::{DeviceFd, Monotonic, Time, Transform},
     wayland::presentation::Refresh,
@@ -35,7 +42,7 @@ pub struct DirectBackendState {
     pub session: LibSeatSession,
     pub active: bool,
     devices: HashMap<DrmNode, DirectDevice>,
-    presentation: PresentationClock,
+    presentation: HashMap<(DrmNode, crtc::Handle), PresentationClock>,
 }
 
 #[derive(Default)]
@@ -48,18 +55,16 @@ struct PresentationClock {
 
 struct DirectDevice {
     drm: DrmDevice,
-    #[allow(dead_code)]
     gbm: GbmDevice<DrmDeviceFd>,
-    #[allow(dead_code)]
     renderer: GlesRenderer,
-    #[allow(dead_code)]
+    outputs: HashMap<crtc::Handle, DirectOutput>,
+}
+
+struct DirectOutput {
     connector: connector::Handle,
-    #[allow(dead_code)]
-    crtc: crtc::Handle,
-    #[allow(dead_code)]
     mode: DrmMode,
-    #[allow(dead_code)]
     output: Output,
+    global: GlobalId,
     surface: GbmBufferedSurface<GbmAllocator<DrmDeviceFd>, OutputPresentationFeedback>,
     damage_tracker: OutputDamageTracker,
     frame_pending: bool,
@@ -92,7 +97,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         session,
         active: session_active,
         devices: HashMap::new(),
-        presentation: PresentationClock::default(),
+        presentation: HashMap::new(),
     });
     open_primary_device(event_loop, state, &primary_path)?;
 
@@ -107,12 +112,18 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
             SessionEvent::PauseSession => {
                 if let Some(backend) = state.direct_backend.as_mut() {
                     backend.active = false;
-                    backend.presentation.reset_timing();
+                    backend
+                        .presentation
+                        .values_mut()
+                        .for_each(PresentationClock::reset_timing);
                     backend.devices.values_mut().for_each(|device| {
                         device.drm.pause();
-                        device.surface.reset_buffers();
-                        device.damage_tracker = OutputDamageTracker::from_output(&device.output);
-                        device.frame_pending = false;
+                        device.outputs.values_mut().for_each(|output| {
+                            output.surface.reset_buffers();
+                            output.damage_tracker =
+                                OutputDamageTracker::from_output(&output.output);
+                            output.frame_pending = false;
+                        });
                     });
                 }
                 libinput_context.suspend();
@@ -136,15 +147,23 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         })?;
     event_loop
         .handle()
-        .insert_source(udev_backend, |event, _, _state| match event {
+        .insert_source(udev_backend, |event, _, state| match event {
             UdevEvent::Added { device_id, path } => {
-                tracing::info!(?device_id, ?path, "DRM device added");
+                if let Some(node) = direct_node_for_device(state, device_id) {
+                    rescan_device(state, node);
+                } else {
+                    tracing::info!(?device_id, ?path, "additional DRM device discovered");
+                }
             }
             UdevEvent::Changed { device_id } => {
-                tracing::debug!(?device_id, "DRM device changed");
+                if let Some(node) = direct_node_for_device(state, device_id) {
+                    rescan_device(state, node);
+                }
             }
             UdevEvent::Removed { device_id } => {
-                tracing::info!(?device_id, "DRM device removed");
+                if let Some(node) = direct_node_for_device(state, device_id) {
+                    remove_device(state, node);
+                }
             }
         })?;
 
@@ -182,25 +201,20 @@ fn open_primary_device(
     state
         .dmabuf_state
         .create_global::<Ferese>(&display_handle, dmabuf_formats);
-    let (connector, crtc, mode) = select_output(&drm)?;
-    let output = create_output(state, &connector, mode);
-    if let Some(backend) = state.direct_backend.as_mut() {
-        backend
+    let selections = select_outputs(&drm)?;
+    let mut outputs = HashMap::new();
+    for (connector, crtc, mode) in selections {
+        let output = create_direct_output(state, &mut drm, &gbm, &renderer, connector, crtc, mode)?;
+        state
+            .direct_backend
+            .as_mut()
+            .expect("direct backend state remains initialized")
             .presentation
+            .entry((node, crtc))
+            .or_default()
             .set_refresh(OutputMode::from(mode).refresh);
+        outputs.insert(crtc, output);
     }
-    let drm_surface = drm.create_surface(crtc, mode, &[connector.handle()])?;
-    let allocator = GbmAllocator::new(
-        gbm.clone(),
-        GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
-    );
-    let surface = GbmBufferedSurface::new(
-        drm_surface,
-        allocator,
-        &[Fourcc::Argb8888, Fourcc::Abgr8888],
-        renderer.dmabuf_formats(),
-    )?;
-    let damage_tracker = OutputDamageTracker::from_output(&output);
 
     event_loop
         .handle()
@@ -211,7 +225,8 @@ fn open_primary_device(
                         .direct_backend
                         .as_mut()
                         .and_then(|backend| backend.devices.get_mut(&node))
-                        .and_then(|device| match device.surface.frame_submitted() {
+                        .and_then(|device| device.outputs.get_mut(&crtc))
+                        .and_then(|output| match output.surface.frame_submitted() {
                             Ok(feedback) => feedback,
                             Err(error) => {
                                 tracing::error!(?node, ?crtc, %error, "failed to retire DRM frame");
@@ -223,21 +238,30 @@ fn open_primary_device(
                     {
                         feedback.presented(
                             Time::<Monotonic>::from(time),
-                            Refresh::fixed(refresh_duration(state, node)),
+                            Refresh::fixed(refresh_duration(state, node, crtc)),
                             u64::from(metadata.sequence),
                             Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
                         );
                     }
-                    if let Some(device) = state
+                    let focused = state
+                        .direct_backend
+                        .as_ref()
+                        .and_then(|backend| backend.devices.get(&node))
+                        .and_then(|device| device.outputs.get(&crtc))
+                        .is_some_and(|output| state.is_focused_output(&output.output));
+                    if let Some(output) = state
                         .direct_backend
                         .as_mut()
                         .and_then(|backend| backend.devices.get_mut(&node))
+                        .and_then(|device| device.outputs.get_mut(&crtc))
                     {
-                        device.frame_pending = false;
+                        output.frame_pending = false;
                     }
-                    state.record_drm_presentation(metadata.time, metadata.sequence);
+                    if focused {
+                        state.record_drm_presentation(node, crtc, metadata.time, metadata.sequence);
+                    }
                     tracing::trace!(?node, ?crtc, sequence = metadata.sequence, "page flip");
-                    render_device(state, node);
+                    render_output(state, node, crtc);
                 }
             }
             DrmEvent::Error(error) => {
@@ -256,30 +280,30 @@ fn open_primary_device(
                 drm,
                 gbm,
                 renderer,
-                connector: connector.handle(),
-                crtc,
-                mode,
-                output,
-                surface,
-                damage_tracker,
-                frame_pending: false,
+                outputs,
             },
         );
     state.relayout();
-    render_device(state, node);
-    tracing::info!(?node, ?path, ?crtc, connector = %connector, "initialized primary DRM/GBM device");
+    render_all(state);
+    tracing::info!(?node, ?path, "initialized DRM/GBM device outputs");
     Ok(())
 }
 
 pub fn render_all(state: &mut Ferese) {
-    let nodes = state
+    let outputs = state
         .direct_backend
         .as_ref()
-        .map(|backend| backend.devices.keys().copied().collect::<Vec<_>>())
+        .map(|backend| {
+            backend
+                .devices
+                .iter()
+                .flat_map(|(node, device)| device.outputs.keys().map(|crtc| (*node, *crtc)))
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
 
-    for node in nodes {
-        render_device(state, node);
+    for (node, crtc) in outputs {
+        render_output(state, node, crtc);
     }
 }
 
@@ -293,7 +317,7 @@ pub fn switch_vt(state: &mut Ferese, vt: i32) {
     }
 }
 
-fn render_device(state: &mut Ferese, node: DrmNode) {
+fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
     let Some(mut device) = state
         .direct_backend
         .as_mut()
@@ -301,34 +325,39 @@ fn render_device(state: &mut Ferese, node: DrmNode) {
     else {
         return;
     };
-    if !device.drm.is_active() || device.frame_pending {
+    let Some(mut output) = device.outputs.remove(&crtc) else {
+        restore_device(state, node, device);
+        return;
+    };
+    if !device.drm.is_active() || output.frame_pending {
+        device.outputs.insert(crtc, output);
         restore_device(state, node, device);
         return;
     }
 
     let rendered = (|| -> Result<bool, Box<dyn Error>> {
         state.process_dmabuf_imports(&mut device.renderer);
-        let (mut buffer, age) = device.surface.next_buffer()?;
-        let elements = animated_window_elements(state, &mut device.renderer, &device.output);
+        let (mut buffer, age) = output.surface.next_buffer()?;
+        let elements = animated_window_elements(state, &mut device.renderer, &output.output);
         let mut framebuffer = device.renderer.bind(&mut buffer)?;
-        let result = device.damage_tracker.render_output(
+        let result = output.damage_tracker.render_output(
             &mut device.renderer,
             &mut framebuffer,
             usize::from(age),
             &elements,
             [0.035, 0.04, 0.055, 1.0],
         )?;
-        if state.process_screencopies(&mut device.renderer, &framebuffer, &device.output) {
+        if state.process_screencopies(&mut device.renderer, &framebuffer, &output.output) {
             let _ = device
                 .renderer
                 .render(
                     &mut framebuffer,
-                    device
+                    output
                         .output
                         .current_mode()
                         .expect("output has a mode")
                         .size,
-                    device.output.current_transform(),
+                    output.output.current_transform(),
                 )?
                 .finish()?;
         }
@@ -336,46 +365,48 @@ fn render_device(state: &mut Ferese, node: DrmNode) {
             return Ok(false);
         };
 
-        let mut presentation = OutputPresentationFeedback::new(&device.output);
+        let mut presentation = OutputPresentationFeedback::new(&output.output);
         state.space.elements().for_each(|window| {
             window.take_presentation_feedback(
                 &mut presentation,
-                |_, _| Some(device.output.clone()),
+                |_, _| Some(output.output.clone()),
                 |_, _| Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
             );
         });
-        let layers = layer_map_for_output(&device.output)
+        let layers = layer_map_for_output(&output.output)
             .layers()
             .cloned()
             .collect::<Vec<_>>();
         layers.iter().for_each(|layer| {
             layer.take_presentation_feedback(
                 &mut presentation,
-                |_, _| Some(device.output.clone()),
+                |_, _| Some(output.output.clone()),
                 |_, _| Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
             );
         });
-        device
+        output
             .surface
             .queue_buffer(Some(result.sync), Some(damage), presentation)?;
-        device.frame_pending = true;
+        output.frame_pending = true;
         Ok(true)
     })();
 
     let queued = match rendered {
         Ok(true) => {
-            tracing::trace!(?node, "queued DRM frame");
+            tracing::trace!(?node, ?crtc, "queued DRM frame");
             true
         }
         Ok(false) => false,
         Err(error) => {
-            tracing::error!(?node, %error, "failed to render DRM frame");
+            tracing::error!(?node, ?crtc, %error, "failed to render DRM frame");
             false
         }
     };
+    let callback_output = output.output.clone();
+    device.outputs.insert(crtc, output);
     restore_device(state, node, device);
     if queued {
-        send_frame_callbacks(state);
+        send_frame_callbacks(state, &callback_output);
     }
 }
 
@@ -385,58 +416,156 @@ fn restore_device(state: &mut Ferese, node: DrmNode, device: DirectDevice) {
     }
 }
 
-fn refresh_duration(state: &Ferese, node: DrmNode) -> Duration {
+fn direct_node_for_device(state: &Ferese, device_id: libc::dev_t) -> Option<DrmNode> {
+    state
+        .direct_backend
+        .as_ref()?
+        .devices
+        .keys()
+        .copied()
+        .find(|node| node.dev_id() == device_id)
+}
+
+fn rescan_device(state: &mut Ferese, node: DrmNode) {
+    let Some(mut device) = state
+        .direct_backend
+        .as_mut()
+        .and_then(|backend| backend.devices.remove(&node))
+    else {
+        return;
+    };
+
+    let selections = match select_outputs(&device.drm) {
+        Ok(selections) => selections,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            tracing::error!(?node, %error, "failed to scan DRM connectors");
+            restore_device(state, node, device);
+            return;
+        }
+    };
+    let mut selections = selections
+        .into_iter()
+        .map(|selection @ (_, crtc, _)| (crtc, selection))
+        .collect::<HashMap<_, _>>();
+    let existing = device.outputs.keys().copied().collect::<Vec<_>>();
+
+    for crtc in existing {
+        let unchanged = device.outputs.get(&crtc).is_some_and(|output| {
+            selections.get(&crtc).is_some_and(|(connector, _, mode)| {
+                connector.handle() == output.connector && *mode == output.mode
+            })
+        });
+        if unchanged {
+            selections.remove(&crtc);
+            continue;
+        }
+
+        if let Some(output) = device.outputs.remove(&crtc) {
+            state.display_handle.disable_global::<Ferese>(output.global);
+            state.unregister_output(&output.output);
+            if let Some(backend) = state.direct_backend.as_mut() {
+                backend.presentation.remove(&(node, crtc));
+            }
+            tracing::info!(?node, ?crtc, "removed DRM output");
+        }
+    }
+
+    for (_, (connector, crtc, mode)) in selections {
+        match create_direct_output(
+            state,
+            &mut device.drm,
+            &device.gbm,
+            &device.renderer,
+            connector,
+            crtc,
+            mode,
+        ) {
+            Ok(output) => {
+                state
+                    .direct_backend
+                    .as_mut()
+                    .expect("direct backend state remains initialized")
+                    .presentation
+                    .entry((node, crtc))
+                    .or_default()
+                    .set_refresh(OutputMode::from(mode).refresh);
+                device.outputs.insert(crtc, output);
+            }
+            Err(error) => tracing::error!(?node, ?crtc, %error, "failed to add DRM output"),
+        }
+    }
+
+    restore_device(state, node, device);
+    state.relayout();
+    render_all(state);
+}
+
+fn remove_device(state: &mut Ferese, node: DrmNode) {
+    let Some(device) = state
+        .direct_backend
+        .as_mut()
+        .and_then(|backend| backend.devices.remove(&node))
+    else {
+        return;
+    };
+
+    for (crtc, output) in device.outputs {
+        state.display_handle.disable_global::<Ferese>(output.global);
+        state.unregister_output(&output.output);
+        if let Some(backend) = state.direct_backend.as_mut() {
+            backend.presentation.remove(&(node, crtc));
+        }
+    }
+    tracing::info!(?node, "removed DRM device");
+}
+
+fn refresh_duration(state: &Ferese, node: DrmNode, crtc: crtc::Handle) -> Duration {
     state
         .direct_backend
         .as_ref()
         .and_then(|backend| backend.devices.get(&node))
-        .and_then(|device| device.output.current_mode())
+        .and_then(|device| device.outputs.get(&crtc))
+        .and_then(|output| output.output.current_mode())
         .filter(|mode| mode.refresh > 0)
         .map(|mode| Duration::from_nanos(1_000_000_000_000_u64 / mode.refresh as u64))
         .unwrap_or_else(|| Duration::from_millis(16))
 }
 
-fn send_frame_callbacks(state: &mut Ferese) {
-    let Some(output) = state
-        .direct_backend
-        .as_ref()
-        .and_then(|backend| backend.devices.values().next())
-        .map(|device| device.output.clone())
-    else {
-        return;
-    };
-
+fn send_frame_callbacks(state: &mut Ferese, output: &Output) {
     state.space.elements().for_each(|window| {
         window.send_frame(
-            &output,
+            output,
             state.start_time.elapsed(),
             Some(Duration::ZERO),
             |_, _| Some(output.clone()),
         );
     });
-    let layers = layer_map_for_output(&output)
+    let layers = layer_map_for_output(output)
         .layers()
         .cloned()
         .collect::<Vec<_>>();
     layers.iter().for_each(|layer| {
         layer.send_frame(
-            &output,
+            output,
             state.start_time.elapsed(),
             Some(Duration::ZERO),
             |_, _| Some(output.clone()),
         );
     });
-    state.send_cursor_frame(&output);
+    state.send_cursor_frame(output);
     state.space.refresh();
     state.popups.cleanup();
-    layer_map_for_output(&output).cleanup();
+    layer_map_for_output(output).cleanup();
     if let Err(error) = state.display_handle.flush_clients() {
         tracing::debug!(%error, "failed to flush clients after DRM frame");
     }
 }
 
-fn select_output(drm: &DrmDevice) -> io::Result<(connector::Info, crtc::Handle, DrmMode)> {
+fn select_outputs(drm: &DrmDevice) -> io::Result<Vec<(connector::Info, crtc::Handle, DrmMode)>> {
     let resources = drm.resource_handles()?;
+    let mut selections = Vec::new();
+    let mut used_crtcs = HashSet::new();
 
     for handle in resources.connectors() {
         let connector = drm.get_connector(*handle, true)?;
@@ -456,26 +585,71 @@ fn select_output(drm: &DrmDevice) -> io::Result<(connector::Info, crtc::Handle, 
         let current_crtc = connector
             .current_encoder()
             .and_then(|handle| drm.get_encoder(handle).ok())
-            .and_then(|encoder| encoder.crtc());
+            .and_then(|encoder| encoder.crtc())
+            .filter(|crtc| !used_crtcs.contains(crtc));
         let compatible_crtc = connector.encoders().iter().find_map(|handle| {
             let encoder = drm.get_encoder(*handle).ok()?;
             resources
                 .filter_crtcs(encoder.possible_crtcs())
                 .into_iter()
-                .next()
+                .find(|crtc| !used_crtcs.contains(crtc))
         });
         if let Some(crtc) = current_crtc.or(compatible_crtc) {
-            return Ok((connector, crtc, mode));
+            used_crtcs.insert(crtc);
+            selections.push((connector, crtc, mode));
         }
     }
 
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        "no connected desktop DRM connector with a usable CRTC",
-    ))
+    if selections.is_empty() {
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no connected desktop DRM connector with a usable CRTC",
+        ))
+    } else {
+        Ok(selections)
+    }
 }
 
-fn create_output(state: &mut Ferese, connector: &connector::Info, mode: DrmMode) -> Output {
+fn create_direct_output(
+    state: &mut Ferese,
+    drm: &mut DrmDevice,
+    gbm: &GbmDevice<DrmDeviceFd>,
+    renderer: &GlesRenderer,
+    connector: connector::Info,
+    crtc: crtc::Handle,
+    mode: DrmMode,
+) -> Result<DirectOutput, Box<dyn Error>> {
+    let (output, global) = create_output(state, &connector, mode);
+    let drm_surface = drm.create_surface(crtc, mode, &[connector.handle()])?;
+    let allocator = GbmAllocator::new(
+        gbm.clone(),
+        GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+    );
+    let surface = GbmBufferedSurface::new(
+        drm_surface,
+        allocator,
+        &[Fourcc::Argb8888, Fourcc::Abgr8888],
+        renderer.dmabuf_formats(),
+    )?;
+    let damage_tracker = OutputDamageTracker::from_output(&output);
+
+    tracing::info!(?crtc, connector = %connector, "initialized DRM output");
+    Ok(DirectOutput {
+        connector: connector.handle(),
+        mode,
+        output,
+        global,
+        surface,
+        damage_tracker,
+        frame_pending: false,
+    })
+}
+
+fn create_output(
+    state: &mut Ferese,
+    connector: &connector::Info,
+    mode: DrmMode,
+) -> (Output, GlobalId) {
     let name = connector.to_string();
     let identity = format!("drm:{name}");
     let physical_size = connector.size().unwrap_or((0, 0));
@@ -490,7 +664,7 @@ fn create_output(state: &mut Ferese, connector: &connector::Info, mode: DrmMode)
     );
     let output_mode = OutputMode::from(mode);
 
-    output.create_global::<Ferese>(&state.display_handle);
+    let global = output.create_global::<Ferese>(&state.display_handle);
     output.set_preferred(output_mode);
     output.change_current_state(
         Some(output_mode),
@@ -507,12 +681,20 @@ fn create_output(state: &mut Ferese, connector: &connector::Info, mode: DrmMode)
         .unwrap_or(0);
     state.space.map_output(&output, (x, 0));
     state.register_output(&output, identity);
-    output
+    (output, global)
 }
 
 impl DirectBackendState {
-    pub fn record_presentation(&mut self, time: DrmEventTime, sequence: u32) -> Option<Duration> {
-        self.presentation.record(time, sequence)
+    pub fn record_presentation(
+        &mut self,
+        node: DrmNode,
+        crtc: crtc::Handle,
+        time: DrmEventTime,
+        sequence: u32,
+    ) -> Option<Duration> {
+        self.presentation
+            .get_mut(&(node, crtc))
+            .and_then(|clock| clock.record(time, sequence))
     }
 }
 

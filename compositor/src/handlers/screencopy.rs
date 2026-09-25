@@ -33,9 +33,9 @@ pub(crate) struct FrameData {
 
 #[derive(Debug)]
 pub(crate) struct PendingScreencopy {
-    frame: ZwlrScreencopyFrameV1,
+    pub(crate) frame: ZwlrScreencopyFrameV1,
     buffer: WlBuffer,
-    output: Output,
+    pub(crate) output: Output,
     region: Rectangle<i32, Buffer>,
     with_damage: bool,
 }
