@@ -11,7 +11,7 @@ use ferese_core::{WindowPlacement, WorkspaceSet};
 use ferese_layout::{Axis, Direction, GapConfig, LayoutResult, Rect, SizeConstraints, WindowId};
 
 use smithay::{
-    backend::drm::DrmEventTime,
+    backend::{allocator::dmabuf::Dmabuf, drm::DrmEventTime, renderer::ImportDma},
     desktop::{
         LayerSurface, PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output,
         utils::send_frames_surface_tree,
@@ -37,6 +37,7 @@ use smithay::{
     wayland::{
         compositor::{CompositorClientState, CompositorState, with_states},
         cursor_shape::CursorShapeManagerState,
+        dmabuf::{DmabufState, ImportNotifier},
         fractional_scale::FractionalScaleManagerState,
         idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
@@ -78,6 +79,7 @@ pub struct Ferese {
     pub idle_inhibitors: HashMap<WlSurface, usize>,
     pub active_shortcuts_inhibitor: Option<KeyboardShortcutsInhibitor>,
     pub direct_backend: Option<crate::backends::direct::DirectBackendState>,
+    pending_dmabuf_imports: Vec<(Dmabuf, ImportNotifier)>,
     next_window_id: u64,
     last_animation_tick: Instant,
     pub popups: PopupManager,
@@ -86,6 +88,7 @@ pub struct Ferese {
     pub cursor_shape_state: CursorShapeManagerState,
     pub data_device_state: DataDeviceState,
     pub decoration_state: XdgDecorationState,
+    pub dmabuf_state: DmabufState,
     pub fractional_scale_state: FractionalScaleManagerState,
     pub idle_inhibit_state: IdleInhibitManagerState,
     pub idle_notifier_state: IdleNotifierState<Self>,
@@ -108,6 +111,25 @@ pub struct Ferese {
 }
 
 impl Ferese {
+    pub(crate) fn queue_dmabuf_import(&mut self, dmabuf: Dmabuf, notifier: ImportNotifier) {
+        self.pending_dmabuf_imports.push((dmabuf, notifier));
+    }
+
+    pub(crate) fn process_dmabuf_imports<R>(&mut self, renderer: &mut R)
+    where
+        R: ImportDma,
+    {
+        for (dmabuf, notifier) in self.pending_dmabuf_imports.drain(..) {
+            if renderer.import_dmabuf(&dmabuf, None).is_ok() {
+                if let Err(error) = notifier.successful::<Self>() {
+                    tracing::debug!(?error, "dma-buf client disappeared before import completed");
+                }
+            } else {
+                notifier.failed();
+            }
+        }
+    }
+
     pub fn new(
         event_loop: &mut EventLoop<'static, Self>,
         display: Display<Self>,
@@ -117,6 +139,7 @@ impl Ferese {
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let decoration_state = XdgDecorationState::new::<Self>(&display_handle);
+        let dmabuf_state = DmabufState::new();
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&display_handle);
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&display_handle);
         let idle_notifier_state = IdleNotifierState::new(&display_handle, event_loop.handle());
@@ -168,6 +191,7 @@ impl Ferese {
             idle_inhibitors: HashMap::new(),
             active_shortcuts_inhibitor: None,
             direct_backend: None,
+            pending_dmabuf_imports: Vec::new(),
             next_window_id: 1,
             last_animation_tick: start_time,
             popups: PopupManager::default(),
@@ -176,6 +200,7 @@ impl Ferese {
             cursor_shape_state,
             data_device_state,
             decoration_state,
+            dmabuf_state,
             fractional_scale_state,
             idle_inhibit_state,
             idle_notifier_state,

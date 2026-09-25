@@ -235,6 +235,7 @@ impl XdgForeignHandler for Ferese {
 smithay::delegate_compositor!(Ferese);
 smithay::delegate_cursor_shape!(Ferese);
 smithay::delegate_data_device!(Ferese);
+smithay::delegate_dmabuf!(Ferese);
 smithay::delegate_fractional_scale!(Ferese);
 smithay::delegate_idle_inhibit!(Ferese);
 smithay::delegate_idle_notify!(Ferese);

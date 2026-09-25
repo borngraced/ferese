@@ -6,6 +6,7 @@ use std::{
 use smithay::{
     backend::{
         renderer::{
+            ImportDma,
             damage::OutputDamageTracker,
             element::{
                 AsRenderElements, Kind as RenderElementKind,
@@ -52,7 +53,12 @@ render_elements! {
 }
 
 pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<(), Box<dyn Error>> {
-    let (mut backend, event_source) = winit::init()?;
+    let (mut backend, event_source) = winit::init::<GlesRenderer>()?;
+    let dmabuf_formats = backend.renderer().dmabuf_formats();
+    let display_handle = state.display_handle.clone();
+    state
+        .dmabuf_state
+        .create_global::<Ferese>(&display_handle, dmabuf_formats);
     let initial_scale = normalized_scale(backend.scale_factor());
     let mode = Mode {
         size: backend.window_size(),
@@ -127,6 +133,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                 let rendered = (|| -> Result<(), Box<dyn Error>> {
                     {
                         let (renderer, mut framebuffer) = backend.bind()?;
+                        state.process_dmabuf_imports(renderer);
                         let elements = animated_window_elements(state, renderer, &output);
                         damage_tracker.render_output(
                             renderer,

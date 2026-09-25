@@ -174,6 +174,11 @@ fn open_primary_device(
     // SAFETY: the new context is not current on another thread and remains renderer-owned.
     let renderer = unsafe { GlesRenderer::new(egl_context)? };
     state.shm_state.update_formats(renderer.shm_formats());
+    let dmabuf_formats = renderer.dmabuf_formats();
+    let display_handle = state.display_handle.clone();
+    state
+        .dmabuf_state
+        .create_global::<Ferese>(&display_handle, dmabuf_formats);
     let (connector, crtc, mode) = select_output(&drm)?;
     let output = create_output(state, &connector, mode);
     if let Some(backend) = state.direct_backend.as_mut() {
@@ -299,6 +304,7 @@ fn render_device(state: &mut Ferese, node: DrmNode) {
     }
 
     let rendered = (|| -> Result<bool, Box<dyn Error>> {
+        state.process_dmabuf_imports(&mut device.renderer);
         let (mut buffer, age) = device.surface.next_buffer()?;
         let elements = animated_window_elements(state, &mut device.renderer, &device.output);
         let mut framebuffer = device.renderer.bind(&mut buffer)?;

@@ -1,5 +1,5 @@
 use smithay::{
-    backend::renderer::utils::on_commit_buffer_handler,
+    backend::{allocator::dmabuf::Dmabuf, renderer::utils::on_commit_buffer_handler},
     reexports::wayland_server::{
         Client,
         protocol::{wl_buffer, wl_surface::WlSurface},
@@ -10,6 +10,7 @@ use smithay::{
             CompositorClientState, CompositorHandler, CompositorState, get_parent,
             is_sync_subsurface,
         },
+        dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
         shm::{ShmHandler, ShmState},
     },
 };
@@ -72,6 +73,22 @@ impl CompositorHandler for Ferese {
 
 impl BufferHandler for Ferese {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
+}
+
+impl DmabufHandler for Ferese {
+    fn dmabuf_state(&mut self) -> &mut DmabufState {
+        &mut self.dmabuf_state
+    }
+
+    fn dmabuf_imported(
+        &mut self,
+        _global: &DmabufGlobal,
+        dmabuf: Dmabuf,
+        notifier: ImportNotifier,
+    ) {
+        self.queue_dmabuf_import(dmabuf, notifier);
+        crate::backends::direct::render_all(self);
+    }
 }
 
 impl ShmHandler for Ferese {
