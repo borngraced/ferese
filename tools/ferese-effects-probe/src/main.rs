@@ -20,12 +20,19 @@ const WIDTH: u32 = 640;
 const HEIGHT: u32 = 64;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let expect_hidden = std::env::args_os().any(|argument| argument == "--expect-hidden");
+    let arguments = std::env::args_os().collect::<Vec<_>>();
+    let expect_hidden = arguments
+        .iter()
+        .any(|argument| argument == "--expect-hidden");
+    let preview = arguments.iter().any(|argument| argument == "--preview");
     let connection = Connection::connect_to_env()?;
     let mut queue = connection.new_event_queue();
     let qh = queue.handle();
     connection.display().get_registry(&qh, ());
-    let mut state = ProbeState::default();
+    let mut state = ProbeState {
+        preview,
+        ..ProbeState::default()
+    };
 
     if expect_hidden {
         queue.roundtrip(&mut state)?;
@@ -62,6 +69,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
 
+    if preview {
+        effects.set_role(ferese_surface_effects_v1::Role::Popover);
+        queue.roundtrip(&mut state)?;
+        println!(
+            "PREVIEW glass popover is mapped; press Ctrl+C in the compositor terminal to stop"
+        );
+
+        while !state.closed {
+            queue.blocking_dispatch(&mut state)?;
+        }
+
+        return Ok(());
+    }
+
     // Keep the final glass role mapped long enough for the compositor to run
     // at least one presentation. This turns shader and capture failures into
     // probe failures instead of disconnecting before the first rendered frame.
@@ -90,6 +111,7 @@ struct ProbeState {
     layer_surface: Option<ZwlrLayerSurfaceV1>,
     effects: Option<FereseSurfaceEffectsV1>,
     buffer: Option<wl_buffer::WlBuffer>,
+    preview: bool,
     configured: bool,
     closed: bool,
     configure_count: u32,
@@ -112,21 +134,35 @@ impl ProbeState {
         };
 
         let surface = compositor.create_surface(qh, ());
+        let layer = if self.preview {
+            zwlr_layer_shell_v1::Layer::Overlay
+        } else {
+            zwlr_layer_shell_v1::Layer::Top
+        };
         let layer_surface = layer_shell.get_layer_surface(
             &surface,
             None,
-            zwlr_layer_shell_v1::Layer::Top,
+            layer,
             "ferese-effects-probe".to_owned(),
             qh,
             (),
         );
-        layer_surface.set_anchor(
-            zwlr_layer_surface_v1::Anchor::Top
-                | zwlr_layer_surface_v1::Anchor::Left
-                | zwlr_layer_surface_v1::Anchor::Right,
-        );
-        layer_surface.set_size(WIDTH, HEIGHT);
-        layer_surface.set_exclusive_zone(HEIGHT as i32);
+        if self.preview {
+            layer_surface.set_anchor(
+                zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Right,
+            );
+            layer_surface.set_margin(32, 32, 0, 0);
+            layer_surface.set_size(480, 220);
+            layer_surface.set_exclusive_zone(0);
+        } else {
+            layer_surface.set_anchor(
+                zwlr_layer_surface_v1::Anchor::Top
+                    | zwlr_layer_surface_v1::Anchor::Left
+                    | zwlr_layer_surface_v1::Anchor::Right,
+            );
+            layer_surface.set_size(WIDTH, HEIGHT);
+            layer_surface.set_exclusive_zone(HEIGHT as i32);
+        }
 
         let effects = effects_manager.get_surface_effects(&surface, qh, ());
         effects.set_role(ferese_surface_effects_v1::Role::Panel);
@@ -144,12 +180,14 @@ fn create_buffer(
     qh: &QueueHandle<ProbeState>,
     width: u32,
     height: u32,
+    preview: bool,
 ) -> Result<wl_buffer::WlBuffer, Box<dyn Error>> {
     let stride = width * 4;
     let size = stride * height;
     let mut file = tempfile::tempfile()?;
     file.set_len(u64::from(size))?;
-    let pixel = [0x28_u8, 0x24, 0x20, 0xd8];
+    let alpha = if preview { 0x28 } else { 0xd8 };
+    let pixel = [0x28_u8, 0x24, 0x20, alpha];
     for _ in 0..width * height {
         file.write_all(&pixel)?;
     }
@@ -223,7 +261,7 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for ProbeState {
                 if !state.configured {
                     let surface = state.surface.clone().expect("surface initialized");
                     let shm = state.shm.as_ref().expect("shm initialized");
-                    let buffer = create_buffer(shm, qh, state.width, state.height)
+                    let buffer = create_buffer(shm, qh, state.width, state.height, state.preview)
                         .expect("create configured shared-memory buffer");
                     surface.attach(Some(&buffer), 0, 0);
                     surface.damage_buffer(0, 0, state.width as i32, state.height as i32);
