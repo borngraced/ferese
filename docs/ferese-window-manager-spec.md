@@ -1127,7 +1127,7 @@ mass = 1.0
 [layout]
 mode = "scrolling"
 inner_gap = 10.0
-outer_gap = 10.0
+outer_gap = 4.0
 smart_gaps = false
 
 [scrolling]

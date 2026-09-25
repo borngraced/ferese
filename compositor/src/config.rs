@@ -110,6 +110,7 @@ pub struct ThemeSettings {
     pub border_color: RgbaColor,
     pub accent_color: RgbaColor,
     pub shadow_color: RgbaColor,
+    pub surface_base_color: RgbaColor,
     pub window_radius: f64,
     pub shadow_offset_y: f64,
     pub shadow_blur: f64,
@@ -146,6 +147,8 @@ struct ThemeMaterialConfig {
 
 #[derive(Debug, Deserialize)]
 struct ThemeColorsConfig {
+    #[serde(default = "default_surface_base_color")]
+    surface_base: String,
     #[serde(default = "default_border_color")]
     border: String,
     #[serde(default = "default_accent_color")]
@@ -157,6 +160,7 @@ struct ThemeColorsConfig {
 impl Default for ThemeColorsConfig {
     fn default() -> Self {
         Self {
+            surface_base: default_surface_base_color(),
             border: default_border_color(),
             accent: default_accent_color(),
             shadow: default_shadow_color(),
@@ -235,12 +239,14 @@ struct BindingModifiers {
 pub enum BindingAction {
     Spawn(Vec<String>),
     Close,
+    Exit,
     Focus(ferese_layout::Direction),
     Move(ferese_layout::Direction),
     Resize(ferese_layout::Direction),
     SwitchWorkspace(u8),
     MoveToWorkspace(u8),
     ToggleFullscreen,
+    ToggleMaximized,
     ToggleLayout,
     CycleColumnWidth,
     CenterColumn,
@@ -803,6 +809,10 @@ impl Config {
             border_color: parse_color(&self.theme.colors.border, "colors.border")?,
             accent_color: parse_color(&self.theme.colors.accent, "colors.accent")?,
             shadow_color: parse_color(&self.theme.colors.shadow, "colors.shadow")?,
+            surface_base_color: parse_color(
+                &self.theme.colors.surface_base,
+                "colors.surface_base",
+            )?,
             window_radius,
             shadow_offset_y,
             shadow_blur,
@@ -1059,6 +1069,10 @@ fn parse_action(
             no_argument()?;
             Ok(BindingAction::Close)
         }
+        "exit" => {
+            no_argument()?;
+            Ok(BindingAction::Exit)
+        }
         "focus" => Ok(BindingAction::Focus(parse_direction(required_argument()?)?)),
         "move" => Ok(BindingAction::Move(parse_direction(required_argument()?)?)),
         "resize" => Ok(BindingAction::Resize(
@@ -1070,6 +1084,10 @@ fn parse_action(
         "move-to-workspace" => Ok(BindingAction::MoveToWorkspace(parse_workspace(
             required_argument()?,
         )?)),
+        "toggle-maximized" => {
+            no_argument()?;
+            Ok(BindingAction::ToggleMaximized)
+        }
         "toggle-fullscreen" => {
             no_argument()?;
             Ok(BindingAction::ToggleFullscreen)
@@ -1133,7 +1151,8 @@ fn default_bindings() -> Vec<BindingConfig> {
     let mut bindings = vec![
         binding("Super+Enter", "spawn", Some("terminal")),
         binding("Super+Q", "close", None),
-        binding("Super+F", "toggle-fullscreen", None),
+        binding("Super+F", "toggle-maximized", None),
+        binding("Super+Shift+F", "toggle-fullscreen", None),
         binding("Super+M", "toggle-layout", None),
         binding("Super+R", "cycle-column-width", None),
         binding("Super+C", "center-column", None),
@@ -1141,6 +1160,7 @@ fn default_bindings() -> Vec<BindingConfig> {
         binding("Super+]", "expel", None),
         binding("Super+Shift+Space", "toggle-floating", None),
         binding("Super+Tab", "toggle-overview", None),
+        binding("Super+Shift+E", "exit", None),
     ];
 
     for (key, direction) in [("H", "left"), ("J", "down"), ("K", "up"), ("L", "right")] {
@@ -1283,11 +1303,15 @@ const fn default_inner_gap() -> f64 {
 }
 
 const fn default_outer_gap() -> f64 {
-    10.0
+    4.0
 }
 
 fn default_border_color() -> String {
     "#FFFFFF18".to_owned()
+}
+
+fn default_surface_base_color() -> String {
+    "#111821".to_owned()
 }
 
 fn default_accent_color() -> String {
@@ -1574,6 +1598,7 @@ mod tests {
                 border_color: RgbaColor([17.0 / 255.0, 34.0 / 255.0, 51.0 / 255.0, 68.0 / 255.0,]),
                 accent_color: RgbaColor([170.0 / 255.0, 187.0 / 255.0, 0.8, 1.0]),
                 shadow_color: RgbaColor([1.0 / 255.0, 2.0 / 255.0, 3.0 / 255.0, 128.0 / 255.0]),
+                surface_base_color: RgbaColor([17.0 / 255.0, 24.0 / 255.0, 33.0 / 255.0, 1.0,]),
                 window_radius: 12.0,
                 shadow_offset_y: -2.0,
                 shadow_blur: 24.0,
@@ -1628,7 +1653,21 @@ mod tests {
         let input = config.input_settings().unwrap();
         let bindings = config.bindings(&input).unwrap();
 
-        assert_eq!(bindings.len(), 40);
+        assert_eq!(bindings.len(), 42);
+        for (shift, action) in [
+            (false, BindingAction::ToggleMaximized),
+            (true, BindingAction::ToggleFullscreen),
+        ] {
+            assert!(bindings.iter().any(|binding| binding.modifiers.logo
+                && binding.modifiers.shift == shift
+                && binding.trigger == BindingTrigger::Keysym(keysyms::KEY_f)
+                && binding.action == action));
+        }
+        assert!(
+            bindings
+                .iter()
+                .any(|binding| binding.action == BindingAction::Exit)
+        );
         assert!(bindings.iter().any(|binding| {
             binding.modifiers.logo
                 && binding.trigger == BindingTrigger::Keysym(keysyms::KEY_Return)
@@ -1650,7 +1689,7 @@ mod tests {
 
         let input = replaced.input_settings().unwrap();
         let bindings = replaced.bindings(&input).unwrap();
-        assert_eq!(bindings.len(), 40);
+        assert_eq!(bindings.len(), 42);
         assert!(bindings.iter().any(|binding| {
             binding.action
                 == BindingAction::Spawn(vec![
@@ -1662,7 +1701,7 @@ mod tests {
 
         let input = unbound.input_settings().unwrap();
         let bindings = unbound.bindings(&input).unwrap();
-        assert_eq!(bindings.len(), 39);
+        assert_eq!(bindings.len(), 41);
         assert!(
             !bindings
                 .iter()

@@ -1,11 +1,15 @@
 # Ferese
 
-Ferese is an experimental Wayland scrolling compositor written in Rust with
+Ferese is a Wayland scrolling compositor written in Rust with
 Smithay. Scrolling columns are the default, tree tiling remains available as an
 optional per-workspace mode, and geometry changes use timestamp-driven
 animation. See the
 [window-manager specification](docs/ferese-window-manager-spec.md) for the
 current architecture and milestones.
+
+For a versioned installation alongside Plasma in SDDM, see
+[installation and recovery](docs/installation.md). `Super+Shift+E` or
+`feresectl exit` logs out immediately; save your work first.
 
 ## Development
 
@@ -23,6 +27,10 @@ cargo run -p ferese -- foot
 ```
 
 Set `RUST_LOG=ferese=debug` for detailed compositor logging.
+
+`Super+F` toggles decorated maximization inside the workspace (bar and outer
+gaps retained). `Super+Shift+F` toggles true fullscreen (no bar or window
+decorations). Leaving fullscreen restores the previous maximized/tiled state.
 
 Set `FERESE_TRACE_PERFORMANCE=1` to emit five-second per-output summaries under
 the `ferese::render` tracing target. Summaries include rendered frames, damaged
@@ -76,6 +84,7 @@ them for a lone tiled window:
 
 ```toml
 [layout]
+outer_gap = 4.0
 smart_gaps = true
 ```
 
@@ -245,7 +254,7 @@ cargo run -p feresectl -- get-outputs
 ```
 
 The v0 IPC slice also supports `move`, `resize`, `move-to-workspace`,
-`toggle-floating`, `toggle-fullscreen`, `toggle-layout`, `cycle-column-width`,
+`toggle-floating`, `toggle-maximized`, `toggle-fullscreen`, `toggle-layout`, `cycle-column-width`,
 `center-column`, `consume`, `expel`, `close`, `get-focused-window`, and
 `get-outputs`. Requests use versioned, 1 MiB-limited length-prefixed JSON. The
 runtime directory and socket are restricted to modes `0700` and `0600`, and the

@@ -44,6 +44,14 @@ impl Ferese {
                         }
 
                         let symbol = keysym.modified_sym().raw();
+                        if overview_escape(symbol, data.overview.is_active()) {
+                            if state == KeyState::Pressed {
+                                data.intercepted_keys.insert(keycode);
+                                data.set_overview_active(false);
+                            }
+
+                            return FilterResult::Intercept(());
+                        }
                         if emergency_shortcut_escape(symbol, modifiers.ctrl, modifiers.alt) {
                             if state == KeyState::Pressed {
                                 data.intercepted_keys.insert(keycode);
@@ -168,11 +176,29 @@ impl Ferese {
                 let serial = SERIAL_COUNTER.next_serial();
 
                 if self.overview.is_active() {
-                    if event.state() == ButtonState::Pressed
-                        && let Some(window) = self.window_under_visual(pointer.current_location())
-                        && let Some(id) = self.window_ids.get(&window).copied()
-                    {
-                        self.select_overview_window(id);
+                    let position = pointer.current_location();
+                    if self.layer_under(position).is_some() {
+                        pointer.button(
+                            self,
+                            &ButtonEvent {
+                                button: event.button_code(),
+                                state: event.state(),
+                                serial,
+                                time: event.time() as u32,
+                            },
+                        );
+                        pointer.frame(self);
+                        return;
+                    }
+
+                    if event.state() == ButtonState::Pressed {
+                        if let Some(window) = self.window_under_visual(position)
+                            && let Some(id) = self.window_ids.get(&window).copied()
+                        {
+                            self.select_overview_window(id);
+                        } else {
+                            self.set_overview_active(false);
+                        }
                     }
 
                     return;
@@ -465,6 +491,7 @@ impl Ferese {
                 }
             }
             BindingAction::Close => self.close_focused_window(),
+            BindingAction::Exit => self.loop_signal.stop(),
             BindingAction::Focus(direction) => self.focus_direction(direction),
             BindingAction::Move(direction) => self.move_direction(direction),
             BindingAction::Resize(direction) => self.resize_direction(direction),
@@ -475,6 +502,7 @@ impl Ferese {
                 self.move_focused_to_workspace(u32::from(workspace));
             }
             BindingAction::ToggleFullscreen => self.toggle_focused_fullscreen(),
+            BindingAction::ToggleMaximized => self.toggle_focused_maximized(),
             BindingAction::ToggleLayout => self.toggle_layout_mode(),
             BindingAction::CycleColumnWidth => self.cycle_focused_column_width(),
             BindingAction::CenterColumn => self.center_focused_column(),
@@ -503,9 +531,20 @@ fn emergency_shortcut_escape(symbol: u32, ctrl: bool, alt: bool) -> bool {
     ctrl && alt && symbol == keysyms::KEY_Escape
 }
 
+fn overview_escape(symbol: u32, overview_active: bool) -> bool {
+    overview_active && symbol == keysyms::KEY_Escape
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{emergency_shortcut_escape, virtual_terminal};
+    use super::{emergency_shortcut_escape, overview_escape, virtual_terminal};
+
+    #[test]
+    fn escape_closes_only_an_active_overview() {
+        assert!(overview_escape(keysyms::KEY_Escape, true));
+        assert!(!overview_escape(keysyms::KEY_Escape, false));
+        assert!(!overview_escape(keysyms::KEY_q, true));
+    }
 
     #[test]
     fn emergency_escape_requires_control_alt_escape() {

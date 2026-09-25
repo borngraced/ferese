@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use ferese_animation::{AnimatedValue, ClientSize, SpringConfig, WindowGeometry};
+use ferese_animation::{AnimatedValue, ClientSize, PresentationMode, SpringConfig, WindowGeometry};
 use ferese_core::{
     LayoutMode, OutputGeometry, OutputId, OutputWorkspaceMap, WindowPlacement, WorkspaceId,
     WorkspaceSet,
@@ -118,6 +118,7 @@ pub struct Ferese {
     output_identity_ids: HashMap<String, OutputId>,
     pub window_ids: HashMap<Window, WindowId>,
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
+    maximized_windows: HashSet<WindowId>,
     window_stack: crate::stacking::WindowStack,
     pub(crate) window_borders: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
     pub(crate) window_shadows: HashMap<WindowId, crate::winit::WindowShadowBuffers>,
@@ -446,6 +447,7 @@ impl Ferese {
             output_identity_ids: HashMap::new(),
             window_ids: HashMap::new(),
             window_geometry: HashMap::new(),
+            maximized_windows: HashSet::new(),
             window_stack: crate::stacking::WindowStack::default(),
             window_borders: HashMap::new(),
             window_shadows: HashMap::new(),
@@ -619,6 +621,9 @@ impl Ferese {
         let map = layer_map_for_output(output);
 
         for requested in layers {
+            if *requested == Layer::Top && self.output_has_fullscreen(output) {
+                continue;
+            }
             for layer in map.layers_on(*requested).rev() {
                 let geometry = map.layer_geometry(layer)?;
                 let layer_position = output_position - geometry.loc.to_f64();
@@ -901,6 +906,7 @@ impl Ferese {
 
         self.space.unmap_elem(window);
         self.window_geometry.remove(&id);
+        self.maximized_windows.remove(&id);
         self.window_stack.remove(id);
         self.window_borders.remove(&id);
         self.window_shadows.remove(&id);
@@ -996,8 +1002,12 @@ impl Ferese {
                     continue;
                 }
 
+                let is_maximized =
+                    self.maximized_windows.contains(id) && workspace_fullscreen != Some(*id);
                 let rect = if workspace_fullscreen == Some(*id) {
                     fullscreen_bounds
+                } else if is_maximized {
+                    maximized_rect(bounds, self.gap_config.outer)
                 } else {
                     match self.workspaces.placement(*id) {
                         Some(WindowPlacement::Tiled) => {
@@ -1017,7 +1027,7 @@ impl Ferese {
                 );
 
                 visible.insert(*id);
-                let scrolling = if !is_fullscreen && !is_floating {
+                let scrolling = if !is_fullscreen && !is_maximized && !is_floating {
                     viewport_target
                         .zip(viewport_current)
                         .map(|(target, current)| (workspace_id, rect.x + target, current))
@@ -1030,6 +1040,7 @@ impl Ferese {
                     *id,
                     rect,
                     is_fullscreen,
+                    is_maximized,
                     is_floating,
                     scrolling,
                     pending_column_width_cycles.contains(id) && viewport_target_changed,
@@ -1053,7 +1064,9 @@ impl Ferese {
         let mut scrolling_world_x = HashMap::new();
         placements.sort_by_key(|(_, id, ..)| self.window_stack.rank(*id));
 
-        for (window, id, rect, is_fullscreen, is_floating, scrolling, couple_width) in placements {
+        for (window, id, rect, is_fullscreen, is_maximized, is_floating, scrolling, couple_width) in
+            placements
+        {
             // A viewport-coupled width must never override fullscreen/floating geometry.
             if scrolling.is_none() {
                 self.viewport_coupled_widths.remove(&id);
@@ -1064,7 +1077,14 @@ impl Ferese {
                 .window_geometry
                 .entry(id)
                 .or_insert_with(|| WindowGeometry::new(rect, committed_size));
-            let mut requested_size = geometry.set_presentation_target(rect, is_fullscreen, now);
+            let mode = if is_fullscreen {
+                PresentationMode::Fullscreen
+            } else if is_maximized {
+                PresentationMode::Maximized
+            } else {
+                PresentationMode::Normal
+            };
+            let mut requested_size = geometry.set_presentation_mode(rect, mode, now);
             if !self.animations_enabled {
                 geometry.advance(Duration::ZERO, self.spring_config, false);
                 requested_size = geometry.presentation_size_request(now).or(requested_size);
@@ -1132,6 +1152,11 @@ impl Ferese {
                         state.states.unset(xdg_toplevel::State::Fullscreen)
                     };
 
+                    let maximized_changed = if is_maximized {
+                        state.states.set(xdg_toplevel::State::Maximized)
+                    } else {
+                        state.states.unset(xdg_toplevel::State::Maximized)
+                    };
                     let tiled = !is_floating && !is_fullscreen;
                     let tiled_changed = if tiled {
                         state.states.set(xdg_toplevel::State::TiledLeft)
@@ -1145,7 +1170,7 @@ impl Ferese {
                             | state.states.unset(xdg_toplevel::State::TiledBottom)
                     };
 
-                    let decoration_mode = if is_floating && !is_fullscreen {
+                    let decoration_mode = if is_floating && !is_fullscreen && !is_maximized {
                         DecorationMode::ClientSide
                     } else {
                         DecorationMode::ServerSide
@@ -1153,7 +1178,7 @@ impl Ferese {
                     let decoration_changed = state.decoration_mode != Some(decoration_mode);
                     state.decoration_mode = Some(decoration_mode);
 
-                    fullscreen_changed || tiled_changed || decoration_changed
+                    fullscreen_changed || maximized_changed || tiled_changed || decoration_changed
                 });
 
                 if requested_size.is_some() || state_changed {
@@ -1600,6 +1625,42 @@ impl Ferese {
         self.relayout();
     }
 
+    pub fn toggle_focused_maximized(&mut self) {
+        let Some(window) = self.focused_window else {
+            return;
+        };
+        // Super+F from true fullscreen enters decorated maximization.
+        let fullscreen = self
+            .workspaces
+            .workspace_for_window(window)
+            .and_then(|workspace| self.workspaces.workspace(workspace))
+            .is_some_and(|workspace| workspace.fullscreen == Some(window));
+        let enabled = fullscreen || !self.maximized_windows.contains(&window);
+        self.set_window_maximized(window, enabled);
+    }
+
+    pub fn set_window_maximized(&mut self, window: WindowId, enabled: bool) {
+        if self.workspaces.workspace_for_window(window).is_none() {
+            return;
+        }
+        if enabled {
+            let _ = self.workspaces.set_fullscreen(window, false);
+            self.maximized_windows.insert(window);
+        } else {
+            self.maximized_windows.remove(&window);
+        }
+        self.relayout();
+    }
+
+    pub(crate) fn output_has_fullscreen(&self, output: &Output) -> bool {
+        !self.overview.is_presenting()
+            && self
+                .output_id(output)
+                .and_then(|id| self.output_workspaces.active_workspace(id))
+                .and_then(|workspace| self.workspaces.workspace(workspace))
+                .is_some_and(|workspace| workspace.fullscreen.is_some())
+    }
+
     pub fn close_focused_window(&mut self) {
         let Some(focused) = self.focused_window else {
             return;
@@ -1950,6 +2011,18 @@ impl Ferese {
     }
 }
 
+fn maximized_rect(bounds: Rect, gap: f64) -> Rect {
+    let gap = gap
+        .max(0.0)
+        .min(((bounds.width.min(bounds.height) - 1.0) / 2.0).max(0.0));
+    Rect::new(
+        bounds.x + gap,
+        bounds.y + gap,
+        (bounds.width - 2.0 * gap).max(1.0),
+        (bounds.height - 2.0 * gap).max(1.0),
+    )
+}
+
 fn centered_floating_rect(bounds: Rect) -> Rect {
     let width = (bounds.width * 0.6).max(1.0);
     let height = (bounds.height * 0.6).max(1.0);
@@ -2016,6 +2089,20 @@ impl ClientData for ClientState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maximization_respects_layer_exclusion_and_outer_gaps() {
+        assert_eq!(
+            maximized_rect(Rect::new(0.0, 48.0, 1280.0, 752.0), 10.0),
+            Rect::new(10.0, 58.0, 1260.0, 732.0)
+        );
+        assert_eq!(
+            maximized_rect(Rect::new(1600.0, 36.0, 1280.0, 764.0), 6.0),
+            Rect::new(1606.0, 42.0, 1268.0, 752.0)
+        );
+        let tiny = maximized_rect(Rect::new(0.0, 0.0, 5.0, 3.0), 10.0);
+        assert!(tiny.width >= 1.0 && tiny.height >= 1.0);
+    }
 
     #[test]
     fn transient_geometry_is_centered_and_bounded_by_its_parent() {

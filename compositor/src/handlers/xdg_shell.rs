@@ -198,6 +198,28 @@ impl XdgShellHandler for Ferese {
         );
     }
 
+    fn maximize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(id) = self.window_ids.iter().find_map(|(window, id)| {
+            window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+                .then_some(*id)
+        }) {
+            self.set_window_maximized(id, true);
+        }
+    }
+
+    fn unmaximize_request(&mut self, surface: ToplevelSurface) {
+        if let Some(id) = self.window_ids.iter().find_map(|(window, id)| {
+            window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+                .then_some(*id)
+        }) {
+            self.set_window_maximized(id, false);
+        }
+    }
+
     fn fullscreen_request(
         &mut self,
         surface: ToplevelSurface,

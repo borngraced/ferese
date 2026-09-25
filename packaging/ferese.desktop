@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=Ferese
+Comment=Animation-first scrolling Wayland desktop
+Exec=/usr/local/bin/ferese-session
+TryExec=/usr/local/bin/ferese-session
+Type=Application

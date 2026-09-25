@@ -47,9 +47,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(String, Value),
                 .map_err(|_| format!("{} requires a positive workspace index", command))?;
             json!({ "index": index })
         }
-        "toggle-floating" | "toggle-fullscreen" | "toggle-layout" | "cycle-column-width"
-        | "center-column" | "consume" | "expel" | "close" | "get-focused-window"
-        | "get-workspaces" | "get-outputs" => {
+        "toggle-floating" | "toggle-fullscreen" | "toggle-maximized" | "toggle-layout"
+        | "cycle-column-width" | "center-column" | "consume" | "expel" | "close"
+        | "get-focused-window" | "get-workspaces" | "get-outputs" | "exit" => {
             if !positional.is_empty() {
                 return Err(format!("{command} does not accept arguments"));
             }
@@ -78,7 +78,7 @@ fn socket_path() -> Result<PathBuf, io::Error> {
 }
 
 fn usage() -> String {
-    "usage: feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl <toggle-floating|toggle-fullscreen|toggle-layout>\n       feresectl <cycle-column-width|center-column|consume|expel|close>\n       feresectl <get-focused-window|get-workspaces|get-outputs>".to_owned()
+    "usage: feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit>\n       feresectl <get-focused-window|get-workspaces|get-outputs>".to_owned()
 }
 
 #[cfg(test)]
@@ -107,6 +107,11 @@ mod tests {
 
     #[test]
     fn rejects_unknown_or_missing_arguments() {
+        assert_eq!(
+            parse_args(["exit".to_owned()]).unwrap(),
+            ("exit".to_owned(), json!({}))
+        );
+        assert!(parse_args(["exit".to_owned(), "extra".to_owned()]).is_err());
         assert!(parse_args(["focus".to_owned()]).is_err());
         assert!(parse_args(["reload-config".to_owned()]).is_err());
     }

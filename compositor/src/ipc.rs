@@ -16,7 +16,7 @@ use ferese_core::LayoutMode;
 use ferese_ipc::{Request, Response, VERSION, read_frame, write_frame};
 use ferese_layout::Direction;
 use serde_json::{Value, json};
-use smithay::reexports::calloop::{EventLoop, channel};
+use smithay::reexports::calloop::{EventLoop, LoopSignal, channel};
 use smithay::utils::Transform;
 
 use crate::{Ferese, config::OutputTransform};
@@ -84,15 +84,20 @@ pub(crate) fn init(
             }
         })?;
 
+    let signal = event_loop.get_signal();
     thread::Builder::new()
         .name("ferese-ipc-listener".to_owned())
-        .spawn(move || accept_connections(listener, sender))?;
+        .spawn(move || accept_connections(listener, sender, signal))?;
 
     tracing::info!(path = %path.display(), "Ferese IPC is accepting connections");
     Ok(guard)
 }
 
-fn accept_connections(listener: UnixListener, sender: channel::SyncSender<IpcCall>) {
+fn accept_connections(
+    listener: UnixListener,
+    sender: channel::SyncSender<IpcCall>,
+    signal: LoopSignal,
+) {
     let active_connections = Arc::new(AtomicUsize::new(0));
 
     loop {
@@ -125,11 +130,12 @@ fn accept_connections(listener: UnixListener, sender: channel::SyncSender<IpcCal
             continue;
         };
         let sender = sender.clone();
+        let signal = signal.clone();
         if let Err(error) = thread::Builder::new()
             .name("ferese-ipc-client".to_owned())
             .spawn(move || {
                 let _permit = permit;
-                serve_connection(stream, sender);
+                serve_connection(stream, sender, signal);
             })
         {
             tracing::warn!(%error, "could not start IPC connection worker");
@@ -154,9 +160,13 @@ fn try_acquire_connection(active: &Arc<AtomicUsize>) -> Option<ConnectionPermit>
     })
 }
 
-fn serve_connection(mut stream: UnixStream, sender: channel::SyncSender<IpcCall>) {
+fn serve_connection(
+    mut stream: UnixStream,
+    sender: channel::SyncSender<IpcCall>,
+    signal: LoopSignal,
+) {
     loop {
-        let request = match read_frame(&mut stream) {
+        let request: Request = match read_frame(&mut stream) {
             Ok(request) => request,
             Err(ferese_ipc::FrameError::Io(error))
                 if matches!(
@@ -174,6 +184,7 @@ fn serve_connection(mut stream: UnixStream, sender: channel::SyncSender<IpcCall>
             }
         };
         let (response, receiver) = sync_channel(1);
+        let exit_requested = request.command == "exit";
         let call = IpcCall { request, response };
         if sender.try_send(call).is_err() {
             tracing::warn!("disconnecting IPC client because the request queue is full");
@@ -182,8 +193,15 @@ fn serve_connection(mut stream: UnixStream, sender: channel::SyncSender<IpcCall>
         let Ok(response) = receiver.recv() else {
             return;
         };
+        let exit_accepted = exit_requested && response.error.is_none();
         if let Err(error) = write_frame(&mut stream, &response) {
             tracing::debug!(%error, "IPC client disconnected before receiving its response");
+            return;
+        }
+        if exit_accepted {
+            // Acknowledge before stopping so feresectl never races process exit.
+            signal.stop();
+            signal.wakeup();
             return;
         }
     }
@@ -203,6 +221,7 @@ impl Ferese {
 
     fn dispatch_ipc_command(&mut self, command: &str, args: &Value) -> Result<Value, CommandError> {
         match command {
+            "exit" => {} // The IPC worker stops the loop after writing the response.
             "focus" => self.focus_direction(direction_arg(args)?),
             "move" => self.move_direction(direction_arg(args)?),
             "resize" => self.resize_direction(direction_arg(args)?),
@@ -210,6 +229,7 @@ impl Ferese {
             "move-to-workspace" => self.move_focused_to_workspace(workspace_arg(args)?),
             "toggle-floating" => self.toggle_focused_floating(),
             "toggle-fullscreen" => self.toggle_focused_fullscreen(),
+            "toggle-maximized" => self.toggle_focused_maximized(),
             "toggle-layout" => self.toggle_layout_mode(),
             "cycle-column-width" => self.cycle_focused_column_width(),
             "center-column" => self.center_focused_column(),
@@ -608,7 +628,9 @@ mod tests {
     fn malformed_ipc_connection_is_closed_without_reaching_the_request_queue() {
         let (mut client, server) = UnixStream::pair().unwrap();
         let (sender, _receiver) = channel::sync_channel(1);
-        let worker = thread::spawn(move || serve_connection(server, sender));
+        let event_loop = EventLoop::<()>::try_new().unwrap();
+        let signal = event_loop.get_signal();
+        let worker = thread::spawn(move || serve_connection(server, sender, signal));
         let invalid = b"not-json";
 
         client

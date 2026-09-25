@@ -1,0 +1,14 @@
+# User configuration: ~/.config/ferese/config.toml
+# Unspecified monitors use automatic placement and preferred modes.
+[commands]
+terminal = ["foot"]
+
+[input]
+xkb_layout = "us"
+focus_follows_mouse = false
+
+[layout]
+smart_gaps = false
+
+# Super+Enter opens Foot. Super+Shift+E logs out.
+# See README.md for monitor profiles and additional bindings.

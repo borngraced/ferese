@@ -8,7 +8,9 @@ rust-version = "1.93"
 [dependencies]
 ferese-protocols = { path = "../../crates/ferese-protocols", default-features = false, features = ["client"] }
 jiff.workspace = true
-libcosmic.workspace = true
+# Wallpaper resampling must not block the bar on iced's shared UI thread.
+# Keep tiny-skia available as libcosmic's fallback, but prefer GPU rendering.
+libcosmic = { workspace = true, features = ["wgpu"] }
 serde.workspace = true
 toml.workspace = true
 wayland-client.workspace = true

@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+backend=drm
+if [[ ${1:-} == --nested ]]; then
+    backend=nested
+    shift
+fi
+if (($#)); then
+    echo 'usage: ferese-session [--nested]' >&2
+    exit 2
+fi
+: "${XDG_RUNTIME_DIR:?A login session with XDG_RUNTIME_DIR is required}"
+
+# Resolve once, so upgrading current cannot mix compositor and shell versions.
+release_dir=$(dirname -- "$(readlink -f -- "$0")")
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/ferese
+mkdir -p -- "$state_dir"
+log_file=$state_dir/session-$(date -u +%Y%m%dT%H%M%SZ)-$$.log
+echo "Ferese session log: $log_file" >&2
+exec >>"$log_file" 2>&1
+
+export XDG_CURRENT_DESKTOP=Ferese
+export XDG_SESSION_DESKTOP=ferese
+export XDG_SESSION_TYPE=wayland
+export MOZ_ENABLE_WAYLAND=1
+export QT_QPA_PLATFORM=wayland
+export PATH="$release_dir:$PATH"
+unset WAYLAND_SOCKET
+if [[ $backend == drm ]]; then
+    unset DISPLAY WAYLAND_DISPLAY
+fi
+
+command=("$release_dir/ferese" --backend "$backend" --grant-effects
+    --grant-shell-control -- "$release_dir/ferese-shell")
+if [[ -z ${DBUS_SESSION_BUS_ADDRESS:-} ]]; then
+    exec dbus-run-session -- "${command[@]}"
+else
+    exec "${command[@]}"
+fi

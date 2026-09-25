@@ -40,9 +40,9 @@ use smithay::{
     },
     input::pointer::{CursorImageStatus, CursorImageSurfaceData},
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
-    reexports::calloop::EventLoop,
     reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind as PresentationKind,
     reexports::wayland_server::Resource,
+    reexports::calloop::EventLoop,
     utils::{
         Buffer, Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale as RenderScale, Size,
         Transform,
@@ -871,12 +871,12 @@ fn output_elements(
     } else {
         Vec::new()
     };
-    elements.extend(layer_elements(
-        state,
-        renderer,
-        output,
-        &[Layer::Overlay, Layer::Top],
-    ));
+    let upper_layers: &[Layer] = if state.output_has_fullscreen(output) {
+        &[Layer::Overlay]
+    } else {
+        &[Layer::Overlay, Layer::Top]
+    };
+    elements.extend(layer_elements(state, renderer, output, upper_layers));
     let windows = state
         .space
         .elements()
@@ -1452,30 +1452,26 @@ fn layer_elements(
 
     let mut elements = Vec::new();
     for (geometry, layer) in layers {
-        let target = geometry.to_physical_precise_round(scale);
-        let surface_elements = AsRenderElements::<GlesRenderer>::render_elements::<
-            WaylandSurfaceRenderElement<GlesRenderer>,
-        >(&layer, renderer, target.loc, scale.into(), 1.0);
-        let source_bounds = surface_elements
-            .iter()
-            .map(|element| element.geometry(scale.into()))
-            .reduce(Rectangle::merge);
-        let content_scale = source_bounds
-            .map(|source| layer_content_scale(source.size, target.size))
-            .unwrap_or_else(|| RenderScale::from(1.0));
-        let scale_origin = source_bounds.map_or(target.loc, |source| source.loc);
-        let crop = target.intersection(output_crop).unwrap_or_default();
+        elements.extend(
+            AsRenderElements::<GlesRenderer>::render_elements::<
+                WaylandSurfaceRenderElement<GlesRenderer>,
+            >(
+                &layer,
+                renderer,
+                geometry.loc.to_physical_precise_round(scale),
+                scale.into(),
+                1.0,
+            )
+            .into_iter()
+            .filter_map(|element| {
+                let origin = Point::<i32, Physical>::default();
+                let element = RescaleRenderElement::from_element(element, origin, 1.0);
+                let element =
+                    RelocateRenderElement::from_element(element, origin, Relocate::Relative);
 
-        elements.extend(surface_elements.into_iter().filter_map(|element| {
-            let element = RescaleRenderElement::from_element(element, scale_origin, content_scale);
-            let element = RelocateRenderElement::from_element(
-                element,
-                Point::<i32, Physical>::default(),
-                Relocate::Relative,
-            );
-
-            CropRenderElement::from_element(element, scale, crop).map(Into::into)
-        }));
+                CropRenderElement::from_element(element, scale, output_crop).map(Into::into)
+            }),
+        );
 
         if let Some(material) = material_element(state, renderer, output, &layer, geometry) {
             elements.push(material);
@@ -1483,20 +1479,6 @@ fn layer_elements(
     }
 
     elements
-}
-
-fn layer_content_scale(
-    source: Size<i32, Physical>,
-    target: Size<i32, Physical>,
-) -> RenderScale<f64> {
-    if source.w <= 0 || source.h <= 0 || target.w <= 0 || target.h <= 0 {
-        return RenderScale::from(1.0);
-    }
-
-    RenderScale::from((
-        f64::from(target.w) / f64::from(source.w),
-        f64::from(target.h) / f64::from(source.h),
-    ))
 }
 
 fn material_element(
@@ -1519,7 +1501,8 @@ fn material_element(
         expanded_blur_region(geometry, material.blur.ceil() as i32, output_logical);
     let sample_physical = sample_geometry.to_physical_precise_round(scale);
     let transform = output.current_transform().invert();
-    let tint = [0.067, 0.094, 0.129, material.opacity];
+    let [red, green, blue, _] = state.theme_settings.surface_base_color.0;
+    let tint = [red, green, blue, material.opacity];
     let parameters = MaterialParameters {
         geometry,
         tint,
@@ -1831,8 +1814,7 @@ mod tests {
 
     use super::{
         color_with_alpha, expanded_blur_region, framebuffer_capture_rect, framebuffer_clip_rect,
-        layer_content_scale, normalized_scale, rounded_visual_rect, scaled_visual_rect,
-        shadow_bounds,
+        normalized_scale, rounded_visual_rect, scaled_visual_rect, shadow_bounds,
     };
 
     #[derive(Debug)]
@@ -1883,21 +1865,6 @@ mod tests {
         assert_eq!(normalized_scale(0.0), 1.0);
         assert_eq!(normalized_scale(f64::NAN), 1.0);
         assert_eq!(normalized_scale(f64::INFINITY), 1.0);
-    }
-
-    #[test]
-    fn layer_content_tracks_new_allocation_before_the_client_repaints() {
-        let scale = layer_content_scale((1_000, 40).into(), (1_600, 40).into());
-
-        assert_eq!(scale, Scale::from((1.6, 1.0)));
-    }
-
-    #[test]
-    fn layer_content_scale_ignores_empty_allocations() {
-        assert_eq!(
-            layer_content_scale((0, 40).into(), (1_600, 40).into()),
-            Scale::from(1.0)
-        );
     }
 
     #[test]

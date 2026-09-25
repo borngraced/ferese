@@ -119,7 +119,7 @@ impl Default for GapConfig {
     fn default() -> Self {
         Self {
             inner: 10.0,
-            outer: 10.0,
+            outer: 4.0,
             smart: false,
         }
     }
@@ -1178,8 +1178,8 @@ mod tests {
         let first = geometry[&WindowId(1)];
         let second = geometry[&WindowId(2)];
 
-        assert_eq!(first.x, 10.0);
-        assert_eq!(second.x + second.width, 90.0);
+        assert_eq!(first.x, 4.0);
+        assert_eq!(second.x + second.width, 96.0);
         assert_eq!(second.x - (first.x + first.width), 10.0);
     }
 
@@ -1213,7 +1213,7 @@ mod tests {
             .geometry_with_gaps(Rect::new(0.0, 0.0, 100.0, 80.0), GapConfig::default())
             .unwrap();
 
-        assert_eq!(geometry[&WindowId(1)], Rect::new(10.0, 10.0, 80.0, 60.0));
+        assert_eq!(geometry[&WindowId(1)], Rect::new(4.0, 4.0, 92.0, 72.0));
     }
 
     #[test]
@@ -1571,7 +1571,7 @@ mod tests {
 
         assert_eq!(
             result.geometry[&WindowId(1)],
-            Rect::new(10.0, 10.0, 60.0, 40.0)
+            Rect::new(4.0, 4.0, 60.0, 40.0)
         );
         assert_eq!(result.warnings.len(), 2);
     }

@@ -267,6 +267,13 @@ impl ClientGeometry {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PresentationMode {
+    Normal,
+    Maximized,
+    Fullscreen,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WindowGeometry {
     pub logical: Rect,
@@ -274,11 +281,11 @@ pub struct WindowGeometry {
     pub client: ClientGeometry,
     pub decorations: f64,
     pub presentation_changed: bool,
-    fullscreen: bool,
+    mode: PresentationMode,
     zoom: Option<ZoomTransition>,
 }
 
-/// Fullscreen geometry and decorations use one clock, including on reversal.
+/// Maximized/fullscreen geometry and decorations share a clock, including on reversal.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ZoomTransition {
     from: Rect,
@@ -300,7 +307,7 @@ impl WindowGeometry {
             },
             decorations: 1.0,
             presentation_changed: true,
-            fullscreen: false,
+            mode: PresentationMode::Normal,
             zoom: None,
         }
     }
@@ -320,8 +327,25 @@ impl WindowGeometry {
         fullscreen: bool,
         now: Duration,
     ) -> Option<ClientSize> {
+        self.set_presentation_mode(
+            rect,
+            if fullscreen {
+                PresentationMode::Fullscreen
+            } else {
+                PresentationMode::Normal
+            },
+            now,
+        )
+    }
+
+    pub fn set_presentation_mode(
+        &mut self,
+        rect: Rect,
+        mode: PresentationMode,
+        now: Duration,
+    ) -> Option<ClientSize> {
         let rect = normalized_rect(rect);
-        if self.fullscreen != fullscreen || (self.zoom.is_some() && self.logical != rect) {
+        if self.mode != mode || (self.zoom.is_some() && self.logical != rect) {
             let mut progress = AnimatedValue::new(0.0);
             progress.set_target(1.0);
             let from = self.visual.current;
@@ -350,7 +374,7 @@ impl WindowGeometry {
                 progress,
             });
         }
-        self.fullscreen = fullscreen;
+        self.mode = mode;
         self.logical = rect;
         self.visual.set_target(rect);
         self.presentation_size_request(now)
@@ -368,14 +392,14 @@ impl WindowGeometry {
     }
 
     pub fn is_fullscreen(&self) -> bool {
-        self.fullscreen
+        self.mode == PresentationMode::Fullscreen
     }
 
     pub fn follow_pointer(&mut self, rect: Rect, now: Duration) -> Option<ClientSize> {
         self.zoom = None;
         let requested_size = self.set_logical_target(rect, now);
         self.visual.snap();
-        self.decorations = if self.fullscreen { 0.0 } else { 1.0 };
+        self.decorations = if self.is_fullscreen() { 0.0 } else { 1.0 };
         self.presentation_changed = true;
         requested_size
     }
@@ -400,7 +424,7 @@ impl WindowGeometry {
     ) -> bool {
         if !animations_enabled {
             self.visual.snap();
-            self.decorations = if self.fullscreen { 0.0 } else { 1.0 };
+            self.decorations = if self.is_fullscreen() { 0.0 } else { 1.0 };
             self.zoom = None;
             return false;
         }
@@ -437,7 +461,11 @@ impl WindowGeometry {
             };
             self.decorations = lerp(
                 zoom.decorations_from,
-                if self.fullscreen { 0.0 } else { 1.0 },
+                if self.mode == PresentationMode::Fullscreen {
+                    0.0
+                } else {
+                    1.0
+                },
             );
             if !active {
                 self.zoom = None;
@@ -543,6 +571,67 @@ fn finite_or(value: f64, fallback: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maximized_zoom_keeps_decorations_and_restores_through_fullscreen() {
+        let normal = Rect::new(800.0, 50.0, 600.0, 700.0);
+        let maximized = Rect::new(10.0, 50.0, 1580.0, 740.0);
+        let fullscreen = Rect::new(0.0, 0.0, 1600.0, 800.0);
+        let mut geometry = WindowGeometry::new(normal, None);
+        for (mode, rect) in [
+            (PresentationMode::Maximized, maximized),
+            (PresentationMode::Fullscreen, fullscreen),
+            (PresentationMode::Maximized, maximized),
+            (PresentationMode::Normal, normal),
+        ] {
+            let before = geometry.visual.current;
+            let decorations = geometry.decorations;
+            geometry.set_presentation_mode(rect, mode, Duration::ZERO);
+            assert_eq!(geometry.visual.current, before);
+            assert_eq!(geometry.decorations, decorations);
+            for _ in 0..1000 {
+                if !geometry.advance(Duration::from_millis(8), SpringConfig::default(), true) {
+                    break;
+                }
+                if mode != PresentationMode::Fullscreen && decorations == 1.0 {
+                    assert_eq!(geometry.decorations, 1.0);
+                }
+            }
+            assert_eq!(geometry.visual.current, rect);
+            assert_eq!(
+                geometry.decorations,
+                if mode == PresentationMode::Fullscreen {
+                    0.0
+                } else {
+                    1.0
+                }
+            );
+            assert!(!geometry.is_zooming());
+            assert_eq!(
+                geometry.is_fullscreen(),
+                mode == PresentationMode::Fullscreen
+            );
+        }
+    }
+
+    #[test]
+    fn reversing_maximization_preserves_visual_position_and_decoration() {
+        let normal = Rect::new(800.0, 50.0, 600.0, 700.0);
+        let mut geometry = WindowGeometry::new(normal, None);
+        geometry.set_presentation_mode(
+            Rect::new(10.0, 50.0, 1580.0, 740.0),
+            PresentationMode::Maximized,
+            Duration::ZERO,
+        );
+        geometry.advance(Duration::from_millis(80), SpringConfig::default(), true);
+        let before = geometry.visual.current;
+        geometry.set_presentation_mode(normal, PresentationMode::Normal, Duration::from_millis(80));
+        assert_eq!(geometry.visual.current, before);
+        assert_eq!(geometry.decorations, 1.0);
+        geometry.advance(Duration::ZERO, SpringConfig::default(), false);
+        assert_eq!(geometry.visual.current, normal);
+        assert_eq!(geometry.decorations, 1.0);
+    }
 
     #[test]
     fn zoom_finishes_without_a_visible_final_edge_jump() {

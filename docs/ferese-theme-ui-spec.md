@@ -240,10 +240,10 @@ base_unit = 8.0
 
 window_radius = 14.0
 
-top_bar_height = 32.0
+top_bar_height = 38.0
 top_bar_margin_top = 4.0
 top_bar_margin_horizontal = 10.0
-top_bar_radius = 16.0
+top_bar_radius = 19.0
 
 launcher_width = 560.0
 launcher_radius = 20.0
@@ -724,8 +724,8 @@ noise = 0.012
 
 [theme.geometry]
 window_radius = 14.0
-top_bar_height = 32.0
-top_bar_radius = 16.0
+top_bar_height = 38.0
+top_bar_radius = 19.0
 launcher_width = 560.0
 launcher_radius = 20.0
 

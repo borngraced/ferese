@@ -45,6 +45,7 @@ pub(crate) struct WindowSnapshot {
     pub(crate) app_id: String,
     pub(crate) title: String,
     pub(crate) focused: bool,
+    pub(crate) fullscreen: bool,
 }
 
 pub(crate) struct ShellControl {
@@ -56,11 +57,13 @@ pub(crate) struct ShellControl {
 
 pub(crate) struct ControlPoll {
     pub(crate) snapshot: Option<ShellSnapshot>,
+    pub(crate) overview_active: Option<bool>,
     pub(crate) disconnected: bool,
 }
 
 enum ControlUpdate {
     Snapshot(ShellSnapshot),
+    OverviewState(bool),
     Disconnected,
 }
 
@@ -93,12 +96,14 @@ impl ShellControl {
     pub(crate) fn poll(&self) -> ControlPoll {
         let mut poll = ControlPoll {
             snapshot: None,
+            overview_active: None,
             disconnected: false,
         };
 
         loop {
             match self.updates.try_recv() {
                 Ok(ControlUpdate::Snapshot(snapshot)) => poll.snapshot = Some(snapshot),
+                Ok(ControlUpdate::OverviewState(active)) => poll.overview_active = Some(active),
                 Ok(ControlUpdate::Disconnected) | Err(TryRecvError::Disconnected) => {
                     poll.disconnected = true;
                     return poll;
@@ -115,8 +120,12 @@ impl ShellControl {
         let _ = self.connection.flush();
     }
 
-    pub(crate) fn enter_overview(&self) {
-        self.shell.enter_overview();
+    pub(crate) fn set_overview_active(&self, active: bool) {
+        if active {
+            self.shell.enter_overview();
+        } else {
+            self.shell.exit_overview();
+        }
         let _ = self.connection.flush();
     }
 }
@@ -214,17 +223,20 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
                 title,
                 state: window_state,
             } => {
-                let focused = matches!(
-                    window_state,
-                    WEnum::Value(flags)
-                        if flags.contains(ferese_shell_v1::WindowState::Focused)
-                );
+                let (focused, fullscreen) = match window_state {
+                    WEnum::Value(flags) => (
+                        flags.contains(ferese_shell_v1::WindowState::Focused),
+                        flags.contains(ferese_shell_v1::WindowState::Fullscreen),
+                    ),
+                    WEnum::Unknown(_) => (false, false),
+                };
 
                 state.pending.windows.push(WindowSnapshot {
                     workspace: join_id(workspace_hi, workspace_lo),
                     app_id,
                     title,
                     focused,
+                    fullscreen,
                 });
             }
             ferese_shell_v1::Event::SnapshotEnd { serial }
@@ -233,6 +245,9 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
                 let _ = state
                     .sender
                     .send(ControlUpdate::Snapshot(state.pending.clone()));
+            }
+            ferese_shell_v1::Event::OverviewState { active } => {
+                let _ = state.sender.send(ControlUpdate::OverviewState(active != 0));
             }
             _ => {}
         }
