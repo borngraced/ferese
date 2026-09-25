@@ -61,6 +61,9 @@ type MemoryRenderElement = CropRenderElement<
     RelocateRenderElement<RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>>,
 >;
 
+type PhysicalDamage = Vec<Rectangle<i32, Physical>>;
+type DamageRenderResult = Result<Option<PhysicalDamage>, Box<dyn Error>>;
+
 render_elements! {
     pub(crate) AnimatedWindowRenderElement<=GlesRenderer>;
     Window=WindowRenderElement,
@@ -403,31 +406,16 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
             WinitEvent::Input(event) => state.process_input_event(event),
             WinitEvent::Redraw => {
                 state.advance_animations(Instant::now());
-                let damage = Rectangle::from_size(backend.window_size());
-                let mut presentation = OutputPresentationFeedback::new(&output);
-                state.space.elements().for_each(|window| {
-                    window.take_presentation_feedback(
-                        &mut presentation,
-                        |_, _| Some(output.clone()),
-                        |_, _| PresentationKind::Vsync,
-                    );
-                });
-                layer_surfaces(&output).iter().for_each(|layer| {
-                    layer.take_presentation_feedback(
-                        &mut presentation,
-                        |_, _| Some(output.clone()),
-                        |_, _| PresentationKind::Vsync,
-                    );
-                });
-                let rendered = (|| -> Result<(), Box<dyn Error>> {
+                let age = backend.buffer_age().unwrap_or(0);
+                let rendered = (|| -> DamageRenderResult {
                     {
                         let (renderer, mut framebuffer) = backend.bind()?;
                         state.process_dmabuf_imports(renderer);
                         let elements = animated_window_elements(state, renderer, &output);
-                        damage_tracker.render_output(
+                        let result = damage_tracker.render_output(
                             renderer,
                             &mut framebuffer,
-                            0,
+                            age,
                             &elements,
                             [0.035, 0.04, 0.055, 1.0],
                         )?;
@@ -455,15 +443,49 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                                 )?
                                 .finish()?;
                         }
+
+                        Ok(result.damage.cloned())
                     }
-                    backend.submit(Some(&[damage]))?;
-                    Ok(())
                 })();
-                if let Err(error) = rendered {
-                    tracing::error!(%error, "nested renderer failed");
+                let damage = match rendered {
+                    Ok(Some(damage)) => damage,
+                    Ok(None) => {
+                        state.space.refresh();
+                        state.popups.cleanup();
+                        layer_map_for_output(&output).cleanup();
+                        if let Err(error) = state.display_handle.flush_clients() {
+                            tracing::debug!(%error, "failed to flush clients");
+                        }
+                        backend.window().request_redraw();
+                        return;
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "nested renderer failed");
+                        state.loop_signal.stop();
+                        return;
+                    }
+                };
+                if let Err(error) = backend.submit(Some(&damage)) {
+                    tracing::error!(%error, "nested buffer submission failed");
                     state.loop_signal.stop();
                     return;
                 }
+
+                let mut presentation = OutputPresentationFeedback::new(&output);
+                state.space.elements().for_each(|window| {
+                    window.take_presentation_feedback(
+                        &mut presentation,
+                        |_, _| Some(output.clone()),
+                        |_, _| PresentationKind::Vsync,
+                    );
+                });
+                layer_surfaces(&output).iter().for_each(|layer| {
+                    layer.take_presentation_feedback(
+                        &mut presentation,
+                        |_, _| Some(output.clone()),
+                        |_, _| PresentationKind::Vsync,
+                    );
+                });
                 sequence = sequence.wrapping_add(1);
                 presentation.presented(
                     clock.now(),
@@ -1173,12 +1195,57 @@ fn normalized_scale(scale: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use smithay::utils::{Logical, Physical, Rectangle, Transform};
+    use smithay::{
+        backend::renderer::{
+            damage::OutputDamageTracker,
+            element::{Element, Id},
+            utils::CommitCounter,
+        },
+        utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform},
+    };
 
     use super::{
         color_with_alpha, framebuffer_clip_rect, normalized_scale, rounded_visual_rect,
         scaled_visual_rect, shadow_bounds,
     };
+
+    #[derive(Debug)]
+    struct DamageElement {
+        id: Id,
+        geometry: Rectangle<i32, Logical>,
+    }
+
+    impl DamageElement {
+        fn new(geometry: Rectangle<i32, Logical>) -> Self {
+            Self {
+                id: Id::new(),
+                geometry,
+            }
+        }
+    }
+
+    impl Element for DamageElement {
+        fn id(&self) -> &Id {
+            &self.id
+        }
+
+        fn current_commit(&self) -> CommitCounter {
+            CommitCounter::default()
+        }
+
+        fn src(&self) -> Rectangle<f64, Buffer> {
+            Rectangle::from_size(
+                self.geometry
+                    .size
+                    .to_f64()
+                    .to_buffer(1.0, Transform::Normal),
+            )
+        }
+
+        fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+            self.geometry.to_physical_precise_round(scale)
+        }
+    }
 
     #[test]
     fn accepts_positive_finite_scale() {
@@ -1228,6 +1295,35 @@ mod tests {
             shadow_bounds(geometry, -6.0, 10.0),
             Rectangle::new((80, 54).into(), (440, 340).into())
         );
+    }
+
+    #[test]
+    fn damage_tracks_old_and_new_expanded_shadow_bounds() {
+        let old_window = Rectangle::<i32, Logical>::new((100, 80).into(), (400, 300).into());
+        let new_window = Rectangle::<i32, Logical>::new((300, 180).into(), (400, 300).into());
+        let mut shadow = DamageElement::new(shadow_bounds(old_window, 4.0, 18.0));
+        let mut tracker =
+            OutputDamageTracker::new((1_000, 800), Scale::from(1.0), Transform::Normal);
+
+        tracker.damage_output(0, &[&shadow]).unwrap();
+        shadow.geometry = shadow_bounds(new_window, 4.0, 18.0);
+        let damage = tracker
+            .damage_output(1, &[&shadow])
+            .unwrap()
+            .0
+            .cloned()
+            .unwrap();
+
+        assert!(damage.iter().any(|rect| rect.contains((64, 48))));
+        assert!(damage.iter().any(|rect| rect.contains((735, 519))));
+
+        let removal_damage = tracker
+            .damage_output::<&DamageElement>(1, &[])
+            .unwrap()
+            .0
+            .cloned()
+            .unwrap();
+        assert!(removal_damage.iter().any(|rect| rect.contains((300, 180))));
     }
 
     #[test]
