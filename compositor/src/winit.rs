@@ -261,6 +261,17 @@ float random(vec2 point) {
     return fract(sin(dot(point, vec2(12.9898, 78.233))) * 43758.5453);
 }
 
+float kernel_weight(int tap) {
+    int distance = tap < 0 ? -tap : tap;
+    if (distance == 0) {
+        return 6.0;
+    }
+    if (distance == 1) {
+        return 4.0;
+    }
+    return 1.0;
+}
+
 void main() {
     vec2 point = gl_FragCoord.xy;
     vec2 visible_max = visible_rect.xy + visible_rect.zw;
@@ -270,16 +281,16 @@ void main() {
         return;
     }
 
-    vec2 step_size = vec2(blur_radius) / max(texture_size, vec2(1.0));
-    vec4 color = texture2D(tex, v_coords) * 0.20;
-    color += texture2D(tex, v_coords + vec2(step_size.x, 0.0)) * 0.12;
-    color += texture2D(tex, v_coords - vec2(step_size.x, 0.0)) * 0.12;
-    color += texture2D(tex, v_coords + vec2(0.0, step_size.y)) * 0.12;
-    color += texture2D(tex, v_coords - vec2(0.0, step_size.y)) * 0.12;
-    color += texture2D(tex, v_coords + step_size) * 0.08;
-    color += texture2D(tex, v_coords - step_size) * 0.08;
-    color += texture2D(tex, v_coords + vec2(step_size.x, -step_size.y)) * 0.08;
-    color += texture2D(tex, v_coords + vec2(-step_size.x, step_size.y)) * 0.08;
+    vec2 step_size = vec2(blur_radius * 0.5) / max(texture_size, vec2(1.0));
+    vec4 color = vec4(0.0);
+    for (int y = -2; y <= 2; y++) {
+        for (int x = -2; x <= 2; x++) {
+            float weight = kernel_weight(x) * kernel_weight(y);
+            vec2 offset = vec2(float(x), float(y)) * step_size;
+            color += texture2D(tex, v_coords + offset) * weight;
+        }
+    }
+    color /= 256.0;
 
     float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
     vec3 adjusted = mix(vec3(luma), color.rgb, saturation) * brightness;

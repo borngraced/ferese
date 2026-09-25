@@ -41,7 +41,7 @@ pub(crate) struct ResolvedMaterial {
 }
 
 pub(crate) fn resolve_material(role: SemanticRole, style: MaterialStyle) -> ResolvedMaterial {
-    let (opacity, blur, saturation, brightness, noise) = match role {
+    let (base_opacity, blur, saturation, brightness, noise) = match role {
         SemanticRole::Panel => (0.78, 24.0, 1.08, 1.02, 0.012),
         SemanticRole::PanelElevated
         | SemanticRole::Popover
@@ -53,7 +53,11 @@ pub(crate) fn resolve_material(role: SemanticRole, style: MaterialStyle) -> Reso
     match style {
         MaterialStyle::Glass => ResolvedMaterial {
             style,
-            opacity,
+            // Glass already contains an opaque copy of the backdrop. Its tint
+            // therefore needs less coverage than the no-capture translucent
+            // profile or the blur becomes visually indistinguishable from a
+            // flat alpha surface.
+            opacity: base_opacity * 0.72,
             blur,
             saturation,
             brightness,
@@ -61,7 +65,7 @@ pub(crate) fn resolve_material(role: SemanticRole, style: MaterialStyle) -> Reso
         },
         MaterialStyle::Translucent => ResolvedMaterial {
             style,
-            opacity,
+            opacity: base_opacity,
             blur: 0.0,
             saturation: 1.0,
             brightness: 1.0,
@@ -299,7 +303,7 @@ mod tests {
 
         assert!(glass.blur > 0.0);
         assert!(glass.noise > 0.0);
-        assert_eq!(translucent.opacity, glass.opacity);
+        assert!(glass.opacity < translucent.opacity);
         assert_eq!(translucent.blur, 0.0);
         assert_eq!(translucent.noise, 0.0);
         assert_eq!(solid.opacity, 1.0);

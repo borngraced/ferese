@@ -70,11 +70,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if preview {
-        effects.set_role(ferese_surface_effects_v1::Role::Popover);
+        effects.set_role(ferese_surface_effects_v1::Role::Panel);
         queue.roundtrip(&mut state)?;
-        println!(
-            "PREVIEW glass popover is mapped; press Ctrl+C in the compositor terminal to stop"
-        );
+        println!("PREVIEW glass panel is mapped over the patterned card; press Ctrl+C to stop");
 
         while !state.closed {
             queue.blocking_dispatch(&mut state)?;
