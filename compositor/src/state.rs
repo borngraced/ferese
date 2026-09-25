@@ -37,6 +37,7 @@ use smithay::{
         fractional_scale::FractionalScaleManagerState,
         idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
+        input_method::InputMethodManagerState,
         keyboard_shortcuts_inhibit::{KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor},
         output::OutputManagerState,
         pointer_constraints::PointerConstraintsState,
@@ -50,6 +51,7 @@ use smithay::{
         shm::ShmState,
         single_pixel_buffer::SinglePixelBufferState,
         socket::ListeningSocketSource,
+        text_input::TextInputManagerState,
         viewporter::ViewporterState,
         xdg_activation::XdgActivationState,
         xdg_foreign::XdgForeignState,
@@ -84,6 +86,7 @@ pub struct Ferese {
     pub fractional_scale_state: FractionalScaleManagerState,
     pub idle_inhibit_state: IdleInhibitManagerState,
     pub idle_notifier_state: IdleNotifierState<Self>,
+    pub input_method_manager_state: InputMethodManagerState,
     pub keyboard_shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
     pub output_manager_state: OutputManagerState,
     pub pointer_constraints_state: PointerConstraintsState,
@@ -93,6 +96,7 @@ pub struct Ferese {
     pub seat_state: SeatState<Self>,
     pub shm_state: ShmState,
     pub single_pixel_buffer_state: SinglePixelBufferState,
+    pub text_input_manager_state: TextInputManagerState,
     pub viewporter_state: ViewporterState,
     pub layer_shell_state: WlrLayerShellState,
     pub xdg_activation_state: XdgActivationState,
@@ -113,10 +117,15 @@ impl Ferese {
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&display_handle);
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&display_handle);
         let idle_notifier_state = IdleNotifierState::new(&display_handle, event_loop.handle());
+        let input_method_enabled =
+            std::env::var_os("FERESE_ENABLE_INPUT_METHOD").is_some_and(|value| value == "1");
+        let input_method_manager_state =
+            InputMethodManagerState::new::<Self, _>(&display_handle, move |_| input_method_enabled);
         let keyboard_shortcuts_inhibit_state =
             KeyboardShortcutsInhibitState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, Vec::new());
         let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&display_handle);
+        let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
         let pointer_constraints_state = PointerConstraintsState::new::<Self>(&display_handle);
         let presentation_state =
@@ -167,6 +176,7 @@ impl Ferese {
             fractional_scale_state,
             idle_inhibit_state,
             idle_notifier_state,
+            input_method_manager_state,
             keyboard_shortcuts_inhibit_state,
             output_manager_state,
             pointer_constraints_state,
@@ -176,6 +186,7 @@ impl Ferese {
             seat_state,
             shm_state,
             single_pixel_buffer_state,
+            text_input_manager_state,
             viewporter_state,
             layer_shell_state,
             xdg_activation_state,

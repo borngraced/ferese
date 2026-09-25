@@ -1,5 +1,6 @@
 mod activation;
 mod compositor;
+mod input_method;
 mod layer_shell;
 mod xdg_shell;
 
@@ -237,6 +238,7 @@ smithay::delegate_data_device!(Ferese);
 smithay::delegate_fractional_scale!(Ferese);
 smithay::delegate_idle_inhibit!(Ferese);
 smithay::delegate_idle_notify!(Ferese);
+smithay::delegate_input_method_manager!(Ferese);
 smithay::delegate_keyboard_shortcuts_inhibit!(Ferese);
 smithay::delegate_layer_shell!(Ferese);
 smithay::delegate_output!(Ferese);
@@ -247,6 +249,7 @@ smithay::delegate_relative_pointer!(Ferese);
 smithay::delegate_seat!(Ferese);
 smithay::delegate_shm!(Ferese);
 smithay::delegate_single_pixel_buffer!(Ferese);
+smithay::delegate_text_input_manager!(Ferese);
 smithay::delegate_viewporter!(Ferese);
 smithay::delegate_xdg_activation!(Ferese);
 smithay::delegate_xdg_decoration!(Ferese);

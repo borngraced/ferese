@@ -3,7 +3,7 @@
 Ferese is an experimental Wayland tiling compositor written in Rust with
 Smithay. The nested M0–M3 path is complete, including tiling, workspaces, and
 timestamp-driven animated geometry. Development now targets the M4 early
-hardware-session milestone in the
+hardware-session acceptance pass and M5 native interoperability in the
 [window-manager specification](docs/ferese-window-manager-spec.md).
 
 ## Development
@@ -22,6 +22,17 @@ cargo run -p ferese -- foot
 ```
 
 Set `RUST_LOG=ferese=debug` for detailed compositor logging.
+
+Text-input-v3 is available to applications by default. Input-method-v2 is
+hidden unless the session explicitly opts in, because an input method can
+request privileged keyboard access. Enable it only when launching a trusted
+IME for the session:
+
+```bash
+FERESE_ENABLE_INPUT_METHOD=1 cargo run -p ferese
+```
+
+`Ctrl+Alt+Escape` always releases an active client shortcut inhibitor.
 
 ### Direct DRM session
 
