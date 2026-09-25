@@ -1,12 +1,11 @@
 # Ferese
 
 Ferese is an experimental Wayland scrolling compositor written in Rust with
-Smithay. The current implementation includes the original tree layout,
-workspaces, and timestamp-driven animated geometry. The specification now makes
-scrolling columns the default and retains tree tiling as an optional mode. DRM
-multi-output and native interoperability are being completed before that layout
-transition in the
-[window-manager specification](docs/ferese-window-manager-spec.md).
+Smithay. Scrolling columns are the default, tree tiling remains available as an
+optional per-workspace mode, and geometry changes use timestamp-driven
+animation. See the
+[window-manager specification](docs/ferese-window-manager-spec.md) for the
+current architecture and milestones.
 
 ## Development
 
@@ -24,6 +23,19 @@ cargo run -p ferese -- foot
 ```
 
 Set `RUST_LOG=ferese=debug` for detailed compositor logging.
+
+Ferese reads `$XDG_CONFIG_HOME/ferese/config.toml`, or
+`~/.config/ferese/config.toml` when `XDG_CONFIG_HOME` is unset. New scrolling
+columns use half the viewport by default. To make every newly opened column use
+the full viewport width:
+
+```toml
+[scrolling]
+default_column_width = "full"
+```
+
+`default_column_width = 1.0` is equivalent. `Super+M` switches the active
+workspace between scrolling and tree modes.
 
 Text-input-v3 is available to applications by default. Input-method-v2 is
 hidden unless the session explicitly opts in, because an input method can
@@ -68,5 +80,6 @@ M4 validation requires the direct session to:
 - log page-flip timing and any missed presentation deadlines on the reference
   integrated GPU.
 
-The direct path currently targets one connected output. Multi-output hotplug is
-part of M5.
+The direct path creates an independent render pipeline per connected output and
+rescans connectors on hotplug. Physical unplug/replug acceptance testing on the
+reference hardware is still pending.

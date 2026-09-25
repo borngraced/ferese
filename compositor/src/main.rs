@@ -1,6 +1,7 @@
 #![allow(irrefutable_let_patterns)]
 
 mod backends;
+mod config;
 mod cursor;
 mod grabs;
 mod handlers;
@@ -15,15 +16,22 @@ pub use state::Ferese;
 use tracing::{info, warn};
 
 use crate::backends::LaunchConfig;
+use crate::config::Config;
 
 fn main() -> Result<(), Box<dyn Error>> {
     init_logging();
 
     let launch = LaunchConfig::from_environment()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let config = Config::load()?;
     let mut event_loop = EventLoop::try_new()?;
     let display = Display::new()?;
-    let mut state = Ferese::new(&mut event_loop, display)?;
+    let mut state = Ferese::new(
+        &mut event_loop,
+        display,
+        config.layout_mode(),
+        config.default_column_width()?,
+    )?;
     backends::init(launch.backend, &mut event_loop, &mut state)?;
 
     // SAFETY: the backend has already read the host display and Ferese is

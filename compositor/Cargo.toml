@@ -11,6 +11,8 @@ ferese-core = { path = "../crates/ferese-core" }
 ferese-layout = { path = "../crates/ferese-layout" }
 libc.workspace = true
 smithay.workspace = true
+serde.workspace = true
+toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 xcursor.workspace = true

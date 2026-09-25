@@ -2,7 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
-use ferese_layout::{Axis, LayoutError, LayoutTree, Rect, WindowId};
+use ferese_layout::{
+    Axis, ColumnWidth, Direction, GapConfig, LayoutError, LayoutResult, LayoutTree, Rect,
+    ScrollingLayout, SizeConstraints, WindowId,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct WorkspaceId(pub u64);
@@ -11,10 +14,235 @@ pub struct WorkspaceId(pub u64);
 pub struct Workspace {
     pub id: WorkspaceId,
     pub name: String,
-    pub layout: LayoutTree,
+    pub layout: WorkspaceLayout,
     pub floating: Vec<WindowId>,
     pub last_focused: Option<WindowId>,
     pub fullscreen: Option<WindowId>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum LayoutMode {
+    #[default]
+    Scrolling,
+    Tree,
+}
+
+#[derive(Debug)]
+pub enum WorkspaceLayout {
+    Scrolling(ScrollingLayout),
+    Tree(LayoutTree),
+}
+
+impl Default for WorkspaceLayout {
+    fn default() -> Self {
+        Self::Scrolling(ScrollingLayout::default())
+    }
+}
+
+impl WorkspaceLayout {
+    pub fn new(mode: LayoutMode, default_column_width: ColumnWidth) -> Self {
+        match mode {
+            LayoutMode::Scrolling => {
+                Self::Scrolling(ScrollingLayout::with_default_width(default_column_width))
+            }
+            LayoutMode::Tree => Self::Tree(LayoutTree::default()),
+        }
+    }
+
+    pub fn mode(&self) -> LayoutMode {
+        match self {
+            Self::Scrolling(_) => LayoutMode::Scrolling,
+            Self::Tree(_) => LayoutMode::Tree,
+        }
+    }
+
+    pub fn contains(&self, window: WindowId) -> bool {
+        match self {
+            Self::Scrolling(layout) => layout.contains(window),
+            Self::Tree(layout) => layout.contains(window),
+        }
+    }
+
+    pub fn window_ids(&self) -> Box<dyn Iterator<Item = WindowId> + '_> {
+        match self {
+            Self::Scrolling(layout) => Box::new(layout.window_ids()),
+            Self::Tree(layout) => Box::new(layout.window_ids()),
+        }
+    }
+
+    pub fn insert(
+        &mut self,
+        window: WindowId,
+        focused: Option<WindowId>,
+        axis: Axis,
+        ratio: f64,
+    ) -> Result<(), LayoutError> {
+        match self {
+            Self::Scrolling(layout) => layout.insert(window, focused),
+            Self::Tree(layout) => layout.insert(window, focused, axis, ratio).map(drop),
+        }
+    }
+
+    pub fn remove(&mut self, window: WindowId) -> Result<(), LayoutError> {
+        match self {
+            Self::Scrolling(layout) => layout.remove(window),
+            Self::Tree(layout) => layout.remove(window),
+        }
+    }
+
+    pub fn stack_window(&mut self, window: WindowId, target: WindowId) -> Result<(), LayoutError> {
+        match self {
+            Self::Scrolling(layout) => layout.move_into_column(window, target),
+            Self::Tree(layout) => layout.stack_window(window, target),
+        }
+    }
+
+    pub fn activate_window(&mut self, window: WindowId) -> Result<(), LayoutError> {
+        match self {
+            Self::Scrolling(layout) => layout.focus(window),
+            Self::Tree(layout) => layout.activate_window(window),
+        }
+    }
+
+    pub fn geometry(&self, bounds: Rect) -> Result<HashMap<WindowId, Rect>, LayoutError> {
+        match self {
+            Self::Scrolling(layout) => {
+                let mut layout = layout.clone();
+                layout
+                    .geometry_with_constraints(bounds, GapConfig::default(), &HashMap::new(), None)
+                    .map(|result| result.geometry)
+            }
+            Self::Tree(layout) => layout.geometry(bounds),
+        }
+    }
+
+    pub fn geometry_with_constraints(
+        &mut self,
+        bounds: Rect,
+        gaps: GapConfig,
+        constraints: &HashMap<WindowId, SizeConstraints>,
+        focused: Option<WindowId>,
+    ) -> Result<LayoutResult, LayoutError> {
+        match self {
+            Self::Scrolling(layout) => layout.geometry_with_constraints(
+                bounds,
+                gaps,
+                constraints,
+                focused.filter(|window| layout.contains(*window)),
+            ),
+            Self::Tree(layout) => {
+                layout.geometry_with_constraints(bounds, gaps, constraints, focused)
+            }
+        }
+    }
+
+    pub fn automatic_axis(
+        &self,
+        focused: Option<WindowId>,
+        bounds: Rect,
+    ) -> Result<Axis, LayoutError> {
+        match self {
+            Self::Scrolling(_) => Ok(Axis::Horizontal),
+            Self::Tree(layout) => layout.automatic_axis(focused, bounds),
+        }
+    }
+
+    pub fn directional_neighbor(
+        &self,
+        window: WindowId,
+        direction: Direction,
+        bounds: Rect,
+    ) -> Result<Option<WindowId>, LayoutError> {
+        match self {
+            Self::Scrolling(layout) => layout.directional_neighbor(window, direction),
+            Self::Tree(layout) => layout.directional_neighbor(window, direction, bounds),
+        }
+    }
+
+    pub fn move_window(
+        &mut self,
+        window: WindowId,
+        direction: Direction,
+        bounds: Rect,
+    ) -> Result<bool, LayoutError> {
+        match self {
+            Self::Scrolling(layout) => layout.move_window(window, direction),
+            Self::Tree(layout) => layout.move_window(window, direction, bounds),
+        }
+    }
+
+    pub fn resize_window(
+        &mut self,
+        window: WindowId,
+        direction: Direction,
+        amount: f64,
+    ) -> Result<bool, LayoutError> {
+        match self {
+            Self::Scrolling(layout) => layout.resize_window(window, direction, amount),
+            Self::Tree(layout) => layout.resize_window(window, direction, amount),
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), LayoutError> {
+        match self {
+            Self::Scrolling(layout) => layout.validate(),
+            Self::Tree(layout) => layout.validate(),
+        }
+    }
+
+    pub fn set_mode(
+        &mut self,
+        mode: LayoutMode,
+        bounds: Rect,
+        focused: Option<WindowId>,
+        default_column_width: ColumnWidth,
+    ) -> Result<bool, LayoutError> {
+        if self.mode() == mode {
+            return Ok(false);
+        }
+
+        let replacement = match self {
+            Self::Scrolling(layout) => {
+                let columns = layout.columns().to_vec();
+                let mut tree = LayoutTree::default();
+                let mut previous = None;
+
+                for column in columns {
+                    for (row, window) in column.windows.into_iter().enumerate() {
+                        let axis = if row == 0 {
+                            Axis::Horizontal
+                        } else {
+                            Axis::Vertical
+                        };
+                        tree.insert(window, previous, axis, 0.5)?;
+                        previous = Some(window);
+                    }
+                }
+                if let Some(focused) = focused.filter(|window| tree.contains(*window)) {
+                    tree.activate_window(focused)?;
+                }
+                Self::Tree(tree)
+            }
+            Self::Tree(layout) => {
+                let windows = layout.window_ids_in_reading_order(bounds)?;
+                let mut scrolling = ScrollingLayout::with_default_width(default_column_width);
+                let mut previous = None;
+
+                for window in windows {
+                    scrolling.insert(window, previous)?;
+                    previous = Some(window);
+                }
+                if let Some(focused) = focused.filter(|window| scrolling.contains(*window)) {
+                    scrolling.focus(focused)?;
+                }
+                Self::Scrolling(scrolling)
+            }
+        };
+
+        *self = replacement;
+        debug_assert!(self.validate().is_ok());
+        Ok(true)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -70,16 +298,24 @@ pub struct WorkspaceSet {
     names: HashMap<String, WorkspaceId>,
     window_workspaces: HashMap<WindowId, WorkspaceId>,
     placements: HashMap<WindowId, WindowPlacement>,
+    default_layout_mode: LayoutMode,
+    default_column_width: ColumnWidth,
     next_id: u64,
 }
 
 impl Default for WorkspaceSet {
     fn default() -> Self {
+        Self::new(LayoutMode::default(), ColumnWidth::default())
+    }
+}
+
+impl WorkspaceSet {
+    pub fn new(default_layout_mode: LayoutMode, default_column_width: ColumnWidth) -> Self {
         let active = WorkspaceId(1);
         let workspace = Workspace {
             id: active,
             name: "1".to_owned(),
-            layout: LayoutTree::default(),
+            layout: WorkspaceLayout::new(default_layout_mode, default_column_width),
             floating: Vec::new(),
             last_focused: None,
             fullscreen: None,
@@ -93,12 +329,12 @@ impl Default for WorkspaceSet {
             names,
             window_workspaces: HashMap::new(),
             placements: HashMap::new(),
+            default_layout_mode,
+            default_column_width,
             next_id: 2,
         }
     }
-}
 
-impl WorkspaceSet {
     pub fn active_id(&self) -> WorkspaceId {
         self.active
     }
@@ -130,12 +366,32 @@ impl WorkspaceSet {
         self.workspaces.get(&id)
     }
 
+    pub fn workspace_mut(&mut self, id: WorkspaceId) -> Option<&mut Workspace> {
+        self.workspaces.get_mut(&id)
+    }
+
     pub fn workspace_for_window(&self, window: WindowId) -> Option<WorkspaceId> {
         self.window_workspaces.get(&window).copied()
     }
 
     pub fn placement(&self, window: WindowId) -> Option<WindowPlacement> {
         self.placements.get(&window).copied()
+    }
+
+    pub fn set_active_layout_mode(
+        &mut self,
+        mode: LayoutMode,
+        bounds: Rect,
+    ) -> Result<bool, WorkspaceError> {
+        let default_column_width = self.default_column_width;
+        let workspace = self.active_mut();
+        let focused = tiled_focus(workspace);
+        let changed = workspace
+            .layout
+            .set_mode(mode, bounds, focused, default_column_width)?;
+
+        debug_assert!(self.validate().is_ok());
+        Ok(changed)
     }
 
     pub fn set_floating_rect(
@@ -235,7 +491,7 @@ impl WorkspaceSet {
             Workspace {
                 id,
                 name,
-                layout: LayoutTree::default(),
+                layout: WorkspaceLayout::new(self.default_layout_mode, self.default_column_width),
                 floating: Vec::new(),
                 last_focused: None,
                 fullscreen: None,
@@ -605,6 +861,28 @@ mod tests {
     }
 
     #[test]
+    fn configured_layout_defaults_apply_to_new_workspaces() {
+        let mut workspaces = WorkspaceSet::new(LayoutMode::Scrolling, ColumnWidth::Full);
+        workspaces
+            .insert_window(WindowId(1), Axis::Horizontal, 0.5)
+            .unwrap();
+        let first = workspaces
+            .active_mut()
+            .layout
+            .geometry_with_constraints(
+                Rect::new(0.0, 0.0, 1_000.0, 800.0),
+                GapConfig::default(),
+                &HashMap::new(),
+                Some(WindowId(1)),
+            )
+            .unwrap();
+
+        assert_eq!(first.geometry[&WindowId(1)].width, 1_000.0);
+        workspaces.switch_to_numeric(2).unwrap();
+        assert_eq!(workspaces.active().layout.mode(), LayoutMode::Scrolling);
+    }
+
+    #[test]
     fn switching_restores_workspace_focus() {
         let mut workspaces = WorkspaceSet::default();
         workspaces
@@ -840,7 +1118,7 @@ mod tests {
     }
 
     #[test]
-    fn stacking_tiled_windows_preserves_workspace_membership() {
+    fn grouping_tiled_windows_preserves_workspace_membership() {
         let mut workspaces = WorkspaceSet::default();
         workspaces
             .insert_window(WindowId(1), Axis::Horizontal, 0.5)
@@ -851,6 +1129,7 @@ mod tests {
         workspaces.stack_window(WindowId(2), WindowId(1)).unwrap();
 
         assert_eq!(workspaces.active().last_focused, Some(WindowId(2)));
+        assert_eq!(workspaces.active().layout.mode(), LayoutMode::Scrolling);
         assert_eq!(
             workspaces
                 .active()
@@ -858,8 +1137,45 @@ mod tests {
                 .geometry(Rect::new(0.0, 0.0, 100.0, 80.0))
                 .unwrap()
                 .len(),
-            1
+            2
         );
+        assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn layout_mode_conversion_preserves_membership_and_focus() {
+        let mut workspaces = WorkspaceSet::default();
+        for id in 1..=4 {
+            workspaces
+                .insert_window(WindowId(id), Axis::Horizontal, 0.5)
+                .unwrap();
+        }
+        workspaces.focus_window(WindowId(2)).unwrap();
+        let bounds = Rect::new(0.0, 0.0, 1_000.0, 800.0);
+
+        assert!(
+            workspaces
+                .set_active_layout_mode(LayoutMode::Tree, bounds)
+                .unwrap()
+        );
+        assert_eq!(workspaces.active().layout.mode(), LayoutMode::Tree);
+        assert_eq!(workspaces.active().last_focused, Some(WindowId(2)));
+        assert_eq!(
+            workspaces
+                .active()
+                .layout
+                .window_ids()
+                .collect::<HashSet<_>>(),
+            HashSet::from([WindowId(1), WindowId(2), WindowId(3), WindowId(4)])
+        );
+
+        assert!(
+            workspaces
+                .set_active_layout_mode(LayoutMode::Scrolling, bounds)
+                .unwrap()
+        );
+        assert_eq!(workspaces.active().layout.mode(), LayoutMode::Scrolling);
+        assert_eq!(workspaces.active().last_focused, Some(WindowId(2)));
         assert!(workspaces.validate().is_ok());
     }
 

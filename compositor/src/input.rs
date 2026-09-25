@@ -139,6 +139,15 @@ impl Ferese {
                                 }
 
                                 FilterResult::Intercept(())
+                            } else if !modifiers.shift
+                                && matches!(symbol, keysyms::KEY_m | keysyms::KEY_M)
+                            {
+                                if state == KeyState::Pressed {
+                                    data.intercepted_keys.insert(keycode);
+                                    data.toggle_layout_mode();
+                                }
+
+                                FilterResult::Intercept(())
                             } else if modifiers.shift && symbol == keysyms::KEY_space {
                                 if state == KeyState::Pressed {
                                     data.intercepted_keys.insert(keycode);
@@ -313,6 +322,8 @@ impl Ferese {
                 toplevel.send_pending_configure();
             }
         });
+
+        self.relayout();
     }
 
     fn clamp_pointer_position(&self, requested: Point<f64, Logical>) -> Point<f64, Logical> {

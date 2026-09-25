@@ -170,6 +170,18 @@ impl LayoutTree {
         self.windows.keys().copied()
     }
 
+    pub fn window_ids_in_reading_order(&self, bounds: Rect) -> Result<Vec<WindowId>, LayoutError> {
+        let geometry = self.geometry(bounds)?;
+        let mut windows = geometry.into_iter().collect::<Vec<_>>();
+        windows.sort_by(|(left_window, left), (right_window, right)| {
+            left.x
+                .total_cmp(&right.x)
+                .then_with(|| left.y.total_cmp(&right.y))
+                .then_with(|| left_window.0.cmp(&right_window.0))
+        });
+        Ok(windows.into_iter().map(|(window, _)| window).collect())
+    }
+
     pub fn insert(
         &mut self,
         window: WindowId,

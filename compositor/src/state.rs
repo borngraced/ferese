@@ -7,8 +7,12 @@ use std::{
 };
 
 use ferese_animation::{ClientSize, SpringConfig, WindowGeometry};
-use ferese_core::{OutputGeometry, OutputId, OutputWorkspaceMap, WindowPlacement, WorkspaceSet};
-use ferese_layout::{Axis, Direction, GapConfig, LayoutResult, Rect, SizeConstraints, WindowId};
+use ferese_core::{
+    LayoutMode, OutputGeometry, OutputId, OutputWorkspaceMap, WindowPlacement, WorkspaceSet,
+};
+use ferese_layout::{
+    Axis, ColumnWidth, Direction, GapConfig, LayoutResult, Rect, SizeConstraints, WindowId,
+};
 
 use smithay::{
     backend::{
@@ -267,6 +271,8 @@ impl Ferese {
     pub fn new(
         event_loop: &mut EventLoop<'static, Self>,
         display: Display<Self>,
+        default_layout_mode: LayoutMode,
+        default_column_width: ColumnWidth,
     ) -> Result<Self, Box<dyn Error>> {
         let display_handle = display.handle();
         crate::handlers::screencopy::init_global(&display_handle);
@@ -315,7 +321,7 @@ impl Ferese {
             display_handle,
             loop_signal: event_loop.get_signal(),
             space: Space::default(),
-            workspaces: WorkspaceSet::default(),
+            workspaces: WorkspaceSet::new(default_layout_mode, default_column_width),
             output_workspaces: OutputWorkspaceMap::default(),
             output_ids: HashMap::new(),
             output_identity_ids: HashMap::new(),
@@ -620,6 +626,7 @@ impl Ferese {
     pub fn relayout(&mut self) {
         self.arrange_layers();
         let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
+        let constraints = self.window_constraints();
         let mut visible = HashSet::new();
         let mut placements = Vec::new();
 
@@ -630,23 +637,28 @@ impl Ferese {
             let Some(workspace_id) = self.output_workspaces.active_workspace(output_id) else {
                 continue;
             };
-            let Some(workspace) = self.workspaces.workspace(workspace_id) else {
-                continue;
-            };
             let Some(bounds) = self.output_bounds_for(&output) else {
                 continue;
             };
             let fullscreen_bounds = self.full_output_bounds_for(&output).unwrap_or(bounds);
+            let Some(workspace) = self.workspaces.workspace(workspace_id) else {
+                continue;
+            };
+            let workspace_fullscreen = workspace.fullscreen;
+            let workspace_focus = workspace.last_focused;
             let focused = self
                 .focused_window
                 .filter(|window| {
                     self.workspaces.workspace_for_window(*window) == Some(workspace_id)
                 })
-                .or(workspace.last_focused);
+                .or(workspace_focus);
+            let Some(workspace) = self.workspaces.workspace_mut(workspace_id) else {
+                continue;
+            };
             let layout = match workspace.layout.geometry_with_constraints(
                 bounds,
                 GapConfig::default(),
-                &self.window_constraints(),
+                &constraints,
                 focused,
             ) {
                 Ok(layout) => layout,
@@ -671,9 +683,9 @@ impl Ferese {
                     continue;
                 }
 
-                let rect = if workspace.fullscreen == Some(*id) {
+                let rect = if workspace_fullscreen == Some(*id) {
                     fullscreen_bounds
-                } else if workspace.fullscreen.is_some() {
+                } else if workspace_fullscreen.is_some() {
                     continue;
                 } else {
                     match self.workspaces.placement(*id) {
@@ -687,7 +699,7 @@ impl Ferese {
                         None => continue,
                     }
                 };
-                let is_fullscreen = workspace.fullscreen == Some(*id);
+                let is_fullscreen = workspace_fullscreen == Some(*id);
                 let is_floating = matches!(
                     self.workspaces.placement(*id),
                     Some(WindowPlacement::Floating { .. })
@@ -885,6 +897,8 @@ impl Ferese {
                 toplevel.send_pending_configure();
             }
         }
+
+        self.relayout();
     }
 
     pub fn move_direction(&mut self, direction: Direction) {
@@ -923,6 +937,22 @@ impl Ferese {
             Ok(true) => self.relayout(),
             Ok(false) => {}
             Err(error) => tracing::error!(%error, ?current, "failed to resize tiled window"),
+        }
+    }
+
+    pub fn toggle_layout_mode(&mut self) {
+        let Some(bounds) = self.output_bounds() else {
+            return;
+        };
+        let mode = match self.workspaces.active().layout.mode() {
+            LayoutMode::Scrolling => LayoutMode::Tree,
+            LayoutMode::Tree => LayoutMode::Scrolling,
+        };
+
+        match self.workspaces.set_active_layout_mode(mode, bounds) {
+            Ok(true) => self.relayout(),
+            Ok(false) => {}
+            Err(error) => tracing::error!(%error, ?mode, "failed to change layout mode"),
         }
     }
 
@@ -1142,23 +1172,22 @@ impl Ferese {
         }
     }
 
-    fn logical_window_rect(&self, window: WindowId, bounds: Rect) -> Option<Rect> {
+    fn logical_window_rect(&mut self, window: WindowId, bounds: Rect) -> Option<Rect> {
         let workspace = self.workspaces.workspace_for_window(window)?;
-        let workspace = self.workspaces.workspace(workspace)?;
+        let fullscreen = self.workspaces.workspace(workspace)?.fullscreen;
 
-        if workspace.fullscreen == Some(window) {
+        if fullscreen == Some(window) {
             return Some(bounds);
         }
 
+        let constraints = self.window_constraints();
+        let focused = self.focused_window;
         match self.workspaces.placement(window)? {
-            WindowPlacement::Tiled => workspace
+            WindowPlacement::Tiled => self
+                .workspaces
+                .workspace_mut(workspace)?
                 .layout
-                .geometry_with_constraints(
-                    bounds,
-                    GapConfig::default(),
-                    &self.window_constraints(),
-                    self.focused_window,
-                )
+                .geometry_with_constraints(bounds, GapConfig::default(), &constraints, focused)
                 .ok()?
                 .geometry
                 .get(&window)
@@ -1167,13 +1196,13 @@ impl Ferese {
         }
     }
 
-    fn tiled_layout(&self, bounds: Rect) -> Result<LayoutResult, ferese_layout::LayoutError> {
-        self.workspaces.active().layout.geometry_with_constraints(
-            bounds,
-            GapConfig::default(),
-            &self.window_constraints(),
-            self.focused_window,
-        )
+    fn tiled_layout(&mut self, bounds: Rect) -> Result<LayoutResult, ferese_layout::LayoutError> {
+        let constraints = self.window_constraints();
+        let focused = self.focused_window;
+        self.workspaces
+            .active_mut()
+            .layout
+            .geometry_with_constraints(bounds, GapConfig::default(), &constraints, focused)
     }
 
     fn window_constraints(&self) -> HashMap<WindowId, SizeConstraints> {

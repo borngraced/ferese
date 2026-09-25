@@ -1,11 +1,14 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    ConstraintKind, ConstraintWarning, GapConfig, LayoutError, LayoutResult, Rect, SizeConstraints,
-    WindowId, normalized_constraints, record_minimum_warnings,
+    ConstraintKind, ConstraintWarning, Direction, GapConfig, LayoutError, LayoutResult, Rect,
+    SizeConstraints, WindowId, normalized_constraints, record_minimum_warnings,
 };
 
 const DEFAULT_WIDTH: f64 = 0.5;
+const MIN_COLUMN_WIDTH: f64 = 0.1;
+const MAX_COLUMN_WIDTH: f64 = 2.0;
+const MIN_ROW_HEIGHT: f64 = 0.05;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ColumnWidth {
@@ -29,11 +32,11 @@ pub struct Column {
 }
 
 impl Column {
-    fn new(window: WindowId) -> Self {
+    fn new(window: WindowId, width: ColumnWidth) -> Self {
         Self {
             windows: vec![window],
             active: 0,
-            width: ColumnWidth::default(),
+            width: normalized_width(width),
             heights: vec![1.0],
         }
     }
@@ -63,6 +66,7 @@ pub struct ScrollingLayout {
     active_column: Option<usize>,
     viewport_x: f64,
     neighbor_context: f64,
+    default_width: ColumnWidth,
 }
 
 impl Default for ScrollingLayout {
@@ -72,11 +76,23 @@ impl Default for ScrollingLayout {
             active_column: None,
             viewport_x: 0.0,
             neighbor_context: 48.0,
+            default_width: ColumnWidth::default(),
         }
     }
 }
 
 impl ScrollingLayout {
+    pub fn with_default_width(default_width: ColumnWidth) -> Self {
+        Self {
+            default_width: normalized_width(default_width),
+            ..Self::default()
+        }
+    }
+
+    pub fn default_width(&self) -> ColumnWidth {
+        self.default_width
+    }
+
     pub fn columns(&self) -> &[Column] {
         &self.columns
     }
@@ -112,7 +128,8 @@ impl ScrollingLayout {
             .and_then(|focused| self.window_location(focused))
             .map(|(column, _)| column + 1)
             .unwrap_or(self.columns.len());
-        self.columns.insert(index, Column::new(window));
+        self.columns
+            .insert(index, Column::new(window, self.default_width));
         self.active_column = Some(index);
 
         debug_assert!(self.validate().is_ok());
@@ -190,7 +207,8 @@ impl ScrollingLayout {
 
         self.remove(window)?;
         let insertion = (source + 1).min(self.columns.len());
-        self.columns.insert(insertion, Column::new(window));
+        self.columns
+            .insert(insertion, Column::new(window, self.default_width));
         self.active_column = Some(insertion);
 
         debug_assert!(self.validate().is_ok());
@@ -207,6 +225,109 @@ impl ScrollingLayout {
             .ok_or(LayoutError::UnknownWindow(window))?;
         self.columns[column].width = normalized_width(width);
         Ok(())
+    }
+
+    pub fn directional_neighbor(
+        &self,
+        window: WindowId,
+        direction: Direction,
+    ) -> Result<Option<WindowId>, LayoutError> {
+        let (column, row) = self
+            .window_location(window)
+            .ok_or(LayoutError::UnknownWindow(window))?;
+        let neighbor = match direction {
+            Direction::Up => row
+                .checked_sub(1)
+                .map(|row| self.columns[column].windows[row]),
+            Direction::Down => self.columns[column].windows.get(row + 1).copied(),
+            Direction::Left => column.checked_sub(1).map(|column| {
+                let column = &self.columns[column];
+                column.windows[column.active]
+            }),
+            Direction::Right => self
+                .columns
+                .get(column + 1)
+                .map(|column| column.windows[column.active]),
+        };
+
+        Ok(neighbor)
+    }
+
+    pub fn move_window(
+        &mut self,
+        window: WindowId,
+        direction: Direction,
+    ) -> Result<bool, LayoutError> {
+        let (column, row) = self
+            .window_location(window)
+            .ok_or(LayoutError::UnknownWindow(window))?;
+
+        match direction {
+            Direction::Up if row > 0 => {
+                self.columns[column].windows.swap(row, row - 1);
+                self.columns[column].heights.swap(row, row - 1);
+                self.columns[column].active = row - 1;
+            }
+            Direction::Down if row + 1 < self.columns[column].windows.len() => {
+                self.columns[column].windows.swap(row, row + 1);
+                self.columns[column].heights.swap(row, row + 1);
+                self.columns[column].active = row + 1;
+            }
+            Direction::Left if column > 0 => self.move_horizontally(window, column - 1)?,
+            Direction::Right if column + 1 < self.columns.len() => {
+                self.move_horizontally(window, column + 1)?
+            }
+            _ => return Ok(false),
+        }
+
+        debug_assert!(self.validate().is_ok());
+        Ok(true)
+    }
+
+    pub fn resize_window(
+        &mut self,
+        window: WindowId,
+        direction: Direction,
+        amount: f64,
+    ) -> Result<bool, LayoutError> {
+        let (column, row) = self
+            .window_location(window)
+            .ok_or(LayoutError::UnknownWindow(window))?;
+        let amount = if amount.is_finite() {
+            amount.abs()
+        } else {
+            0.0
+        };
+        if amount == 0.0 {
+            return Ok(false);
+        }
+
+        let changed = match direction {
+            Direction::Left | Direction::Right => {
+                let current = match normalized_width(self.columns[column].width) {
+                    ColumnWidth::Proportion(value) => value,
+                    ColumnWidth::Fixed(_) | ColumnWidth::Full => DEFAULT_WIDTH,
+                };
+                let adjustment = if direction == Direction::Right {
+                    amount
+                } else {
+                    -amount
+                };
+                let resized = (current + adjustment).clamp(MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH);
+                self.columns[column].width = ColumnWidth::Proportion(resized);
+                resized != current
+            }
+            Direction::Up if row > 0 => {
+                resize_rows(&mut self.columns[column], row, row - 1, amount)
+            }
+            Direction::Down if row + 1 < self.columns[column].windows.len() => {
+                resize_rows(&mut self.columns[column], row, row + 1, amount)
+            }
+            Direction::Up | Direction::Down => false,
+        };
+
+        debug_assert!(self.validate().is_ok());
+        Ok(changed)
     }
 
     pub fn geometry_with_constraints(
@@ -314,6 +435,33 @@ impl ScrollingLayout {
         }
     }
 
+    fn move_horizontally(
+        &mut self,
+        window: WindowId,
+        destination: usize,
+    ) -> Result<(), LayoutError> {
+        let (source, _) = self
+            .window_location(window)
+            .ok_or(LayoutError::UnknownWindow(window))?;
+        if self.columns[source].windows.len() == 1 {
+            self.columns.swap(source, destination);
+            self.active_column = Some(destination);
+            return Ok(());
+        }
+
+        let insertion = if destination < source {
+            source
+        } else {
+            source + 1
+        };
+        self.remove(window)?;
+        let insertion = insertion.min(self.columns.len());
+        self.columns
+            .insert(insertion, Column::new(window, self.default_width));
+        self.active_column = Some(insertion);
+        Ok(())
+    }
+
     fn window_location(&self, window: WindowId) -> Option<(usize, usize)> {
         self.columns.iter().enumerate().find_map(|(column, data)| {
             data.windows
@@ -323,7 +471,7 @@ impl ScrollingLayout {
         })
     }
 
-    fn validate(&self) -> Result<(), LayoutError> {
+    pub fn validate(&self) -> Result<(), LayoutError> {
         if self.columns.is_empty() {
             return if self.active_column.is_none() {
                 Ok(())
@@ -368,6 +516,18 @@ impl ScrollingLayout {
         }
         Ok(())
     }
+}
+
+fn resize_rows(column: &mut Column, row: usize, neighbor: usize, amount: f64) -> bool {
+    let transferable = (column.heights[neighbor] - MIN_ROW_HEIGHT).max(0.0);
+    let adjustment = amount.min(transferable);
+    if adjustment == 0.0 {
+        return false;
+    }
+
+    column.heights[row] += adjustment;
+    column.heights[neighbor] -= adjustment;
+    true
 }
 
 fn normalized_width(width: ColumnWidth) -> ColumnWidth {
@@ -442,6 +602,21 @@ mod tests {
     }
 
     #[test]
+    fn configured_default_width_is_applied_to_new_columns() {
+        let mut layout = ScrollingLayout::with_default_width(ColumnWidth::Full);
+        layout.insert(window(1), None).unwrap();
+        layout.insert(window(2), Some(window(1))).unwrap();
+
+        assert_eq!(layout.default_width(), ColumnWidth::Full);
+        assert!(
+            layout
+                .columns()
+                .iter()
+                .all(|column| column.width == ColumnWidth::Full)
+        );
+    }
+
+    #[test]
     fn focus_reveal_scrolls_only_as_far_as_needed() {
         let mut layout = ScrollingLayout::default();
         for id in 1..=4 {
@@ -504,5 +679,67 @@ mod tests {
 
         assert_eq!(first.x, second.x);
         assert_eq!(first.width, second.width);
+    }
+
+    #[test]
+    fn directional_navigation_follows_columns_and_rows() {
+        let mut layout = ScrollingLayout::default();
+        layout.insert(window(1), None).unwrap();
+        layout.insert(window(2), Some(window(1))).unwrap();
+        layout.insert(window(3), Some(window(2))).unwrap();
+        layout.move_into_column(window(3), window(2)).unwrap();
+
+        assert_eq!(
+            layout.directional_neighbor(window(1), Direction::Right),
+            Ok(Some(window(3)))
+        );
+        assert_eq!(
+            layout.directional_neighbor(window(3), Direction::Up),
+            Ok(Some(window(2)))
+        );
+        assert_eq!(
+            layout.directional_neighbor(window(2), Direction::Down),
+            Ok(Some(window(3)))
+        );
+    }
+
+    #[test]
+    fn vertical_moves_reorder_rows_and_horizontal_moves_extract_them() {
+        let mut layout = ScrollingLayout::default();
+        layout.insert(window(1), None).unwrap();
+        layout.insert(window(2), Some(window(1))).unwrap();
+        layout.insert(window(3), Some(window(2))).unwrap();
+        layout.move_into_column(window(3), window(2)).unwrap();
+
+        assert!(layout.move_window(window(3), Direction::Up).unwrap());
+        assert_eq!(layout.columns()[1].windows, vec![window(3), window(2)]);
+        assert!(layout.move_window(window(3), Direction::Left).unwrap());
+        assert_eq!(layout.columns().len(), 3);
+        assert_eq!(
+            layout.window_ids().collect::<Vec<_>>(),
+            vec![window(1), window(3), window(2)]
+        );
+    }
+
+    #[test]
+    fn resize_changes_column_width_and_neighboring_row_weights() {
+        let mut layout = ScrollingLayout::default();
+        layout.insert(window(1), None).unwrap();
+        layout.insert(window(2), Some(window(1))).unwrap();
+        layout.move_into_column(window(2), window(1)).unwrap();
+
+        assert!(
+            layout
+                .resize_window(window(1), Direction::Right, 0.1)
+                .unwrap()
+        );
+        assert_eq!(layout.columns()[0].width, ColumnWidth::Proportion(0.6));
+
+        assert!(
+            layout
+                .resize_window(window(1), Direction::Down, 0.1)
+                .unwrap()
+        );
+        assert_eq!(layout.columns()[0].heights, vec![0.6, 0.4]);
     }
 }

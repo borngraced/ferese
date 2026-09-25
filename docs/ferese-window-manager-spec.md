@@ -1024,6 +1024,7 @@ smart_gaps = true
 
 [scrolling]
 default_column_width = 0.5
+# Use 1.0 or "full" to open every new column at the viewport width.
 width_presets = [0.333333, 0.5, 0.666667, 1.0]
 neighbor_context = 48.0
 new_window = "column_after_focused"
@@ -1244,6 +1245,7 @@ Super+Shift+H/J/K/L     move left/down/up/right
 Super+1..9              switch workspace
 Super+Shift+1..9        move window to workspace
 Super+F                 toggle fullscreen
+Super+M                 toggle scrolling/tree layout
 Super+Shift+Space       toggle floating
 Super+Space             launcher
 Super+Tab               overview
