@@ -7,7 +7,7 @@ use smithay::{
         PointerInnerHandle, RelativeMotionEvent,
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Point},
+    utils::{Logical, Point, Size},
 };
 
 use crate::Ferese;
@@ -16,6 +16,7 @@ pub struct MoveSurfaceGrab {
     pub start_data: GrabStartData<Ferese>,
     pub window: Window,
     pub initial_location: Point<i32, Logical>,
+    pub initial_size: Size<i32, Logical>,
     pub finished: bool,
 }
 
@@ -30,10 +31,7 @@ impl PointerGrab<Ferese> for MoveSurfaceGrab {
         handle.motion(data, None, event);
         let location = self.initial_location.to_f64() + (event.location - self.start_data.location);
         let location = location.to_i32_round();
-        let size = self.window.geometry().size;
-
-        data.set_floating_window_geometry(&self.window, location, size);
-        data.space.map_element(self.window.clone(), location, true);
+        data.set_floating_window_geometry(&self.window, location, self.initial_size);
     }
 
     fn relative_motion(
@@ -153,9 +151,6 @@ impl PointerGrab<Ferese> for MoveSurfaceGrab {
             return;
         }
 
-        let size = self.window.geometry().size;
-        data.set_floating_window_geometry(&self.window, self.initial_location, size);
-        data.space
-            .map_element(self.window.clone(), self.initial_location, true);
+        data.set_floating_window_geometry(&self.window, self.initial_location, self.initial_size);
     }
 }

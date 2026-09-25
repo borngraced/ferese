@@ -264,6 +264,7 @@ struct RoundedSurfaceRenderElement {
     program: GlesTexProgram,
     clip_rect: [f32; 4],
     radius: f32,
+    clip_changed: bool,
 }
 
 impl Element for RoundedSurfaceRenderElement {
@@ -292,11 +293,18 @@ impl Element for RoundedSurfaceRenderElement {
         scale: RenderScale<f64>,
         commit: Option<CommitCounter>,
     ) -> DamageSet<i32, Physical> {
+        if self.clip_changed {
+            return DamageSet::from_slice(&[Rectangle::from_size(self.inner.geometry(scale).size)]);
+        }
         self.inner.damage_since(scale, commit)
     }
 
-    fn opaque_regions(&self, _scale: RenderScale<f64>) -> OpaqueRegions<i32, Physical> {
-        OpaqueRegions::default()
+    fn opaque_regions(&self, scale: RenderScale<f64>) -> OpaqueRegions<i32, Physical> {
+        if self.radius == 0.0 {
+            self.inner.opaque_regions(scale)
+        } else {
+            OpaqueRegions::default()
+        }
     }
 
     fn alpha(&self) -> f32 {
@@ -575,9 +583,9 @@ fn output_elements(
             let (close_scale, close_alpha) = state.closing_visual(id);
             let visual = scaled_visual_rect(visual, close_scale);
             let decoration_progress = state
-                .window_decoration_progress
+                .window_geometry
                 .get(&id)
-                .map_or(1.0, |progress| progress.current.clamp(0.0, 1.0));
+                .map_or(1.0, |geometry| geometry.decorations.clamp(0.0, 1.0));
 
             Some((window.clone(), id, visual, decoration_progress, close_alpha))
         })
@@ -641,6 +649,10 @@ fn output_elements(
                 scale,
                 window_radius,
                 close_alpha,
+                state
+                    .window_geometry
+                    .get(&id)
+                    .is_some_and(|geometry| geometry.presentation_changed),
                 output,
                 programs.texture.clone(),
             ));
@@ -905,6 +917,7 @@ fn rounded_window_elements(
     scale: f64,
     requested_radius: f64,
     alpha: f32,
+    clip_changed: bool,
     output: &Output,
     program: GlesTexProgram,
 ) -> Vec<AnimatedWindowRenderElement> {
@@ -966,6 +979,7 @@ fn rounded_window_elements(
                 program: program.clone(),
                 clip_rect: clip,
                 radius,
+                clip_changed,
             }
             .into()
         }),

@@ -45,7 +45,7 @@ use smithay::{
             protocol::wl_surface::WlSurface,
         },
     },
-    utils::{Logical, Point, Size},
+    utils::{Logical, Point, Rectangle, Size},
     wayland::{
         alpha_modifier::AlphaModifierState,
         compositor::{CompositorClientState, CompositorState, with_states},
@@ -118,7 +118,7 @@ pub struct Ferese {
     output_identity_ids: HashMap<String, OutputId>,
     pub window_ids: HashMap<Window, WindowId>,
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
-    pub(crate) window_decoration_progress: HashMap<WindowId, AnimatedValue>,
+    window_stack: crate::stacking::WindowStack,
     pub(crate) window_borders: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
     pub(crate) window_shadows: HashMap<WindowId, crate::winit::WindowShadowBuffers>,
     pub(crate) rounded_clip_programs: HashMap<ErasedContextId, crate::winit::RoundedClipPrograms>,
@@ -429,7 +429,7 @@ impl Ferese {
             output_identity_ids: HashMap::new(),
             window_ids: HashMap::new(),
             window_geometry: HashMap::new(),
-            window_decoration_progress: HashMap::new(),
+            window_stack: crate::stacking::WindowStack::default(),
             window_borders: HashMap::new(),
             window_shadows: HashMap::new(),
             rounded_clip_programs: HashMap::new(),
@@ -634,9 +634,47 @@ impl Ferese {
         })
     }
 
+    pub(crate) fn raise_window(&mut self, window: &Window, activate: bool) {
+        if let Some(id) = self.window_ids.get(window) {
+            self.window_stack.raise(*id);
+        }
+        self.space.raise_element(window, activate);
+        self.sync_window_stacking();
+    }
+
+    pub(crate) fn sync_window_stacking(&mut self) {
+        let mut windows = self.space.elements().cloned().collect::<Vec<_>>();
+        windows.sort_by_key(|window| {
+            let id = self.window_ids.get(window).copied();
+            let priority = id
+                .and_then(|id| self.window_geometry.get(&id))
+                .is_some_and(|geometry| geometry.is_fullscreen() || geometry.is_zooming());
+            (
+                priority,
+                id.map_or(usize::MAX, |id| self.window_stack.rank(id)),
+            )
+        });
+        for window in windows {
+            self.space.raise_element(&window, false);
+        }
+    }
+
     pub fn visual_scale_for_window(&self, window: &Window) -> Option<(f64, f64)> {
         let id = self.window_ids.get(window)?;
         self.window_geometry.get(id)?.visual_scale()
+    }
+
+    pub(crate) fn visual_rect_for_window(
+        &self,
+        window: &Window,
+    ) -> Option<Rectangle<i32, Logical>> {
+        let id = self.window_ids.get(window)?;
+        let rect = self.window_geometry.get(id)?.visual.current;
+        let size = ClientSize::from_rect(rect);
+        Some(Rectangle::new(
+            (rect.x.round() as i32, rect.y.round() as i32).into(),
+            (size.width, size.height).into(),
+        ))
     }
 
     pub fn add_tiled_window(&mut self, window: Window) {
@@ -661,6 +699,7 @@ impl Ferese {
         }
 
         self.window_ids.insert(window.clone(), id);
+        self.window_stack.insert(id);
         if focus_new_window {
             self.focused_window = Some(id);
         }
@@ -695,6 +734,7 @@ impl Ferese {
         }
 
         self.window_ids.insert(window.clone(), id);
+        self.window_stack.insert(id);
         self.space.map_element(window, (0, 0), false);
         self.relayout();
     }
@@ -821,7 +861,7 @@ impl Ferese {
 
         self.space.unmap_elem(window);
         self.window_geometry.remove(&id);
-        self.window_decoration_progress.remove(&id);
+        self.window_stack.remove(id);
         self.window_borders.remove(&id);
         self.window_shadows.remove(&id);
         self.closing_windows.remove(&id);
@@ -918,8 +958,6 @@ impl Ferese {
 
                 let rect = if workspace_fullscreen == Some(*id) {
                     fullscreen_bounds
-                } else if workspace_fullscreen.is_some() {
-                    continue;
                 } else {
                     match self.workspaces.placement(*id) {
                         Some(WindowPlacement::Tiled) => {
@@ -973,30 +1011,9 @@ impl Ferese {
         let now = self.start_time.elapsed();
 
         let mut scrolling_world_x = HashMap::new();
-        // map_element also raises windows. Keep relayout's HashMap iteration
-        // order from randomly changing the stack during overlapping animations.
-        let stacking_order = self
-            .space
-            .elements()
-            .enumerate()
-            .filter_map(|(index, window)| self.window_ids.get(window).map(|id| (*id, index)))
-            .collect::<HashMap<_, _>>();
-        placements.sort_by_key(|(_, id, ..)| stacking_order.get(id).copied().unwrap_or(usize::MAX));
-        let mut fullscreen_transitions = Vec::new();
+        placements.sort_by_key(|(_, id, ..)| self.window_stack.rank(*id));
 
         for (window, id, rect, is_fullscreen, is_floating, scrolling, couple_width) in placements {
-            let decoration_target = if is_fullscreen { 0.0 } else { 1.0 };
-            let decorations = self
-                .window_decoration_progress
-                .entry(id)
-                .or_insert_with(|| AnimatedValue::new(decoration_target));
-            if decorations.target != decoration_target {
-                fullscreen_transitions.push(window.clone());
-            }
-            decorations.set_target(decoration_target);
-            if !self.animations_enabled {
-                decorations.snap();
-            }
             // A viewport-coupled width must never override fullscreen/floating geometry.
             if scrolling.is_none() {
                 self.viewport_coupled_widths.remove(&id);
@@ -1007,9 +1024,13 @@ impl Ferese {
                 .window_geometry
                 .entry(id)
                 .or_insert_with(|| WindowGeometry::new(rect, committed_size));
-            let requested_size = geometry.set_logical_target(rect, now);
+            let mut requested_size = geometry.set_presentation_target(rect, is_fullscreen, now);
             if !self.animations_enabled {
                 geometry.advance(Duration::ZERO, self.spring_config, false);
+                requested_size = geometry.presentation_size_request(now).or(requested_size);
+            }
+            if geometry.is_zooming() {
+                self.viewport_coupled_widths.remove(&id);
             }
             if let Some((workspace, world_x, viewport_x)) = scrolling {
                 let restored_world_x = restored_scrolling_world_x(
@@ -1027,15 +1048,17 @@ impl Ferese {
                 if !self.animations_enabled {
                     animated_world_x.snap();
                 }
-                geometry.visual.current.x = animated_world_x.current - viewport_x;
-                geometry.visual.velocity.x = 0.0;
+                if !geometry.is_zooming() {
+                    geometry.visual.current.x = animated_world_x.current - viewport_x;
+                    geometry.visual.velocity.x = animated_world_x.velocity;
+                }
                 scrolling_world_x.insert(id, (workspace, animated_world_x));
 
-                let coupled = couple_width
-                    || self
-                        .viewport_coupled_widths
-                        .get(&id)
-                        .is_some_and(|(previous_workspace, _)| *previous_workspace == workspace);
+                let coupled = !geometry.is_zooming()
+                    && (couple_width
+                        || self.viewport_coupled_widths.get(&id).is_some_and(
+                            |(previous_workspace, _)| *previous_workspace == workspace,
+                        ));
                 if coupled {
                     let width = self.viewport_coupled_widths.entry(id).or_insert_with(|| {
                         (workspace, AnimatedValue::new(geometry.visual.current.width))
@@ -1099,11 +1122,7 @@ impl Ferese {
             }
         }
         self.scrolling_world_x = scrolling_world_x;
-        // Neighbours are remapped on fullscreen exit; the shrinking window must
-        // remain above them. Subsequent animation ticks preserve this ordering.
-        for window in fullscreen_transitions {
-            self.space.raise_element(&window, false);
-        }
+        self.sync_window_stacking();
 
         crate::backends::direct::render_all(self);
     }
@@ -1175,16 +1194,10 @@ impl Ferese {
 
         let mut settled_coupled_widths = Vec::new();
         for (window, id) in windows {
-            if let Some(decorations) = self.window_decoration_progress.get_mut(&id) {
-                if self.animations_enabled {
-                    active_animation |= decorations.advance(delta, self.spring_config);
-                } else {
-                    decorations.snap();
-                }
-            }
             let Some(geometry) = self.window_geometry.get_mut(&id) else {
                 continue;
             };
+            let zooming = geometry.is_zooming();
 
             let coupled_target = self
                 .viewport_coupled_widths
@@ -1202,13 +1215,18 @@ impl Ferese {
             if let Some((workspace, world_x)) = self.scrolling_world_x.get_mut(&id)
                 && let Some(viewport) = self.viewport_animations.get(workspace)
             {
-                if self.animations_enabled {
+                if zooming {
+                    world_x.current = geometry.visual.current.x + viewport.current;
+                    world_x.velocity = geometry.visual.velocity.x + viewport.velocity;
+                } else if self.animations_enabled {
                     active_animation |= world_x.advance(delta, self.spring_config);
                 } else {
                     world_x.snap();
                 }
-                geometry.visual.current.x = world_x.current - viewport.current;
-                geometry.visual.velocity.x = 0.0;
+                if !zooming {
+                    geometry.visual.current.x = world_x.current - viewport.current;
+                    geometry.visual.velocity.x = world_x.velocity - viewport.velocity;
+                }
             }
             if let Some((_, width)) = self.viewport_coupled_widths.get_mut(&id) {
                 let width_active = if self.animations_enabled {
@@ -1233,6 +1251,14 @@ impl Ferese {
                     "client did not commit the final configured size within 500 ms"
                 );
             }
+            if let Some(size) = geometry.presentation_size_request(self.start_time.elapsed())
+                && let Some(toplevel) = window.toplevel()
+            {
+                toplevel.with_pending_state(|state| {
+                    state.size = Some((size.width, size.height).into());
+                });
+                toplevel.send_pending_configure();
+            }
             let visual = geometry.visual.current;
             self.space.map_element(
                 window,
@@ -1243,6 +1269,7 @@ impl Ferese {
         for id in settled_coupled_widths {
             self.viewport_coupled_widths.remove(&id);
         }
+        self.sync_window_stacking();
 
         active_animation
     }
@@ -1302,7 +1329,7 @@ impl Ferese {
         };
 
         self.focused_window = Some(next);
-        self.space.raise_element(&window, true);
+        self.raise_window(&window, true);
         self.seat
             .get_keyboard()
             .expect("seat has a keyboard")
@@ -1585,11 +1612,18 @@ impl Ferese {
             .window_geometry
             .entry(id)
             .or_insert_with(|| WindowGeometry::new(rect, client_size(window)));
-        geometry.set_logical_target(rect, self.start_time.elapsed());
-        geometry.visual.snap();
+        if let Some(size) = geometry.follow_pointer(rect, self.start_time.elapsed())
+            && let Some(toplevel) = window.toplevel()
+        {
+            toplevel.with_pending_state(|state| {
+                state.size = Some((size.width, size.height).into());
+            });
+            toplevel.send_pending_configure();
+        }
         self.scrolling_world_x.remove(&id);
         self.viewport_coupled_widths.remove(&id);
         self.space.map_element(window.clone(), location, false);
+        self.sync_window_stacking();
         crate::backends::direct::render_all(self);
     }
 

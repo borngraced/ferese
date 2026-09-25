@@ -12,7 +12,7 @@ use smithay::{
         Resource,
         protocol::{wl_seat, wl_surface::WlSurface},
     },
-    utils::{Rectangle, Serial},
+    utils::Serial,
     wayland::{
         compositor::with_states,
         shell::xdg::decoration::XdgDecorationHandler,
@@ -136,7 +136,7 @@ impl XdgShellHandler for Ferese {
         else {
             return;
         };
-        let Some(initial_location) = self.space.element_location(&window) else {
+        let Some(initial_rect) = self.visual_rect_for_window(&window) else {
             return;
         };
         if !self.is_floating_window(&window) {
@@ -147,7 +147,8 @@ impl XdgShellHandler for Ferese {
             MoveSurfaceGrab {
                 start_data,
                 window,
-                initial_location,
+                initial_location: initial_rect.loc,
+                initial_size: initial_rect.size,
                 finished: false,
             },
             serial,
@@ -183,13 +184,12 @@ impl XdgShellHandler for Ferese {
         else {
             return;
         };
-        let Some(location) = self.space.element_location(&window) else {
+        let Some(rect) = self.visual_rect_for_window(&window) else {
             return;
         };
         if !self.is_floating_window(&window) {
             return;
         }
-        let rect = Rectangle::new(location, window.geometry().size);
         pointer.set_grab(
             self,
             ResizeSurfaceGrab::new(start_data, window, ResizeEdge::from(edges), rect),
@@ -314,7 +314,7 @@ fn set_decoration_mode(toplevel: &ToplevelSurface, mode: Mode) {
 }
 
 pub fn handle_commit(popups: &mut PopupManager, space: &mut Space<Window>, surface: &WlSurface) {
-    handle_resize_commit(space, surface);
+    handle_resize_commit(surface);
     if let Some(window) = space
         .elements()
         .find(|window| {

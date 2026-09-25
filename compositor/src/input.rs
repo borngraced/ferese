@@ -308,7 +308,7 @@ impl Ferese {
             {
                 tracing::error!(%error, ?focused, "failed to update workspace focus");
             }
-            self.space.raise_element(&window, true);
+            self.raise_window(&window, true);
             let surface = window
                 .toplevel()
                 .expect("mapped window has a toplevel")

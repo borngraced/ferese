@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
 use smithay::{
-    desktop::{Space, Window},
+    desktop::Window,
     input::pointer::{
         AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
         GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent,
@@ -275,8 +275,6 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
             self.initial_rect.loc,
             self.initial_rect.size,
         );
-        data.space
-            .map_element(self.window.clone(), self.initial_rect.loc, true);
     }
 }
 
@@ -326,35 +324,10 @@ impl ResizeState {
     }
 }
 
-pub fn handle_resize_commit(space: &mut Space<Window>, surface: &WlSurface) {
-    let Some(window) = space
-        .elements()
-        .find(|window| {
-            window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == surface)
-        })
-        .cloned()
-    else {
-        return;
-    };
-    let Some(mut location) = space.element_location(&window) else {
-        return;
-    };
-    let geometry = window.geometry();
-    let Some((edges, initial_rect)) = ResizeState::with(surface, ResizeState::commit) else {
-        return;
-    };
-
-    if edges.left() {
-        location.x = initial_rect.loc.x + initial_rect.size.w - geometry.size.w;
-    }
-    if edges.top() {
-        location.y = initial_rect.loc.y + initial_rect.size.h - geometry.size.h;
-    }
-    if edges.left() || edges.top() {
-        space.map_element(window, location, false);
-    }
+pub fn handle_resize_commit(surface: &WlSurface) {
+    // The compositor's visual rect owns the anchored edge. A delayed client
+    // commit must not move the window or change its stacking order.
+    ResizeState::with(surface, ResizeState::commit);
 }
 
 fn constrained_size(

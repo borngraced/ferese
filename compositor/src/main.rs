@@ -8,6 +8,7 @@ mod handlers;
 mod input;
 mod ipc;
 mod metrics;
+mod stacking;
 mod state;
 mod window_rules;
 mod winit;

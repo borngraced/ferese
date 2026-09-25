@@ -272,6 +272,18 @@ pub struct WindowGeometry {
     pub logical: Rect,
     pub visual: AnimatedRect,
     pub client: ClientGeometry,
+    pub decorations: f64,
+    pub presentation_changed: bool,
+    fullscreen: bool,
+    zoom: Option<ZoomTransition>,
+}
+
+/// Fullscreen geometry and decorations use one clock, including on reversal.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ZoomTransition {
+    from: Rect,
+    decorations_from: f64,
+    progress: AnimatedValue,
 }
 
 impl WindowGeometry {
@@ -286,6 +298,10 @@ impl WindowGeometry {
                 committed_size,
                 waiting_since: None,
             },
+            decorations: 1.0,
+            presentation_changed: true,
+            fullscreen: false,
+            zoom: None,
         }
     }
 
@@ -298,7 +314,95 @@ impl WindowGeometry {
         self.client.request_size(size, now).then_some(size)
     }
 
+    pub fn set_presentation_target(
+        &mut self,
+        rect: Rect,
+        fullscreen: bool,
+        now: Duration,
+    ) -> Option<ClientSize> {
+        let rect = normalized_rect(rect);
+        if self.fullscreen != fullscreen || (self.zoom.is_some() && self.logical != rect) {
+            let mut progress = AnimatedValue::new(0.0);
+            progress.set_target(1.0);
+            let from = self.visual.current;
+            let distance = [
+                rect.x - from.x,
+                rect.y - from.y,
+                rect.width - from.width,
+                rect.height - from.height,
+            ];
+            let velocity = self.visual.velocity;
+            let speed = [velocity.x, velocity.y, velocity.width, velocity.height];
+            let squared_length = distance.iter().map(|value| value * value).sum::<f64>();
+            if squared_length > 0.001 {
+                let projected =
+                    distance.iter().zip(speed).map(|(d, v)| d * v).sum::<f64>() / squared_length;
+                // Keep forward momentum; soften a reversal without jumping position.
+                progress.velocity = if projected < 0.0 {
+                    projected * 0.35
+                } else {
+                    projected
+                };
+            }
+            self.zoom = Some(ZoomTransition {
+                from: self.visual.current,
+                decorations_from: self.decorations,
+                progress,
+            });
+        }
+        self.fullscreen = fullscreen;
+        self.logical = rect;
+        self.visual.set_target(rect);
+        self.presentation_size_request(now)
+    }
+
+    /// Pace intermediate resizes to client commits, but always deliver the final
+    /// size. Fast clients redraw near the presented size instead of one giant
+    /// buffer being stretched throughout the zoom.
+    pub fn presentation_size_request(&mut self, now: Duration) -> Option<ClientSize> {
+        if self.zoom.is_some() && self.client.waiting_since.is_some() && !self.client.timed_out(now)
+        {
+            return None;
+        }
+        let rect = if self.zoom.is_some() {
+            self.visual.current
+        } else {
+            self.logical
+        };
+        let size = ClientSize::from_rect(rect);
+        self.client.request_size(size, now).then_some(size)
+    }
+
+    pub fn is_zooming(&self) -> bool {
+        self.zoom.is_some()
+    }
+
+    pub fn is_fullscreen(&self) -> bool {
+        self.fullscreen
+    }
+
+    pub fn follow_pointer(&mut self, rect: Rect, now: Duration) -> Option<ClientSize> {
+        self.zoom = None;
+        let requested_size = self.set_logical_target(rect, now);
+        self.visual.snap();
+        self.decorations = if self.fullscreen { 0.0 } else { 1.0 };
+        self.presentation_changed = true;
+        requested_size
+    }
+
     pub fn advance(
+        &mut self,
+        delta: Duration,
+        config: SpringConfig,
+        animations_enabled: bool,
+    ) -> bool {
+        let previous = (self.visual.current, self.decorations);
+        let active = self.advance_presentation(delta, config, animations_enabled);
+        self.presentation_changed = previous != (self.visual.current, self.decorations);
+        active
+    }
+
+    fn advance_presentation(
         &mut self,
         delta: Duration,
         config: SpringConfig,
@@ -306,7 +410,37 @@ impl WindowGeometry {
     ) -> bool {
         if !animations_enabled {
             self.visual.snap();
+            self.decorations = if self.fullscreen { 0.0 } else { 1.0 };
+            self.zoom = None;
             return false;
+        }
+
+        if let Some(zoom) = &mut self.zoom {
+            let active = zoom.progress.advance(delta, config);
+            let p = zoom.progress.current;
+            let target = self.visual.target;
+            let lerp = |a: f64, b: f64| a + (b - a) * p;
+            self.visual.current = Rect::new(
+                lerp(zoom.from.x, target.x),
+                lerp(zoom.from.y, target.y),
+                lerp(zoom.from.width, target.width),
+                lerp(zoom.from.height, target.height),
+            );
+            self.visual.velocity = RectVelocity {
+                x: (target.x - zoom.from.x) * zoom.progress.velocity,
+                y: (target.y - zoom.from.y) * zoom.progress.velocity,
+                width: (target.width - zoom.from.width) * zoom.progress.velocity,
+                height: (target.height - zoom.from.height) * zoom.progress.velocity,
+            };
+            self.decorations = lerp(
+                zoom.decorations_from,
+                if self.fullscreen { 0.0 } else { 1.0 },
+            );
+            if !active {
+                self.zoom = None;
+                self.visual.snap();
+            }
+            return active;
         }
 
         self.visual.advance(delta, config)
@@ -406,6 +540,159 @@ fn finite_or(value: f64, fallback: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zoom_geometry_and_decorations_share_progress() {
+        let start = Rect::new(200.0, 40.0, 600.0, 800.0);
+        let end = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let mut geometry = WindowGeometry::new(start, Some(ClientSize::from_rect(start)));
+        geometry.set_presentation_target(end, true, Duration::ZERO);
+        for _ in 0..20 {
+            geometry.advance(Duration::from_millis(8), SpringConfig::default(), true);
+            let progress = 1.0 - geometry.decorations;
+            let visual = geometry.visual.current;
+            assert!((visual.x - (start.x + (end.x - start.x) * progress)).abs() < 1e-9);
+            assert!(
+                (visual.width - (start.width + (end.width - start.width) * progress)).abs() < 1e-9
+            );
+        }
+    }
+
+    #[test]
+    fn rapid_zoom_reversal_preserves_presented_frame_and_reaches_latest_target() {
+        let tiled = Rect::new(600.0, 20.0, 600.0, 900.0);
+        let fullscreen = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let mut geometry = WindowGeometry::new(tiled, None);
+        for enabled in [true, false, true, false] {
+            let before = (geometry.visual.current, geometry.decorations);
+            geometry.set_presentation_target(
+                if enabled { fullscreen } else { tiled },
+                enabled,
+                Duration::ZERO,
+            );
+            assert_eq!((geometry.visual.current, geometry.decorations), before);
+            geometry.advance(Duration::from_millis(48), SpringConfig::default(), true);
+        }
+        for _ in 0..240 {
+            geometry.advance(Duration::from_millis(8), SpringConfig::default(), true);
+        }
+        assert_eq!(geometry.visual.current, tiled);
+        assert_eq!(geometry.decorations, 1.0);
+        assert!(!geometry.is_zooming());
+    }
+
+    #[test]
+    fn slow_client_does_not_queue_intermediate_sizes_but_gets_final_size() {
+        let start = Rect::new(0.0, 0.0, 600.0, 800.0);
+        let end = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let mut geometry = WindowGeometry::new(start, Some(ClientSize::from_rect(start)));
+        assert_eq!(
+            geometry.set_presentation_target(end, true, Duration::ZERO),
+            None
+        );
+        geometry.advance(Duration::from_millis(16), SpringConfig::default(), true);
+        let first = geometry
+            .presentation_size_request(Duration::from_millis(16))
+            .unwrap();
+        assert_ne!(first, ClientSize::from_rect(end));
+        geometry.advance(Duration::from_millis(16), SpringConfig::default(), true);
+        assert_eq!(
+            geometry.presentation_size_request(Duration::from_millis(32)),
+            None
+        );
+        geometry.client.commit(first);
+        assert!(
+            geometry
+                .presentation_size_request(Duration::from_millis(32))
+                .is_some()
+        );
+        for _ in 0..240 {
+            geometry.advance(Duration::from_millis(8), SpringConfig::default(), true);
+        }
+        assert_eq!(
+            geometry.presentation_size_request(Duration::from_secs(2)),
+            Some(ClientSize::from_rect(end))
+        );
+    }
+
+    #[test]
+    fn drag_takes_ownership_from_an_unfinished_zoom() {
+        let start = Rect::new(0.0, 0.0, 600.0, 800.0);
+        let mut geometry = WindowGeometry::new(start, None);
+        geometry.set_presentation_target(Rect::new(0.0, 0.0, 1920.0, 1080.0), true, Duration::ZERO);
+        geometry.advance(Duration::from_millis(32), SpringConfig::default(), true);
+        geometry.set_presentation_target(start, false, Duration::ZERO);
+        let dragged = Rect::new(40.0, 50.0, 500.0, 700.0);
+        geometry.follow_pointer(dragged, Duration::ZERO);
+        assert!(!geometry.advance(Duration::from_millis(16), SpringConfig::default(), true));
+        assert_eq!(geometry.visual.current, dragged);
+    }
+
+    #[test]
+    fn reduced_motion_finishes_zoom_and_decorations_together() {
+        let mut geometry = WindowGeometry::new(Rect::new(100.0, 20.0, 600.0, 800.0), None);
+        let target = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        geometry.set_presentation_target(target, true, Duration::ZERO);
+        geometry.advance(Duration::ZERO, SpringConfig::default(), false);
+        assert_eq!(geometry.visual.current, target);
+        assert_eq!(geometry.decorations, 0.0);
+        assert!(!geometry.is_zooming());
+    }
+
+    #[test]
+    fn relayout_during_zoom_does_not_restart_its_clock() {
+        let start = Rect::new(600.0, 20.0, 600.0, 900.0);
+        let target = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let mut uninterrupted = WindowGeometry::new(start, None);
+        uninterrupted.set_presentation_target(target, true, Duration::ZERO);
+        let mut relayout = uninterrupted;
+        for frame in 0..120 {
+            let now = Duration::from_millis(frame * 8);
+            relayout.set_presentation_target(target, true, now);
+            relayout.advance(Duration::from_millis(8), SpringConfig::default(), true);
+            uninterrupted.advance(Duration::from_millis(8), SpringConfig::default(), true);
+            assert_eq!(relayout.visual, uninterrupted.visual);
+            assert_eq!(relayout.decorations, uninterrupted.decorations);
+        }
+    }
+
+    #[test]
+    fn zoom_at_different_refresh_rates_has_comparable_progress() {
+        let start = Rect::new(600.0, 20.0, 600.0, 900.0);
+        let target = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let mut progress = Vec::new();
+        for rate in [60, 120, 144] {
+            let mut geometry = WindowGeometry::new(start, None);
+            geometry.set_presentation_target(target, true, Duration::ZERO);
+            for _ in 0..rate / 6 {
+                geometry.advance(
+                    Duration::from_secs_f64(1.0 / f64::from(rate)),
+                    SpringConfig::default(),
+                    true,
+                );
+            }
+            progress.push(geometry.decorations);
+        }
+        assert!((progress[0] - progress[1]).abs() < 0.01);
+        assert!((progress[0] - progress[2]).abs() < 0.01);
+    }
+
+    #[test]
+    fn final_frame_invalidates_clip_even_when_zoom_has_settled() {
+        let start = Rect::new(0.0, 0.0, 600.0, 800.0);
+        let mut geometry = WindowGeometry::new(start, None);
+        geometry.set_presentation_target(start, true, Duration::ZERO);
+        for _ in 0..1000 {
+            if !geometry.advance(Duration::from_millis(8), SpringConfig::default(), true) {
+                assert!(geometry.presentation_changed);
+                assert_eq!(geometry.decorations, 0.0);
+                geometry.advance(Duration::from_millis(8), SpringConfig::default(), true);
+                assert!(!geometry.presentation_changed);
+                return;
+            }
+        }
+        panic!("zoom failed to settle");
+    }
 
     #[test]
     fn scalar_spring_retargets_from_current_motion() {
