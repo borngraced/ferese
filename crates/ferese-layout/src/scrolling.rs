@@ -409,7 +409,9 @@ impl ScrollingLayout {
 
         for column in &self.columns {
             let requested = match normalized_width(column.width) {
-                ColumnWidth::Proportion(proportion) => viewport_width * proportion,
+                ColumnWidth::Proportion(proportion) => {
+                    ((viewport_width + inner) * proportion - inner).max(1.0)
+                }
                 ColumnWidth::Fixed(width) => width,
                 ColumnWidth::Full => viewport_width,
             };
@@ -701,6 +703,38 @@ mod tests {
 
         assert_eq!(layout.viewport_x(), 1_000.0);
         assert_eq!(result.geometry[&window(4)].x, 500.0);
+    }
+
+    #[test]
+    fn two_half_width_columns_fit_without_focus_scrolling() {
+        let mut layout = ScrollingLayout::default();
+        layout.insert(window(1), None).unwrap();
+        layout.insert(window(2), Some(window(1))).unwrap();
+        let bounds = Rect::new(0.0, 0.0, 1_000.0, 800.0);
+        let gaps = GapConfig {
+            inner: 10.0,
+            outer: 10.0,
+            smart: false,
+        };
+
+        let first = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(1)))
+            .unwrap();
+        assert_eq!(layout.viewport_x(), 0.0);
+        let second = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(2)))
+            .unwrap();
+
+        assert_eq!(layout.viewport_x(), 0.0);
+        assert_eq!(first.geometry, second.geometry);
+        assert_eq!(
+            second.geometry[&window(1)],
+            Rect::new(10.0, 10.0, 485.0, 780.0)
+        );
+        assert_eq!(
+            second.geometry[&window(2)],
+            Rect::new(505.0, 10.0, 485.0, 780.0)
+        );
     }
 
     #[test]
