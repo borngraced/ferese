@@ -416,9 +416,22 @@ impl WindowGeometry {
         }
 
         if let Some(zoom) = &mut self.zoom {
-            let active = zoom.progress.advance(delta, config);
-            let p = zoom.progress.current;
             let target = self.visual.target;
+            // Spring tolerances describe pixels and pixels/second, whereas this
+            // spring advances unit progress. Without conversion it snaps several
+            // pixels early on large zooms, visibly shifting the trailing edge.
+            let travel = rect_distance(zoom.from, target)
+                .max((zoom.from.x + zoom.from.width - target.x - target.width).abs())
+                .max((zoom.from.y + zoom.from.height - target.y - target.height).abs())
+                .max(1.0);
+            let config = config.normalized();
+            let progress_config = SpringConfig {
+                position_tolerance: config.position_tolerance / travel,
+                velocity_tolerance: config.velocity_tolerance / travel,
+                ..config
+            };
+            let active = zoom.progress.advance(delta, progress_config);
+            let p = zoom.progress.current;
             let lerp = |a: f64, b: f64| a + (b - a) * p;
             self.visual.current = Rect::new(
                 lerp(zoom.from.x, target.x),
@@ -540,6 +553,42 @@ fn finite_or(value: f64, fallback: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zoom_finishes_without_a_visible_final_edge_jump() {
+        let tiled = Rect::new(12.0, 12.0, 942.0, 1056.0);
+        let fullscreen = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        for (start, target, fullscreen_target) in
+            [(tiled, fullscreen, true), (fullscreen, tiled, false)]
+        {
+            let mut geometry = WindowGeometry::new(start, None);
+            if !fullscreen_target {
+                geometry.set_presentation_target(start, true, Duration::ZERO);
+                geometry.advance(Duration::ZERO, SpringConfig::default(), false);
+            }
+            geometry.set_presentation_target(target, fullscreen_target, Duration::ZERO);
+            let mut finished = false;
+            for _ in 0..1000 {
+                let before = geometry.visual.current;
+                if !geometry.advance(
+                    Duration::from_secs_f64(1.0 / 144.0),
+                    SpringConfig::default(),
+                    true,
+                ) {
+                    let right_before = before.x + before.width;
+                    let right_after = target.x + target.width;
+                    assert!(
+                        (right_after - right_before).abs() < 0.5,
+                        "final right-edge jump: {} pixels",
+                        (right_after - right_before).abs()
+                    );
+                    finished = true;
+                    break;
+                }
+            }
+            assert!(finished);
+        }
+    }
 
     #[test]
     fn zoom_geometry_and_decorations_share_progress() {
