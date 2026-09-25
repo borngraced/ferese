@@ -3,11 +3,13 @@
 mod backends;
 mod config;
 mod cursor;
+mod effects;
 mod grabs;
 mod handlers;
 mod input;
 mod ipc;
 mod metrics;
+mod private_client;
 mod stacking;
 mod state;
 mod window_rules;
@@ -66,7 +68,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
 
     info!(socket = ?state.socket_name, backend = ?launch.backend, "Ferese is accepting Wayland clients");
-    spawn_client(launch.client);
+    spawn_client(&mut state, launch.client, launch.client_capabilities);
     event_loop.run(None, &mut state, |_| {})?;
     Ok(())
 }
@@ -77,15 +79,34 @@ fn init_logging() {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
-fn spawn_client(mut args: Vec<std::ffi::OsString>) {
+fn spawn_client(
+    state: &mut Ferese,
+    mut args: Vec<std::ffi::OsString>,
+    capabilities: private_client::ClientCapabilities,
+) {
     if args.is_empty() {
         info!("no client requested; pass one after `--`, for example `-- foot`");
         return;
     }
     let program = args.remove(0);
 
-    match Command::new(&program).args(args).spawn() {
+    let mut command = Command::new(&program);
+    command.args(args);
+    let private_connection = if capabilities.is_empty() {
+        None
+    } else {
+        match private_client::prepare_command(state, &mut command, capabilities) {
+            Ok(connection) => Some(connection),
+            Err(error) => {
+                warn!(program = ?program, %error, "failed to create private Wayland connection");
+                return;
+            }
+        }
+    };
+
+    match command.spawn() {
         Ok(child) => info!(program = ?program, pid = child.id(), "spawned Wayland client"),
         Err(error) => warn!(program = ?program, %error, "failed to spawn Wayland client"),
     }
+    drop(private_connection);
 }

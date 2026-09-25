@@ -422,6 +422,7 @@ dependencies = [
  "ferese-core",
  "ferese-ipc",
  "ferese-layout",
+ "ferese-protocols",
  "libc",
  "serde",
  "serde_json",

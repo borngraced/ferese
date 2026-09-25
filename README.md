@@ -31,6 +31,20 @@ pixels, average and longest render time, and DRM missed-deadline totals.
 The native-client soak runner and its nested/DRM procedure are documented in
 [docs/native-soak-testing.md](docs/native-soak-testing.md).
 
+The M7 semantic-effects probe must use a compositor-created private connection.
+Build it, then grant only the `effects` capability to that launched process:
+
+```bash
+cargo build -p ferese-effects-probe
+cargo run -p ferese -- --grant-effects -- target/debug/ferese-effects-probe
+```
+
+To verify that the private global is absent from the public Wayland socket:
+
+```bash
+cargo run -p ferese -- target/debug/ferese-effects-probe --expect-hidden
+```
+
 Ferese reads `$XDG_CONFIG_HOME/ferese/config.toml`, or
 `~/.config/ferese/config.toml` when `XDG_CONFIG_HOME` is unset. New scrolling
 columns use half the viewport by default. To make every newly opened column use

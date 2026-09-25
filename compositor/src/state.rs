@@ -355,6 +355,7 @@ impl Ferese {
     ) -> Result<Self, Box<dyn Error>> {
         let display_handle = display.handle();
         crate::handlers::screencopy::init_global(&display_handle);
+        crate::effects::init_global(&display_handle);
         let alpha_modifier_state = AlphaModifierState::new::<Self>(&display_handle);
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
@@ -1856,6 +1857,7 @@ fn client_size(window: &Window) -> Option<ClientSize> {
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
+    pub(crate) capabilities: crate::private_client::ClientCapabilities,
 }
 
 impl ClientData for ClientState {

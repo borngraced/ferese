@@ -19,11 +19,21 @@ const WIDTH: u32 = 640;
 const HEIGHT: u32 = 64;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let expect_hidden = std::env::args_os().any(|argument| argument == "--expect-hidden");
     let connection = Connection::connect_to_env()?;
     let mut queue = connection.new_event_queue();
     let qh = queue.handle();
     connection.display().get_registry(&qh, ());
     let mut state = ProbeState::default();
+
+    if expect_hidden {
+        queue.roundtrip(&mut state)?;
+        if state.effects_manager.is_some() {
+            return Err("public client could see the private effects global".into());
+        }
+        println!("PASS public client cannot see ferese_effects_manager_v1");
+        return Ok(());
+    }
 
     while state.effects.is_none() || !state.configured {
         queue.blocking_dispatch(&mut state)?;

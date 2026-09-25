@@ -4,7 +4,7 @@ use std::ffi::OsString;
 
 use smithay::reexports::calloop::EventLoop;
 
-use crate::Ferese;
+use crate::{Ferese, private_client::ClientCapabilities};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BackendKind {
@@ -16,6 +16,7 @@ pub enum BackendKind {
 pub struct LaunchConfig {
     pub backend: BackendKind,
     pub client: Vec<OsString>,
+    pub client_capabilities: ClientCapabilities,
 }
 
 impl LaunchConfig {
@@ -33,6 +34,7 @@ impl LaunchConfig {
         let mut args = args.into_iter().peekable();
         let mut requested_backend = None;
         let mut client = Vec::new();
+        let mut client_capabilities = ClientCapabilities::default();
 
         while let Some(argument) = args.next() {
             if argument == "--" {
@@ -44,6 +46,10 @@ impl LaunchConfig {
                     .next()
                     .ok_or_else(|| "--backend requires auto, nested, or drm".to_owned())?;
                 requested_backend = Some(parse_backend(&value)?);
+                continue;
+            }
+            if argument == "--grant-effects" {
+                client_capabilities.insert(ClientCapabilities::EFFECTS);
                 continue;
             }
             if let Some(value) = argument
@@ -65,7 +71,11 @@ impl LaunchConfig {
             BackendKind::Drm
         });
 
-        Ok(Self { backend, client })
+        Ok(Self {
+            backend,
+            client,
+            client_capabilities,
+        })
     }
 }
 
@@ -102,6 +112,7 @@ mod tests {
 
         assert_eq!(config.backend, BackendKind::Nested);
         assert_eq!(config.client, [OsString::from("foot")]);
+        assert!(config.client_capabilities.is_empty());
     }
 
     #[test]
@@ -110,6 +121,7 @@ mod tests {
 
         assert_eq!(config.backend, BackendKind::Drm);
         assert!(config.client.is_empty());
+        assert!(config.client_capabilities.is_empty());
     }
 
     #[test]
@@ -129,6 +141,26 @@ mod tests {
         assert_eq!(
             config.client,
             [OsString::from("foot"), OsString::from("--title=Ferese")]
+        );
+        assert!(config.client_capabilities.is_empty());
+    }
+
+    #[test]
+    fn explicitly_grants_effects_to_the_launched_private_client() {
+        let config = LaunchConfig::parse(
+            [
+                OsString::from("--grant-effects"),
+                OsString::from("ferese-effects-probe"),
+            ],
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(config.client, [OsString::from("ferese-effects-probe")]);
+        assert!(
+            config
+                .client_capabilities
+                .contains(ClientCapabilities::EFFECTS)
         );
     }
 

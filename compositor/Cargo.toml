@@ -11,6 +11,7 @@ ferese-animation = { path = "../crates/ferese-animation" }
 ferese-core = { path = "../crates/ferese-core" }
 ferese-ipc = { path = "../crates/ferese-ipc" }
 ferese-layout = { path = "../crates/ferese-layout" }
+ferese-protocols = { path = "../crates/ferese-protocols", features = ["server"] }
 libc.workspace = true
 smithay.workspace = true
 serde.workspace = true
