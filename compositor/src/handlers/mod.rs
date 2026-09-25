@@ -237,6 +237,7 @@ impl XdgForeignHandler for Ferese {
 impl XdgToplevelIconHandler for Ferese {}
 
 smithay::delegate_compositor!(Ferese);
+smithay::delegate_alpha_modifier!(Ferese);
 smithay::delegate_cursor_shape!(Ferese);
 smithay::delegate_data_device!(Ferese);
 smithay::delegate_dmabuf!(Ferese);

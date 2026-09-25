@@ -47,6 +47,7 @@ use smithay::{
     },
     utils::{Logical, Point, Size},
     wayland::{
+        alpha_modifier::AlphaModifierState,
         compositor::{CompositorClientState, CompositorState, with_states},
         cursor_shape::CursorShapeManagerState,
         dmabuf::{DmabufState, ImportNotifier},
@@ -123,6 +124,7 @@ pub struct Ferese {
     last_animation_tick: Instant,
     pub popups: PopupManager,
     pub seat: Seat<Self>,
+    pub alpha_modifier_state: AlphaModifierState,
     pub compositor_state: CompositorState,
     pub cursor_shape_state: CursorShapeManagerState,
     pub data_device_state: DataDeviceState,
@@ -321,6 +323,7 @@ impl Ferese {
     ) -> Result<Self, Box<dyn Error>> {
         let display_handle = display.handle();
         crate::handlers::screencopy::init_global(&display_handle);
+        let alpha_modifier_state = AlphaModifierState::new::<Self>(&display_handle);
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
@@ -425,6 +428,7 @@ impl Ferese {
             last_animation_tick: start_time,
             popups: PopupManager::default(),
             seat,
+            alpha_modifier_state,
             compositor_state,
             cursor_shape_state,
             data_device_state,
