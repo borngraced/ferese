@@ -574,8 +574,8 @@ to `visual.target`. Geometry uses spring animation; opacity, dimming, blur
 intensity, and overlays use bounded easing. Updates MUST use presentation or
 monotonic frame timestamps and MUST NOT assume a fixed refresh rate.
 
-The default geometry spring uses mass `1.0`, stiffness `320.0`, and damping
-`36.0`, which is approximately critically damped. Geometry defaults MUST NOT
+The default geometry spring uses mass `1.0`, stiffness `700.0`, and damping
+`53.0`, which is approximately critically damped. Geometry defaults MUST NOT
 overshoot shared tile boundaries. User-configured underdamped geometry springs
 MAY overshoot numerically, but their rendered content remains clipped to the
 animated allocation and MUST NOT cover adjacent windows.
@@ -927,8 +927,8 @@ reduced_motion = false
 speed = 1.0
 
 [animations.spring]
-stiffness = 320.0
-damping = 36.0
+stiffness = 700.0
+damping = 53.0
 mass = 1.0
 
 [tiling]

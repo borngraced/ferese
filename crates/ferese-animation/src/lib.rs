@@ -19,8 +19,8 @@ impl Default for SpringConfig {
     fn default() -> Self {
         Self {
             mass: 1.0,
-            stiffness: 320.0,
-            damping: 36.0,
+            stiffness: 700.0,
+            damping: 53.0,
             position_tolerance: 0.1,
             velocity_tolerance: 0.1,
         }
@@ -420,6 +420,27 @@ mod tests {
         assert!(one_forty_four.is_settled(SpringConfig::default()));
         assert_eq!(sixty.current, target);
         assert_eq!(one_forty_four.current, target);
+    }
+
+    #[test]
+    fn default_spring_completes_most_motion_within_two_hundred_milliseconds() {
+        let start = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let target = Rect::new(500.0, 300.0, 900.0, 700.0);
+        let mut animated = AnimatedRect::new(start);
+        animated.set_target(target);
+
+        for _ in 0..12 {
+            animated.advance(Duration::from_secs_f64(1.0 / 60.0), SpringConfig::default());
+        }
+
+        assert!(animated.current.x >= 475.0);
+        assert!(animated.current.y >= 285.0);
+        assert!(animated.current.width >= 860.0);
+        assert!(animated.current.height >= 670.0);
+        assert!(animated.current.x <= target.x);
+        assert!(animated.current.y <= target.y);
+        assert!(animated.current.width <= target.width);
+        assert!(animated.current.height <= target.height);
     }
 
     #[test]
