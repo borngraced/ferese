@@ -40,6 +40,7 @@ use smithay::{
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
     reexports::calloop::EventLoop,
     reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind as PresentationKind,
+    reexports::wayland_server::Resource,
     utils::{
         Buffer, Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale as RenderScale,
         Transform,
@@ -210,11 +211,54 @@ void main() {
 }
 "#;
 
+const MATERIAL_SHADER: &str = r#"
+precision mediump float;
+
+uniform float alpha;
+uniform vec4 tint;
+uniform float noise_amount;
+varying vec2 v_coords;
+
+float random(vec2 point) {
+    return fract(sin(dot(point, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+void main() {
+    float grain = (random(gl_FragCoord.xy) - 0.5) * noise_amount;
+    vec3 color = clamp(tint.rgb + vec3(grain), 0.0, 1.0);
+    float opacity = tint.a * alpha;
+    gl_FragColor = vec4(color * opacity, opacity);
+}
+"#;
+
 #[derive(Clone, Debug)]
 pub(crate) struct RoundedClipPrograms {
     texture: GlesTexProgram,
     border: GlesPixelProgram,
     shadow: GlesPixelProgram,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MaterialProgram(GlesPixelProgram);
+
+#[derive(Clone, Debug, PartialEq)]
+struct MaterialParameters {
+    geometry: Rectangle<i32, Logical>,
+    tint: [f32; 4],
+    noise: f32,
+    generation: u64,
+    opaque: bool,
+}
+
+#[derive(Debug)]
+struct CachedMaterial {
+    element: PixelShaderElement,
+    parameters: MaterialParameters,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct MaterialBuffers {
+    contexts: HashMap<ErasedContextId, CachedMaterial>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -569,6 +613,7 @@ fn output_elements(
         Vec::new()
     };
     elements.extend(layer_elements(
+        state,
         renderer,
         output,
         &[Layer::Overlay, Layer::Top],
@@ -680,6 +725,7 @@ fn output_elements(
         }
     }
     elements.extend(layer_elements(
+        state,
         renderer,
         output,
         &[Layer::Bottom, Layer::Background],
@@ -1081,6 +1127,7 @@ fn layer_surfaces(output: &Output) -> Vec<LayerSurface> {
 }
 
 fn layer_elements(
+    state: &mut Ferese,
     renderer: &mut GlesRenderer,
     output: &Output,
     requested_layers: &[Layer],
@@ -1098,33 +1145,139 @@ fn layer_elements(
             .flat_map(|requested| {
                 map.layers_on(*requested).rev().filter_map(|layer| {
                     map.layer_geometry(layer)
-                        .map(|geometry| (geometry.loc, layer.clone()))
+                        .map(|geometry| (geometry, layer.clone()))
                 })
             })
             .collect::<Vec<_>>()
     };
 
-    layers
-        .into_iter()
-        .flat_map(|(location, layer)| {
+    state
+        .material_buffers
+        .retain(|surface, _| surface.is_alive());
+
+    let mut elements = Vec::new();
+    for (geometry, layer) in layers {
+        elements.extend(
             AsRenderElements::<GlesRenderer>::render_elements::<
                 WaylandSurfaceRenderElement<GlesRenderer>,
             >(
                 &layer,
                 renderer,
-                location.to_physical_precise_round(scale),
+                geometry.loc.to_physical_precise_round(scale),
                 scale.into(),
                 1.0,
             )
-        })
-        .filter_map(|element| {
-            let origin = Point::<i32, Physical>::default();
-            let element = RescaleRenderElement::from_element(element, origin, 1.0);
-            let element = RelocateRenderElement::from_element(element, origin, Relocate::Relative);
+            .into_iter()
+            .filter_map(|element| {
+                let origin = Point::<i32, Physical>::default();
+                let element = RescaleRenderElement::from_element(element, origin, 1.0);
+                let element =
+                    RelocateRenderElement::from_element(element, origin, Relocate::Relative);
 
-            CropRenderElement::from_element(element, scale, output_crop).map(Into::into)
-        })
-        .collect()
+                CropRenderElement::from_element(element, scale, output_crop).map(Into::into)
+            }),
+        );
+
+        if let Some(material) = material_element(state, renderer, &layer, geometry) {
+            elements.push(material.into());
+        }
+    }
+
+    elements
+}
+
+fn material_element(
+    state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+    layer: &LayerSurface,
+    geometry: Rectangle<i32, Logical>,
+) -> Option<PixelShaderElement> {
+    let surface = layer.wl_surface();
+    let (role, generation) = crate::effects::surface_role(surface)?;
+    let material = crate::effects::resolve_material(role, state.theme_settings.material_style);
+    let program = material_program(state, renderer)?;
+    let tint = match material.style {
+        crate::config::MaterialStyle::Solid => [0.067, 0.094, 0.129, material.opacity],
+        crate::config::MaterialStyle::Glass | crate::config::MaterialStyle::Translucent => {
+            [0.067, 0.094, 0.129, material.opacity]
+        }
+    };
+    let parameters = MaterialParameters {
+        geometry,
+        tint,
+        noise: material.noise,
+        generation,
+        opaque: material.opacity == 1.0,
+    };
+    let context = renderer.context_id().erased();
+    let buffers = state.material_buffers.entry(surface.clone()).or_default();
+    if !buffers.contexts.contains_key(&context) {
+        let element = PixelShaderElement::new(
+            program.0,
+            geometry,
+            parameters
+                .opaque
+                .then(|| vec![Rectangle::from_size(geometry.size)]),
+            1.0,
+            material_uniforms(&parameters),
+            RenderElementKind::Unspecified,
+        );
+        buffers.contexts.insert(
+            context.clone(),
+            CachedMaterial {
+                element,
+                parameters: parameters.clone(),
+            },
+        );
+    }
+
+    let cached = buffers.contexts.get_mut(&context)?;
+    if cached.parameters != parameters {
+        if cached.parameters.geometry != parameters.geometry
+            || cached.parameters.opaque != parameters.opaque
+        {
+            let opaque = parameters
+                .opaque
+                .then(|| vec![Rectangle::from_size(parameters.geometry.size)]);
+            cached.element.resize(parameters.geometry, opaque);
+        }
+        cached
+            .element
+            .update_uniforms(material_uniforms(&parameters));
+        cached.parameters = parameters;
+    }
+
+    Some(cached.element.clone())
+}
+
+fn material_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<MaterialProgram> {
+    let context = renderer.context_id().erased();
+    if let Some(program) = state.material_programs.get(&context) {
+        return Some(program.clone());
+    }
+
+    let uniforms = [
+        UniformName::new("tint", UniformType::_4f),
+        UniformName::new("noise_amount", UniformType::_1f),
+    ];
+    match renderer.compile_custom_pixel_shader(MATERIAL_SHADER, &uniforms) {
+        Ok(program) => {
+            let program = MaterialProgram(program);
+            state.material_programs.insert(context, program.clone());
+            Some(program)
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to compile semantic material shader");
+            None
+        }
+    }
+}
+
+fn material_uniforms(parameters: &MaterialParameters) -> Vec<Uniform<'static>> {
+    vec![
+        Uniform::new("tint", parameters.tint).into_owned(),
+        Uniform::new("noise_amount", parameters.noise).into_owned(),
+    ]
 }
 
 fn cursor_elements(
