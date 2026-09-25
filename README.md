@@ -121,6 +121,21 @@ fullscreen = false
 Rules are finalized on the first toplevel commit, before its buffer is
 presented, and are not re-applied when an application later changes its title.
 
+`feresectl` controls the running compositor through the same-user socket at
+`$XDG_RUNTIME_DIR/ferese/control.sock`. For example:
+
+```bash
+cargo run -p feresectl -- focus left
+cargo run -p feresectl -- workspace 2
+cargo run -p feresectl -- get-workspaces
+```
+
+The v0 IPC slice also supports `move`, `resize`, `move-to-workspace`,
+`toggle-floating`, `toggle-fullscreen`, `close`, `get-focused-window`, and
+`get-outputs`. Requests use versioned, 1 MiB-limited length-prefixed JSON. The
+runtime directory and socket are restricted to modes `0700` and `0600`, and the
+server rejects peers whose effective UID differs from the compositor's.
+
 Text-input-v3 is available to applications by default. Input-method-v2 is
 hidden unless the session explicitly opts in, because an input method can
 request privileged keyboard access. Enable it only when launching a trusted

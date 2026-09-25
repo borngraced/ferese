@@ -445,6 +445,10 @@ impl WorkspaceSet {
         self.workspaces.get_mut(&id)
     }
 
+    pub fn iter(&self) -> impl Iterator<Item = &Workspace> {
+        self.workspaces.values()
+    }
+
     pub fn workspace_for_window(&self, window: WindowId) -> Option<WorkspaceId> {
         self.window_workspaces.get(&window).copied()
     }

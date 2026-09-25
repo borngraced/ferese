@@ -6,12 +6,14 @@ mod cursor;
 mod grabs;
 mod handlers;
 mod input;
+mod ipc;
 mod state;
 mod window_rules;
 mod winit;
 
 use std::{error::Error, io, process::Command};
 
+use calloop::signals::{Signal, Signals};
 use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
 pub use state::{Ferese, RuntimeConfig};
 use tracing::{info, warn};
@@ -29,6 +31,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let bindings = config.bindings(&input_settings)?;
     let window_rules = config.window_rules()?;
     let mut event_loop = EventLoop::try_new()?;
+    let signals = Signals::new(&[Signal::SIGINT, Signal::SIGTERM])?;
+    event_loop
+        .handle()
+        .insert_source(signals, |event, _, state: &mut Ferese| {
+            info!(signal = ?event.signal(), "stopping Ferese");
+            state.loop_signal.stop();
+        })?;
     let display = Display::new()?;
     let runtime = RuntimeConfig {
         layout_mode: config.layout_mode(),

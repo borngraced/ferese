@@ -112,6 +112,7 @@ pub struct Ferese {
     pub idle_inhibitors: HashMap<WlSurface, usize>,
     pub active_shortcuts_inhibitor: Option<KeyboardShortcutsInhibitor>,
     pub direct_backend: Option<crate::backends::direct::DirectBackendState>,
+    _ipc_socket: Option<crate::ipc::IpcSocketGuard>,
     pending_dmabuf_imports: Vec<(Dmabuf, ImportNotifier)>,
     pub(crate) pending_screencopies: Vec<crate::handlers::screencopy::PendingScreencopy>,
     next_window_id: u64,
@@ -260,6 +261,10 @@ impl Ferese {
             .find_map(|(output, id)| (*id == focused).then_some(output))
     }
 
+    pub(crate) fn output_id(&self, output: &Output) -> Option<OutputId> {
+        self.output_ids.get(output).copied()
+    }
+
     pub(crate) fn focus_output_at(&mut self, position: Point<f64, Logical>) {
         let output = self.space.outputs().find_map(|output| {
             let geometry = self.space.output_geometry(output)?;
@@ -369,7 +374,7 @@ impl Ferese {
         let default_cursor = crate::cursor::load_named_cursor(&cursor_theme, CursorIcon::Default);
         let named_cursors = HashMap::from([(CursorIcon::Default, default_cursor)]);
 
-        Ok(Self {
+        let mut state = Self {
             start_time,
             socket_name,
             display_handle,
@@ -405,6 +410,7 @@ impl Ferese {
             idle_inhibitors: HashMap::new(),
             active_shortcuts_inhibitor: None,
             direct_backend: None,
+            _ipc_socket: None,
             pending_dmabuf_imports: Vec::new(),
             pending_screencopies: Vec::new(),
             next_window_id: 1,
@@ -437,7 +443,9 @@ impl Ferese {
             xdg_foreign_state,
             xdg_shell_state,
             xdg_toplevel_icon_manager,
-        })
+        };
+        state._ipc_socket = Some(crate::ipc::init(event_loop)?);
+        Ok(state)
     }
 
     fn init_wayland_listener(
