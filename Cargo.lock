@@ -447,6 +447,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferese-effects-probe"
+version = "0.1.0"
+dependencies = [
+ "ferese-protocols",
+ "tempfile",
+ "wayland-client",
+ "wayland-protocols-wlr",
+]
+
+[[package]]
 name = "ferese-ipc"
 version = "0.1.0"
 dependencies = [
