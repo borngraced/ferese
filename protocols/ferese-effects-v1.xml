@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="ferese_effects_v1">
+  <copyright>
+    Copyright 2026 Ferese contributors
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <interface name="ferese_effects_manager_v1" version="1">
+    <description summary="assign semantic material roles to surfaces">
+      This private global is visible only to clients granted the Ferese effects
+      capability. Roles describe compositor-owned appearance policy and do not
+      expose shader parameters or backdrop content to the client.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager binding"/>
+    </request>
+
+    <request name="get_surface_effects">
+      <description summary="create semantic effects state for a surface">
+        A wl_surface can have at most one live surface-effects object. Creating
+        another object for the same surface is a protocol error.
+      </description>
+      <arg name="id" type="new_id" interface="ferese_surface_effects_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <enum name="error">
+      <entry name="already_constructed" value="0"
+             summary="the surface already has an effects object"/>
+    </enum>
+  </interface>
+
+  <interface name="ferese_surface_effects_v1" version="1">
+    <description summary="semantic material role for one surface">
+      The role affects only compositor rendering. It does not change surface
+      geometry, input, focus, stacking, or the surface's Wayland role.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="clear the role and destroy this object"/>
+    </request>
+
+    <request name="set_role">
+      <description summary="set the semantic material role">
+        The most recent valid role replaces the previous role atomically.
+      </description>
+      <arg name="role" type="uint" enum="role"/>
+    </request>
+
+    <request name="clear_role">
+      <description summary="clear the semantic material role"/>
+    </request>
+
+    <enum name="role">
+      <entry name="panel" value="0" summary="persistent panel surface"/>
+      <entry name="panel_elevated" value="1" summary="raised panel surface"/>
+      <entry name="popover" value="2" summary="transient popover"/>
+      <entry name="menu" value="3" summary="menu surface"/>
+      <entry name="notification" value="4" summary="notification surface"/>
+      <entry name="hud" value="5" summary="heads-up display surface"/>
+      <entry name="modal" value="6" summary="modal surface"/>
+    </enum>
+  </interface>
+</protocol>

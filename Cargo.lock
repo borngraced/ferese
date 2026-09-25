@@ -463,6 +463,16 @@ name = "ferese-malformed-client"
 version = "0.1.0"
 
 [[package]]
+name = "ferese-protocols"
+version = "0.1.0"
+dependencies = [
+ "wayland-backend",
+ "wayland-client",
+ "wayland-scanner",
+ "wayland-server",
+]
+
+[[package]]
 name = "feresectl"
 version = "0.1.0"
 dependencies = [

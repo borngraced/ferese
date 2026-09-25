@@ -1,0 +1,17 @@
+[package]
+name = "ferese-protocols"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["client", "server"]
+client = ["dep:wayland-client"]
+server = ["dep:wayland-server"]
+
+[dependencies]
+wayland-backend.workspace = true
+wayland-client = { workspace = true, optional = true }
+wayland-scanner.workspace = true
+wayland-server = { workspace = true, optional = true }

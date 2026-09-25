@@ -6,6 +6,7 @@ members = [
     "crates/ferese-core",
     "crates/ferese-ipc",
     "crates/ferese-layout",
+    "crates/ferese-protocols",
     "tools/ferese-malformed-client",
 ]
 resolver = "3"
@@ -36,3 +37,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 toml = "0.9.7"
 xcursor = "0.3.11"
+wayland-backend = "0.3.17"
+wayland-client = "0.31.15"
+wayland-scanner = "0.31.11"
+wayland-server = "0.31.14"
