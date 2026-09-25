@@ -560,18 +560,7 @@ fn output_elements(
         .collect::<Vec<_>>();
 
     for (window, id, visual, fullscreen, close_alpha) in windows {
-        let constrain = Rectangle::<i32, Logical>::new(
-            (
-                (visual.x - f64::from(output_geometry.loc.x)).round() as i32,
-                (visual.y - f64::from(output_geometry.loc.y)).round() as i32,
-            )
-                .into(),
-            (
-                visual.width.round().max(1.0) as i32,
-                visual.height.round().max(1.0) as i32,
-            )
-                .into(),
-        );
+        let constrain = rounded_visual_rect(visual, output_geometry.loc);
 
         if !fullscreen && let Some(programs) = rounded_clip_program.clone() {
             let window_radius = state.theme_settings.window_radius;
@@ -988,6 +977,21 @@ fn color_with_alpha(mut color: [f32; 4], alpha: f32) -> [f32; 4] {
     color
 }
 
+fn rounded_visual_rect(
+    rect: ferese_layout::Rect,
+    output_location: Point<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let left = (rect.x - f64::from(output_location.x)).round() as i32;
+    let top = (rect.y - f64::from(output_location.y)).round() as i32;
+    let right = (rect.x + rect.width - f64::from(output_location.x)).round() as i32;
+    let bottom = (rect.y + rect.height - f64::from(output_location.y)).round() as i32;
+
+    Rectangle::new(
+        (left, top).into(),
+        ((right - left).max(1), (bottom - top).max(1)).into(),
+    )
+}
+
 fn framebuffer_clip_rect(
     geometry: Rectangle<i32, Physical>,
     output_size: smithay::utils::Size<i32, Physical>,
@@ -1172,8 +1176,8 @@ mod tests {
     use smithay::utils::{Logical, Physical, Rectangle, Transform};
 
     use super::{
-        color_with_alpha, framebuffer_clip_rect, normalized_scale, scaled_visual_rect,
-        shadow_bounds,
+        color_with_alpha, framebuffer_clip_rect, normalized_scale, rounded_visual_rect,
+        scaled_visual_rect, shadow_bounds,
     };
 
     #[test]
@@ -1243,5 +1247,25 @@ mod tests {
             color_with_alpha([0.2, 0.4, 0.6, 0.8], 0.5),
             [0.2, 0.4, 0.6, 0.4]
         );
+    }
+
+    #[test]
+    fn visual_rect_rounds_shared_edges_instead_of_size() {
+        let rect = ferese_layout::Rect::new(100.5, 50.25, 399.5, 299.75);
+        let rounded = rounded_visual_rect(rect, (0, 0).into());
+
+        assert_eq!(rounded, Rectangle::new((101, 50).into(), (399, 300).into()));
+        assert_eq!(rounded.loc.x + rounded.size.w, 500);
+        assert_eq!(rounded.loc.y + rounded.size.h, 350);
+
+        for tenth in 0..=10 {
+            let left = 100.0 + f64::from(tenth) / 10.0;
+            let frame = rounded_visual_rect(
+                ferese_layout::Rect::new(left, 50.0, 500.0 - left, 300.0),
+                (0, 0).into(),
+            );
+
+            assert_eq!(frame.loc.x + frame.size.w, 500);
+        }
     }
 }
