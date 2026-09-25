@@ -118,6 +118,7 @@ pub struct Ferese {
     output_identity_ids: HashMap<String, OutputId>,
     pub window_ids: HashMap<Window, WindowId>,
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
+    pub(crate) window_decoration_progress: HashMap<WindowId, AnimatedValue>,
     pub(crate) window_borders: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
     pub(crate) window_shadows: HashMap<WindowId, crate::winit::WindowShadowBuffers>,
     pub(crate) rounded_clip_programs: HashMap<ErasedContextId, crate::winit::RoundedClipPrograms>,
@@ -428,6 +429,7 @@ impl Ferese {
             output_identity_ids: HashMap::new(),
             window_ids: HashMap::new(),
             window_geometry: HashMap::new(),
+            window_decoration_progress: HashMap::new(),
             window_borders: HashMap::new(),
             window_shadows: HashMap::new(),
             rounded_clip_programs: HashMap::new(),
@@ -819,6 +821,7 @@ impl Ferese {
 
         self.space.unmap_elem(window);
         self.window_geometry.remove(&id);
+        self.window_decoration_progress.remove(&id);
         self.window_borders.remove(&id);
         self.window_shadows.remove(&id);
         self.closing_windows.remove(&id);
@@ -970,8 +973,34 @@ impl Ferese {
         let now = self.start_time.elapsed();
 
         let mut scrolling_world_x = HashMap::new();
+        // map_element also raises windows. Keep relayout's HashMap iteration
+        // order from randomly changing the stack during overlapping animations.
+        let stacking_order = self
+            .space
+            .elements()
+            .enumerate()
+            .filter_map(|(index, window)| self.window_ids.get(window).map(|id| (*id, index)))
+            .collect::<HashMap<_, _>>();
+        placements.sort_by_key(|(_, id, ..)| stacking_order.get(id).copied().unwrap_or(usize::MAX));
+        let mut fullscreen_transitions = Vec::new();
 
         for (window, id, rect, is_fullscreen, is_floating, scrolling, couple_width) in placements {
+            let decoration_target = if is_fullscreen { 0.0 } else { 1.0 };
+            let decorations = self
+                .window_decoration_progress
+                .entry(id)
+                .or_insert_with(|| AnimatedValue::new(decoration_target));
+            if decorations.target != decoration_target {
+                fullscreen_transitions.push(window.clone());
+            }
+            decorations.set_target(decoration_target);
+            if !self.animations_enabled {
+                decorations.snap();
+            }
+            // A viewport-coupled width must never override fullscreen/floating geometry.
+            if scrolling.is_none() {
+                self.viewport_coupled_widths.remove(&id);
+            }
             let committed_size = client_size(&window);
             let had_geometry = self.window_geometry.contains_key(&id);
             let geometry = self
@@ -1070,6 +1099,11 @@ impl Ferese {
             }
         }
         self.scrolling_world_x = scrolling_world_x;
+        // Neighbours are remapped on fullscreen exit; the shrinking window must
+        // remain above them. Subsequent animation ticks preserve this ordering.
+        for window in fullscreen_transitions {
+            self.space.raise_element(&window, false);
+        }
 
         crate::backends::direct::render_all(self);
     }
@@ -1141,6 +1175,13 @@ impl Ferese {
 
         let mut settled_coupled_widths = Vec::new();
         for (window, id) in windows {
+            if let Some(decorations) = self.window_decoration_progress.get_mut(&id) {
+                if self.animations_enabled {
+                    active_animation |= decorations.advance(delta, self.spring_config);
+                } else {
+                    decorations.snap();
+                }
+            }
             let Some(geometry) = self.window_geometry.get_mut(&id) else {
                 continue;
             };
@@ -1535,7 +1576,21 @@ impl Ferese {
 
         if let Err(error) = self.workspaces.set_floating_rect(id, rect) {
             tracing::error!(%error, ?id, "failed to update floating window geometry");
+            return;
         }
+
+        // Direct manipulation follows the pointer, including while the client is
+        // still drawing its next buffer. Rendering and hit testing share this rect.
+        let geometry = self
+            .window_geometry
+            .entry(id)
+            .or_insert_with(|| WindowGeometry::new(rect, client_size(window)));
+        geometry.set_logical_target(rect, self.start_time.elapsed());
+        geometry.visual.snap();
+        self.scrolling_world_x.remove(&id);
+        self.viewport_coupled_widths.remove(&id);
+        self.space.map_element(window.clone(), location, false);
+        crate::backends::direct::render_all(self);
     }
 
     pub fn switch_workspace(&mut self, index: u32) {

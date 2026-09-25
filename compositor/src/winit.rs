@@ -574,21 +574,20 @@ fn output_elements(
             let visual = state.window_geometry.get(&id)?.visual.current;
             let (close_scale, close_alpha) = state.closing_visual(id);
             let visual = scaled_visual_rect(visual, close_scale);
-            let fullscreen = state
-                .workspaces
-                .workspace_for_window(id)
-                .and_then(|workspace| state.workspaces.workspace(workspace))
-                .is_some_and(|workspace| workspace.fullscreen == Some(id));
+            let decoration_progress = state
+                .window_decoration_progress
+                .get(&id)
+                .map_or(1.0, |progress| progress.current.clamp(0.0, 1.0));
 
-            Some((window.clone(), id, visual, fullscreen, close_alpha))
+            Some((window.clone(), id, visual, decoration_progress, close_alpha))
         })
         .collect::<Vec<_>>();
 
-    for (window, id, visual, fullscreen, close_alpha) in windows {
+    for (window, id, visual, decoration_progress, close_alpha) in windows {
         let constrain = rounded_visual_rect(visual, output_geometry.loc);
 
-        if !fullscreen && let Some(programs) = rounded_clip_program.clone() {
-            let window_radius = state.theme_settings.window_radius;
+        if let Some(programs) = rounded_clip_program.clone() {
+            let window_radius = state.theme_settings.window_radius * decoration_progress;
             let shadow_offset_y = state.theme_settings.shadow_offset_y;
             let shadow_blur = state.theme_settings.shadow_blur;
             let shadow_opacity = state.theme_settings.shadow_opacity;
@@ -604,7 +603,8 @@ fn output_elements(
             } else {
                 state.theme_settings.border_color.0
             };
-            let border_color = color_with_alpha(border_color, close_alpha);
+            let border_color =
+                color_with_alpha(border_color, close_alpha * decoration_progress as f32);
 
             if let Some(border) = window_border_element(
                 state,
@@ -629,7 +629,7 @@ fn output_elements(
                 window_radius,
                 shadow_offset_y,
                 shadow_blur,
-                shadow_opacity * f64::from(close_alpha),
+                shadow_opacity * f64::from(close_alpha) * decoration_progress,
                 shadow_color,
                 output,
                 &programs,
@@ -656,7 +656,7 @@ fn output_elements(
                 renderer,
                 &window,
                 constrain.loc,
-                1.0,
+                close_alpha,
                 scale,
                 constrain,
                 ConstrainBehavior {
