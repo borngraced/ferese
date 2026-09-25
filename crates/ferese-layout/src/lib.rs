@@ -120,7 +120,7 @@ impl Default for GapConfig {
         Self {
             inner: 10.0,
             outer: 10.0,
-            smart: true,
+            smart: false,
         }
     }
 }
@@ -1191,10 +1191,29 @@ mod tests {
 
         let bounds = Rect::new(0.0, 0.0, 100.0, 80.0);
         let geometry = tree
-            .geometry_with_gaps(bounds, GapConfig::default())
+            .geometry_with_gaps(
+                bounds,
+                GapConfig {
+                    smart: true,
+                    ..GapConfig::default()
+                },
+            )
             .unwrap();
 
         assert_eq!(geometry[&WindowId(1)], bounds);
+    }
+
+    #[test]
+    fn default_gaps_keep_outer_spacing_for_one_window() {
+        let mut tree = LayoutTree::default();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
+            .unwrap();
+
+        let geometry = tree
+            .geometry_with_gaps(Rect::new(0.0, 0.0, 100.0, 80.0), GapConfig::default())
+            .unwrap();
+
+        assert_eq!(geometry[&WindowId(1)], Rect::new(10.0, 10.0, 80.0, 60.0));
     }
 
     #[test]
@@ -1552,7 +1571,7 @@ mod tests {
 
         assert_eq!(
             result.geometry[&WindowId(1)],
-            Rect::new(0.0, 0.0, 60.0, 40.0)
+            Rect::new(10.0, 10.0, 60.0, 40.0)
         );
         assert_eq!(result.warnings.len(), 2);
     }

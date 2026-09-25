@@ -1025,7 +1025,10 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(first.geometry[&WindowId(1)].width, 1_000.0);
+        assert_eq!(
+            first.geometry[&WindowId(1)],
+            Rect::new(10.0, 10.0, 980.0, 780.0)
+        );
         workspaces.switch_to_numeric(2).unwrap();
         assert_eq!(workspaces.active().layout.mode(), LayoutMode::Scrolling);
     }

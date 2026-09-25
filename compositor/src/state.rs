@@ -90,6 +90,7 @@ pub struct Ferese {
     scrolling_world_x: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
     pub focused_window: Option<WindowId>,
     column_width_presets: Vec<ColumnWidth>,
+    gap_config: GapConfig,
     animations_enabled: bool,
     animation_speed: f64,
     spring_config: SpringConfig,
@@ -137,6 +138,7 @@ pub struct Ferese {
 
 pub struct RuntimeConfig {
     pub layout_mode: LayoutMode,
+    pub gap_config: GapConfig,
     pub default_column_width: ColumnWidth,
     pub scrolling_focus_strategy: ViewportFocusStrategy,
     pub column_width_presets: Vec<ColumnWidth>,
@@ -363,6 +365,7 @@ impl Ferese {
             scrolling_world_x: HashMap::new(),
             focused_window: None,
             column_width_presets: config.column_width_presets,
+            gap_config: config.gap_config,
             animations_enabled: config.animations_enabled,
             animation_speed: config.animation_speed,
             spring_config: config.spring_config,
@@ -699,7 +702,7 @@ impl Ferese {
             };
             let layout = match workspace.layout.geometry_with_constraints(
                 bounds,
-                GapConfig::default(),
+                self.gap_config,
                 &constraints,
                 focused,
             ) {
@@ -1162,7 +1165,7 @@ impl Ferese {
 
         match self
             .workspaces
-            .center_window(window, bounds, GapConfig::default(), &constraints)
+            .center_window(window, bounds, self.gap_config, &constraints)
         {
             Ok(true) => self.relayout(),
             Ok(false) => {}
@@ -1401,7 +1404,7 @@ impl Ferese {
                 .workspaces
                 .workspace_mut(workspace)?
                 .layout
-                .geometry_with_constraints(bounds, GapConfig::default(), &constraints, focused)
+                .geometry_with_constraints(bounds, self.gap_config, &constraints, focused)
                 .ok()?
                 .geometry
                 .get(&window)
@@ -1416,7 +1419,7 @@ impl Ferese {
         self.workspaces
             .active_mut()
             .layout
-            .geometry_with_constraints(bounds, GapConfig::default(), &constraints, focused)
+            .geometry_with_constraints(bounds, self.gap_config, &constraints, focused)
     }
 
     fn window_constraints(&self) -> HashMap<WindowId, SizeConstraints> {

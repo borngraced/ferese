@@ -28,6 +28,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let display = Display::new()?;
     let runtime = RuntimeConfig {
         layout_mode: config.layout_mode(),
+        gap_config: config.gap_config()?,
         default_column_width: config.default_column_width()?,
         scrolling_focus_strategy: config.scrolling_focus_strategy(),
         column_width_presets: config.width_presets()?,

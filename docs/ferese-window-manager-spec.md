@@ -624,8 +624,9 @@ mode, center creates or joins a stack and an edge creates a split.
 
 Shared gap defaults live under `[layout]`; mode-specific behavior lives under
 `[scrolling]` and `[tiling]`. `inner_gap` separates managed windows and
-`outer_gap` separates the layout from output bounds. With `smart_gaps = true`,
-a lone managed window has no outer gap.
+`outer_gap` separates the layout from output bounds. Outer gaps are retained by
+default. With the explicit opt-in `smart_gaps = true`, a lone managed window has
+no outer gap.
 
 ## 7. Geometry and animation
 
@@ -1083,7 +1084,7 @@ mass = 1.0
 mode = "scrolling"
 inner_gap = 10.0
 outer_gap = 10.0
-smart_gaps = true
+smart_gaps = false
 
 [scrolling]
 default_column_width = 0.5

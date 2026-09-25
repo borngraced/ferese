@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use ferese_animation::SpringConfig;
 use ferese_core::LayoutMode;
-use ferese_layout::{ColumnWidth, ViewportFocusStrategy};
+use ferese_layout::{ColumnWidth, GapConfig, ViewportFocusStrategy};
 use serde::Deserialize;
 
 #[derive(Debug, Default, Deserialize)]
@@ -86,9 +86,26 @@ impl Default for SpringSettings {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct LayoutConfig {
     mode: Option<LayoutModeValue>,
+    #[serde(default = "default_inner_gap")]
+    inner_gap: f64,
+    #[serde(default = "default_outer_gap")]
+    outer_gap: f64,
+    #[serde(default)]
+    smart_gaps: bool,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self {
+            mode: None,
+            inner_gap: default_inner_gap(),
+            outer_gap: default_outer_gap(),
+            smart_gaps: false,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -138,6 +155,10 @@ pub enum ConfigError {
         field: &'static str,
         value: f64,
     },
+    InvalidLayoutValue {
+        field: &'static str,
+        value: f64,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -156,6 +177,9 @@ impl fmt::Display for ConfigError {
             Self::InvalidAnimationValue { field, value } => {
                 write!(formatter, "invalid animations.{field} value {value}")
             }
+            Self::InvalidLayoutValue { field, value } => {
+                write!(formatter, "invalid layout.{field} value {value}")
+            }
         }
     }
 }
@@ -165,7 +189,9 @@ impl Error for ConfigError {
         match self {
             Self::Read { source, .. } => Some(source),
             Self::Parse { source, .. } => Some(source),
-            Self::InvalidColumnWidth { .. } | Self::InvalidAnimationValue { .. } => None,
+            Self::InvalidColumnWidth { .. }
+            | Self::InvalidAnimationValue { .. }
+            | Self::InvalidLayoutValue { .. } => None,
         }
     }
 }
@@ -189,6 +215,17 @@ impl Config {
             LayoutModeValue::Scrolling => LayoutMode::Scrolling,
             LayoutModeValue::Tree => LayoutMode::Tree,
         }
+    }
+
+    pub fn gap_config(&self) -> Result<GapConfig, ConfigError> {
+        let inner = nonnegative_layout_value(self.layout.inner_gap, "inner_gap")?;
+        let outer = nonnegative_layout_value(self.layout.outer_gap, "outer_gap")?;
+
+        Ok(GapConfig {
+            inner,
+            outer,
+            smart: self.layout.smart_gaps,
+        })
     }
 
     pub fn default_column_width(&self) -> Result<ColumnWidth, ConfigError> {
@@ -286,8 +323,24 @@ fn positive_animation_value(value: f64, field: &'static str) -> Result<f64, Conf
     }
 }
 
+fn nonnegative_layout_value(value: f64, field: &'static str) -> Result<f64, ConfigError> {
+    if value.is_finite() && value >= 0.0 {
+        Ok(value)
+    } else {
+        Err(ConfigError::InvalidLayoutValue { field, value })
+    }
+}
+
 const fn enabled_by_default() -> bool {
     true
+}
+
+const fn default_inner_gap() -> f64 {
+    10.0
+}
+
+const fn default_outer_gap() -> f64 {
+    10.0
 }
 
 const fn default_animation_speed() -> f64 {
@@ -367,6 +420,7 @@ mod tests {
             config.default_column_width().unwrap(),
             ColumnWidth::Proportion(0.5)
         );
+        assert_eq!(config.gap_config().unwrap(), GapConfig::default());
     }
 
     #[test]
@@ -447,6 +501,22 @@ mod tests {
 
         assert!(speed.animation_speed().is_err());
         assert!(damping.spring_config().is_err());
+    }
+
+    #[test]
+    fn parses_and_validates_layout_gaps() {
+        let configured = parse("[layout]\ninner_gap = 6.0\nouter_gap = 14.0\nsmart_gaps = true");
+        let invalid = parse("[layout]\nouter_gap = -1.0");
+
+        assert_eq!(
+            configured.gap_config().unwrap(),
+            GapConfig {
+                inner: 6.0,
+                outer: 14.0,
+                smart: true,
+            }
+        );
+        assert!(invalid.gap_config().is_err());
     }
 
     #[test]

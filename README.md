@@ -37,6 +37,14 @@ default_column_width = "full"
 `default_column_width = 1.0` is equivalent. `Super+M` switches the active
 workspace between scrolling and tree modes.
 
+Outer gaps remain visible with one window by default. To intentionally remove
+them for a lone tiled window:
+
+```toml
+[layout]
+smart_gaps = true
+```
+
 Scrolling keeps windows in stable workspace coordinates and animates the
 viewport only when focus must be revealed. Set
 `focus_strategy = "center_on_focus"` under `[scrolling]` to center focused
