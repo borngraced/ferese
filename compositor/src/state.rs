@@ -970,6 +970,7 @@ impl Ferese {
 
         for (window, id, rect, is_fullscreen, is_floating, scrolling, couple_width) in placements {
             let committed_size = client_size(&window);
+            let had_geometry = self.window_geometry.contains_key(&id);
             let geometry = self
                 .window_geometry
                 .entry(id)
@@ -979,11 +980,17 @@ impl Ferese {
                 geometry.advance(Duration::ZERO, self.spring_config, false);
             }
             if let Some((workspace, world_x, viewport_x)) = scrolling {
+                let restored_world_x = restored_scrolling_world_x(
+                    had_geometry,
+                    geometry.visual.current.x,
+                    viewport_x,
+                    world_x,
+                );
                 let mut animated_world_x = previous_scrolling_world_x
                     .remove(&id)
                     .filter(|(previous_workspace, _)| *previous_workspace == workspace)
                     .map(|(_, world_x)| world_x)
-                    .unwrap_or_else(|| AnimatedValue::new(world_x));
+                    .unwrap_or_else(|| AnimatedValue::new(restored_world_x));
                 animated_world_x.set_target(world_x);
                 if !self.animations_enabled {
                     animated_world_x.snap();
@@ -1720,6 +1727,19 @@ fn smoothstep(progress: f64) -> f64 {
     progress * progress * (3.0 - 2.0 * progress)
 }
 
+fn restored_scrolling_world_x(
+    had_geometry: bool,
+    visual_x: f64,
+    viewport_x: f64,
+    target_world_x: f64,
+) -> f64 {
+    if had_geometry {
+        visual_x + viewport_x
+    } else {
+        target_world_x
+    }
+}
+
 fn centered_transient_rect(parent: Rect) -> Rect {
     let width = (parent.width * 0.75).clamp(1.0, 640.0);
     let height = (parent.height * 0.75).clamp(1.0, 480.0);
@@ -1801,5 +1821,15 @@ mod tests {
 
             assert!((width.current - viewport.current - 485.0).abs() < 0.001);
         }
+    }
+
+    #[test]
+    fn fullscreen_exit_restores_world_x_from_presented_position() {
+        assert_eq!(restored_scrolling_world_x(true, 0.0, 0.0, 505.0), 0.0);
+        assert_eq!(restored_scrolling_world_x(true, 25.0, 480.0, 505.0), 505.0);
+        assert_eq!(
+            restored_scrolling_world_x(false, 10.0, 495.0, 1_000.0),
+            1_000.0
+        );
     }
 }
