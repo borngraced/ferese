@@ -121,6 +121,7 @@ impl Ferese {
                     },
                 );
                 pointer.frame(self);
+                self.focus_window_under_pointer(&pointer, position);
                 self.activate_focused_pointer_constraint(&pointer);
                 crate::backends::direct::render_all(self);
             }
@@ -158,6 +159,7 @@ impl Ferese {
                     },
                 );
                 pointer.frame(self);
+                self.focus_window_under_pointer(&pointer, location);
                 self.activate_focused_pointer_constraint(&pointer);
                 crate::backends::direct::render_all(self);
             }
@@ -325,6 +327,25 @@ impl Ferese {
         });
 
         self.relayout();
+    }
+
+    fn focus_window_under_pointer(
+        &mut self,
+        pointer: &PointerHandle<Self>,
+        position: Point<f64, Logical>,
+    ) {
+        if !self.input_settings.focus_follows_mouse || pointer.is_grabbed() {
+            return;
+        }
+
+        let Some(window) = self.window_under_visual(position) else {
+            return;
+        };
+        if self.window_ids.get(&window).copied() == self.focused_window {
+            return;
+        }
+
+        self.focus_window_at(position, SERIAL_COUNTER.next_serial());
     }
 
     fn clamp_pointer_position(&self, requested: Point<f64, Logical>) -> Point<f64, Logical> {

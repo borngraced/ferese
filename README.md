@@ -59,6 +59,7 @@ Keyboard and direct-session touchpad settings are applied at startup:
 
 ```toml
 [input]
+focus_follows_mouse = false
 xkb_layout = "us"
 xkb_variant = ""
 xkb_options = []

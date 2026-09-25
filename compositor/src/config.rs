@@ -112,6 +112,7 @@ struct BindingConfig {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct InputSettings {
+    pub focus_follows_mouse: bool,
     pub xkb_layout: String,
     pub xkb_variant: String,
     pub xkb_options: Vec<String>,
@@ -129,6 +130,8 @@ pub struct TouchpadSettings {
 
 #[derive(Debug, Deserialize)]
 struct InputConfig {
+    #[serde(default)]
+    focus_follows_mouse: bool,
     #[serde(default = "default_xkb_layout")]
     xkb_layout: String,
     #[serde(default)]
@@ -146,6 +149,7 @@ struct InputConfig {
 impl Default for InputConfig {
     fn default() -> Self {
         Self {
+            focus_follows_mouse: false,
             xkb_layout: default_xkb_layout(),
             xkb_variant: String::new(),
             xkb_options: Vec::new(),
@@ -454,6 +458,7 @@ impl Config {
         }
 
         Ok(InputSettings {
+            focus_follows_mouse: self.input.focus_follows_mouse,
             xkb_layout: self.input.xkb_layout.clone(),
             xkb_variant: self.input.xkb_variant.clone(),
             xkb_options: self.input.xkb_options.clone(),
@@ -1095,12 +1100,13 @@ mod tests {
     #[test]
     fn parses_input_and_touchpad_settings() {
         let config = parse(
-            "[input]\nxkb_layout = \"us,de\"\nxkb_variant = \",nodeadkeys\"\nxkb_options = [\"grp:alt_shift_toggle\"]\nrepeat_rate = 30\nrepeat_delay_ms = 450\n\n[input.touchpad]\ntap = false\nnatural_scroll = false\ndisable_while_typing = true",
+            "[input]\nfocus_follows_mouse = true\nxkb_layout = \"us,de\"\nxkb_variant = \",nodeadkeys\"\nxkb_options = [\"grp:alt_shift_toggle\"]\nrepeat_rate = 30\nrepeat_delay_ms = 450\n\n[input.touchpad]\ntap = false\nnatural_scroll = false\ndisable_while_typing = true",
         );
 
         assert_eq!(
             config.input_settings().unwrap(),
             InputSettings {
+                focus_follows_mouse: true,
                 xkb_layout: "us,de".to_owned(),
                 xkb_variant: ",nodeadkeys".to_owned(),
                 xkb_options: vec!["grp:alt_shift_toggle".to_owned()],
