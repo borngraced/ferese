@@ -75,7 +75,7 @@ use smithay::{
     },
 };
 
-use crate::config::InputSettings;
+use crate::config::{Binding, InputSettings};
 
 pub struct Ferese {
     pub start_time: Instant,
@@ -95,6 +95,7 @@ pub struct Ferese {
     column_width_presets: Vec<ColumnWidth>,
     gap_config: GapConfig,
     pub(crate) input_settings: InputSettings,
+    pub(crate) bindings: Vec<Binding>,
     animations_enabled: bool,
     animation_speed: f64,
     spring_config: SpringConfig,
@@ -144,6 +145,7 @@ pub struct RuntimeConfig {
     pub layout_mode: LayoutMode,
     pub gap_config: GapConfig,
     pub input_settings: InputSettings,
+    pub bindings: Vec<Binding>,
     pub default_column_width: ColumnWidth,
     pub scrolling_focus_strategy: ViewportFocusStrategy,
     pub column_width_presets: Vec<ColumnWidth>,
@@ -383,6 +385,7 @@ impl Ferese {
             column_width_presets: config.column_width_presets,
             gap_config: config.gap_config,
             input_settings: config.input_settings,
+            bindings: config.bindings,
             animations_enabled: config.animations_enabled,
             animation_speed: config.animation_speed,
             spring_config: config.spring_config,

@@ -1,3 +1,5 @@
+use std::process::Command;
+
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
@@ -17,8 +19,7 @@ use smithay::{
     },
 };
 
-use crate::Ferese;
-use ferese_layout::Direction;
+use crate::{Ferese, config::BindingAction};
 
 impl Ferese {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
@@ -73,140 +74,33 @@ impl Ferese {
                             return FilterResult::Intercept(());
                         }
 
-                        let direction = match symbol {
-                            keysyms::KEY_h | keysyms::KEY_H => Some(Direction::Left),
-                            keysyms::KEY_j | keysyms::KEY_J => Some(Direction::Down),
-                            keysyms::KEY_k | keysyms::KEY_K => Some(Direction::Up),
-                            keysyms::KEY_l | keysyms::KEY_L => Some(Direction::Right),
-                            _ => None,
+                        let raw_symbols = keysym
+                            .raw_syms()
+                            .into_iter()
+                            .map(|symbol| symbol.raw())
+                            .collect::<Vec<_>>();
+                        let action = data.bindings.iter().find_map(|binding| {
+                            binding
+                                .matches(
+                                    keycode,
+                                    &raw_symbols,
+                                    modifiers.logo,
+                                    modifiers.ctrl,
+                                    modifiers.alt,
+                                    modifiers.shift,
+                                )
+                                .then(|| binding.action.clone())
+                        });
+                        let Some(action) = action else {
+                            return FilterResult::Forward;
                         };
 
-                        if modifiers.logo
-                            && modifiers.ctrl
-                            && !modifiers.alt
-                            && !modifiers.shift
-                            && let Some(direction) = direction
-                        {
-                            if state == KeyState::Pressed {
-                                data.intercepted_keys.insert(keycode);
-                                data.resize_direction(direction);
-                            }
-
-                            FilterResult::Intercept(())
-                        } else if modifiers.logo
-                            && !modifiers.ctrl
-                            && !modifiers.alt
-                            && let Some(direction) = direction
-                        {
-                            if state == KeyState::Pressed {
-                                data.intercepted_keys.insert(keycode);
-
-                                if modifiers.shift {
-                                    data.move_direction(direction);
-                                } else {
-                                    data.focus_direction(direction);
-                                }
-                            }
-
-                            FilterResult::Intercept(())
-                        } else if modifiers.logo && !modifiers.ctrl && !modifiers.alt {
-                            let workspace = match symbol {
-                                keysyms::KEY_1 => Some(1),
-                                keysyms::KEY_2 => Some(2),
-                                keysyms::KEY_3 => Some(3),
-                                keysyms::KEY_4 => Some(4),
-                                keysyms::KEY_5 => Some(5),
-                                keysyms::KEY_6 => Some(6),
-                                keysyms::KEY_7 => Some(7),
-                                keysyms::KEY_8 => Some(8),
-                                keysyms::KEY_9 => Some(9),
-                                _ => None,
-                            };
-
-                            if let Some(workspace) = workspace {
-                                if state == KeyState::Pressed {
-                                    data.intercepted_keys.insert(keycode);
-
-                                    if modifiers.shift {
-                                        data.move_focused_to_workspace(workspace);
-                                    } else {
-                                        data.switch_workspace(workspace);
-                                    }
-                                }
-
-                                FilterResult::Intercept(())
-                            } else if !modifiers.shift
-                                && matches!(symbol, keysyms::KEY_q | keysyms::KEY_Q)
-                            {
-                                if state == KeyState::Pressed {
-                                    data.intercepted_keys.insert(keycode);
-                                    data.close_focused_window();
-                                }
-
-                                FilterResult::Intercept(())
-                            } else if !modifiers.shift
-                                && matches!(symbol, keysyms::KEY_f | keysyms::KEY_F)
-                            {
-                                if state == KeyState::Pressed {
-                                    data.intercepted_keys.insert(keycode);
-                                    data.toggle_focused_fullscreen();
-                                }
-
-                                FilterResult::Intercept(())
-                            } else if !modifiers.shift
-                                && matches!(symbol, keysyms::KEY_m | keysyms::KEY_M)
-                            {
-                                if state == KeyState::Pressed {
-                                    data.intercepted_keys.insert(keycode);
-                                    data.toggle_layout_mode();
-                                }
-
-                                FilterResult::Intercept(())
-                            } else if !modifiers.shift
-                                && matches!(symbol, keysyms::KEY_r | keysyms::KEY_R)
-                            {
-                                if state == KeyState::Pressed {
-                                    data.intercepted_keys.insert(keycode);
-                                    data.cycle_focused_column_width();
-                                }
-
-                                FilterResult::Intercept(())
-                            } else if !modifiers.shift
-                                && matches!(symbol, keysyms::KEY_c | keysyms::KEY_C)
-                            {
-                                if state == KeyState::Pressed {
-                                    data.intercepted_keys.insert(keycode);
-                                    data.center_focused_column();
-                                }
-
-                                FilterResult::Intercept(())
-                            } else if !modifiers.shift && symbol == keysyms::KEY_bracketleft {
-                                if state == KeyState::Pressed {
-                                    data.intercepted_keys.insert(keycode);
-                                    data.consume_focused_window();
-                                }
-
-                                FilterResult::Intercept(())
-                            } else if !modifiers.shift && symbol == keysyms::KEY_bracketright {
-                                if state == KeyState::Pressed {
-                                    data.intercepted_keys.insert(keycode);
-                                    data.expel_focused_window();
-                                }
-
-                                FilterResult::Intercept(())
-                            } else if modifiers.shift && symbol == keysyms::KEY_space {
-                                if state == KeyState::Pressed {
-                                    data.intercepted_keys.insert(keycode);
-                                    data.toggle_focused_floating();
-                                }
-
-                                FilterResult::Intercept(())
-                            } else {
-                                FilterResult::Forward
-                            }
-                        } else {
-                            FilterResult::Forward
+                        if state == KeyState::Pressed {
+                            data.intercepted_keys.insert(keycode);
+                            data.execute_binding(action);
                         }
+
+                        FilterResult::Intercept(())
                     },
                 );
             }
@@ -519,6 +413,40 @@ impl Ferese {
                 constraint.activate();
             }
         });
+    }
+
+    fn execute_binding(&mut self, action: BindingAction) {
+        match action {
+            BindingAction::Spawn(mut argv) => {
+                let program = argv.remove(0);
+
+                match Command::new(&program).args(argv).spawn() {
+                    Ok(child) => {
+                        tracing::info!(%program, pid = child.id(), "spawned binding command")
+                    }
+                    Err(error) => {
+                        tracing::warn!(%program, %error, "failed to spawn binding command")
+                    }
+                }
+            }
+            BindingAction::Close => self.close_focused_window(),
+            BindingAction::Focus(direction) => self.focus_direction(direction),
+            BindingAction::Move(direction) => self.move_direction(direction),
+            BindingAction::Resize(direction) => self.resize_direction(direction),
+            BindingAction::SwitchWorkspace(workspace) => {
+                self.switch_workspace(u32::from(workspace));
+            }
+            BindingAction::MoveToWorkspace(workspace) => {
+                self.move_focused_to_workspace(u32::from(workspace));
+            }
+            BindingAction::ToggleFullscreen => self.toggle_focused_fullscreen(),
+            BindingAction::ToggleLayout => self.toggle_layout_mode(),
+            BindingAction::CycleColumnWidth => self.cycle_focused_column_width(),
+            BindingAction::CenterColumn => self.center_focused_column(),
+            BindingAction::Consume => self.consume_focused_window(),
+            BindingAction::Expel => self.expel_focused_window(),
+            BindingAction::ToggleFloating => self.toggle_focused_floating(),
+        }
     }
 }
 

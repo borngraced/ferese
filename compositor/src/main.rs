@@ -24,12 +24,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let launch = LaunchConfig::from_environment()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let config = Config::load()?;
+    let input_settings = config.input_settings()?;
+    let bindings = config.bindings(&input_settings)?;
     let mut event_loop = EventLoop::try_new()?;
     let display = Display::new()?;
     let runtime = RuntimeConfig {
         layout_mode: config.layout_mode(),
         gap_config: config.gap_config()?,
-        input_settings: config.input_settings()?,
+        input_settings,
+        bindings,
         default_column_width: config.default_column_width()?,
         scrolling_focus_strategy: config.scrolling_focus_strategy(),
         column_width_presets: config.width_presets()?,

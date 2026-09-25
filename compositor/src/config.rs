@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::error::Error;
 use std::fmt;
@@ -7,8 +8,9 @@ use std::path::PathBuf;
 
 use ferese_animation::SpringConfig;
 use ferese_core::LayoutMode;
-use ferese_layout::{ColumnWidth, GapConfig, ViewportFocusStrategy};
+use ferese_layout::{ColumnWidth, Direction, GapConfig, ViewportFocusStrategy};
 use serde::Deserialize;
+use smithay::input::keyboard::{Keycode, keysyms, xkb};
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
@@ -19,7 +21,93 @@ pub struct Config {
     #[serde(default)]
     input: InputConfig,
     #[serde(default)]
+    commands: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    bindings: Vec<BindingConfig>,
+    #[serde(default)]
     scrolling: ScrollingConfig,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Binding {
+    modifiers: BindingModifiers,
+    trigger: BindingTrigger,
+    pub action: BindingAction,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum BindingTrigger {
+    Keysym(u32),
+    Physical(Keycode),
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+struct BindingModifiers {
+    logo: bool,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum BindingAction {
+    Spawn(Vec<String>),
+    Close,
+    Focus(ferese_layout::Direction),
+    Move(ferese_layout::Direction),
+    Resize(ferese_layout::Direction),
+    SwitchWorkspace(u8),
+    MoveToWorkspace(u8),
+    ToggleFullscreen,
+    ToggleLayout,
+    CycleColumnWidth,
+    CenterColumn,
+    Consume,
+    Expel,
+    ToggleFloating,
+}
+
+impl Binding {
+    pub fn matches(
+        &self,
+        keycode: Keycode,
+        keysyms: &[u32],
+        logo: bool,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+    ) -> bool {
+        self.modifiers
+            == BindingModifiers {
+                logo,
+                ctrl,
+                alt,
+                shift,
+            }
+            && match self.trigger {
+                BindingTrigger::Keysym(expected) => keysyms.contains(&expected),
+                BindingTrigger::Physical(expected) => expected == keycode,
+            }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Hash, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum BindingMatch {
+    #[default]
+    Keysym,
+    Physical,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct BindingConfig {
+    keys: String,
+    #[serde(default, rename = "match")]
+    match_mode: BindingMatch,
+    action: Option<String>,
+    argument: Option<String>,
+    #[serde(default)]
+    disabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -231,6 +319,7 @@ pub enum ConfigError {
         field: &'static str,
         value: String,
     },
+    InvalidBinding(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -255,6 +344,7 @@ impl fmt::Display for ConfigError {
             Self::InvalidInputValue { field, value } => {
                 write!(formatter, "invalid input.{field} value {value}")
             }
+            Self::InvalidBinding(message) => write!(formatter, "invalid binding: {message}"),
         }
     }
 }
@@ -267,7 +357,8 @@ impl Error for ConfigError {
             Self::InvalidColumnWidth { .. }
             | Self::InvalidAnimationValue { .. }
             | Self::InvalidLayoutValue { .. }
-            | Self::InvalidInputValue { .. } => None,
+            | Self::InvalidInputValue { .. }
+            | Self::InvalidBinding(_) => None,
         }
     }
 }
@@ -376,6 +467,43 @@ impl Config {
         })
     }
 
+    pub fn bindings(&self, input: &InputSettings) -> Result<Vec<Binding>, ConfigError> {
+        let mut commands = HashMap::from([("terminal".to_owned(), vec!["foot".to_owned()])]);
+        commands.extend(self.commands.clone());
+        validate_commands(&commands)?;
+
+        let keymap = physical_keymap(input)?;
+        let mut bindings = default_bindings()
+            .into_iter()
+            .map(|binding| parse_binding(&binding, &commands, &keymap))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut supplied = HashSet::new();
+
+        for configured in &self.bindings {
+            let identity = binding_identity(configured, &keymap)?;
+            if !supplied.insert(identity.clone()) {
+                return Err(ConfigError::InvalidBinding(format!(
+                    "duplicate binding {:?}",
+                    configured.keys
+                )));
+            }
+
+            bindings.retain(|binding| binding_identity_for_runtime(binding) != identity);
+            if configured.disabled {
+                if configured.action.is_some() || configured.argument.is_some() {
+                    return Err(ConfigError::InvalidBinding(format!(
+                        "disabled binding {:?} cannot have an action or argument",
+                        configured.keys
+                    )));
+                }
+            } else {
+                bindings.push(parse_binding(configured, &commands, &keymap)?);
+            }
+        }
+
+        Ok(bindings)
+    }
+
     pub fn animations_enabled(&self) -> bool {
         self.animations.enabled && !self.animations.reduced_motion
     }
@@ -422,6 +550,329 @@ impl Config {
             damping: 2.0 * damping_ratio * (stiffness * mass).sqrt(),
             ..SpringConfig::default()
         })
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct BindingIdentity {
+    modifiers: BindingModifiers,
+    match_mode: BindingMatch,
+    key: u32,
+}
+
+fn validate_commands(commands: &HashMap<String, Vec<String>>) -> Result<(), ConfigError> {
+    for (name, argv) in commands {
+        if name.trim().is_empty() {
+            return Err(ConfigError::InvalidBinding(
+                "command names cannot be empty".to_owned(),
+            ));
+        }
+        if argv.is_empty() || argv[0].is_empty() {
+            return Err(ConfigError::InvalidBinding(format!(
+                "command {name:?} must contain a program"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn physical_keymap(input: &InputSettings) -> Result<xkb::Keymap, ConfigError> {
+    let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+    let options = (!input.xkb_options.is_empty()).then(|| input.xkb_options.join(","));
+
+    xkb::Keymap::new_from_names(
+        &context,
+        "",
+        "",
+        &input.xkb_layout,
+        &input.xkb_variant,
+        options,
+        xkb::KEYMAP_COMPILE_NO_FLAGS,
+    )
+    .ok_or_else(|| ConfigError::InvalidBinding("failed to compile the XKB keymap".to_owned()))
+}
+
+fn parse_binding(
+    configured: &BindingConfig,
+    commands: &HashMap<String, Vec<String>>,
+    keymap: &xkb::Keymap,
+) -> Result<Binding, ConfigError> {
+    if configured.disabled {
+        return Err(ConfigError::InvalidBinding(format!(
+            "disabled binding {:?} cannot be executed",
+            configured.keys
+        )));
+    }
+
+    let identity = binding_identity(configured, keymap)?;
+    let action = configured.action.as_deref().ok_or_else(|| {
+        ConfigError::InvalidBinding(format!("binding {:?} has no action", configured.keys))
+    })?;
+    let action = parse_action(action, configured.argument.as_deref(), commands)?;
+    let trigger = match identity.match_mode {
+        BindingMatch::Keysym => BindingTrigger::Keysym(identity.key),
+        BindingMatch::Physical => BindingTrigger::Physical(Keycode::new(identity.key)),
+    };
+
+    Ok(Binding {
+        modifiers: identity.modifiers,
+        trigger,
+        action,
+    })
+}
+
+fn binding_identity(
+    configured: &BindingConfig,
+    keymap: &xkb::Keymap,
+) -> Result<BindingIdentity, ConfigError> {
+    let (modifiers, key) = parse_chord(&configured.keys)?;
+    let key = match configured.match_mode {
+        BindingMatch::Keysym => parse_keysym(&key)?,
+        BindingMatch::Physical => keymap
+            .key_by_name(&key.to_ascii_uppercase())
+            .map(Keycode::raw)
+            .ok_or_else(|| {
+                ConfigError::InvalidBinding(format!(
+                    "unknown XKB physical key name {key:?} in {:?}",
+                    configured.keys
+                ))
+            })?,
+    };
+
+    Ok(BindingIdentity {
+        modifiers,
+        match_mode: configured.match_mode,
+        key,
+    })
+}
+
+fn binding_identity_for_runtime(binding: &Binding) -> BindingIdentity {
+    let (match_mode, key) = match binding.trigger {
+        BindingTrigger::Keysym(key) => (BindingMatch::Keysym, key),
+        BindingTrigger::Physical(key) => (BindingMatch::Physical, key.raw()),
+    };
+
+    BindingIdentity {
+        modifiers: binding.modifiers,
+        match_mode,
+        key,
+    }
+}
+
+fn parse_chord(chord: &str) -> Result<(BindingModifiers, String), ConfigError> {
+    let mut modifiers = BindingModifiers::default();
+    let mut key = None;
+
+    for component in chord.split('+').map(str::trim) {
+        if component.is_empty() {
+            return Err(ConfigError::InvalidBinding(format!(
+                "invalid key chord {chord:?}"
+            )));
+        }
+
+        let slot = match component.to_ascii_lowercase().as_str() {
+            "super" | "logo" | "mod4" => Some(&mut modifiers.logo),
+            "ctrl" | "control" => Some(&mut modifiers.ctrl),
+            "alt" => Some(&mut modifiers.alt),
+            "shift" => Some(&mut modifiers.shift),
+            _ => None,
+        };
+        if let Some(slot) = slot {
+            if *slot {
+                return Err(ConfigError::InvalidBinding(format!(
+                    "duplicate modifier in {chord:?}"
+                )));
+            }
+            *slot = true;
+        } else if key.replace(component.to_owned()).is_some() {
+            return Err(ConfigError::InvalidBinding(format!(
+                "key chord {chord:?} contains more than one key"
+            )));
+        }
+    }
+
+    let key = key.ok_or_else(|| {
+        ConfigError::InvalidBinding(format!("key chord {chord:?} does not contain a key"))
+    })?;
+    Ok((modifiers, key))
+}
+
+fn parse_keysym(name: &str) -> Result<u32, ConfigError> {
+    let normalized = match name {
+        "Enter" | "enter" => "Return".to_owned(),
+        "Space" | "space" => "space".to_owned(),
+        "[" => "bracketleft".to_owned(),
+        "]" => "bracketright".to_owned(),
+        name if name.len() == 1 => name.to_ascii_lowercase(),
+        name => name.to_owned(),
+    };
+    let mut symbol = xkb::keysym_from_name(&normalized, xkb::KEYSYM_NO_FLAGS);
+    if symbol.raw() == keysyms::KEY_NoSymbol {
+        symbol = xkb::keysym_from_name(&normalized, xkb::KEYSYM_CASE_INSENSITIVE);
+    }
+    if symbol.raw() == keysyms::KEY_NoSymbol {
+        Err(ConfigError::InvalidBinding(format!(
+            "unknown keysym {name:?}"
+        )))
+    } else {
+        Ok(symbol.raw())
+    }
+}
+
+fn parse_action(
+    action: &str,
+    argument: Option<&str>,
+    commands: &HashMap<String, Vec<String>>,
+) -> Result<BindingAction, ConfigError> {
+    let no_argument = || {
+        if argument.is_some() {
+            Err(ConfigError::InvalidBinding(format!(
+                "action {action:?} does not accept an argument"
+            )))
+        } else {
+            Ok(())
+        }
+    };
+    let required_argument = || {
+        argument.ok_or_else(|| {
+            ConfigError::InvalidBinding(format!("action {action:?} requires an argument"))
+        })
+    };
+
+    match action {
+        "spawn" => {
+            let command = required_argument()?;
+            let argv = commands.get(command).ok_or_else(|| {
+                ConfigError::InvalidBinding(format!("unknown command {command:?}"))
+            })?;
+            Ok(BindingAction::Spawn(argv.clone()))
+        }
+        "close" => {
+            no_argument()?;
+            Ok(BindingAction::Close)
+        }
+        "focus" => Ok(BindingAction::Focus(parse_direction(required_argument()?)?)),
+        "move" => Ok(BindingAction::Move(parse_direction(required_argument()?)?)),
+        "resize" => Ok(BindingAction::Resize(
+            parse_direction(required_argument()?)?,
+        )),
+        "workspace" => Ok(BindingAction::SwitchWorkspace(parse_workspace(
+            required_argument()?,
+        )?)),
+        "move-to-workspace" => Ok(BindingAction::MoveToWorkspace(parse_workspace(
+            required_argument()?,
+        )?)),
+        "toggle-fullscreen" => {
+            no_argument()?;
+            Ok(BindingAction::ToggleFullscreen)
+        }
+        "toggle-layout" => {
+            no_argument()?;
+            Ok(BindingAction::ToggleLayout)
+        }
+        "cycle-column-width" => {
+            no_argument()?;
+            Ok(BindingAction::CycleColumnWidth)
+        }
+        "center-column" => {
+            no_argument()?;
+            Ok(BindingAction::CenterColumn)
+        }
+        "consume" => {
+            no_argument()?;
+            Ok(BindingAction::Consume)
+        }
+        "expel" => {
+            no_argument()?;
+            Ok(BindingAction::Expel)
+        }
+        "toggle-floating" => {
+            no_argument()?;
+            Ok(BindingAction::ToggleFloating)
+        }
+        _ => Err(ConfigError::InvalidBinding(format!(
+            "unknown action {action:?}"
+        ))),
+    }
+}
+
+fn parse_direction(argument: &str) -> Result<Direction, ConfigError> {
+    match argument {
+        "left" => Ok(Direction::Left),
+        "right" => Ok(Direction::Right),
+        "up" => Ok(Direction::Up),
+        "down" => Ok(Direction::Down),
+        _ => Err(ConfigError::InvalidBinding(format!(
+            "invalid direction {argument:?}"
+        ))),
+    }
+}
+
+fn parse_workspace(argument: &str) -> Result<u8, ConfigError> {
+    match argument.parse() {
+        Ok(workspace) if workspace > 0 => Ok(workspace),
+        _ => Err(ConfigError::InvalidBinding(format!(
+            "invalid workspace {argument:?}"
+        ))),
+    }
+}
+
+fn default_bindings() -> Vec<BindingConfig> {
+    let mut bindings = vec![
+        binding("Super+Enter", "spawn", Some("terminal")),
+        binding("Super+Q", "close", None),
+        binding("Super+F", "toggle-fullscreen", None),
+        binding("Super+M", "toggle-layout", None),
+        binding("Super+R", "cycle-column-width", None),
+        binding("Super+C", "center-column", None),
+        binding("Super+[", "consume", None),
+        binding("Super+]", "expel", None),
+        binding("Super+Shift+Space", "toggle-floating", None),
+    ];
+
+    for (key, direction) in [("H", "left"), ("J", "down"), ("K", "up"), ("L", "right")] {
+        bindings.push(binding("Super+".to_owned() + key, "focus", Some(direction)));
+        bindings.push(binding(
+            "Super+Shift+".to_owned() + key,
+            "move",
+            Some(direction),
+        ));
+        bindings.push(binding(
+            "Super+Ctrl+".to_owned() + key,
+            "resize",
+            Some(direction),
+        ));
+    }
+
+    for workspace in 1..=9 {
+        let workspace = workspace.to_string();
+        bindings.push(binding(
+            format!("Super+{workspace}"),
+            "workspace",
+            Some(&workspace),
+        ));
+        bindings.push(binding(
+            format!("Super+Shift+{workspace}"),
+            "move-to-workspace",
+            Some(&workspace),
+        ));
+    }
+
+    bindings
+}
+
+fn binding(
+    keys: impl Into<String>,
+    action: impl Into<String>,
+    argument: Option<&str>,
+) -> BindingConfig {
+    BindingConfig {
+        keys: keys.into(),
+        match_mode: BindingMatch::Keysym,
+        action: Some(action.into()),
+        argument: argument.map(str::to_owned),
+        disabled: false,
     }
 }
 
@@ -673,6 +1124,80 @@ mod tests {
         assert!(layout.input_settings().is_err());
         assert!(rate.input_settings().is_err());
         assert!(delay.input_settings().is_err());
+    }
+
+    #[test]
+    fn supplies_complete_v0_bindings_and_terminal_command() {
+        let config = parse("");
+        let input = config.input_settings().unwrap();
+        let bindings = config.bindings(&input).unwrap();
+
+        assert_eq!(bindings.len(), 39);
+        assert!(bindings.iter().any(|binding| {
+            binding.modifiers.logo
+                && binding.trigger == BindingTrigger::Keysym(keysyms::KEY_Return)
+                && binding.action == BindingAction::Spawn(vec!["foot".to_owned()])
+        }));
+    }
+
+    #[test]
+    fn replaces_and_unbinds_default_bindings() {
+        let replaced = parse(
+            "[commands]\nterm = [\"foot\", \"--app-id\", \"work\"]\n\n[[bindings]]\nkeys = \"Super+Enter\"\naction = \"spawn\"\nargument = \"term\"",
+        );
+        let unbound = parse("[[bindings]]\nkeys = \"Super+Q\"\ndisabled = true");
+
+        let input = replaced.input_settings().unwrap();
+        let bindings = replaced.bindings(&input).unwrap();
+        assert_eq!(bindings.len(), 39);
+        assert!(bindings.iter().any(|binding| {
+            binding.action
+                == BindingAction::Spawn(vec![
+                    "foot".to_owned(),
+                    "--app-id".to_owned(),
+                    "work".to_owned(),
+                ])
+        }));
+
+        let input = unbound.input_settings().unwrap();
+        let bindings = unbound.bindings(&input).unwrap();
+        assert_eq!(bindings.len(), 38);
+        assert!(
+            !bindings
+                .iter()
+                .any(|binding| binding.action == BindingAction::Close)
+        );
+    }
+
+    #[test]
+    fn accepts_physical_xkb_key_names() {
+        let config = parse(
+            "[[bindings]]\nkeys = \"Super+AD06\"\nmatch = \"physical\"\naction = \"focus\"\nargument = \"left\"",
+        );
+        let input = config.input_settings().unwrap();
+        let bindings = config.bindings(&input).unwrap();
+
+        assert!(bindings.iter().any(|binding| {
+            matches!(binding.trigger, BindingTrigger::Physical(_))
+                && binding.action == BindingAction::Focus(Direction::Left)
+        }));
+    }
+
+    #[test]
+    fn rejects_duplicate_or_invalid_user_bindings() {
+        let duplicate = parse(
+            "[[bindings]]\nkeys = \"Super+Q\"\naction = \"close\"\n\n[[bindings]]\nkeys = \"logo+q\"\naction = \"close\"",
+        );
+        let missing_command = parse(
+            "[[bindings]]\nkeys = \"Super+Enter\"\naction = \"spawn\"\nargument = \"missing\"",
+        );
+        let invalid_argument =
+            parse("[[bindings]]\nkeys = \"Super+Q\"\naction = \"close\"\nargument = \"left\"");
+
+        for config in [duplicate, missing_command, invalid_argument] {
+            let input = config.input_settings().unwrap();
+            assert!(config.bindings(&input).is_err());
+        }
     }
 
     #[test]

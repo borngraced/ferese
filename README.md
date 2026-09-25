@@ -75,6 +75,33 @@ Touchpad settings apply to libinput devices in the direct DRM session. In the
 nested backend, the host compositor remains responsible for physical touchpad
 configuration.
 
+Commands are argv arrays and are started directly, without a shell. The
+default `Super+Enter` binding runs the built-in `terminal = ["foot"]` command:
+
+```toml
+[commands]
+terminal = ["foot", "--app-id", "terminal"]
+
+[[bindings]]
+keys = "Super+Enter"
+action = "spawn"
+argument = "terminal"
+```
+
+A configured binding replaces the built-in binding with the same normalized
+chord and match mode. Disable a default explicitly with no action:
+
+```toml
+[[bindings]]
+keys = "Super+Q"
+disabled = true
+```
+
+Bindings follow the active layout by default. To bind a keyboard position
+instead, set `match = "physical"` and use an XKB physical key name such as
+`AD06`. Invalid chords, actions, arguments, duplicate bindings, and missing
+command references stop startup with an error.
+
 Text-input-v3 is available to applications by default. Input-method-v2 is
 hidden unless the session explicitly opts in, because an input method can
 request privileged keyboard access. Enable it only when launching a trusted
