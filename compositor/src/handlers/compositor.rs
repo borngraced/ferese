@@ -49,6 +49,9 @@ impl CompositorHandler for Ferese {
             };
 
             if let Some(window) = window {
+                if surface == &root {
+                    xdg_shell::apply_initial_window_rules(self, &window);
+                }
                 window.on_commit();
                 self.record_client_commit(&window);
             }

@@ -75,7 +75,10 @@ use smithay::{
     },
 };
 
-use crate::config::{Binding, InputSettings};
+use crate::{
+    config::{Binding, InputSettings},
+    window_rules::{WindowRule, resolve as resolve_window_rules},
+};
 
 pub struct Ferese {
     pub start_time: Instant,
@@ -96,6 +99,8 @@ pub struct Ferese {
     gap_config: GapConfig,
     pub(crate) input_settings: InputSettings,
     pub(crate) bindings: Vec<Binding>,
+    window_rules: Vec<WindowRule>,
+    window_rules_applied: HashSet<WindowId>,
     animations_enabled: bool,
     animation_speed: f64,
     spring_config: SpringConfig,
@@ -146,6 +151,7 @@ pub struct RuntimeConfig {
     pub gap_config: GapConfig,
     pub input_settings: InputSettings,
     pub bindings: Vec<Binding>,
+    pub window_rules: Vec<WindowRule>,
     pub default_column_width: ColumnWidth,
     pub scrolling_focus_strategy: ViewportFocusStrategy,
     pub column_width_presets: Vec<ColumnWidth>,
@@ -386,6 +392,8 @@ impl Ferese {
             gap_config: config.gap_config,
             input_settings: config.input_settings,
             bindings: config.bindings,
+            window_rules: config.window_rules,
+            window_rules_applied: HashSet::new(),
             animations_enabled: config.animations_enabled,
             animation_speed: config.animation_speed,
             spring_config: config.spring_config,
@@ -634,6 +642,86 @@ impl Ferese {
         self.relayout();
     }
 
+    pub(crate) fn apply_initial_window_rules(
+        &mut self,
+        window: &Window,
+        app_id: Option<&str>,
+        title: Option<&str>,
+        transient: bool,
+    ) {
+        let Some(id) = self.window_ids.get(window).copied() else {
+            return;
+        };
+        let Some(bounds) = self.output_bounds() else {
+            return;
+        };
+        if !self.window_rules_applied.insert(id) {
+            return;
+        }
+
+        let rule = resolve_window_rules(&self.window_rules, app_id, title, transient);
+        if rule == Default::default() {
+            return;
+        }
+        let axis = self
+            .workspaces
+            .active()
+            .layout
+            .automatic_axis(self.focused_window, bounds)
+            .unwrap_or(Axis::Horizontal);
+
+        if let Some(workspace) = rule.workspace
+            && let Err(error) = self
+                .workspaces
+                .move_window_to_numeric(id, workspace, axis, 0.5)
+        {
+            tracing::warn!(%error, ?id, workspace, "failed to apply window workspace rule");
+        }
+
+        let should_float = rule
+            .floating
+            .or((rule.width.is_some() || rule.height.is_some()).then_some(true));
+        if let Some(should_float) = should_float {
+            let is_floating = matches!(
+                self.workspaces.placement(id),
+                Some(WindowPlacement::Floating { .. })
+            );
+            let mut rect = centered_floating_rect(bounds);
+            rect.width = rule.width.unwrap_or(rect.width).min(bounds.width);
+            rect.height = rule.height.unwrap_or(rect.height).min(bounds.height);
+            rect.x = bounds.x + (bounds.width - rect.width) / 2.0;
+            rect.y = bounds.y + (bounds.height - rect.height) / 2.0;
+
+            let result = if should_float != is_floating {
+                self.workspaces
+                    .toggle_floating(id, rect, axis, 0.5)
+                    .map(|_| ())
+            } else if should_float && (rule.width.is_some() || rule.height.is_some()) {
+                self.workspaces.set_floating_rect(id, rect)
+            } else {
+                Ok(())
+            };
+            if let Err(error) = result {
+                tracing::warn!(%error, ?id, "failed to apply floating window rule");
+            }
+        }
+
+        if let Some(fullscreen) = rule.fullscreen
+            && let Err(error) = self.workspaces.set_fullscreen(id, fullscreen)
+        {
+            tracing::warn!(%error, ?id, fullscreen, "failed to apply fullscreen window rule");
+        }
+
+        if self.workspaces.workspace_for_window(id) != Some(self.workspaces.active_id())
+            && self.focused_window == Some(id)
+        {
+            self.focused_window = self.workspaces.active().last_focused;
+        }
+
+        self.relayout();
+        self.restore_keyboard_focus();
+    }
+
     pub fn make_window_transient(&mut self, window: &Window, parent: WindowId) {
         let Some(id) = self.window_ids.get(window).copied() else {
             return;
@@ -676,6 +764,7 @@ impl Ferese {
 
         self.space.unmap_elem(window);
         self.window_geometry.remove(&id);
+        self.window_rules_applied.remove(&id);
         self.scrolling_world_x.remove(&id);
         if let Err(error) = self.workspaces.remove_window(id) {
             tracing::error!(%error, ?id, "failed to remove window from layout");

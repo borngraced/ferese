@@ -7,6 +7,7 @@ mod grabs;
 mod handlers;
 mod input;
 mod state;
+mod window_rules;
 mod winit;
 
 use std::{error::Error, io, process::Command};
@@ -26,6 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config = Config::load()?;
     let input_settings = config.input_settings()?;
     let bindings = config.bindings(&input_settings)?;
+    let window_rules = config.window_rules()?;
     let mut event_loop = EventLoop::try_new()?;
     let display = Display::new()?;
     let runtime = RuntimeConfig {
@@ -33,6 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         gap_config: config.gap_config()?,
         input_settings,
         bindings,
+        window_rules,
         default_column_width: config.default_column_width()?,
         scrolling_focus_strategy: config.scrolling_focus_strategy(),
         column_width_presets: config.width_presets()?,

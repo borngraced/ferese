@@ -12,6 +12,8 @@ use ferese_layout::{ColumnWidth, Direction, GapConfig, ViewportFocusStrategy};
 use serde::Deserialize;
 use smithay::input::keyboard::{Keycode, keysyms, xkb};
 
+use crate::window_rules::{self, WindowRule, WindowRuleConfig};
+
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -24,6 +26,8 @@ pub struct Config {
     commands: HashMap<String, Vec<String>>,
     #[serde(default)]
     bindings: Vec<BindingConfig>,
+    #[serde(default)]
+    window_rules: Vec<WindowRuleConfig>,
     #[serde(default)]
     scrolling: ScrollingConfig,
 }
@@ -324,6 +328,7 @@ pub enum ConfigError {
         value: String,
     },
     InvalidBinding(String),
+    InvalidWindowRule(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -349,6 +354,7 @@ impl fmt::Display for ConfigError {
                 write!(formatter, "invalid input.{field} value {value}")
             }
             Self::InvalidBinding(message) => write!(formatter, "invalid binding: {message}"),
+            Self::InvalidWindowRule(message) => write!(formatter, "invalid window rule: {message}"),
         }
     }
 }
@@ -362,7 +368,8 @@ impl Error for ConfigError {
             | Self::InvalidAnimationValue { .. }
             | Self::InvalidLayoutValue { .. }
             | Self::InvalidInputValue { .. }
-            | Self::InvalidBinding(_) => None,
+            | Self::InvalidBinding(_)
+            | Self::InvalidWindowRule(_) => None,
         }
     }
 }
@@ -507,6 +514,10 @@ impl Config {
         }
 
         Ok(bindings)
+    }
+
+    pub fn window_rules(&self) -> Result<Vec<WindowRule>, ConfigError> {
+        window_rules::validate(&self.window_rules).map_err(ConfigError::InvalidWindowRule)
     }
 
     pub fn animations_enabled(&self) -> bool {
@@ -1204,6 +1215,35 @@ mod tests {
             let input = config.input_settings().unwrap();
             assert!(config.bindings(&input).is_err());
         }
+    }
+
+    #[test]
+    fn parses_and_validates_window_rules() {
+        let config = parse(
+            "[[window_rules]]\napp_id = \"org.example.Editor\"\nworkspace = 3\nfloating = true\nwidth = 900.0\nheight = 600.0\nfullscreen = false",
+        );
+        let rules = config.window_rules().unwrap();
+        let result = window_rules::resolve(
+            &rules,
+            Some("org.example.editor.desktop"),
+            Some("Document"),
+            false,
+        );
+
+        assert_eq!(result.workspace, Some(3));
+        assert_eq!(result.floating, Some(true));
+        assert_eq!(result.width, Some(900.0));
+        assert_eq!(result.height, Some(600.0));
+        assert_eq!(result.fullscreen, Some(false));
+    }
+
+    #[test]
+    fn rejects_invalid_window_rule_configuration() {
+        let catch_all = parse("[[window_rules]]\nfloating = true");
+        let zero_workspace = parse("[[window_rules]]\napp_id = \"editor\"\nworkspace = 0");
+
+        assert!(catch_all.window_rules().is_err());
+        assert!(zero_workspace.window_rules().is_err());
     }
 
     #[test]

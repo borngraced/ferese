@@ -103,6 +103,24 @@ instead, set `match = "physical"` and use an XKB physical key name such as
 `AD06`. Invalid chords, actions, arguments, duplicate bindings, and missing
 command references stop startup with an error.
 
+Initial window rules match `app_id`, exact title, and/or transient status. All
+matching rules are applied in declaration order; later rules override only the
+fields they specify. Width or height implies floating placement when `floating`
+is omitted:
+
+```toml
+[[window_rules]]
+app_id = "org.example.Editor"
+workspace = 3
+floating = true
+width = 900.0
+height = 600.0
+fullscreen = false
+```
+
+Rules are finalized on the first toplevel commit, before its buffer is
+presented, and are not re-applied when an application later changes its title.
+
 Text-input-v3 is available to applications by default. Input-method-v2 is
 hidden unless the session explicitly opts in, because an input method can
 request privileged keyboard access. Enable it only when launching a trusted

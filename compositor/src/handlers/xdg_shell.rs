@@ -351,6 +351,28 @@ pub fn handle_commit(popups: &mut PopupManager, space: &mut Space<Window>, surfa
     }
 }
 
+pub fn apply_initial_window_rules(state: &mut Ferese, window: &Window) {
+    let Some(toplevel) = window.toplevel() else {
+        return;
+    };
+    let (app_id, title, transient) = with_states(toplevel.wl_surface(), |states| {
+        let attributes = states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()
+            .expect("xdg toplevel state exists")
+            .lock()
+            .expect("xdg toplevel state is not poisoned");
+
+        (
+            attributes.app_id.clone(),
+            attributes.title.clone(),
+            attributes.parent.is_some(),
+        )
+    });
+
+    state.apply_initial_window_rules(window, app_id.as_deref(), title.as_deref(), transient);
+}
+
 impl Ferese {
     pub(crate) fn unconstrain_popup(&self, popup: &PopupSurface) {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
