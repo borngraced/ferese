@@ -17,7 +17,75 @@ pub struct Config {
     #[serde(default)]
     layout: LayoutConfig,
     #[serde(default)]
+    input: InputConfig,
+    #[serde(default)]
     scrolling: ScrollingConfig,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct InputSettings {
+    pub xkb_layout: String,
+    pub xkb_variant: String,
+    pub xkb_options: Vec<String>,
+    pub repeat_rate: i32,
+    pub repeat_delay_ms: i32,
+    pub touchpad: TouchpadSettings,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TouchpadSettings {
+    pub tap: bool,
+    pub natural_scroll: bool,
+    pub disable_while_typing: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct InputConfig {
+    #[serde(default = "default_xkb_layout")]
+    xkb_layout: String,
+    #[serde(default)]
+    xkb_variant: String,
+    #[serde(default)]
+    xkb_options: Vec<String>,
+    #[serde(default = "default_repeat_rate")]
+    repeat_rate: i32,
+    #[serde(default = "default_repeat_delay")]
+    repeat_delay_ms: i32,
+    #[serde(default)]
+    touchpad: TouchpadConfig,
+}
+
+impl Default for InputConfig {
+    fn default() -> Self {
+        Self {
+            xkb_layout: default_xkb_layout(),
+            xkb_variant: String::new(),
+            xkb_options: Vec::new(),
+            repeat_rate: default_repeat_rate(),
+            repeat_delay_ms: default_repeat_delay(),
+            touchpad: TouchpadConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TouchpadConfig {
+    #[serde(default = "enabled_by_default")]
+    tap: bool,
+    #[serde(default = "enabled_by_default")]
+    natural_scroll: bool,
+    #[serde(default = "enabled_by_default")]
+    disable_while_typing: bool,
+}
+
+impl Default for TouchpadConfig {
+    fn default() -> Self {
+        Self {
+            tap: true,
+            natural_scroll: true,
+            disable_while_typing: true,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,6 +227,10 @@ pub enum ConfigError {
         field: &'static str,
         value: f64,
     },
+    InvalidInputValue {
+        field: &'static str,
+        value: String,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -180,6 +252,9 @@ impl fmt::Display for ConfigError {
             Self::InvalidLayoutValue { field, value } => {
                 write!(formatter, "invalid layout.{field} value {value}")
             }
+            Self::InvalidInputValue { field, value } => {
+                write!(formatter, "invalid input.{field} value {value}")
+            }
         }
     }
 }
@@ -191,7 +266,8 @@ impl Error for ConfigError {
             Self::Parse { source, .. } => Some(source),
             Self::InvalidColumnWidth { .. }
             | Self::InvalidAnimationValue { .. }
-            | Self::InvalidLayoutValue { .. } => None,
+            | Self::InvalidLayoutValue { .. }
+            | Self::InvalidInputValue { .. } => None,
         }
     }
 }
@@ -264,6 +340,40 @@ impl Config {
             FocusStrategyValue::Minimal => ViewportFocusStrategy::Minimal,
             FocusStrategyValue::CenterOnFocus => ViewportFocusStrategy::Center,
         }
+    }
+
+    pub fn input_settings(&self) -> Result<InputSettings, ConfigError> {
+        if self.input.xkb_layout.trim().is_empty() {
+            return Err(ConfigError::InvalidInputValue {
+                field: "xkb_layout",
+                value: self.input.xkb_layout.clone(),
+            });
+        }
+        if self.input.repeat_rate <= 0 {
+            return Err(ConfigError::InvalidInputValue {
+                field: "repeat_rate",
+                value: self.input.repeat_rate.to_string(),
+            });
+        }
+        if self.input.repeat_delay_ms < 0 {
+            return Err(ConfigError::InvalidInputValue {
+                field: "repeat_delay_ms",
+                value: self.input.repeat_delay_ms.to_string(),
+            });
+        }
+
+        Ok(InputSettings {
+            xkb_layout: self.input.xkb_layout.clone(),
+            xkb_variant: self.input.xkb_variant.clone(),
+            xkb_options: self.input.xkb_options.clone(),
+            repeat_rate: self.input.repeat_rate,
+            repeat_delay_ms: self.input.repeat_delay_ms,
+            touchpad: TouchpadSettings {
+                tap: self.input.touchpad.tap,
+                natural_scroll: self.input.touchpad.natural_scroll,
+                disable_while_typing: self.input.touchpad.disable_while_typing,
+            },
+        })
     }
 
     pub fn animations_enabled(&self) -> bool {
@@ -341,6 +451,18 @@ const fn default_inner_gap() -> f64 {
 
 const fn default_outer_gap() -> f64 {
     10.0
+}
+
+fn default_xkb_layout() -> String {
+    "us".to_owned()
+}
+
+const fn default_repeat_rate() -> i32 {
+    25
+}
+
+const fn default_repeat_delay() -> i32 {
+    600
 }
 
 const fn default_animation_speed() -> f64 {
@@ -517,6 +639,40 @@ mod tests {
             }
         );
         assert!(invalid.gap_config().is_err());
+    }
+
+    #[test]
+    fn parses_input_and_touchpad_settings() {
+        let config = parse(
+            "[input]\nxkb_layout = \"us,de\"\nxkb_variant = \",nodeadkeys\"\nxkb_options = [\"grp:alt_shift_toggle\"]\nrepeat_rate = 30\nrepeat_delay_ms = 450\n\n[input.touchpad]\ntap = false\nnatural_scroll = false\ndisable_while_typing = true",
+        );
+
+        assert_eq!(
+            config.input_settings().unwrap(),
+            InputSettings {
+                xkb_layout: "us,de".to_owned(),
+                xkb_variant: ",nodeadkeys".to_owned(),
+                xkb_options: vec!["grp:alt_shift_toggle".to_owned()],
+                repeat_rate: 30,
+                repeat_delay_ms: 450,
+                touchpad: TouchpadSettings {
+                    tap: false,
+                    natural_scroll: false,
+                    disable_while_typing: true,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_input_settings() {
+        let layout = parse("[input]\nxkb_layout = \"\"");
+        let rate = parse("[input]\nrepeat_rate = 0");
+        let delay = parse("[input]\nrepeat_delay_ms = -1");
+
+        assert!(layout.input_settings().is_err());
+        assert!(rate.input_settings().is_err());
+        assert!(delay.input_settings().is_err());
     }
 
     #[test]

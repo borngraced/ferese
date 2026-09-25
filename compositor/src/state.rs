@@ -28,6 +28,7 @@ use smithay::{
     },
     input::{
         Seat, SeatState,
+        keyboard::XkbConfig,
         pointer::{CursorIcon, CursorImageStatus},
     },
     output::Output,
@@ -74,6 +75,8 @@ use smithay::{
     },
 };
 
+use crate::config::InputSettings;
+
 pub struct Ferese {
     pub start_time: Instant,
     pub socket_name: OsString,
@@ -91,6 +94,7 @@ pub struct Ferese {
     pub focused_window: Option<WindowId>,
     column_width_presets: Vec<ColumnWidth>,
     gap_config: GapConfig,
+    pub(crate) input_settings: InputSettings,
     animations_enabled: bool,
     animation_speed: f64,
     spring_config: SpringConfig,
@@ -139,6 +143,7 @@ pub struct Ferese {
 pub struct RuntimeConfig {
     pub layout_mode: LayoutMode,
     pub gap_config: GapConfig,
+    pub input_settings: InputSettings,
     pub default_column_width: ColumnWidth,
     pub scrolling_focus_strategy: ViewportFocusStrategy,
     pub column_width_presets: Vec<ColumnWidth>,
@@ -335,7 +340,18 @@ impl Ferese {
         let xdg_toplevel_icon_manager = XdgToplevelIconManager::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&display_handle, "ferese-winit");
-        seat.add_keyboard(Default::default(), 200, 25)?;
+        let xkb_options = (!config.input_settings.xkb_options.is_empty())
+            .then(|| config.input_settings.xkb_options.join(","));
+        seat.add_keyboard(
+            XkbConfig {
+                layout: &config.input_settings.xkb_layout,
+                variant: &config.input_settings.xkb_variant,
+                options: xkb_options,
+                ..XkbConfig::default()
+            },
+            config.input_settings.repeat_delay_ms,
+            config.input_settings.repeat_rate,
+        )?;
         seat.add_pointer();
         seat.add_touch();
         let socket_name = Self::init_wayland_listener(display, event_loop)?;
@@ -366,6 +382,7 @@ impl Ferese {
             focused_window: None,
             column_width_presets: config.column_width_presets,
             gap_config: config.gap_config,
+            input_settings: config.input_settings,
             animations_enabled: config.animations_enabled,
             animation_speed: config.animation_speed,
             spring_config: config.spring_config,

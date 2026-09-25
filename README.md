@@ -55,6 +55,26 @@ to center the focused column, `Super+[` to consume the focused window into an
 adjacent column, and `Super+]` to expel it. `Super+Ctrl+H/J/K/L` resizes in the
 corresponding direction.
 
+Keyboard and direct-session touchpad settings are applied at startup:
+
+```toml
+[input]
+xkb_layout = "us"
+xkb_variant = ""
+xkb_options = []
+repeat_rate = 25
+repeat_delay_ms = 600
+
+[input.touchpad]
+tap = true
+natural_scroll = true
+disable_while_typing = true
+```
+
+Touchpad settings apply to libinput devices in the direct DRM session. In the
+nested backend, the host compositor remains responsible for physical touchpad
+configuration.
+
 Text-input-v3 is available to applications by default. Input-method-v2 is
 hidden unless the session explicitly opts in, because an input method can
 request privileged keyboard access. Enable it only when launching a trusted

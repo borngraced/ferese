@@ -14,6 +14,7 @@ use smithay::{
         },
         drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode, GbmBufferedSurface},
         egl::{EGLContext, EGLDisplay},
+        input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
         renderer::{
             Bind, Frame, ImportDma, ImportMemWl, Renderer, damage::OutputDamageTracker,
@@ -29,7 +30,7 @@ use smithay::{
         drm::control::{
             Device as ControlDevice, Mode as DrmMode, ModeTypeFlags, connector, crtc, property,
         },
-        input::Libinput,
+        input::{Device as LibinputDevice, Libinput},
         rustix::fs::OFlags,
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind,
         wayland_server::backend::GlobalId,
@@ -108,8 +109,9 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
 
     event_loop
         .handle()
-        .insert_source(libinput_backend, |event, _, state| {
-            state.process_input_event(event);
+        .insert_source(libinput_backend, |event, _, state| match event {
+            InputEvent::DeviceAdded { mut device } => configure_libinput_device(state, &mut device),
+            event => state.process_input_event(event),
         })?;
     event_loop
         .handle()
@@ -174,6 +176,38 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
 
     tracing::info!(seat = %seat_name, "initialized direct session input and device discovery");
     Ok(())
+}
+
+fn configure_libinput_device(state: &Ferese, device: &mut LibinputDevice) {
+    let settings = state.input_settings.touchpad;
+
+    if device.config_tap_finger_count() > 0
+        && let Err(error) = device.config_tap_set_enabled(settings.tap)
+    {
+        tracing::warn!(
+            device = device.name(),
+            ?error,
+            "failed to configure tap-to-click"
+        );
+    }
+    if device.config_scroll_has_natural_scroll()
+        && let Err(error) = device.config_scroll_set_natural_scroll_enabled(settings.natural_scroll)
+    {
+        tracing::warn!(
+            device = device.name(),
+            ?error,
+            "failed to configure natural scrolling"
+        );
+    }
+    if device.config_dwt_is_available()
+        && let Err(error) = device.config_dwt_set_enabled(settings.disable_while_typing)
+    {
+        tracing::warn!(
+            device = device.name(),
+            ?error,
+            "failed to configure disable-while-typing"
+        );
+    }
 }
 
 fn open_primary_device(
