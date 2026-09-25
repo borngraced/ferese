@@ -247,6 +247,7 @@ struct MaterialParameters {
     tint: [f32; 4],
     noise: f32,
     generation: u64,
+    scene_generation: u64,
     opaque: bool,
 }
 
@@ -1207,6 +1208,7 @@ fn material_element(
         tint,
         noise: material.noise,
         generation,
+        scene_generation: state.material_scene_generation(),
         opaque: material.opacity == 1.0,
     };
     let context = renderer.context_id().erased();

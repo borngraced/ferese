@@ -124,6 +124,7 @@ pub struct Ferese {
     pub(crate) rounded_clip_programs: HashMap<ErasedContextId, crate::winit::RoundedClipPrograms>,
     pub(crate) material_programs: HashMap<ErasedContextId, crate::winit::MaterialProgram>,
     pub(crate) material_buffers: HashMap<WlSurface, crate::winit::MaterialBuffers>,
+    material_scene_generation: u64,
     closing_windows: HashMap<WindowId, ClosingAnimation>,
     viewport_animations: HashMap<WorkspaceId, AnimatedValue>,
     scrolling_world_x: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
@@ -438,6 +439,7 @@ impl Ferese {
             rounded_clip_programs: HashMap::new(),
             material_programs: HashMap::new(),
             material_buffers: HashMap::new(),
+            material_scene_generation: 0,
             closing_windows: HashMap::new(),
             viewport_animations: HashMap::new(),
             scrolling_world_x: HashMap::new(),
@@ -1276,7 +1278,19 @@ impl Ferese {
         }
         self.sync_window_stacking();
 
+        if active_animation {
+            self.invalidate_material_scene();
+        }
+
         active_animation
+    }
+
+    pub(crate) fn invalidate_material_scene(&mut self) {
+        self.material_scene_generation = self.material_scene_generation.wrapping_add(1);
+    }
+
+    pub(crate) fn material_scene_generation(&self) -> u64 {
+        self.material_scene_generation
     }
 
     pub fn record_client_commit(&mut self, window: &Window) {

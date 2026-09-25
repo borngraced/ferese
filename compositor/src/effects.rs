@@ -96,11 +96,14 @@ impl SurfaceEffectsState {
         }
     }
 
-    fn set_role(&self, role: Option<SemanticRole>) {
+    fn set_role(&self, role: Option<SemanticRole>) -> bool {
         let mut current = self.role.lock().unwrap();
         if *current != role {
             *current = role;
             self.generation.fetch_add(1, Ordering::Release);
+            true
+        } else {
+            false
         }
     }
 }
@@ -192,7 +195,7 @@ impl Dispatch<FereseEffectsManagerV1, ()> for Ferese {
 
 impl Dispatch<FereseSurfaceEffectsV1, SurfaceEffectsUserData> for Ferese {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &Client,
         _resource: &FereseSurfaceEffectsV1,
         request: ferese_surface_effects_v1::Request,
@@ -220,10 +223,23 @@ impl Dispatch<FereseSurfaceEffectsV1, SurfaceEffectsUserData> for Ferese {
                     WEnum::Value(ferese_surface_effects_v1::Role::Modal) => SemanticRole::Modal,
                     WEnum::Unknown(_) | WEnum::Value(_) => return,
                 };
-                set_surface_role(&surface, Some(role));
+                if set_surface_role(&surface, Some(role)) {
+                    state.invalidate_material_scene();
+                    crate::backends::direct::render_all(state);
+                }
             }
-            ferese_surface_effects_v1::Request::ClearRole => set_surface_role(&surface, None),
-            ferese_surface_effects_v1::Request::Destroy => detach(&surface),
+            ferese_surface_effects_v1::Request::ClearRole => {
+                if set_surface_role(&surface, None) {
+                    state.invalidate_material_scene();
+                    crate::backends::direct::render_all(state);
+                }
+            }
+            ferese_surface_effects_v1::Request::Destroy => {
+                if detach(&surface) {
+                    state.invalidate_material_scene();
+                    crate::backends::direct::render_all(state);
+                }
+            }
             _ => unreachable!(),
         }
     }
@@ -240,21 +256,24 @@ impl Dispatch<FereseSurfaceEffectsV1, SurfaceEffectsUserData> for Ferese {
     }
 }
 
-fn set_surface_role(surface: &WlSurface, role: Option<SemanticRole>) {
+fn set_surface_role(surface: &WlSurface, role: Option<SemanticRole>) -> bool {
     with_states(surface, |states| {
-        if let Some(effects) = states.data_map.get::<SurfaceEffectsState>() {
-            effects.set_role(role);
-        }
-    });
+        states
+            .data_map
+            .get::<SurfaceEffectsState>()
+            .is_some_and(|effects| effects.set_role(role))
+    })
 }
 
-fn detach(surface: &WlSurface) {
+fn detach(surface: &WlSurface) -> bool {
     with_states(surface, |states| {
-        if let Some(effects) = states.data_map.get::<SurfaceEffectsState>() {
-            effects.set_role(None);
-            effects.attached.store(false, Ordering::Release);
-        }
-    });
+        let Some(effects) = states.data_map.get::<SurfaceEffectsState>() else {
+            return false;
+        };
+        let role_changed = effects.set_role(None);
+        let was_attached = effects.attached.swap(false, Ordering::AcqRel);
+        role_changed || was_attached
+    })
 }
 
 #[cfg(test)]
@@ -264,13 +283,13 @@ mod tests {
     #[test]
     fn role_changes_advance_generation_only_when_material_changes() {
         let effects = SurfaceEffectsState::new();
-        effects.set_role(Some(SemanticRole::Panel));
+        assert!(effects.set_role(Some(SemanticRole::Panel)));
         assert_eq!(effects.generation.load(Ordering::Acquire), 1);
 
-        effects.set_role(Some(SemanticRole::Panel));
+        assert!(!effects.set_role(Some(SemanticRole::Panel)));
         assert_eq!(effects.generation.load(Ordering::Acquire), 1);
 
-        effects.set_role(Some(SemanticRole::Popover));
+        assert!(effects.set_role(Some(SemanticRole::Popover)));
         assert_eq!(effects.generation.load(Ordering::Acquire), 2);
     }
 
