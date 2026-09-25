@@ -32,6 +32,14 @@ const APP_ID: &str = "dev.ferese.Shell";
 const BAR_HEIGHT: u32 = 32;
 const BAR_MARGIN: i32 = 8;
 const EXCLUSIVE_ZONE: i32 = BAR_HEIGHT as i32;
+const BAR_TEXT_SIZE: u16 = (BAR_HEIGHT * 3 / 8) as u16;
+const BAR_ICON_SIZE: u16 = (BAR_HEIGHT / 2) as u16;
+const CONTROL_HEIGHT: f32 = BAR_HEIGHT as f32 * 0.75;
+const WORKSPACE_HIT_WIDTH: f32 = BAR_HEIGHT as f32 * 0.6875;
+const ACTIVE_MARKER_WIDTH: f32 = BAR_HEIGHT as f32 * 0.5;
+const ACTIVE_MARKER_HEIGHT: f32 = BAR_HEIGHT as f32 * 0.125;
+const DOT_MARKER_SIZE: f32 = BAR_HEIGHT as f32 * 0.1875;
+const EMPTY_MARKER_SIZE: f32 = BAR_HEIGHT as f32 * 0.125;
 
 fn main() -> cosmic::iced::Result {
     let settings = Settings::default()
@@ -206,13 +214,13 @@ impl FereseShell {
             .or_else(|| self.snapshot.outputs.first());
         let focused_output_id = focused_output.map(|output| output.id);
         let mut workspace_row = row::with_capacity(self.snapshot.workspaces.len() + 1)
-            .spacing(2)
+            .spacing(1)
             .align_y(cosmic::iced::Alignment::Center);
 
         workspace_row = workspace_row.push(
             button::suggested("F")
-                .font_size(12)
-                .height(24)
+                .font_size(BAR_TEXT_SIZE)
+                .height(CONTROL_HEIGHT)
                 .padding([2, 9])
                 .on_press(cosmic::Action::App(Message::EnterOverview)),
         );
@@ -222,16 +230,21 @@ impl FereseShell {
             .iter()
             .filter(|workspace| workspace.output == focused_output_id)
         {
-            let button = if workspace.active {
-                button::suggested(workspace.name.clone())
-            } else {
-                button::text(workspace.name.clone())
-            };
+            let occupied = self
+                .snapshot
+                .windows
+                .iter()
+                .any(|window| window.workspace == workspace.id);
+            let indicator = workspace_indicator(workspace.active, occupied);
+            let workspace_button = button::custom(indicator)
+                .height(CONTROL_HEIGHT)
+                .padding(0)
+                .class(theme::Button::Transparent)
+                .on_press(cosmic::Action::App(Message::ActivateWorkspace(
+                    workspace.id,
+                )));
 
-            workspace_row =
-                workspace_row.push(button.font_size(12).height(24).padding([2, 8]).on_press(
-                    cosmic::Action::App(Message::ActivateWorkspace(workspace.id)),
-                ));
+            workspace_row = workspace_row.push(workspace_button);
         }
 
         let app_name = self
@@ -245,18 +258,14 @@ impl FereseShell {
             })
             .map(display_app_name)
             .unwrap_or_else(|| "Desktop".to_owned());
-        let left = row![workspace_row, text(app_name).size(12)]
+        let left = row![workspace_row, text(app_name).size(BAR_TEXT_SIZE)]
             .spacing(12)
             .align_y(cosmic::iced::Alignment::Center);
-        let center = text(&self.clock).size(13);
-        let output_hint = focused_output
-            .map(|output| output.name.as_str())
-            .unwrap_or("No display");
+        let center = text(&self.clock).size(BAR_TEXT_SIZE);
         let right = row![
-            text("◌").size(16),
-            text("♪").size(15),
-            text(output_hint).size(11),
-            text("●").size(10),
+            text("◌").size(BAR_ICON_SIZE),
+            text("♪").size(BAR_ICON_SIZE),
+            text("●").size(BAR_ICON_SIZE),
         ]
         .spacing(10)
         .align_y(cosmic::iced::Alignment::Center);
@@ -280,6 +289,63 @@ impl FereseShell {
             .padding([0, 12])
             .class(theme::Container::custom(bar_style))
             .into()
+    }
+}
+
+fn workspace_indicator(active: bool, occupied: bool) -> Element<'static, cosmic::Action<Message>> {
+    let (width, height, style) = if active {
+        (
+            ACTIVE_MARKER_WIDTH,
+            ACTIVE_MARKER_HEIGHT,
+            active_workspace_style as fn(&cosmic::Theme) -> container::Style,
+        )
+    } else if occupied {
+        (
+            DOT_MARKER_SIZE,
+            DOT_MARKER_SIZE,
+            occupied_workspace_style as fn(&cosmic::Theme) -> container::Style,
+        )
+    } else {
+        (
+            EMPTY_MARKER_SIZE,
+            EMPTY_MARKER_SIZE,
+            empty_workspace_style as fn(&cosmic::Theme) -> container::Style,
+        )
+    };
+    let marker = container(text(""))
+        .width(width)
+        .height(height)
+        .class(theme::Container::custom(style));
+
+    container(marker)
+        .width(WORKSPACE_HIT_WIDTH)
+        .height(CONTROL_HEIGHT)
+        .align_x(alignment::Horizontal::Center)
+        .align_y(alignment::Vertical::Center)
+        .into()
+}
+
+fn active_workspace_style(_theme: &cosmic::Theme) -> container::Style {
+    workspace_marker_style(Color::from_rgb8(91, 140, 255), 2.0)
+}
+
+fn occupied_workspace_style(_theme: &cosmic::Theme) -> container::Style {
+    workspace_marker_style(Color::from_rgba8(221, 228, 240, 0.68), 3.0)
+}
+
+fn empty_workspace_style(_theme: &cosmic::Theme) -> container::Style {
+    workspace_marker_style(Color::from_rgba8(221, 228, 240, 0.25), 2.0)
+}
+
+fn workspace_marker_style(color: Color, radius: f32) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(color)),
+        border: Border {
+            radius: radius.into(),
+            ..Border::default()
+        },
+        snap: true,
+        ..container::Style::default()
     }
 }
 
