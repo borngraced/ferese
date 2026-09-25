@@ -459,6 +459,10 @@ name = "ferese-layout"
 version = "0.1.0"
 
 [[package]]
+name = "ferese-malformed-client"
+version = "0.1.0"
+
+[[package]]
 name = "feresectl"
 version = "0.1.0"
 dependencies = [

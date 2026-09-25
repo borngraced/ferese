@@ -5,7 +5,11 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{SyncSender, sync_channel};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{
+    Arc,
+    mpsc::{SyncSender, sync_channel},
+};
 use std::thread;
 
 use ferese_core::LayoutMode;
@@ -18,11 +22,22 @@ use smithay::utils::Transform;
 use crate::{Ferese, config::OutputTransform};
 
 const REQUEST_QUEUE_CAPACITY: usize = 128;
+const MAX_CONNECTIONS: usize = 64;
 
 #[derive(Debug)]
 struct IpcCall {
     request: Request,
     response: SyncSender<Response>,
+}
+
+struct ConnectionPermit {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[derive(Debug)]
@@ -78,6 +93,8 @@ pub(crate) fn init(
 }
 
 fn accept_connections(listener: UnixListener, sender: channel::SyncSender<IpcCall>) {
+    let active_connections = Arc::new(AtomicUsize::new(0));
+
     loop {
         let (stream, _) = match listener.accept() {
             Ok(connection) => connection,
@@ -100,14 +117,41 @@ fn accept_connections(listener: UnixListener, sender: channel::SyncSender<IpcCal
             }
         }
 
+        let Some(permit) = try_acquire_connection(&active_connections) else {
+            tracing::warn!(
+                limit = MAX_CONNECTIONS,
+                "rejected IPC connection at worker limit"
+            );
+            continue;
+        };
         let sender = sender.clone();
         if let Err(error) = thread::Builder::new()
             .name("ferese-ipc-client".to_owned())
-            .spawn(move || serve_connection(stream, sender))
+            .spawn(move || {
+                let _permit = permit;
+                serve_connection(stream, sender);
+            })
         {
             tracing::warn!(%error, "could not start IPC connection worker");
         }
     }
+}
+
+fn try_acquire_connection(active: &Arc<AtomicUsize>) -> Option<ConnectionPermit> {
+    let mut count = active.load(Ordering::Acquire);
+    loop {
+        if count >= MAX_CONNECTIONS {
+            return None;
+        }
+        match active.compare_exchange_weak(count, count + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => break,
+            Err(actual) => count = actual,
+        }
+    }
+
+    Some(ConnectionPermit {
+        active: active.clone(),
+    })
 }
 
 fn serve_connection(mut stream: UnixStream, sender: channel::SyncSender<IpcCall>) {
@@ -147,15 +191,8 @@ fn serve_connection(mut stream: UnixStream, sender: channel::SyncSender<IpcCall>
 
 impl Ferese {
     fn handle_ipc_request(&mut self, request: Request) -> Response {
-        if request.version != VERSION {
-            return Response::error(
-                request.id,
-                "unsupported_version",
-                format!("supported version is {VERSION}"),
-            );
-        }
-        if request.kind != "command" {
-            return Response::error(request.id, "invalid_type", "expected type \"command\"");
+        if let Err(error) = validate_request(&request) {
+            return Response::error(request.id, error.code, error.message);
         }
 
         match self.dispatch_ipc_command(&request.command, &request.args) {
@@ -345,6 +382,23 @@ impl Ferese {
     }
 }
 
+fn validate_request(request: &Request) -> Result<(), CommandError> {
+    if request.version != VERSION {
+        return Err(CommandError::new(
+            "unsupported_version",
+            format!("supported version is {VERSION}"),
+        ));
+    }
+    if request.kind != "command" {
+        return Err(CommandError::new(
+            "invalid_type",
+            "expected type \"command\"",
+        ));
+    }
+
+    Ok(())
+}
+
 fn transform_name(transform: Transform) -> &'static str {
     match transform {
         Transform::Normal => "normal",
@@ -500,7 +554,21 @@ fn effective_uid() -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::Shutdown;
+    use std::os::unix::fs::PermissionsExt;
+
     use super::*;
+
+    fn request(version: u32, kind: &str) -> Request {
+        Request {
+            version,
+            id: 7,
+            kind: kind.to_owned(),
+            command: "get-outputs".to_owned(),
+            args: json!({}),
+        }
+    }
 
     #[test]
     fn parses_direction_arguments() {
@@ -516,5 +584,113 @@ mod tests {
         assert_eq!(workspace_arg(&json!({ "index": 9 })).unwrap(), 9);
         assert!(workspace_arg(&json!({ "index": 0 })).is_err());
         assert!(workspace_arg(&json!({ "index": -1 })).is_err());
+    }
+
+    #[test]
+    fn rejects_unsupported_versions_and_request_types_with_stable_codes() {
+        let version = validate_request(&request(VERSION + 1, "command")).unwrap_err();
+        let kind = validate_request(&request(VERSION, "event")).unwrap_err();
+
+        assert_eq!(version.code, "unsupported_version");
+        assert_eq!(kind.code, "invalid_type");
+        assert!(validate_request(&request(VERSION, "command")).is_ok());
+    }
+
+    #[test]
+    fn reads_same_user_peer_credentials() {
+        let (left, right) = UnixStream::pair().unwrap();
+
+        assert_eq!(peer_uid(&left).unwrap(), effective_uid());
+        assert_eq!(peer_uid(&right).unwrap(), effective_uid());
+    }
+
+    #[test]
+    fn malformed_ipc_connection_is_closed_without_reaching_the_request_queue() {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let (sender, _receiver) = channel::sync_channel(1);
+        let worker = thread::spawn(move || serve_connection(server, sender));
+        let invalid = b"not-json";
+
+        client
+            .write_all(&(invalid.len() as u32).to_be_bytes())
+            .unwrap();
+        client.write_all(invalid).unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        let mut byte = [0_u8; 1];
+
+        assert_eq!(client.read(&mut byte).unwrap(), 0);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn runtime_socket_directory_is_private() {
+        let root = unique_test_directory("private-parent");
+        let parent = root.join("ferese");
+        let socket = parent.join("control.sock");
+
+        fs::create_dir(&root).unwrap();
+        prepare_parent(&socket).unwrap();
+        let metadata = fs::metadata(&parent).unwrap();
+
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn listener_reclaims_only_a_stale_owned_socket() {
+        let root = unique_test_directory("stale-socket");
+        fs::create_dir(&root).unwrap();
+        let socket = root.join("control.sock");
+        let first = bind_listener(&socket).unwrap();
+
+        assert_eq!(
+            bind_listener(&socket).unwrap_err().kind(),
+            io::ErrorKind::AddrInUse
+        );
+        drop(first);
+        let replacement = bind_listener(&socket).unwrap();
+
+        drop(replacement);
+        fs::remove_file(socket).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn listener_never_replaces_a_non_socket_path() {
+        let root = unique_test_directory("non-socket");
+        fs::create_dir(&root).unwrap();
+        let socket = root.join("control.sock");
+        fs::write(&socket, b"keep").unwrap();
+
+        assert_eq!(
+            bind_listener(&socket).unwrap_err().kind(),
+            io::ErrorKind::AddrInUse
+        );
+        assert_eq!(fs::read(&socket).unwrap(), b"keep");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn ipc_worker_count_is_bounded_and_permits_are_reusable() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let mut permits = (0..MAX_CONNECTIONS)
+            .map(|_| try_acquire_connection(&active).unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(try_acquire_connection(&active).is_none());
+        permits.pop();
+        assert_eq!(active.load(Ordering::Acquire), MAX_CONNECTIONS - 1);
+        assert!(try_acquire_connection(&active).is_some());
+    }
+
+    fn unique_test_directory(label: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        env::temp_dir().join(format!("ferese-ipc-{label}-{}-{nonce}", std::process::id()))
     }
 }

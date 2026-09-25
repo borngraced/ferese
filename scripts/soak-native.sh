@@ -6,6 +6,7 @@ soak_seconds="${FERESE_SOAK_SECONDS:-86400}"
 iteration_delay="${FERESE_SOAK_DELAY:-0.15}"
 client_program="${FERESE_SOAK_CLIENT:-foot}"
 feresectl_program="${FERESECTL:-target/debug/feresectl}"
+malformed_client_program="${FERESE_MALFORMED_CLIENT:-target/debug/ferese-malformed-client}"
 compositor_pid="${FERESE_PID:-}"
 log_path="${FERESE_SOAK_LOG:-/tmp/ferese-soak-$$.log}"
 
@@ -21,6 +22,10 @@ fi
 
 if [[ ! -x "$feresectl_program" ]]; then
     cargo build -p feresectl
+fi
+
+if [[ ! -x "$malformed_client_program" ]]; then
+    cargo build -p ferese-malformed-client
 fi
 
 if ! command -v "$client_program" >/dev/null 2>&1; then
@@ -135,6 +140,8 @@ while ((SECONDS < deadline)); do
         launch_client
         wait_for_focus
         kill -TERM "${client_pids[-1]}" 2>/dev/null || true
+        "$malformed_client_program" >>"$log_path" 2>&1
+        control get-outputs
     fi
     reap_clients
 

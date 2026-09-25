@@ -1347,6 +1347,10 @@ Events include `window-opened`, `window-closed`, `window-focused`,
 Subscribers have bounded queues. The server MUST disconnect a subscriber whose
 queue overflows rather than block the compositor.
 
+The IPC server MUST bound concurrent connection workers as well as queued
+requests. Reaching either limit rejects the excess client without blocking the
+compositor event loop or allocating another worker thread.
+
 ## 14. Input
 
 Ferese MUST support click-to-focus, configurable focus-follows-pointer, floating

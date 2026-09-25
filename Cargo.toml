@@ -6,6 +6,7 @@ members = [
     "crates/ferese-core",
     "crates/ferese-ipc",
     "crates/ferese-layout",
+    "tools/ferese-malformed-client",
 ]
 resolver = "3"
 

@@ -201,7 +201,8 @@ The v0 IPC slice also supports `move`, `resize`, `move-to-workspace`,
 `center-column`, `consume`, `expel`, `close`, `get-focused-window`, and
 `get-outputs`. Requests use versioned, 1 MiB-limited length-prefixed JSON. The
 runtime directory and socket are restricted to modes `0700` and `0600`, and the
-server rejects peers whose effective UID differs from the compositor's.
+server rejects peers whose effective UID differs from the compositor's. IPC has
+a bounded request queue and accepts at most 64 concurrent client connections.
 `get-outputs` includes disabled-but-connected monitors, connector and persistent
 identity matchers, current and available modes with refresh rates, fractional
 scale, transform, logical position and size, and physical dimensions.
