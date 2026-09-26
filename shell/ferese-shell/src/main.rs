@@ -26,7 +26,7 @@ use cosmic::iced::{
     window,
 };
 use cosmic::theme;
-use cosmic::widget::{button, container, icon, image, row, text};
+use cosmic::widget::{button, container, icon, image, row};
 use ferese_protocols::effects::v1::client::{
     ferese_effects_manager_v1::FereseEffectsManagerV1,
     ferese_surface_effects_v1::{self, FereseSurfaceEffectsV1},
@@ -42,6 +42,23 @@ use crate::config::{ShellConfig, ShellTheme, WallpaperMode};
 use crate::control::{ShellControl, ShellSnapshot};
 
 const APP_ID: &str = "dev.ferese.Shell";
+
+static SHELL_FONT: std::sync::OnceLock<cosmic::font::Font> = std::sync::OnceLock::new();
+
+fn configured_font(family: Option<&str>) -> cosmic::font::Font {
+    family.map_or_else(cosmic::font::default, |family| {
+        let family = Box::leak(family.to_owned().into_boxed_str());
+        cosmic::font::Font::with_name(family)
+    })
+}
+
+// COSMIC's text helper explicitly selects its interface font, overriding
+// Settings::default_font. Use this helper for every bar and menu label.
+fn text<'a>(
+    content: impl Into<std::borrow::Cow<'a, str>> + 'a,
+) -> cosmic::widget::Text<'a, cosmic::Theme, cosmic::Renderer> {
+    cosmic::widget::text(content).font(*SHELL_FONT.get_or_init(cosmic::font::default))
+}
 
 #[derive(Clone, Copy)]
 struct BarMetrics {
@@ -87,6 +104,8 @@ fn main() -> cosmic::iced::Result {
         unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia,wgpu") };
     }
     let config = config::load();
+    let shell_font = configured_font(config.font_family.as_deref());
+    let _ = SHELL_FONT.set(shell_font);
     // Decode alongside toolkit/GPU initialization, never during a UI draw.
     let wallpaper = config.wallpaper.path.clone().map(|path| {
         let (sender, receiver) = cosmic::iced::futures::channel::oneshot::channel();
@@ -106,11 +125,7 @@ fn main() -> cosmic::iced::Result {
         .client_decorations(false)
         .transparent(true)
         .is_daemon(true);
-    if let Some(font_family) = config.font_family.clone() {
-        let font_family = Box::leak(font_family.into_boxed_str());
-
-        settings = settings.default_font(cosmic::font::Font::with_name(font_family));
-    }
+    settings = settings.default_font(shell_font);
 
     cosmic::app::run::<FereseShell>(settings, (config, wallpaper))
 }
@@ -1024,6 +1039,15 @@ delegate_noop!(EffectsState: ignore FereseSurfaceEffectsV1);
 mod tests {
     use super::*;
     use crate::control::{OutputSnapshot, WindowSnapshot};
+
+    #[test]
+    fn shell_font_respects_configured_family() {
+        assert_eq!(
+            configured_font(Some("JetBrainsMono Nerd Font")),
+            cosmic::font::Font::with_name("JetBrainsMono Nerd Font")
+        );
+        assert_eq!(configured_font(None), cosmic::font::default());
+    }
 
     #[test]
     fn icons_use_theme_accent_and_preserve_battery_status_colors() {

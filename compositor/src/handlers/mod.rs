@@ -6,6 +6,7 @@ pub(crate) mod screencopy;
 mod xdg_shell;
 
 use smithay::{
+    desktop::{PopupManager, layer_map_for_output},
     input::{
         Seat, SeatHandler, SeatState,
         pointer::{CursorImageStatus, PointerHandle},
@@ -159,18 +160,39 @@ impl Ferese {
                 continue;
             };
 
-            with_surface_tree_downward(
-                toplevel.wl_surface(),
-                (),
-                |_, _, &()| TraversalAction::DoChildren(()),
-                |_, states, &()| {
-                    with_fractional_scale(states, |surface_scale| {
-                        surface_scale.set_preferred_scale(scale);
-                    });
-                },
-                |_, _, &()| true,
-            );
+            set_surface_tree_scale(toplevel.wl_surface(), scale);
         }
+
+        // Layer surfaces are not Space elements. Use their own output's scale,
+        // rather than broadcasting one output's density to every bar.
+        for output in self.space.outputs() {
+            let scale = output.current_scale().fractional_scale();
+            let layers: Vec<_> = layer_map_for_output(output).layers().cloned().collect();
+            for layer in layers {
+                set_surface_tree_scale(layer.wl_surface(), scale);
+            }
+        }
+    }
+}
+
+pub(crate) fn set_surface_tree_scale(surface: &WlSurface, scale: f64) {
+    let update_tree = |root: &WlSurface| {
+        with_surface_tree_downward(
+            root,
+            (),
+            |_, _, &()| TraversalAction::DoChildren(()),
+            |_, states, &()| {
+                with_fractional_scale(states, |surface_scale| {
+                    surface_scale.set_preferred_scale(scale);
+                });
+            },
+            |_, _, &()| true,
+        );
+    };
+    update_tree(surface);
+    // XDG popups are separate surface trees, not wl_subsurfaces.
+    for (popup, _) in PopupManager::popups_for_surface(surface) {
+        update_tree(popup.wl_surface());
     }
 }
 
