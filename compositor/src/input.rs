@@ -195,6 +195,9 @@ impl Ferese {
                     }
 
                     if event.state() == ButtonState::Pressed {
+                        if self.click_overview_workspace(position) {
+                            return;
+                        }
                         if let Some(window) = self.window_under_visual(position)
                             && let Some(id) = self.window_ids.get(&window).copied()
                         {
@@ -230,6 +233,17 @@ impl Ferese {
                 let vertical = event.amount(Axis::Vertical).unwrap_or_else(|| {
                     event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.0
                 });
+                let pointer = self.seat.get_pointer().expect("seat has a pointer");
+                if self.scroll_overview_strip(
+                    pointer.current_location(),
+                    if horizontal != 0.0 {
+                        horizontal
+                    } else {
+                        vertical
+                    },
+                ) {
+                    return;
+                }
                 let mut frame = AxisFrame::new(event.time() as u32).source(source);
                 if horizontal != 0.0 {
                     frame = frame.value(Axis::Horizontal, horizontal);

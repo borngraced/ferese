@@ -231,6 +231,7 @@ impl Ferese {
             "toggle-fullscreen" => self.toggle_focused_fullscreen(),
             "toggle-maximized" => self.toggle_focused_maximized(),
             "toggle-layout" => self.toggle_layout_mode(),
+            "toggle-overview" => self.toggle_overview(),
             "cycle-column-width" => self.cycle_focused_column_width(),
             "center-column" => self.center_focused_column(),
             "consume" => self.consume_focused_window(),

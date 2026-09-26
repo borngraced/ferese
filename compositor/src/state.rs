@@ -208,6 +208,7 @@ pub struct Ferese {
 }
 
 pub struct RuntimeConfig {
+    pub(crate) overview_font_family: String,
     pub(crate) wallpaper: crate::wallpaper::WallpaperConfig,
     pub layout_mode: LayoutMode,
     pub gap_config: GapConfig,
@@ -519,7 +520,7 @@ impl Ferese {
             pending_screencopies: Vec::new(),
             shell_resources: Vec::new(),
             shell_snapshot_serial: 0,
-            overview: crate::overview::OverviewState::default(),
+            overview: crate::overview::OverviewState::with_font_family(config.overview_font_family),
             next_window_id: 1,
             next_output_id: 1,
             last_animation_tick: start_time,
@@ -693,7 +694,12 @@ impl Ferese {
 
     pub fn window_under_visual(&self, position: Point<f64, Logical>) -> Option<Window> {
         let workspace = self.workspace_under_pointer(position)?;
-        self.space.elements().rev().find_map(|window| {
+        let candidates = if self.overview.is_active() {
+            self.window_ids.keys().cloned().collect::<Vec<_>>()
+        } else {
+            self.space.elements().rev().cloned().collect::<Vec<_>>()
+        };
+        candidates.iter().find_map(|window| {
             let id = self.window_ids.get(window)?;
             if self.workspaces.workspace_for_window(*id) != Some(workspace) {
                 return None;

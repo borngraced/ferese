@@ -1570,12 +1570,14 @@ dependencies = [
 name = "ferese"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "calloop 0.14.4",
  "ferese-animation",
  "ferese-core",
  "ferese-ipc",
  "ferese-layout",
  "ferese-protocols",
+ "fontdb",
  "image",
  "libc",
  "serde",

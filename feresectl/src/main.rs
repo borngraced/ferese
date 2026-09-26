@@ -48,8 +48,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(String, Value),
             json!({ "index": index })
         }
         "toggle-floating" | "toggle-fullscreen" | "toggle-maximized" | "toggle-layout"
-        | "cycle-column-width" | "center-column" | "consume" | "expel" | "close"
-        | "get-focused-window" | "get-workspaces" | "get-outputs" | "exit" => {
+        | "toggle-overview" | "cycle-column-width" | "center-column" | "consume" | "expel"
+        | "close" | "get-focused-window" | "get-workspaces" | "get-outputs" | "exit" => {
             if !positional.is_empty() {
                 return Err(format!("{command} does not accept arguments"));
             }
@@ -78,12 +78,21 @@ fn socket_path() -> Result<PathBuf, io::Error> {
 }
 
 fn usage() -> String {
-    "usage: feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit>\n       feresectl <get-focused-window|get-workspaces|get-outputs>".to_owned()
+    "usage: feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit>\n       feresectl <get-focused-window|get-workspaces|get-outputs>".to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overview_toggle_accepts_no_arguments() {
+        assert_eq!(
+            parse_args(["toggle-overview".into()]).unwrap(),
+            ("toggle-overview".into(), json!({}))
+        );
+        assert!(parse_args(["toggle-overview".into(), "extra".into()]).is_err());
+    }
 
     #[test]
     fn parses_direction_and_workspace_commands() {

@@ -168,6 +168,8 @@ impl Default for InactiveDimConfig {
 #[derive(Debug, Default, Deserialize)]
 struct ThemeConfig {
     #[serde(default)]
+    typography: OverviewTypographyConfig,
+    #[serde(default)]
     background: crate::wallpaper::WallpaperConfig,
     #[serde(default)]
     surface: ThemeSurfaceConfig,
@@ -182,9 +184,21 @@ struct ThemeConfig {
 }
 
 impl Config {
+    pub(crate) fn overview_font_family(&self) -> String {
+        self.theme
+            .typography
+            .font_family
+            .clone()
+            .unwrap_or_else(|| "sans-serif".into())
+    }
     pub(crate) fn wallpaper_settings(&self) -> crate::wallpaper::WallpaperConfig {
         self.theme.background.clone()
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OverviewTypographyConfig {
+    font_family: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]

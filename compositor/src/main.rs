@@ -72,6 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         viewport_spring_config: config.viewport_spring_config()?,
         output_profiles,
         wallpaper: config.wallpaper_settings(),
+        overview_font_family: config.overview_font_family(),
     };
     let mut state = Ferese::new(&mut event_loop, display, runtime)?;
     backends::init(launch.backend, &mut event_loop, &mut state)?;

@@ -198,6 +198,15 @@ out over 80 ms, with a 64 MiB total snapshot budget and automatic release.
 All monitors share one elapsed-time animation clock, and window content,
 clips, borders and shadows use the same physical-pixel edges.
 
+Overview has a horizontally scrollable workspace strip with live window
+thumbnails and an accent outline on the workspace shown by each output.
+Click a workspace to change the window grid without leaving overview; click
+a window to focus it and exit, or press Escape to dismiss. Only the workspace
+strip has a tinted surface; the window grid sits directly over the wallpaper.
+Strip labels use `[theme.typography].font_family` and rasterize at output scale.
+The strip fades independently and preserves its opacity on rapid reversals,
+including when the selected workspace is empty.
+
 Ferese renders `[theme.background]` wallpapers directly: `path` selects the
 image and `mode = "fill"` or `"fit"` controls crop/letterboxing. One decoded
 image and one texture per GPU context serve every output; resizing requires

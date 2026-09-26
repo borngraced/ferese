@@ -6,6 +6,8 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ab_glyph = "0.2.32"
+fontdb = "0.23.0"
 calloop.workspace = true
 ferese-animation = { path = "../crates/ferese-animation" }
 ferese-core = { path = "../crates/ferese-core" }
