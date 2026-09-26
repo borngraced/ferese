@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Ferese Settings
+Comment=Make your Ferese desktop feel like yours
+Exec=ferese-settings
+TryExec=ferese-settings
+Icon=dev.ferese.Settings
+Terminal=false
+Categories=Settings;DesktopSettings;
+Keywords=Ferese;Appearance;Wallpaper;Keyboard;Windows;
+StartupNotify=true

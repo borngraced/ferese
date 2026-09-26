@@ -7,7 +7,10 @@ use smithay::{
         Seat,
         pointer::{Focus, GrabStartData},
     },
-    reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+    reexports::wayland_protocols::xdg::{
+        decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
+        shell::server::xdg_toplevel::State as ToplevelState,
+    },
     reexports::wayland_server::{
         Resource,
         protocol::{wl_seat, wl_surface::WlSurface},
@@ -34,21 +37,11 @@ impl XdgShellHandler for Ferese {
     }
 
     fn new_toplevel(&mut self, surface: ToplevelSurface) {
-        let parent = surface.parent().and_then(|parent| {
-            self.window_ids.iter().find_map(|(window, id)| {
-                window
-                    .toplevel()
-                    .is_some_and(|toplevel| toplevel.wl_surface() == &parent)
-                    .then_some(*id)
-            })
-        });
         let window = Window::new_wayland_window(surface);
-
-        if let Some(parent) = parent {
-            self.add_transient_window(window, parent);
-        } else {
-            self.add_tiled_window(window);
-        }
+        // app_id, title and parent arrive after get_toplevel. Keep the surface
+        // discoverable, but do not mutate/focus the layout until its initial
+        // commit supplies the metadata needed to resolve placement rules.
+        self.space.map_element(window, (0, 0), false);
     }
 
     fn parent_changed(&mut self, surface: ToplevelSurface) {
@@ -212,6 +205,8 @@ impl XdgShellHandler for Ferese {
                 .then_some(*id)
         }) {
             self.set_window_maximized(id, true);
+        } else {
+            surface.with_pending_state(|state| state.states.set(ToplevelState::Maximized));
         }
     }
 
@@ -223,6 +218,8 @@ impl XdgShellHandler for Ferese {
                 .then_some(*id)
         }) {
             self.set_window_maximized(id, false);
+        } else {
+            surface.with_pending_state(|state| state.states.unset(ToplevelState::Maximized));
         }
     }
 
@@ -238,6 +235,8 @@ impl XdgShellHandler for Ferese {
                 .then_some(*id)
         }) {
             self.set_window_fullscreen(window, true);
+        } else {
+            surface.with_pending_state(|state| state.states.set(ToplevelState::Fullscreen));
         }
     }
 
@@ -249,6 +248,8 @@ impl XdgShellHandler for Ferese {
                 .then_some(*id)
         }) {
             self.set_window_fullscreen(window, false);
+        } else {
+            surface.with_pending_state(|state| state.states.unset(ToplevelState::Fullscreen));
         }
     }
 
@@ -405,7 +406,37 @@ pub fn apply_initial_window_rules(state: &mut Ferese, window: &Window) {
         )
     });
 
+    let initial = !state.window_ids.contains_key(window);
+    let requested = initial.then(|| {
+        toplevel.with_pending_state(|pending| {
+            (
+                pending.states.contains(ToplevelState::Maximized),
+                pending.states.contains(ToplevelState::Fullscreen),
+            )
+        })
+    });
+    if initial {
+        let parent = toplevel.parent().and_then(|parent| {
+            state.window_ids.iter().find_map(|(candidate, id)| {
+                candidate
+                    .toplevel()
+                    .is_some_and(|surface| surface.wl_surface() == &parent)
+                    .then_some(*id)
+            })
+        });
+        state.add_rule_placed_window(window.clone(), app_id.as_deref(), title.as_deref(), parent);
+    }
     state.apply_initial_window_rules(window, app_id.as_deref(), title.as_deref(), transient);
+    if let Some((maximized, fullscreen)) = requested
+        && let Some(id) = state.window_ids.get(window).copied()
+    {
+        if maximized {
+            state.set_window_maximized(id, true);
+        }
+        if fullscreen {
+            state.set_window_fullscreen(id, true);
+        }
+    }
 }
 
 impl Ferese {

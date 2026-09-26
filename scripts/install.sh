@@ -49,7 +49,7 @@ desktop-file-validate "$repo_dir/packaging/ferese.desktop"
 
 build=(cargo build --manifest-path "$repo_dir/Cargo.toml"
     --target-dir "$repo_dir/target" --release --locked
-    -p ferese -p ferese-shell -p feresectl)
+    -p ferese -p ferese-shell -p ferese-settings -p feresectl)
 if $offline; then build+=(--offline); fi
 if ! $skip_build; then
     ((EUID != 0)) || fail 'build as your normal user, without sudo (or use --skip-build)'
@@ -75,7 +75,7 @@ fi
 
 cd -- "$repo_dir"
 if ! $skip_build; then "${build[@]}"; fi
-for name in ferese ferese-shell feresectl; do
+for name in ferese ferese-shell ferese-settings feresectl; do
     [[ -x $repo_dir/target/release/$name ]] || fail "missing release binary: $name"
 done
 "${installer[@]}"

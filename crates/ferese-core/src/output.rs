@@ -114,6 +114,12 @@ impl OutputWorkspaceMap {
         self.outputs.keys().copied()
     }
 
+    pub fn update_geometry(&mut self, output: OutputId, geometry: OutputGeometry) {
+        if let Some(state) = self.outputs.get_mut(&output) {
+            state.geometry = geometry;
+        }
+    }
+
     pub fn connect(
         &mut self,
         output: OutputId,
@@ -373,6 +379,19 @@ impl OutputWorkspaceMap {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn changing_output_geometry_preserves_workspace_ownership_and_focus() {
+        let mut outputs = super::OutputWorkspaceMap::default();
+        let id = super::OutputId(1);
+        let workspace = crate::WorkspaceId(1);
+        outputs
+            .connect(id, super::OutputGeometry::new(0, 0, 1920, 1080), workspace)
+            .unwrap();
+        outputs.update_geometry(id, super::OutputGeometry::new(2000, 0, 1280, 720));
+        assert_eq!(outputs.output_for_workspace(workspace), Some(id));
+        assert_eq!(outputs.active_workspace(id), Some(workspace));
+        assert_eq!(outputs.focused_output(), Some(id));
+    }
     use super::*;
 
     fn geometry(x: i32) -> OutputGeometry {

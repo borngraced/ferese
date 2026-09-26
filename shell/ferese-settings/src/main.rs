@@ -1,0 +1,1000 @@
+mod schema;
+mod store;
+mod visuals;
+mod watch;
+
+use cosmic::{
+    ApplicationExt, Element,
+    app::{Core, Settings, Task},
+    iced::{Alignment, Length, Size},
+    widget::{self, button, column, container, row, scrollable, slider, text_input, toggler},
+};
+use schema::{Field, Kind, Page};
+use std::{collections::HashMap, path::PathBuf};
+use store::{Edit, Snapshot, set};
+
+fn main() -> cosmic::iced::Result {
+    // Set before libcosmic creates worker threads. The software backend is
+    // efficient for this mostly-static interface; WGPU remains a fallback.
+    if std::env::var_os("ICED_BACKEND").is_none() {
+        unsafe {
+            std::env::set_var("ICED_BACKEND", "tiny-skia,wgpu");
+        }
+    }
+    let mut args = std::env::args_os().skip(1);
+    let path = match args.next() {
+        Some(arg) if arg == "--config" => {
+            PathBuf::from(args.next().expect("--config requires a path"))
+        }
+        Some(_) => {
+            eprintln!("Usage: ferese-settings [--config PATH]");
+            return Ok(());
+        }
+        None => store::config_path(),
+    };
+    let path = path.canonicalize().unwrap_or(path);
+    let initial = Snapshot::read(&path);
+    let theme = visuals::native_theme(initial.as_ref().ok());
+    cosmic::app::run::<App>(
+        Settings::default()
+            .size(Size::new(960., 720.))
+            .size_limits(cosmic::iced::Limits::NONE.min_width(820.).min_height(560.))
+            .theme(theme)
+            .is_daemon(false)
+            .antialiasing(true)
+            .default_text_size(14.),
+        (path, initial),
+    )
+}
+
+#[derive(Clone, Debug)]
+enum Message {
+    DragWindow,
+    Page(Page),
+    Search(String),
+    Change(Edit),
+    Draft(String, String),
+    Commit(Field),
+    Range(Field, f64),
+    Release(Field),
+    Saved(Result<(Snapshot, bool), String>),
+    Reload,
+    ExternalConfig(Result<Snapshot, String>),
+    Undo,
+    Preset(usize),
+    PickWallpaper,
+    WallpaperPicked(Result<Option<String>, String>),
+    NewCommand(String),
+    AddCommand,
+    Remove(String, usize),
+    Thumbnail(String, Result<widget::image::Handle, String>),
+}
+
+struct App {
+    core: Core,
+    path: PathBuf,
+    current: Snapshot,
+    draft: Snapshot,
+    pending: Vec<Edit>,
+    saving: bool,
+    undo: Option<String>,
+    saving_previous: String,
+    error: Option<String>,
+    status: String,
+    page: Page,
+    search: String,
+    inputs: HashMap<String, String>,
+    ranges: HashMap<String, f64>,
+    new_command: String,
+    font: cosmic::font::Font,
+    thumbnail: Option<widget::image::Handle>,
+    thumbnail_path: String,
+    thumbnail_loading: bool,
+    thumbnail_error: Option<String>,
+}
+
+impl cosmic::Application for App {
+    type Executor = cosmic::executor::Default;
+    type Flags = (PathBuf, Result<Snapshot, String>);
+    type Message = Message;
+    const APP_ID: &'static str = "dev.ferese.Settings";
+    fn core(&self) -> &Core {
+        &self.core
+    }
+    fn core_mut(&mut self) -> &mut Core {
+        &mut self.core
+    }
+    fn init(mut core: Core, (path, initial): Self::Flags) -> (Self, Task<Message>) {
+        core.window.show_headerbar = false;
+        let status = if path == store::config_path() {
+            "Changes save automatically"
+        } else {
+            "Preview config · changes do not update your desktop"
+        }
+        .into();
+        let error = initial.as_ref().err().cloned();
+        let current = initial.unwrap_or_else(|_| Snapshot::parse(String::new()).unwrap());
+        let font = visuals::configured_font(&current);
+        let mut app = Self {
+            core,
+            path,
+            draft: current.clone(),
+            current,
+            pending: vec![],
+            saving: false,
+            undo: None,
+            saving_previous: String::new(),
+            error,
+            status,
+            page: Page::Appearance,
+            search: String::new(),
+            inputs: HashMap::new(),
+            ranges: HashMap::new(),
+            new_command: String::new(),
+            font,
+            thumbnail: None,
+            thumbnail_path: String::new(),
+            thumbnail_loading: false,
+            thumbnail_error: None,
+        };
+        let task = app
+            .core
+            .main_window_id()
+            .map(|id| app.set_window_title("Ferese Settings".into(), id))
+            .unwrap_or_else(Task::none);
+        (app, task)
+    }
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::DragWindow => return self.core.drag(None),
+            Message::ExternalConfig(result) => match result {
+                Ok(snapshot)
+                    if snapshot.source == self.current.source
+                        || snapshot.source == self.draft.source => {}
+                Ok(snapshot) => {
+                    if self.saving
+                        || !self.inputs.is_empty()
+                        || !self.ranges.is_empty()
+                        || !self.pending.is_empty()
+                    {
+                        self.status =
+                            "Config changed externally · Reload when your edits are finished"
+                                .into();
+                    } else {
+                        self.current = snapshot.clone();
+                        self.draft = snapshot;
+                        self.font = visuals::configured_font(&self.current);
+                        self.undo = None;
+                        self.error = None;
+                        self.status = "Updated from your config".into();
+                        return Task::batch([
+                            cosmic::command::set_theme(visuals::native_theme(Some(&self.draft))),
+                            self.load_thumbnail(),
+                        ]);
+                    }
+                }
+                Err(error) => self.error = Some(format!("Config reload failed: {error}")),
+            },
+            Message::Page(page) => {
+                self.page = page;
+                self.search.clear();
+                if page == Page::Wallpaper {
+                    return self.load_thumbnail();
+                }
+            }
+            Message::Search(query) => self.search = query,
+            Message::Draft(path, value) => {
+                self.inputs.insert(path, value);
+            }
+            Message::Range(field, value) => {
+                self.ranges.insert(field.path, value);
+            }
+            Message::Release(field) => {
+                if let Some(value) = self.ranges.remove(&field.path) {
+                    let integer = matches!(field.kind, Kind::Range { integer: true, .. });
+                    return self.change(if integer {
+                        set(&field.path, value.round() as i64)
+                    } else {
+                        set(&field.path, value)
+                    });
+                }
+            }
+            Message::Commit(field) => {
+                if let Some(value) = self.inputs.remove(&field.path) {
+                    let edit = if matches!(field.kind, Kind::Text { argv: true, .. }) {
+                        match shlex::split(&value).filter(|v| !v.is_empty()) {
+                            Some(args) => {
+                                set(&field.path, args.into_iter().collect::<toml_edit::Array>())
+                            }
+                            None => {
+                                self.error = Some("Enter a program and arguments with balanced quotes. Commands are not run through a shell.".into());
+                                return Task::none();
+                            }
+                        }
+                    } else {
+                        set(&field.path, value)
+                    };
+                    return self.change(edit);
+                }
+            }
+            Message::Change(edit) => return self.change(edit),
+            Message::Saved(result) => {
+                self.saving = false;
+                match result {
+                    Ok((snapshot, live)) => {
+                        self.undo = Some(std::mem::take(&mut self.saving_previous));
+                        self.current = snapshot;
+                        self.font = visuals::configured_font(&self.current);
+                        self.draft = self.current.clone();
+                        for edit in &self.pending {
+                            if let Err(error) = self.draft.edit(edit) {
+                                self.error = Some(error);
+                            }
+                        }
+                        self.status = if live {
+                            "Saved · desktop updated"
+                        } else if self.path != store::config_path() {
+                            "Saved to preview config · desktop unchanged"
+                        } else {
+                            "Saved · could not confirm desktop reload"
+                        }
+                        .into();
+                        let theme = visuals::native_theme(Some(&self.draft));
+                        return Task::batch([
+                            cosmic::command::set_theme(theme),
+                            self.flush(),
+                            self.load_thumbnail(),
+                        ]);
+                    }
+                    Err(error) => {
+                        self.error = Some(error);
+                        self.pending.clear();
+                        self.draft = self.current.clone();
+                        self.status = "Not saved".into();
+                    }
+                }
+            }
+            Message::Reload if !self.saving => match Snapshot::read(&self.path) {
+                Ok(snapshot) => {
+                    self.current = snapshot.clone();
+                    self.draft = snapshot;
+                    self.font = visuals::configured_font(&self.current);
+                    self.pending.clear();
+                    self.inputs.clear();
+                    self.ranges.clear();
+                    self.error = None;
+                    self.undo = None;
+                    self.status = "Reloaded from your config".into();
+                    return Task::batch([
+                        cosmic::command::set_theme(visuals::native_theme(Some(&self.draft))),
+                        self.load_thumbnail(),
+                    ]);
+                }
+                Err(error) => self.error = Some(error),
+            },
+            Message::Undo if !self.saving => {
+                if let Some(source) = self.undo.take() {
+                    return self.start_save(source);
+                }
+            }
+            Message::Preset(index) => {
+                for edit in visuals::preset(index) {
+                    if let Err(error) = self.draft.edit(&edit) {
+                        self.error = Some(error);
+                        return Task::none();
+                    }
+                    self.pending.push(edit);
+                }
+                return self.flush();
+            }
+            Message::PickWallpaper => {
+                return cosmic::task::future(async {
+                    use cosmic::dialog::file_chooser::{self, FileFilter};
+                    let result = file_chooser::open::Dialog::new()
+                        .title("Choose a wallpaper")
+                        .filter(
+                            FileFilter::new("Images")
+                                .glob("*.png")
+                                .glob("*.jpg")
+                                .glob("*.jpeg")
+                                .glob("*.webp"),
+                        )
+                        .open_file()
+                        .await;
+                    Message::WallpaperPicked(match result {
+                        Ok(response) => response
+                            .url()
+                            .to_file_path()
+                            .map(|p| Some(p.to_string_lossy().into_owned()))
+                            .map_err(|_| "Choose a local image.".into()),
+                        Err(file_chooser::Error::Cancelled) => Ok(None),
+                        Err(error) => Err(format!(
+                            "Image picker unavailable: {error}. You can enter the image path instead."
+                        )),
+                    })
+                });
+            }
+            Message::WallpaperPicked(Ok(Some(path))) => {
+                return self.change(set("theme.background.path", path));
+            }
+            Message::WallpaperPicked(Err(error)) => self.error = Some(error),
+            Message::Thumbnail(path, result) => {
+                self.thumbnail_loading = false;
+                if path == self.current.string("theme.background.path", "") {
+                    self.thumbnail_path = path;
+                    match result {
+                        Ok(handle) => {
+                            self.thumbnail = Some(handle);
+                            self.thumbnail_error = None;
+                        }
+                        Err(error) => {
+                            self.thumbnail = None;
+                            self.thumbnail_error = Some(error);
+                        }
+                    }
+                }
+                return self.load_thumbnail();
+            }
+            Message::NewCommand(value) => self.new_command = value,
+            Message::AddCommand if !self.saving => {
+                match shlex::split(&self.new_command).filter(|a| !a.is_empty()) {
+                    Some(args) => {
+                        self.new_command.clear();
+                        return self.change(Edit::Add(
+                            "autostart".into(),
+                            vec![
+                                (
+                                    "command".into(),
+                                    args.into_iter().collect::<toml_edit::Array>().into(),
+                                ),
+                                ("enabled".into(), true.into()),
+                                ("restart".into(), true.into()),
+                            ],
+                        ));
+                    }
+                    None => {
+                        self.error =
+                            Some("Enter a program and arguments with balanced quotes.".into())
+                    }
+                }
+            }
+            Message::Remove(table, index) if !self.saving => {
+                self.inputs.clear();
+                return self.change(Edit::Remove(table, index));
+            }
+            _ => {}
+        }
+        Task::none()
+    }
+    fn subscription(&self) -> cosmic::iced::Subscription<Message> {
+        cosmic::iced::Subscription::run_with(self.path.clone(), watch::changes)
+    }
+    fn view(&self) -> Element<'_, Message> {
+        let palette = visuals::Palette::from(&self.draft);
+        let mut sidebar = column([])
+            .spacing(3)
+            .push(
+                widget::mouse_area(
+                    row([])
+                        .spacing(10)
+                        .align_y(Alignment::Center)
+                        .push(visuals::brand_icon())
+                        .push(self.label("Ferese", 16.))
+                        .width(Length::Fill),
+                )
+                .on_drag(Message::DragWindow),
+            )
+            .push(widget::Space::new().height(14))
+            .push(
+                text_input("Search settings", self.search.clone())
+                    .on_input(Message::Search)
+                    .font(self.font)
+                    .style(visuals::input_style(palette))
+                    .size(12),
+            )
+            .push(widget::Space::new().height(8));
+        for page in Page::ALL {
+            sidebar = sidebar.push(
+                button::custom(
+                    row([])
+                        .spacing(10)
+                        .align_y(Alignment::Center)
+                        .push(visuals::icon(
+                            page,
+                            if self.page == page {
+                                palette.accent
+                            } else {
+                                palette.muted
+                            },
+                        ))
+                        .push(self.label(page.title(), 13.)),
+                )
+                .width(Length::Fill)
+                .padding([8, 8])
+                .class(visuals::navigation_style(palette, self.page == page))
+                .on_press(Message::Page(page)),
+            );
+        }
+        let sidebar = container(sidebar.push(widget::Space::new().height(Length::Fill)))
+            .width(204)
+            .height(Length::Fill)
+            .padding([20, 10])
+            .class(visuals::surface(palette.sidebar, 0.));
+        let heading = row([]).align_y(Alignment::Center).spacing(20).push(
+            column([])
+                .spacing(5)
+                .push(self.label(
+                    if self.search.is_empty() {
+                        self.page.title()
+                    } else {
+                        "Search"
+                    },
+                    24.,
+                ))
+                .push(
+                    self.label(
+                        if self.search.is_empty() {
+                            self.page.subtitle()
+                        } else {
+                            "Find a setting for your desktop."
+                        },
+                        12.,
+                    )
+                    .class(cosmic::theme::Text::Color(palette.muted)),
+                )
+                .width(Length::Fill),
+        );
+        let mut body = column([]).spacing(12);
+        if !self.search.is_empty() {
+            if !Page::ALL.into_iter().any(|p| p.matches(&self.search)) {
+                body = body
+                    .push(self.note("No matching settings. Try wallpaper, keyboard, or motion."));
+            }
+            for page in Page::ALL.into_iter().filter(|p| p.matches(&self.search)) {
+                body = body.push(
+                    button::custom(
+                        column([])
+                            .spacing(5)
+                            .push(self.label(page.title(), 16.))
+                            .push(self.label(page.subtitle(), 12.)),
+                    )
+                    .width(Length::Fill)
+                    .padding(20)
+                    .class(visuals::button_style(palette, false))
+                    .on_press(Message::Page(page)),
+                );
+            }
+        } else {
+            if matches!(self.page, Page::Appearance | Page::Bar | Page::Windows) {
+                body = body.push(visuals::preview(&self.draft));
+            }
+            if self.page == Page::Appearance {
+                let mut presets = row([]).spacing(10);
+                for (index, title) in ["Amberwood", "Monochrome", "Catppuccin"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    presets = presets.push(
+                        button::custom(
+                            row([])
+                                .spacing(10)
+                                .align_y(Alignment::Center)
+                                .push(visuals::swatches(index))
+                                .push(self.label(title, 12.)),
+                        )
+                        .width(Length::Fill)
+                        .padding(10)
+                        .class(visuals::button_style(
+                            palette,
+                            visuals::preset_selected(&self.draft, index),
+                        ))
+                        .on_press(Message::Preset(index)),
+                    );
+                }
+                body = body.push(presets);
+            }
+            if self.page == Page::Wallpaper {
+                if let Some(handle) = &self.thumbnail {
+                    body = body.push(
+                        widget::image(handle.clone())
+                            .width(Length::Fill)
+                            .height(190)
+                            .content_fit(cosmic::iced::ContentFit::Contain),
+                    );
+                } else {
+                    body = body.push(self.note(if self.thumbnail_loading {
+                        "Loading wallpaper preview…"
+                    } else {
+                        self.thumbnail_error
+                            .as_deref()
+                            .unwrap_or("Choose an image to preview your wallpaper.")
+                    }));
+                }
+                body =
+                    body.push(button::standard("Choose image…").on_press(Message::PickWallpaper));
+            }
+            let fields = schema::fields(self.page);
+            if !fields.is_empty() {
+                let mut group = column([]).spacing(1);
+                for field in fields {
+                    group = group.push(self.field(field));
+                }
+                body = body.push(
+                    container(group)
+                        .padding(8)
+                        .class(visuals::surface(palette.card, 14.)),
+                );
+            }
+            match self.page {
+                Page::Startup => {
+                    body = body.push(self.note("Login items update live. Disabling or removing an item stops the session-owned process; enabling one starts it."));
+                    for index in 0..self.draft.records("autostart") {
+                        let prefix = format!("autostart.{index}");
+                        let group = column([])
+                            .spacing(1)
+                            .push(self.field(Field::new(
+                                format!("{prefix}.command"),
+                                "Program",
+                                "A program and its arguments, not a shell script.",
+                                Kind::Text {
+                                    default: "",
+                                    argv: true,
+                                },
+                            )))
+                            .push(self.field(Field::new(
+                                format!("{prefix}.enabled"),
+                                "Open at login",
+                                "",
+                                Kind::Toggle(true),
+                            )))
+                            .push(self.field(Field::new(
+                                format!("{prefix}.restart"),
+                                "Restart if it exits",
+                                "Managed by the Ferese session.",
+                                Kind::Toggle(true),
+                            )))
+                            .push(
+                                container(
+                                    button::destructive("Remove item").on_press_maybe(
+                                        (!self.saving)
+                                            .then_some(Message::Remove("autostart".into(), index)),
+                                    ),
+                                )
+                                .padding(12),
+                            );
+                        body = body.push(
+                            container(group)
+                                .padding(8)
+                                .class(visuals::surface(palette.card, 14.)),
+                        );
+                    }
+                    body = body.push(
+                        row([])
+                            .spacing(10)
+                            .push(
+                                text_input("Program and arguments", self.new_command.clone())
+                                    .on_input(Message::NewCommand),
+                            )
+                            .push(
+                                button::standard("Add login item").on_press_maybe(
+                                    (!self.saving && !self.new_command.trim().is_empty())
+                                        .then_some(Message::AddCommand),
+                                ),
+                            ),
+                    );
+                }
+                Page::Shortcuts => {
+                    body = body.push(self.note("Custom shortcuts from your config. Built-in shortcuts remain available unless overridden. Edit a field, then press Enter or move focus to save."));
+                    for index in 0..self.draft.records("bindings") {
+                        let prefix = format!("bindings.{index}");
+                        let group = column([])
+                            .spacing(1)
+                            .push(self.field(schema::text(
+                                format!("{prefix}.keys"),
+                                "Shortcut",
+                                "For example: Super+Return",
+                                "",
+                            )))
+                            .push(self.field(schema::text(
+                                format!("{prefix}.action"),
+                                "Action",
+                                "Ferese command, such as spawn or focus.",
+                                "",
+                            )))
+                            .push(self.field(schema::text(
+                                format!("{prefix}.argument"),
+                                "Argument",
+                                "Command name, direction, or action argument.",
+                                "",
+                            )));
+                        body = body.push(
+                            container(group)
+                                .padding(8)
+                                .class(visuals::surface(palette.card, 14.)),
+                        );
+                    }
+                    if self.draft.records("bindings") == 0 {
+                        body = body.push(self.note("You are using the built-in shortcuts. Add custom bindings in config.toml; they will appear here after Reload."));
+                    }
+                }
+                Page::Displays => {
+                    body = body.push(self.note("Display profiles update connected outputs live. Keep your config open for adding profiles or changing display positions."));
+                    for profile in 0..self.draft.records("output_profiles") {
+                        let prefix = format!("output_profiles.{profile}");
+                        body = body.push(
+                            self.label(
+                                self.draft
+                                    .string(&format!("{prefix}.name"), "Display profile"),
+                                17.,
+                            ),
+                        );
+                        for output in 0..self.draft.records(&format!("{prefix}.outputs")) {
+                            let prefix = format!("{prefix}.outputs.{output}");
+                            let group = column([]).spacing(1)
+                                .push(self.field(schema::text(format!("{prefix}.match"), "Display", "Output name or matching pattern.", "")))
+                                .push(self.field(schema::text(format!("{prefix}.mode"), "Resolution", "For example: 2560x1440@60. Leave unchanged to retain automatic selection.", "")))
+                                .push(self.field(schema::range(format!("{prefix}.scale"), "Scale", "Logical size of text and controls.", 1., 0.75, 3., 0.25, "×", false)));
+                            body = body.push(
+                                container(group)
+                                    .padding(8)
+                                    .class(visuals::surface(palette.card, 14.)),
+                            );
+                        }
+                    }
+                    if self.draft.records("output_profiles") == 0 {
+                        body = body.push(self.note("No saved profiles. Ferese currently configures connected displays automatically."));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut content = column([]).spacing(16).push(heading);
+        if let Some(error) = &self.error {
+            content = content.push(
+                container(self.label(error.clone(), 12.))
+                    .padding(12)
+                    .width(Length::Fill)
+                    .class(visuals::surface(palette.error, 10.)),
+            );
+        }
+        content = content.push(
+            scrollable(container(body).padding([0, 2]).width(Length::Fill)).height(Length::Fill),
+        );
+        let footer = row([])
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .push(
+                self.label(
+                    if self.saving {
+                        "Saving…"
+                    } else {
+                        &self.status
+                    },
+                    11.,
+                )
+                .class(cosmic::theme::Text::Color(palette.muted))
+                .width(Length::Fill),
+            )
+            .push(
+                button::text("Undo")
+                    .on_press_maybe((self.undo.is_some() && !self.saving).then_some(Message::Undo)),
+            )
+            .push(button::text("Reload").on_press_maybe((!self.saving).then_some(Message::Reload)));
+        row([])
+            .push(sidebar)
+            .push(
+                container(
+                    container(content.push(footer))
+                        .padding(20)
+                        .max_width(840)
+                        .width(Length::Fill)
+                        .height(Length::Fill),
+                )
+                .width(Length::Fill)
+                .center_x(Length::Fill)
+                .height(Length::Fill)
+                .class(visuals::surface(palette.background, 0.)),
+            )
+            .into()
+    }
+}
+
+impl App {
+    fn load_thumbnail(&mut self) -> Task<Message> {
+        let path = self.current.string("theme.background.path", "");
+        if self.page != Page::Wallpaper || self.thumbnail_loading || path == self.thumbnail_path {
+            return Task::none();
+        }
+        if path.is_empty() {
+            self.thumbnail = None;
+            self.thumbnail_path.clear();
+            self.thumbnail_error = None;
+            return Task::none();
+        }
+        self.thumbnail_loading = true;
+        cosmic::task::future(async move {
+            let (send, receive) = cosmic::iced::futures::channel::oneshot::channel();
+            let file = path.clone();
+            std::thread::spawn(move || {
+                let result = (|| -> Result<_, String> {
+                    let mut reader = image::ImageReader::open(&file)
+                        .map_err(|e| e.to_string())?
+                        .with_guessed_format()
+                        .map_err(|e| e.to_string())?;
+                    let mut limits = image::Limits::default();
+                    limits.max_alloc = Some(256 * 1024 * 1024);
+                    limits.max_image_width = Some(16384);
+                    limits.max_image_height = Some(16384);
+                    reader.limits(limits);
+                    let pixels = reader
+                        .decode()
+                        .map_err(|e| e.to_string())?
+                        .thumbnail(1000, 500)
+                        .into_rgba8();
+                    Ok(widget::image::Handle::from_rgba(
+                        pixels.width(),
+                        pixels.height(),
+                        pixels.into_raw(),
+                    ))
+                })();
+                let _ = send.send(result);
+            });
+            Message::Thumbnail(
+                path,
+                receive
+                    .await
+                    .unwrap_or_else(|_| Err("Could not load wallpaper preview.".into())),
+            )
+        })
+    }
+    fn label<'a>(
+        &self,
+        text: impl Into<std::borrow::Cow<'a, str>> + 'a,
+        size: f32,
+    ) -> widget::Text<'a, cosmic::Theme, cosmic::Renderer> {
+        widget::text(text).size(size).font(self.font)
+    }
+    fn note(&self, text: &str) -> Element<'static, Message> {
+        let palette = visuals::Palette::from(&self.draft);
+        self.label(text.to_owned(), 12.)
+            .class(cosmic::theme::Text::Color(palette.muted))
+            .into()
+    }
+    fn field(&self, field: Field) -> Element<'static, Message> {
+        let palette = visuals::Palette::from(&self.draft);
+        let mut labels = column([])
+            .spacing(3)
+            .push(self.label(field.label.clone(), 13.));
+        if !field.description.is_empty() {
+            labels = labels.push(
+                self.label(field.description.clone(), 11.)
+                    .class(cosmic::theme::Text::Color(palette.muted)),
+            );
+        }
+        let labels = labels.width(Length::Fill);
+        let path = field.path.clone();
+        let control: Element<'static, Message> = match field.kind.clone() {
+            Kind::Toggle(default) => toggler(self.draft.boolean(&path, default))
+                .size(22)
+                .on_toggle(move |value| Message::Change(set(&path, value)))
+                .into(),
+            Kind::Range {
+                default,
+                min,
+                max,
+                step,
+                suffix,
+                integer,
+            } => {
+                let value = self
+                    .ranges
+                    .get(&path)
+                    .copied()
+                    .unwrap_or_else(|| self.draft.number(&path, default));
+                let display = if integer || step >= 1. {
+                    format!("{value:.0}{suffix}")
+                } else {
+                    format!("{value:.2}{suffix}")
+                };
+                let release = field.clone();
+                row([])
+                    .align_y(Alignment::Center)
+                    .spacing(14)
+                    .push(
+                        slider(min..=max, value, move |value| {
+                            Message::Range(field.clone(), value)
+                        })
+                        .step(step)
+                        .on_release(Message::Release(release))
+                        .width(145),
+                    )
+                    .push(self.label(display, 12.).width(65))
+                    .into()
+            }
+            Kind::Choice { default, choices } => {
+                let value = self.draft.string(&path, default);
+                let mut options = row([]).spacing(2);
+                for (key, label) in choices {
+                    options = options.push(
+                        button::custom(self.label(*label, 12.))
+                            .padding([6, 9])
+                            .class(visuals::button_style(palette, value == *key))
+                            .on_press(Message::Change(set(&path, *key))),
+                    );
+                }
+                container(options)
+                    .padding(3)
+                    .class(visuals::surface(palette.sidebar, 10.))
+                    .into()
+            }
+            Kind::Text { default, argv } => {
+                let value = self.inputs.get(&path).cloned().unwrap_or_else(|| {
+                    if argv {
+                        self.draft.argv(&path)
+                    } else {
+                        self.draft.string(&path, default)
+                    }
+                });
+                let commit = field.clone();
+                let is_color = path.starts_with("theme.colors.");
+                let swatch = visuals::color(&value, palette.accent);
+                let input = text_input(default, value)
+                    .font(self.font)
+                    .style(visuals::input_style(palette))
+                    .on_input(move |value| Message::Draft(path.clone(), value))
+                    .on_submit(move |_| Message::Commit(field.clone()))
+                    .on_unfocus(Message::Commit(commit))
+                    .width(if is_color { 155 } else { 225 })
+                    .size(12);
+                if is_color {
+                    row([])
+                        .spacing(8)
+                        .align_y(Alignment::Center)
+                        .push(
+                            container(widget::Space::new().width(24).height(24))
+                                .class(visuals::surface(swatch, 6.)),
+                        )
+                        .push(input)
+                        .into()
+                } else {
+                    input.into()
+                }
+            }
+        };
+        container(
+            row([])
+                .spacing(16)
+                .align_y(Alignment::Center)
+                .push(labels)
+                .push(control),
+        )
+        .padding([12, 12])
+        .width(Length::Fill)
+        .class(visuals::surface(palette.card, 0.))
+        .into()
+    }
+    fn change(&mut self, edit: Edit) -> Task<Message> {
+        match self.draft.edit(&edit) {
+            Ok(()) => {
+                // When a gradient exists, changing Accent also changes its
+                // leading stop; otherwise the visible focus border would stay
+                // on the old palette despite the control saying it changed.
+                if let Edit::Set(path, value) = &edit {
+                    if path == "theme.colors.accent"
+                        && self.draft.item("theme.focus_ring.gradient").is_some()
+                    {
+                        let gradient = set("theme.focus_ring.gradient.from", value.clone());
+                        if self.draft.edit(&gradient).is_ok() {
+                            self.pending.push(gradient);
+                        }
+                    }
+                }
+                self.pending.push(edit);
+                self.error = None;
+                self.flush()
+            }
+            Err(error) => {
+                self.error = Some(error);
+                Task::none()
+            }
+        }
+    }
+    fn flush(&mut self) -> Task<Message> {
+        if self.saving || self.pending.is_empty() {
+            return Task::none();
+        }
+        self.pending.clear();
+        if self.draft.source == self.current.source {
+            return Task::none();
+        }
+        self.start_save(self.draft.source.clone())
+    }
+    fn start_save(&mut self, desired: String) -> Task<Message> {
+        self.saving = true;
+        self.saving_previous = self.current.source.clone();
+        let expected = self.current.source.clone();
+        let path = self.path.clone();
+        cosmic::task::future(async move {
+            // Parsing XKB, disk fsync, and IPC must never block native UI events.
+            let (send, receive) = cosmic::iced::futures::channel::oneshot::channel();
+            std::thread::spawn(move || {
+                let result = store::save(&path, &expected, &desired).map(|snapshot| {
+                    let live = path == store::config_path() && store::reload_running();
+                    (snapshot, live)
+                });
+                let _ = send.send(result);
+            });
+            Message::Saved(
+                receive
+                    .await
+                    .unwrap_or_else(|_| Err("Settings worker stopped unexpectedly.".into())),
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cosmic::Application;
+    fn app() -> App {
+        App::init(
+            Core::default(),
+            (
+                PathBuf::from("/unused/settings-test.toml"),
+                Snapshot::parse(String::new()),
+            ),
+        )
+        .0
+    }
+    #[test]
+    fn rapid_edits_are_serialized_and_not_lost_when_a_save_finishes() {
+        let mut app = app();
+        let _ = app.change(set("animations.speed", 0.75));
+        assert!(app.saving);
+        let completed = app.draft.clone();
+        let _ = app.change(set("layout.inner_gap", 6.));
+        assert_eq!(app.pending.len(), 1);
+        let _ = app.update(Message::Saved(Ok((completed.clone(), true))));
+        assert!(app.saving);
+        assert!(app.pending.is_empty());
+        assert_eq!(app.saving_previous, completed.source);
+        assert_eq!(app.draft.number("layout.inner_gap", 0.), 6.);
+        assert_eq!(app.draft.number("animations.speed", 0.), 0.75);
+    }
+    #[test]
+    fn external_config_refreshes_idle_settings_but_preserves_active_edits() {
+        let mut app = app();
+        let external = Snapshot::parse("[animations]\nspeed = 0.5".into()).unwrap();
+        let _ = app.update(Message::ExternalConfig(Ok(external.clone())));
+        assert_eq!(app.current.source, external.source);
+        assert_eq!(app.draft.number("animations.speed", 0.), 0.5);
+        app.inputs
+            .insert("theme.colors.accent".into(), "#ffffff".into());
+        let newer = Snapshot::parse("[animations]\nspeed = 0.8".into()).unwrap();
+        let _ = app.update(Message::ExternalConfig(Ok(newer)));
+        assert_eq!(app.current.source, external.source);
+        assert_eq!(app.inputs["theme.colors.accent"], "#ffffff");
+        assert!(app.status.contains("externally"));
+        let _ = app.update(Message::ExternalConfig(Err("invalid TOML".into())));
+        assert_eq!(app.current.source, external.source);
+        assert!(app.error.unwrap().contains("invalid TOML"));
+    }
+    #[test]
+    fn settings_has_no_native_headerbar() {
+        assert!(!app().core.window.show_headerbar);
+    }
+
+    #[test]
+    fn rejected_save_restores_committed_values_without_claiming_success() {
+        let mut app = app();
+        let _ = app.change(set("animations.speed", -1.));
+        let _ = app.change(set("layout.inner_gap", 6.));
+        let _ = app.update(Message::Saved(Err("invalid speed".into())));
+        assert!(!app.saving);
+        assert!(app.pending.is_empty());
+        assert_eq!(app.current.source, app.draft.source);
+        assert_eq!(app.status, "Not saved");
+        assert_eq!(app.error.as_deref(), Some("invalid speed"));
+    }
+}

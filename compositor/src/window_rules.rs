@@ -33,6 +33,28 @@ pub struct WindowRuleResult {
     pub fullscreen: Option<bool>,
 }
 
+/// Only changed matches should override an existing window's manual state.
+pub(crate) fn live_result(
+    old: WindowRuleResult,
+    mut new: WindowRuleResult,
+    transient: bool,
+) -> Option<WindowRuleResult> {
+    if old == new {
+        return None;
+    }
+    if new.floating.is_none()
+        && new.width.is_none()
+        && new.height.is_none()
+        && (old.floating.is_some() || old.width.is_some() || old.height.is_some())
+    {
+        new.floating = Some(transient);
+    }
+    if new.fullscreen.is_none() && old.fullscreen.is_some() {
+        new.fullscreen = Some(false);
+    }
+    Some(new)
+}
+
 pub fn validate(configured: &[WindowRuleConfig]) -> Result<Vec<WindowRule>, String> {
     configured
         .iter()
@@ -148,6 +170,29 @@ fn normalize_app_id(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_rule_removal_reverts_placement_but_unchanged_rules_preserve_manual_state() {
+        let old = super::WindowRuleResult {
+            floating: Some(true),
+            fullscreen: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(super::live_result(old, old, false), None);
+        let removed = super::live_result(old, Default::default(), false).unwrap();
+        assert_eq!(removed.floating, Some(false));
+        assert_eq!(removed.fullscreen, Some(false));
+        assert_eq!(
+            super::live_result(old, Default::default(), true)
+                .unwrap()
+                .floating,
+            Some(true)
+        );
+        let new = super::WindowRuleResult {
+            width: Some(800.),
+            ..Default::default()
+        };
+        assert_eq!(super::live_result(old, new, false).unwrap().floating, None);
+    }
     use super::*;
 
     fn config(app_id: &str) -> WindowRuleConfig {

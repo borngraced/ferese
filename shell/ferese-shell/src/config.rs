@@ -28,7 +28,7 @@ impl Default for StatusConfig {
         Self {
             battery_percentage: true,
             low_battery_threshold: 20,
-            settings_command: None,
+            settings_command: Some(vec!["ferese-settings".into()]),
         }
     }
 }

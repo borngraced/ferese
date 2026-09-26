@@ -42,9 +42,11 @@ pub struct Config {
     _status: ShellStatusConfig,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct DaemonConfig {
     pub command: Vec<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     #[serde(default = "default_true")]
     pub restart: bool,
     #[serde(default)]
@@ -282,6 +284,7 @@ impl Config {
         let input_settings = self.input_settings()?;
         let bindings = self.bindings(&input_settings)?;
         Ok(crate::RuntimeConfig {
+            autostart: self.autostart.clone(),
             layout_mode: self.layout_mode(),
             gap_config: self.gap_config()?,
             input_settings,

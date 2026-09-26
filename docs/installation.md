@@ -6,7 +6,7 @@ From the checkout, run the installer as your normal user:
 ./scripts/install.sh
 ```
 
-It builds all three release binaries with the locked dependencies, then uses
+It builds all four release binaries with the locked dependencies, then uses
 `sudo` (or `pkexec`) for installation. Install the Rust toolchain, native build
 dependencies, `desktop-file-utils`, and D-Bus first. Cargo reports missing native
 libraries during the build. The shell requires Rust 1.93 or newer.
@@ -23,8 +23,8 @@ The script works from any directory and preserves your user configuration.
 Use `--help` for all options. To test and install manually:
 
 ```sh
-cargo test -p ferese -p feresectl -p ferese-animation -p ferese-core -p ferese-layout -p ferese-shell --locked
-cargo build --release --locked -p ferese -p ferese-shell -p feresectl
+cargo test -p ferese -p feresectl -p ferese-animation -p ferese-core -p ferese-layout -p ferese-shell -p ferese-settings --locked
+cargo build --release --locked -p ferese -p ferese-shell -p ferese-settings -p feresectl
 sudo bash scripts/install-session.sh YOUR_RELEASE_ID
 ```
 

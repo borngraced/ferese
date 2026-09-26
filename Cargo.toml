@@ -8,6 +8,7 @@ members = [
     "crates/ferese-layout",
     "crates/ferese-protocols",
     "shell/ferese-shell",
+    "shell/ferese-settings",
     "tools/ferese-effects-probe",
     "tools/ferese-malformed-client",
     "tools/ferese-shell-control-probe",

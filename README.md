@@ -13,6 +13,34 @@ For a versioned installation alongside Plasma in SDDM, see
 
 ## Live configuration
 
+`ferese-settings` opens the native settings application, also available from
+Control Center → Settings after installation. It includes appearance presets,
+wallpaper selection, menu bar geometry, window behavior, motion, keyboard/mouse,
+custom shortcut editing, login items, and existing display profiles. Changes save
+automatically; text fields save on Enter or when leaving the field. Sliders save
+when released. Settings also refreshes after external config edits, preserving
+active drafts. Display profiles, touchpad options, and login items update live.
+
+The app validates changes with `ferese --check-config PATH` before atomically
+replacing your file, preserves comments and unrelated keys, and keeps a
+`config.toml.settings-backup`. Undo restores the previous save; external edits
+require Reload before saving. Search filters settings categories. To preview
+against a disposable config without changing your desktop config:
+
+```sh
+cargo build -p ferese -p ferese-settings --locked
+target/debug/ferese-settings --config /tmp/ferese-settings-preview.toml
+```
+
+The GUI is not a replacement for every advanced config option: adding display
+profiles, arranging outputs, new shortcut definitions, and window rules remain
+in `config.toml`. Theme presets update palette and focus-gradient colors without
+replacing custom rules, bindings, wallpaper, or layout settings.
+
+New installations float Settings by default. To do the same in an existing
+config, add a `[[window_rules]]` entry with `app_id = "dev.ferese.Settings"`
+and `floating = true`.
+
 Saving `~/.config/ferese/config.toml` (or `$XDG_CONFIG_HOME/ferese/config.toml`)
 reloads it automatically. Atomic editor saves are supported and bursts are
 debounced. Invalid edits keep the last working compositor and shell config;
@@ -24,9 +52,11 @@ Live sources are limited to 60 KiB for safe delivery over the private protocol.
 Appearance, fonts, wallpaper, animations, keybindings, keyboard layout/repeat,
 gaps, scrolling focus policy/default widths, and bar geometry reload live.
 Wallpaper decoding stays off the render thread and keeps the old image until
-the replacement is ready. Existing windows, widths and layouts are preserved;
-layout-mode defaults and initial window rules affect new workspaces/windows.
-Output profiles and touchpad changes apply on reconnect or session restart.
+the replacement is ready. Layout-mode changes convert existing workspaces;
+default-width changes update columns using the previous default, preserving
+custom widths. Changed window rules are reapplied to existing matching windows.
+Output profiles and touchpad changes apply immediately. Display changes retain
+output/workspace identity; configurations with no usable output are rejected.
 The compositor and shell need one initial update/restart to enable this feature.
 
 ## Session services and locking
@@ -36,6 +66,7 @@ The compositor and shell need one initial update/restart to enable this feature.
 ```toml
 [[autostart]]
 command = ["awari"]
+enabled = true
 restart = true
 
 [[autostart]]
@@ -46,7 +77,8 @@ restart = true
 Services are session-owned, reaped, and restarted with a five-second retry delay.
 They receive the correct public Wayland display without private shell privileges.
 Nested previews skip them unless `nested = true` is explicitly configured.
-Autostart changes require a session restart; live config edits do not restart services.
+Autostart changes reconcile live: unchanged commands keep their processes,
+new/enabled items start, and disabled/removed commands stop without blocking rendering.
 Run foreground daemons here, not commands that fork themselves into the background.
 
 Ferese implements `ext-session-lock-v1`. While locked, only lock surfaces over an
@@ -290,8 +322,7 @@ no image reload or full-screen shell buffers. The launched shell receives
 `FERESE_COMPOSITOR_WALLPAPER=1` to disable its redundant wallpaper surfaces.
 When no valid image path is configured, the shell's existing fallback remains.
 
-Keyboard settings reload live. Direct-session touchpad settings apply on device
-reconnect or session restart:
+Keyboard and direct-session touchpad settings reload live:
 
 ```toml
 [input]
@@ -343,9 +374,8 @@ position = [0, 0]
 Unspecified connected outputs remain enabled with their preferred mode, scale
 `1.0`, normal transform, and automatic horizontal placement. Supported
 transforms are `normal`, `rotate_90`, `rotate_180`, `rotate_270`, `flipped`,
-and their rotated flipped variants. Output configuration is applied at startup
-and on hotplug. Reloaded output profiles take effect on reconnect or session
-restart; they do not change an already-connected output's mode.
+and their rotated flipped variants. Output configuration is applied at startup,
+on hotplug, and live reload, including modes, scale, transform, and position.
 
 On DRM, closing the laptop lid disables internal panels when a usable external
 output is available. With no usable external output, the panel stays enabled;

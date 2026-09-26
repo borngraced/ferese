@@ -19,3 +19,7 @@ text_muted = "#AAB4C7"
 
 # Super+Enter opens Foot. Super+Shift+E logs out.
 # See README.md for monitor profiles and additional bindings.
+
+[[window_rules]]
+app_id = "dev.ferese.Settings"
+floating = true

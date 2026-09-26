@@ -159,6 +159,7 @@ pub struct Ferese {
     spring_config: SpringConfig,
     viewport_spring_config: SpringConfig,
     pub(crate) output_profiles: Vec<OutputProfile>,
+    pub(crate) autostart: Vec<crate::config::DaemonConfig>,
     pub cursor_status: CursorImageStatus,
     // Cursor callbacks may run with Smithay's pointer mutex held. Rendering
     // reads the pointer position, so defer it until event dispatch returns.
@@ -218,6 +219,7 @@ pub struct Ferese {
 }
 
 pub struct RuntimeConfig {
+    pub(crate) autostart: Vec<crate::config::DaemonConfig>,
     pub(crate) overview_font_family: String,
     pub(crate) wallpaper: crate::wallpaper::WallpaperConfig,
     pub layout_mode: LayoutMode,
@@ -238,6 +240,9 @@ pub struct RuntimeConfig {
 
 impl Ferese {
     pub(crate) fn apply_runtime_config(&mut self, config: RuntimeConfig) -> Result<(), String> {
+        if self.output_profiles != config.output_profiles {
+            crate::backends::direct::validate_live_outputs(self, &config.output_profiles)?;
+        }
         let keyboard_changed = self.input_settings.xkb_layout != config.input_settings.xkb_layout
             || self.input_settings.xkb_variant != config.input_settings.xkb_variant
             || self.input_settings.xkb_options != config.input_settings.xkb_options;
@@ -263,25 +268,35 @@ impl Ferese {
             );
         }
         self.advance_animations(Instant::now());
-        if self.input_settings.touchpad != config.input_settings.touchpad {
-            tracing::warn!(
-                "touchpad changes apply when the device reconnects or the session restarts"
-            );
-        }
-        if self.output_profiles != config.output_profiles {
-            tracing::warn!(
-                "output profile changes apply on output reconnect; current modes are preserved"
-            );
-        }
-        self.workspaces.reconfigure_defaults(
-            config.layout_mode,
-            config.default_column_width,
-            config.scrolling_focus_strategy,
-        );
+        let touchpad_changed = self.input_settings.touchpad != config.input_settings.touchpad;
+        let outputs_changed = self.output_profiles != config.output_profiles;
+        let bounds = self
+            .workspaces
+            .iter()
+            .map(|workspace| {
+                let output = self.output_workspaces.output_for_workspace(workspace.id);
+                let rect = self
+                    .output_ids
+                    .iter()
+                    .find(|(_, id)| Some(**id) == output)
+                    .and_then(|(output, _)| self.output_bounds_for(output))
+                    .or_else(|| self.output_bounds())
+                    .unwrap_or(Rect::new(0., 0., 1920., 1080.));
+                (workspace.id, rect)
+            })
+            .collect();
+        self.workspaces
+            .reconfigure_live(
+                config.layout_mode,
+                config.default_column_width,
+                config.scrolling_focus_strategy,
+                &bounds,
+            )
+            .map_err(|error| error.to_string())?;
         self.gap_config = config.gap_config;
         self.input_settings = config.input_settings;
         self.bindings = config.bindings;
-        self.window_rules = config.window_rules;
+        let old_rules = std::mem::replace(&mut self.window_rules, config.window_rules);
         self.theme_settings = config.theme_settings;
         self.column_width_presets = config.column_width_presets;
         self.animations_enabled = config.animations_enabled;
@@ -289,6 +304,16 @@ impl Ferese {
         self.spring_config = config.spring_config;
         self.viewport_spring_config = config.viewport_spring_config;
         self.output_profiles = config.output_profiles;
+        self.autostart = config.autostart;
+        if touchpad_changed {
+            crate::backends::direct::reload_input_devices(self);
+        }
+        if outputs_changed {
+            crate::backends::direct::reload_outputs(self);
+        }
+        if old_rules != self.window_rules {
+            self.reapply_window_rules(&old_rules);
+        }
         self.overview.set_font_family(config.overview_font_family);
         self.wallpaper.reload(config.wallpaper);
         self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
@@ -374,6 +399,28 @@ impl Ferese {
         }
 
         self.relayout();
+    }
+
+    pub(crate) fn reposition_output_floats(&mut self, output: OutputId, old: Rect, new: Rect) {
+        let floats = self
+            .window_ids
+            .values()
+            .filter_map(|id| {
+                let workspace = self.workspaces.workspace_for_window(*id)?;
+                if self.output_workspaces.output_for_workspace(workspace) != Some(output) {
+                    return None;
+                }
+                match self.workspaces.placement(*id)? {
+                    WindowPlacement::Floating { rect } => {
+                        Some((*id, moved_floating_rect(rect, old, new)))
+                    }
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
+        for (id, rect) in floats {
+            let _ = self.workspaces.set_floating_rect(id, rect);
+        }
     }
 
     pub(crate) fn is_focused_output(&self, output: &Output) -> bool {
@@ -587,6 +634,7 @@ impl Ferese {
             spring_config: config.spring_config,
             viewport_spring_config: config.viewport_spring_config,
             output_profiles: config.output_profiles,
+            autostart: config.autostart,
             cursor_status: CursorImageStatus::default_named(),
             cursor_redraw_pending: false,
             cursor_theme,
@@ -880,6 +928,57 @@ impl Ferese {
         ))
     }
 
+    pub(crate) fn add_rule_placed_window(
+        &mut self,
+        window: Window,
+        app_id: Option<&str>,
+        title: Option<&str>,
+        parent: Option<WindowId>,
+    ) {
+        let rule = resolve_window_rules(&self.window_rules, app_id, title, parent.is_some());
+        let floating = rule
+            .floating
+            .unwrap_or(parent.is_some() || rule.width.is_some() || rule.height.is_some());
+        if !floating {
+            self.add_tiled_window(window);
+            return;
+        }
+        if let Some(parent) = parent {
+            self.add_transient_window(window, parent);
+            return;
+        }
+        if let Some(pointer) = self.seat.get_pointer() {
+            self.focus_output_at(pointer.current_location());
+        }
+        let Some(bounds) = self.output_bounds() else {
+            self.add_tiled_window(window);
+            return;
+        };
+        let id = WindowId(self.next_window_id);
+        self.next_window_id += 1;
+        let rect = client_size(&window)
+            .map(|size| natural_floating_rect(bounds, size))
+            .unwrap_or_else(|| centered_floating_rect(bounds));
+        let focus = self.workspaces.active().fullscreen.is_none();
+        if let Err(error) =
+            self.workspaces
+                .insert_floating_window(id, self.workspaces.active_id(), rect, focus)
+        {
+            tracing::error!(%error, ?id, "failed to insert rule-placed floating window");
+            return;
+        }
+        if rule.width.is_none() && rule.height.is_none() && client_size(&window).is_none() {
+            self.natural_floating_pending.insert(id);
+        }
+        self.window_ids.insert(window.clone(), id);
+        self.window_stack.insert(id);
+        if focus {
+            self.focused_window = Some(id);
+        }
+        self.space.map_element(window, (0, 0), focus);
+        // apply_initial_window_rules performs the first relayout/configure.
+    }
+
     pub fn add_tiled_window(&mut self, window: Window) {
         let id = WindowId(self.next_window_id);
         self.next_window_id += 1;
@@ -952,14 +1051,58 @@ impl Ferese {
         let Some(id) = self.window_ids.get(window).copied() else {
             return;
         };
-        let Some(bounds) = self.output_bounds() else {
-            return;
-        };
         if !self.window_rules_applied.insert(id) {
             return;
         }
 
         let rule = resolve_window_rules(&self.window_rules, app_id, title, transient);
+        self.apply_window_rule_result(window, rule);
+    }
+
+    fn reapply_window_rules(&mut self, old_rules: &[WindowRule]) {
+        let windows = self.window_ids.keys().cloned().collect::<Vec<_>>();
+        for window in windows {
+            let Some(toplevel) = window.toplevel() else {
+                continue;
+            };
+            let (app_id, title, transient) = with_states(toplevel.wl_surface(), |states| {
+                let attributes = states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .unwrap()
+                    .lock()
+                    .unwrap();
+                (
+                    attributes.app_id.clone(),
+                    attributes.title.clone(),
+                    attributes.parent.is_some(),
+                )
+            });
+            let old =
+                resolve_window_rules(old_rules, app_id.as_deref(), title.as_deref(), transient);
+            let new = resolve_window_rules(
+                &self.window_rules,
+                app_id.as_deref(),
+                title.as_deref(),
+                transient,
+            );
+            if let Some(new) = crate::window_rules::live_result(old, new, transient) {
+                self.apply_window_rule_result(&window, new);
+            }
+        }
+    }
+
+    fn apply_window_rule_result(
+        &mut self,
+        window: &Window,
+        rule: crate::window_rules::WindowRuleResult,
+    ) {
+        let Some(id) = self.window_ids.get(window).copied() else {
+            return;
+        };
+        let Some(bounds) = self.floating_bounds_for_window(id) else {
+            return;
+        };
         if rule == Default::default() {
             return;
         }
@@ -977,6 +1120,7 @@ impl Ferese {
         {
             tracing::warn!(%error, ?id, workspace, "failed to apply window workspace rule");
         }
+        let bounds = self.floating_bounds_for_window(id).unwrap_or(bounds);
 
         let should_float = rule
             .floating
@@ -1065,11 +1209,11 @@ impl Ferese {
     }
 
     pub fn remove_tiled_window(&mut self, window: &Window) {
+        // Uncommitted toplevels have not entered a workspace yet.
+        self.space.unmap_elem(window);
         let Some(id) = self.window_ids.remove(window) else {
             return;
         };
-
-        self.space.unmap_elem(window);
         self.window_geometry.remove(&id);
         self.resize_transactions.remove(&id);
         self.resize_snapshots.remove(&id);
@@ -1124,6 +1268,10 @@ impl Ferese {
                 continue;
             };
             let fullscreen_bounds = self.full_output_bounds_for(&output).unwrap_or(bounds);
+            let scale = output.current_scale().fractional_scale();
+            for layer in layer_map_for_output(&output).layers() {
+                crate::handlers::set_surface_tree_scale(layer.wl_surface(), scale);
+            }
             let Some(workspace) = self.workspaces.workspace(workspace_id) else {
                 continue;
             };
@@ -1180,6 +1328,9 @@ impl Ferese {
             for (window, id) in &self.window_ids {
                 if self.workspaces.workspace_for_window(*id) != Some(workspace_id) {
                     continue;
+                }
+                if let Some(toplevel) = window.toplevel() {
+                    crate::handlers::set_surface_tree_scale(toplevel.wl_surface(), scale);
                 }
 
                 let is_maximized =
@@ -2507,6 +2658,17 @@ fn maximized_rect(bounds: Rect, gap: f64) -> Rect {
     )
 }
 
+fn moved_floating_rect(rect: Rect, old: Rect, new: Rect) -> Rect {
+    let width = rect.width.min(new.width).max(1.);
+    let height = rect.height.min(new.height).max(1.);
+    Rect::new(
+        (rect.x + new.x - old.x).clamp(new.x, new.x + (new.width - width).max(0.)),
+        (rect.y + new.y - old.y).clamp(new.y, new.y + (new.height - height).max(0.)),
+        width,
+        height,
+    )
+}
+
 fn centered_floating_rect(bounds: Rect) -> Rect {
     let width = (bounds.width * 0.6).max(1.0);
     let height = (bounds.height * 0.6).max(1.0);
@@ -2583,6 +2745,14 @@ impl ClientData for ClientState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn display_reposition_moves_floats_with_their_output_and_clamps_after_shrinking() {
+        let old = ferese_layout::Rect::new(0., 0., 1920., 1080.);
+        let new = ferese_layout::Rect::new(2000., 0., 1000., 700.);
+        let rect =
+            super::moved_floating_rect(ferese_layout::Rect::new(1500., 800., 400., 300.), old, new);
+        assert_eq!(rect, ferese_layout::Rect::new(2600., 400., 400., 300.));
+    }
     use super::*;
 
     #[test]

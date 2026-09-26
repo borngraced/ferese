@@ -27,7 +27,7 @@ pub enum LayoutMode {
     Tree,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum WorkspaceLayout {
     Scrolling(ScrollingLayout),
     Tree(LayoutTree),
@@ -376,6 +376,62 @@ impl Default for WorkspaceSet {
 }
 
 impl WorkspaceSet {
+    pub fn reconfigure_live(
+        &mut self,
+        mode: LayoutMode,
+        width: ColumnWidth,
+        strategy: ViewportFocusStrategy,
+        bounds: &HashMap<WorkspaceId, Rect>,
+    ) -> Result<(), LayoutError> {
+        if mode == self.default_layout_mode
+            && width == self.default_column_width
+            && strategy == self.scrolling_focus_strategy
+        {
+            return Ok(());
+        }
+        let mut replacements = Vec::new();
+        for workspace in self.workspaces.values() {
+            let mut layout = workspace.layout.clone();
+            if mode != self.default_layout_mode {
+                layout.set_mode(
+                    mode,
+                    bounds
+                        .get(&workspace.id)
+                        .copied()
+                        .unwrap_or(Rect::new(0., 0., 1920., 1080.)),
+                    workspace.last_focused,
+                    width,
+                    strategy,
+                )?;
+            }
+            if let WorkspaceLayout::Scrolling(scrolling) = &mut layout {
+                if width != self.default_column_width {
+                    let columns = scrolling
+                        .columns()
+                        .iter()
+                        .filter(|c| c.width == self.default_column_width)
+                        .filter_map(|c| c.windows.first().copied())
+                        .collect::<Vec<_>>();
+                    for window in columns {
+                        scrolling.set_column_width(window, width)?;
+                    }
+                }
+                scrolling.set_default_width(width);
+                if strategy != self.scrolling_focus_strategy {
+                    scrolling.set_focus_strategy(strategy);
+                }
+            }
+            replacements.push((workspace.id, layout));
+        }
+        for (id, layout) in replacements {
+            self.workspaces.get_mut(&id).unwrap().layout = layout;
+        }
+        self.default_layout_mode = mode;
+        self.default_column_width = width;
+        self.scrolling_focus_strategy = strategy;
+        Ok(())
+    }
+
     /// Update policy without moving windows or replacing existing column widths.
     pub fn reconfigure_defaults(
         &mut self,
@@ -1012,6 +1068,48 @@ fn finite_or_zero(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn live_policy_updates_existing_layouts_and_default_widths_not_custom_widths() {
+        let mut workspaces = WorkspaceSet::default();
+        for id in 1..=3 {
+            workspaces
+                .insert_window(WindowId(id), Axis::Horizontal, 0.5)
+                .unwrap();
+        }
+        let WorkspaceLayout::Scrolling(layout) = &mut workspaces.active_mut().layout else {
+            panic!()
+        };
+        layout
+            .set_column_width(WindowId(2), ColumnWidth::Proportion(0.75))
+            .unwrap();
+        let bounds = HashMap::from([(workspaces.active_id(), Rect::new(0., 0., 1000., 800.))]);
+        workspaces
+            .reconfigure_live(
+                LayoutMode::Scrolling,
+                ColumnWidth::Proportion(0.4),
+                ViewportFocusStrategy::Paged,
+                &bounds,
+            )
+            .unwrap();
+        let WorkspaceLayout::Scrolling(layout) = &workspaces.active().layout else {
+            panic!()
+        };
+        assert_eq!(layout.columns()[0].width, ColumnWidth::Proportion(0.4));
+        assert_eq!(layout.columns()[1].width, ColumnWidth::Proportion(0.75));
+        workspaces
+            .reconfigure_live(
+                LayoutMode::Tree,
+                ColumnWidth::Proportion(0.4),
+                ViewportFocusStrategy::Paged,
+                &bounds,
+            )
+            .unwrap();
+        assert_eq!(workspaces.active().layout.mode(), LayoutMode::Tree);
+        assert_eq!(workspaces.active().layout.window_ids().count(), 3);
+        assert_eq!(workspaces.active().last_focused, Some(WindowId(3)));
+        assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
     fn reconfiguration_preserves_windows_and_current_widths_but_updates_defaults() {
         let mut workspaces = WorkspaceSet::default();
         workspaces
@@ -1239,6 +1337,54 @@ mod tests {
             })
         );
         assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn opening_a_focused_float_preserves_tiled_geometry_and_scroll() {
+        let mut workspaces = WorkspaceSet::new(
+            LayoutMode::Scrolling,
+            ColumnWidth::Proportion(0.5),
+            ViewportFocusStrategy::Paged,
+        );
+        for id in 1..=4 {
+            workspaces
+                .insert_window(WindowId(id), Axis::Horizontal, 0.5)
+                .unwrap();
+        }
+        let bounds = Rect::new(0.0, 0.0, 1000.0, 800.0);
+        let before = workspaces
+            .active_mut()
+            .layout
+            .geometry_with_constraints(
+                bounds,
+                GapConfig::default(),
+                &HashMap::new(),
+                Some(WindowId(4)),
+            )
+            .unwrap();
+        let scroll = workspaces.active().layout.viewport_x();
+        workspaces
+            .insert_floating_window(
+                WindowId(5),
+                workspaces.active_id(),
+                Rect::new(100.0, 100.0, 600.0, 500.0),
+                true,
+            )
+            .unwrap();
+        let after = workspaces
+            .active_mut()
+            .layout
+            .geometry_with_constraints(
+                bounds,
+                GapConfig::default(),
+                &HashMap::new(),
+                Some(WindowId(5)),
+            )
+            .unwrap();
+        assert_eq!(before.geometry, after.geometry);
+        assert_eq!(scroll, workspaces.active().layout.viewport_x());
+        assert_eq!(workspaces.active().last_focused, Some(WindowId(5)));
+        assert!(!workspaces.active().layout.contains(WindowId(5)));
     }
 
     #[test]

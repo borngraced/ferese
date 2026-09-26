@@ -43,6 +43,19 @@ use crate::config::Config;
 fn main() -> Result<(), Box<dyn Error>> {
     init_logging();
 
+    // Settings validates a candidate before atomically replacing the user's file.
+    // This mode never opens a display, input device, or compositor socket.
+    let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if args.first().is_some_and(|arg| arg == "--check-config") {
+        if args.len() != 2 {
+            return Err("usage: ferese --check-config PATH".into());
+        }
+        let source = std::fs::read_to_string(&args[1])?;
+        Config::parse_source(&source)?.runtime_config()?;
+        println!("Configuration is valid");
+        return Ok(());
+    }
+
     let launch = LaunchConfig::from_environment()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let initial_source = config::config_path().and_then(|path| std::fs::read_to_string(path).ok());

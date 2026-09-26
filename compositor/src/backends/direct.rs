@@ -55,6 +55,7 @@ pub struct DirectBackendState {
     pub active: bool,
     lid_closed: bool,
     devices: HashMap<DrmNode, DirectDevice>,
+    input_devices: Vec<LibinputDevice>,
     presentation: HashMap<(DrmNode, crtc::Handle), PresentationClock>,
     pub(crate) connected_outputs: Vec<ConnectedOutputInfo>,
 }
@@ -177,6 +178,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         active: session_active,
         lid_closed: initial_lid_closed(),
         devices: HashMap::new(),
+        input_devices: Vec::new(),
         presentation: HashMap::new(),
         connected_outputs: Vec::new(),
     });
@@ -185,7 +187,19 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
     event_loop
         .handle()
         .insert_source(libinput_backend, |event, _, state| match event {
-            InputEvent::DeviceAdded { mut device } => configure_libinput_device(state, &mut device),
+            InputEvent::DeviceAdded { mut device } => {
+                configure_libinput_device(state, &mut device);
+                if let Some(backend) = state.direct_backend.as_mut() {
+                    backend.input_devices.push(device);
+                }
+            }
+            InputEvent::DeviceRemoved { device } => {
+                if let Some(backend) = state.direct_backend.as_mut() {
+                    backend
+                        .input_devices
+                        .retain(|candidate| candidate != &device);
+                }
+            }
             event => state.process_input_event(event),
         })?;
     event_loop
@@ -283,6 +297,47 @@ fn configure_libinput_device(state: &Ferese, device: &mut LibinputDevice) {
             "failed to configure disable-while-typing"
         );
     }
+}
+
+pub(crate) fn reload_input_devices(state: &mut Ferese) {
+    let Some(backend) = state.direct_backend.as_ref() else {
+        return;
+    };
+    // Device clones refer to the same live libinput objects.
+    let mut devices = backend.input_devices.clone();
+    for device in &mut devices {
+        configure_libinput_device(state, device);
+    }
+}
+
+pub(crate) fn reload_outputs(state: &mut Ferese) {
+    let nodes = state
+        .direct_backend
+        .as_ref()
+        .map(|backend| backend.devices.keys().copied().collect::<Vec<_>>())
+        .unwrap_or_default();
+    for node in nodes {
+        rescan_device(state, node);
+    }
+}
+
+pub(crate) fn validate_live_outputs(
+    state: &Ferese,
+    profiles: &[OutputProfile],
+) -> Result<(), String> {
+    let Some(backend) = state.direct_backend.as_ref() else {
+        return Ok(());
+    };
+    let mut usable = 0;
+    for device in backend.devices.values() {
+        let mut scan = select_outputs(&device.drm, profiles).map_err(|e| e.to_string())?;
+        apply_lid_policy(&mut scan, backend.lid_closed);
+        usable += scan.selections.len();
+    }
+    if usable == 0 {
+        return Err("display configuration would leave no usable output".into());
+    }
+    Ok(())
 }
 
 fn open_primary_device(
@@ -725,6 +780,78 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
     let mut deferred_removals = Vec::new();
 
     for crtc in existing {
+        if let Some(selection) = selections.get(&crtc)
+            && let Some(output) = device.outputs.get_mut(&crtc)
+            && selection.connector.handle() == output.connector
+            && (selection.mode != output.mode || selection.settings != output.settings)
+        {
+            // Keep the wl_output/global and workspace ownership alive. A mode
+            // change is tested by DRM before updating client-visible geometry.
+            let result = if selection.mode != output.mode {
+                output.surface.use_mode(selection.mode)
+            } else {
+                Ok(())
+            };
+            match result {
+                Ok(()) => {
+                    let old_geometry = state.space.output_geometry(&output.output);
+                    output.mode = selection.mode;
+                    output.settings = selection.settings.clone();
+                    let position = selection.settings.position.unwrap_or_else(|| {
+                        state
+                            .space
+                            .output_geometry(&output.output)
+                            .map(|g| [g.loc.x, g.loc.y])
+                            .unwrap_or([0, 0])
+                    });
+                    output.output.change_current_state(
+                        Some(OutputMode::from(output.mode)),
+                        Some(output_transform(output.settings.transform)),
+                        Some(Scale::Fractional(output.settings.scale)),
+                        Some((position[0], position[1]).into()),
+                    );
+                    state
+                        .space
+                        .map_output(&output.output, (position[0], position[1]));
+                    if let Some(id) = state.output_id(&output.output)
+                        && let Some(g) = state.space.output_geometry(&output.output)
+                    {
+                        state.output_workspaces.update_geometry(
+                            id,
+                            ferese_core::OutputGeometry::new(g.loc.x, g.loc.y, g.size.w, g.size.h),
+                        );
+                        if let Some(old) = old_geometry {
+                            state.reposition_output_floats(
+                                id,
+                                ferese_layout::Rect::new(
+                                    old.loc.x as f64,
+                                    old.loc.y as f64,
+                                    old.size.w as f64,
+                                    old.size.h as f64,
+                                ),
+                                ferese_layout::Rect::new(
+                                    g.loc.x as f64,
+                                    g.loc.y as f64,
+                                    g.size.w as f64,
+                                    g.size.h as f64,
+                                ),
+                            );
+                        }
+                    }
+                    output.damage_tracker = OutputDamageTracker::from_output(&output.output);
+                    if let Some(backend) = state.direct_backend.as_mut() {
+                        let clock = backend.presentation.entry((node, crtc)).or_default();
+                        clock.set_refresh(OutputMode::from(output.mode).refresh);
+                        clock.reset_timing();
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(?crtc, %error, "display change failed; retaining current output")
+                }
+            }
+            selections.remove(&crtc);
+            continue;
+        }
         let unchanged = device.outputs.get(&crtc).is_some_and(|output| {
             selections.get(&crtc).is_some_and(|selection| {
                 selection.connector.handle() == output.connector
@@ -824,6 +951,21 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
             state.unregister_output(&output.output);
             if let Some(backend) = state.direct_backend.as_mut() {
                 backend.presentation.remove(&(node, crtc));
+            }
+        }
+    }
+    if let Some(backend) = state.direct_backend.as_mut() {
+        for output in device.outputs.values() {
+            if let Some(info) = backend
+                .connected_outputs
+                .iter_mut()
+                .find(|info| info.connector == output.output.name())
+            {
+                info.enabled = true;
+                info.current_mode = Some(connected_mode_info(output.mode));
+                info.scale = output.settings.scale;
+                info.transform = output.settings.transform;
+                info.configured_position = output.settings.position;
             }
         }
     }
