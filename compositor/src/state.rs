@@ -147,6 +147,9 @@ pub struct Ferese {
     viewport_spring_config: SpringConfig,
     pub(crate) output_profiles: Vec<OutputProfile>,
     pub cursor_status: CursorImageStatus,
+    // Cursor callbacks may run with Smithay's pointer mutex held. Rendering
+    // reads the pointer position, so defer it until event dispatch returns.
+    pub(crate) cursor_redraw_pending: bool,
     pub(crate) cursor_theme: xcursor::CursorTheme,
     pub(crate) named_cursors: HashMap<CursorIcon, crate::cursor::NamedCursor>,
     pub intercepted_keys: HashSet<smithay::input::keyboard::Keycode>,
@@ -476,6 +479,7 @@ impl Ferese {
             viewport_spring_config: config.viewport_spring_config,
             output_profiles: config.output_profiles,
             cursor_status: CursorImageStatus::default_named(),
+            cursor_redraw_pending: false,
             cursor_theme,
             named_cursors,
             intercepted_keys: HashSet::new(),

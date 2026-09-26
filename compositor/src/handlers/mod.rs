@@ -59,7 +59,10 @@ impl SeatHandler for Ferese {
                 .or_insert_with(|| crate::cursor::load_named_cursor(&self.cursor_theme, *icon));
         }
         self.cursor_status = image;
-        crate::backends::direct::render_all(self);
+        // Pointer focus transitions invoke this with the pointer lock held.
+        // render_all -> cursor_elements -> current_location would try to
+        // acquire that same lock, freezing the entire compositor thread.
+        self.cursor_redraw_pending = true;
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {

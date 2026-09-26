@@ -25,6 +25,8 @@ pub struct Config {
     #[serde(default)]
     theme: ThemeConfig,
     #[serde(default)]
+    appearance: AppearanceConfig,
+    #[serde(default)]
     commands: HashMap<String, Vec<String>>,
     #[serde(default)]
     bindings: Vec<BindingConfig>,
@@ -116,6 +118,9 @@ pub struct ThemeSettings {
     pub shadow_blur: f64,
     pub shadow_opacity: f64,
     pub material_style: MaterialStyle,
+    pub glass: GlassSettings,
+    pub material_radius: f64,
+    pub panel_radius: f64,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -125,6 +130,56 @@ pub enum MaterialStyle {
     Glass,
     Translucent,
     Solid,
+}
+
+/// Ordered quality tiers; each step retains the preceding reductions.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Ord, PartialOrd)]
+#[serde(rename_all = "snake_case")]
+pub enum GlassQuality {
+    #[default]
+    Full,
+    NoGrain,
+    NoSaturation,
+    ReducedBlur,
+    Translucent,
+    Solid,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlassSettings {
+    pub tint: RgbaColor,
+    pub blur_scale: f32,
+    pub grain: bool,
+    pub quality: GlassQuality,
+}
+
+impl Default for GlassSettings {
+    fn default() -> Self {
+        Self {
+            tint: RgbaColor([28.0 / 255.0, 32.0 / 255.0, 46.0 / 255.0, 1.0]),
+            blur_scale: 1.0,
+            grain: true,
+            quality: GlassQuality::Full,
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AppearanceConfig {
+    corner_radius: Option<f64>,
+    #[serde(default)]
+    reduced_effects: bool,
+    #[serde(default)]
+    glass: GlassConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GlassConfig {
+    tint_color: Option<String>,
+    blur_scale: Option<f64>,
+    grain: Option<bool>,
+    #[serde(default)]
+    quality: GlassQuality,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -202,6 +257,8 @@ struct ThemeGeometryConfig {
     focus_ring_width: f64,
     #[serde(default = "default_window_radius")]
     window_radius: f64,
+    #[serde(default)]
+    top_bar_radius: f64,
 }
 
 impl Default for ThemeGeometryConfig {
@@ -210,6 +267,7 @@ impl Default for ThemeGeometryConfig {
             border_width: default_border_width(),
             focus_ring_width: default_focus_ring_width(),
             window_radius: default_window_radius(),
+            top_bar_radius: 0.0,
         }
     }
 }
@@ -803,6 +861,26 @@ impl Config {
         let shadow_opacity =
             unit_theme_value(self.theme.shadow.soft.opacity, "shadow.soft.opacity")?;
 
+        let mut glass = GlassSettings::default();
+        if let Some(tint) = &self.appearance.glass.tint_color {
+            glass.tint = parse_color(tint, "appearance.glass.tint_color")?;
+            // Opacity belongs to the semantic role, never the color token.
+            glass.tint.0[3] = 1.0;
+        }
+        glass.blur_scale = finite_theme_value(
+            self.appearance.glass.blur_scale.unwrap_or(1.0),
+            "appearance.glass.blur_scale",
+        )?
+        .clamp(0.5, 1.5) as f32;
+        glass.grain = self.appearance.glass.grain.unwrap_or(true);
+        glass.quality = self.appearance.glass.quality;
+        if self.appearance.reduced_effects {
+            glass.quality = glass.quality.max(GlassQuality::ReducedBlur);
+        }
+        let material_radius = nonnegative_theme_value(
+            self.appearance.corner_radius.unwrap_or(14.0),
+            "appearance.corner_radius",
+        )?;
         Ok(ThemeSettings {
             border_width,
             focus_ring_width,
@@ -818,6 +896,12 @@ impl Config {
             shadow_blur,
             shadow_opacity,
             material_style: self.theme.material.style,
+            glass,
+            material_radius,
+            panel_radius: nonnegative_theme_value(
+                self.theme.geometry.top_bar_radius,
+                "geometry.top_bar_radius",
+            )?,
         })
     }
 
@@ -1582,6 +1666,30 @@ mod tests {
     }
 
     #[test]
+    fn glass_configuration_clamps_cost_and_rejects_nonfinite_values() {
+        for (value, expected) in [(0.1, 0.5), (1.2, 1.2), (100.0, 1.5)] {
+            let config = parse(&format!("[appearance.glass]\nblur_scale = {value}"));
+            assert_eq!(config.theme_settings().unwrap().glass.blur_scale, expected);
+        }
+        for value in ["nan", "inf", "-inf"] {
+            assert!(
+                parse(&format!("[appearance.glass]\nblur_scale = {value}"))
+                    .theme_settings()
+                    .is_err()
+            );
+        }
+        let settings = parse("[appearance]\nreduced_effects = true\ncorner_radius = 17.0\n[appearance.glass]\ntint_color = \"#123456\"\ngrain = false")
+            .theme_settings().unwrap();
+        assert_eq!(settings.glass.quality, GlassQuality::ReducedBlur);
+        assert!(!settings.glass.grain);
+        assert_eq!(settings.material_radius, 17.0);
+        assert_eq!(
+            settings.glass.tint,
+            RgbaColor([18.0 / 255.0, 52.0 / 255.0, 86.0 / 255.0, 1.0])
+        );
+    }
+
+    #[test]
     fn parses_and_validates_theme_window_tokens() {
         let configured = parse(
             "[theme.colors]\nborder = \"#11223344\"\naccent = \"#AABBCC\"\nshadow = \"#01020380\"\n\n[theme.geometry]\nborder_width = 1.5\nfocus_ring_width = 3.0\nwindow_radius = 12.0\n\n[theme.shadow.soft]\noffset_y = -2.0\nblur = 24.0\nopacity = 0.4\n\n[theme.material]\nstyle = \"translucent\"",
@@ -1604,6 +1712,9 @@ mod tests {
                 shadow_blur: 24.0,
                 shadow_opacity: 0.4,
                 material_style: MaterialStyle::Translucent,
+                glass: GlassSettings::default(),
+                material_radius: 14.0,
+                panel_radius: 0.0,
             }
         );
         assert!(invalid_color.theme_settings().is_err());

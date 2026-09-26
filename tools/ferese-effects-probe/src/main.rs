@@ -64,6 +64,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     ] {
         effects.set_role(role);
         queue.roundtrip(&mut state)?;
+        // Exercise each role in an actual presented frame, including changes
+        // to the cached backdrop allocation and shadow bounds.
+        std::thread::sleep(Duration::from_millis(50));
         if state.configure_count != initial_configures {
             return Err(format!("semantic role {role:?} changed layer geometry").into());
         }
@@ -210,8 +213,11 @@ fn create_buffer(
     let size = stride * height;
     let mut file = tempfile::tempfile()?;
     file.set_len(u64::from(size))?;
-    let alpha = if preview { 0x28 } else { 0xd8 };
-    let pixel = [0x28_u8, 0x24, 0x20, alpha];
+    let pixel = if preview {
+        [0_u8; 4]
+    } else {
+        [0x28, 0x24, 0x20, 0xd8]
+    };
     for _ in 0..width * height {
         file.write_all(&pixel)?;
     }

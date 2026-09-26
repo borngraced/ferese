@@ -46,6 +46,9 @@ pub(crate) fn prepare_command(
     let mut clients = vec![primary];
 
     command.env_remove("WAYLAND_DISPLAY");
+    // Shell-launched applications must use the public socket, not inherit the
+    // private shell/effects connection or accidentally connect to the host.
+    command.env("FERESE_PUBLIC_WAYLAND_DISPLAY", &state.socket_name);
     command.env_remove("FERESE_SHELL_CONTROL_SOCKET");
     command.env("WAYLAND_SOCKET", clients[0].as_raw_fd().to_string());
 

@@ -111,6 +111,31 @@ opacity = 0.20
 style = "glass" # glass, translucent, or solid
 ```
 
+Glass roles use live backdrop sampling, a dark tint, diagonal lighting, inset
+edges, static overlay grain, and role-specific shadows. Configure them with:
+
+```toml
+[appearance]
+corner_radius = 14.0
+reduced_effects = false # true selects reduced_blur or a stricter quality tier
+
+[appearance.glass]
+tint_color = "#1C202E"
+blur_scale = 1.0 # clamped to 0.5–1.5; non-finite values are rejected
+grain = true
+quality = "full"
+```
+
+Quality tiers are `full`, `no_grain`, `no_saturation`, `reduced_blur`
+(at most 12 logical pixels with fewer samples), `translucent`, and `solid`.
+Each tier retains earlier reductions without reducing tint opacity or changing
+layout. Backdrop shader or texture allocation failure falls back to translucent.
+The legacy `surface.panel_elevated` role uses the panel tint with popover elevation.
+Shell shadows use restrained logical-pixel presets: panel `1/5/4%`, popover
+and menu `2/8/7%`, HUD `1/4/4%`, and notification/modal `3/10/9%`
+(vertical offset / blur / opacity). Private effects capabilities
+remain required; public background-effect requests cannot select these materials.
+
 Fullscreen windows are borderless and shadowless. Other managed windows use GPU
 rounded clipping, matching rounded focus rings, and an analytic soft shadow.
 These effects overlay or surround the allocation without adding client padding.
@@ -130,7 +155,7 @@ their client surfaces, `Super+H/J/K/L` moves the selection using the presented
 preview geometry, and clicking a preview activates it without forwarding the
 selection click to the application.
 
-The first production shell slice provides a floating libcosmic top bar backed
+The shell provides an edge-to-edge libcosmic menu bar backed
 by the private shell-control connection. Build and preview it nested with:
 
 ```bash
@@ -139,9 +164,12 @@ target/debug/ferese --backend nested --grant-effects --grant-shell-control -- \
   target/debug/ferese-shell
 ```
 
-The Ferese mark enters overview, workspace pills switch workspaces, the clock
-remains geometrically centered, and focused-application/output metadata updates
-from compositor snapshots.
+The Ferese mark enters overview, where workspace indicators become available.
+The focused app appears on the left; status controls and day/time sit on the
+right. The 28px bar has square screen edges, 19px icons, a fine bottom separator,
+and no drop shadow. An 8px gap separates it from windows; adjust
+`top_bar_window_gap` under `[theme.geometry]` to change it. This is additional to
+the workspace outer gap. Its dark startup fallback matches the material palette.
 
 Keyboard and direct-session touchpad settings are applied at startup:
 

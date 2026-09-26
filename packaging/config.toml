@@ -10,5 +10,12 @@ focus_follows_mouse = false
 [layout]
 smart_gaps = false
 
+# Edge-to-edge menu bar; its foreground palette is independent of popup surfaces.
+[theme.surface.bar]
+background = "#1C202E"
+opacity = 0.95
+text_primary = "#F0F3FA"
+text_muted = "#AAB4C7"
+
 # Super+Enter opens Foot. Super+Shift+E logs out.
 # See README.md for monitor profiles and additional bindings.

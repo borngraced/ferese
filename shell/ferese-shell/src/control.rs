@@ -140,8 +140,11 @@ fn control_connection() -> Result<Connection, Box<dyn Error>> {
     // SAFETY: Ferese passes ownership of this inherited descriptor to the
     // shell. This function is called once and consumes the descriptor.
     let socket = unsafe { UnixStream::from_raw_fd(fd) };
-
-    Ok(Connection::from_socket(socket)?)
+    // Rust's cloned stream is close-on-exec. Do not leak shell-control authority
+    // into status helpers or applications launched from the menu.
+    let connection_socket = socket.try_clone()?;
+    drop(socket);
+    Ok(Connection::from_socket(connection_socket)?)
 }
 
 struct ControlState {

@@ -272,6 +272,10 @@ impl XdgShellHandler for Ferese {
         }
         if let Some(keyboard) = seat.get_keyboard() {
             keyboard.set_grab(self, PopupKeyboardGrab::new(&popup_grab), serial);
+            // Focus the popup immediately, rather than waiting for its first
+            // key event. Shell clients use focus to initialize popup effects,
+            // and Escape must be delivered to the popup from the outset.
+            keyboard.set_focus(self, popup_grab.current_grab(), serial);
         }
     }
 }

@@ -1,6 +1,10 @@
 use std::{
     collections::HashMap,
     error::Error,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -11,8 +15,7 @@ use smithay::{
             Color32F, ErasedContextId, Frame, ImportDma, Offscreen, Renderer, Texture,
             damage::OutputDamageTracker,
             element::{
-                AsRenderElements, Element, Id, Kind as RenderElementKind, RenderElement,
-                UnderlyingStorage,
+                Element, Id, Kind as RenderElementKind, RenderElement, UnderlyingStorage,
                 memory::MemoryRenderBufferRenderElement,
                 render_elements,
                 solid::{SolidColorBuffer, SolidColorRenderElement},
@@ -40,9 +43,9 @@ use smithay::{
     },
     input::pointer::{CursorImageStatus, CursorImageSurfaceData},
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
+    reexports::calloop::EventLoop,
     reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind as PresentationKind,
     reexports::wayland_server::Resource,
-    reexports::calloop::EventLoop,
     utils::{
         Buffer, Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale as RenderScale, Size,
         Transform,
@@ -94,7 +97,7 @@ const ROUNDED_TEXTURE_SHADER: &str = r#"#version 100
 #extension GL_OES_EGL_image_external : require
 #endif
 
-precision mediump float;
+precision highp float;
 #if defined(EXTERNAL)
 uniform samplerExternalOES tex;
 #else
@@ -218,23 +221,63 @@ void main() {
 }
 "#;
 
+// The material program paints either the fallback tint, the edges above client
+// content, or the shadow outside the surface. All coordinates are physical px.
 const MATERIAL_SHADER: &str = r#"
-precision mediump float;
-
+precision highp float;
 uniform float alpha;
 uniform vec4 tint;
-uniform float noise_amount;
+uniform vec4 visible_rect;
+uniform float material_radius;
+uniform float pixel_scale;
+uniform vec2 local_origin;
+uniform vec4 local_axes;
+uniform vec2 logical_size;
+uniform float paint_mode;
+uniform float glass_edges;
+uniform float edge_bar;
+uniform vec4 shadow_rect;
+uniform vec2 shadow_values;
 varying vec2 v_coords;
 
-float random(vec2 point) {
-    return fract(sin(dot(point, vec2(12.9898, 78.233))) * 43758.5453);
+float rounded_distance(vec2 point, vec4 rect) {
+    vec2 half_size = rect.zw * 0.5;
+    float radius = min(material_radius, min(half_size.x, half_size.y));
+    vec2 d = abs(point - rect.xy - half_size) - (half_size - vec2(radius));
+    return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
 }
-
 void main() {
-    float grain = (random(gl_FragCoord.xy) - 0.5) * noise_amount;
-    vec3 color = clamp(tint.rgb + vec3(grain), 0.0, 1.0);
-    float opacity = tint.a * alpha;
-    gl_FragColor = vec4(color * opacity, opacity);
+    float sdf = rounded_distance(gl_FragCoord.xy, visible_rect);
+    float coverage = 1.0 - smoothstep(-0.5, 0.5, sdf);
+    if (paint_mode > 1.5) {
+        float distance = max(rounded_distance(gl_FragCoord.xy, shadow_rect), 0.0);
+        float sigma = max(shadow_values.x * 0.5, 0.5);
+        float opacity = exp(-0.5 * distance * distance / (sigma * sigma))
+            * shadow_values.y * (1.0 - coverage) * alpha;
+        gl_FragColor = vec4(0.0, 0.0, 0.0, opacity);
+    } else if (paint_mode > 0.5) {
+        if (edge_bar > 0.5) {
+            float bottom = logical_size.y * pixel_scale
+                - dot(gl_FragCoord.xy - local_origin, local_axes.zw);
+            float opacity = 0.10 * (1.0 - smoothstep(pixel_scale - 0.5, pixel_scale + 0.5, bottom)) * coverage * alpha;
+            gl_FragColor = vec4(vec3(opacity), opacity);
+            return;
+        }
+        float border = smoothstep(-pixel_scale - 0.5, -pixel_scale + 0.5, sdf);
+        float hairline = smoothstep(-2.0 * pixel_scale - 0.5, -2.0 * pixel_scale + 0.5, sdf) * (1.0 - border);
+        // Inset only on the logical top, including rotated/flipped outputs.
+        float top = dot(gl_FragCoord.xy - local_origin, local_axes.zw);
+        float top_limit = min(2.0 * pixel_scale, logical_size.y * pixel_scale);
+        float highlight = (1.0 - smoothstep(top_limit - 0.5, top_limit + 0.5, top)) * (1.0 - border);
+        float opacity = 1.0 - (1.0 - 0.14 * border)
+            * (1.0 - glass_edges * 0.04 * hairline)
+            * (1.0 - glass_edges * 0.18 * highlight);
+        opacity *= coverage * alpha;
+        gl_FragColor = vec4(vec3(opacity), opacity);
+    } else {
+        float opacity = tint.a * coverage * alpha;
+        gl_FragColor = vec4(tint.rgb * opacity, opacity);
+    }
 }
 "#;
 
@@ -256,25 +299,35 @@ uniform float alpha;
 uniform vec4 visible_rect;
 uniform vec2 texture_size;
 uniform float blur_radius;
+uniform float tap_scale;
+uniform float material_radius;
 uniform float saturation;
 uniform float brightness;
 uniform vec4 tint;
 uniform float noise_amount;
+uniform float pixel_scale;
+uniform vec2 local_origin;
+uniform vec4 local_axes;
+uniform vec2 logical_size;
 varying vec2 v_coords;
 
+// Static, surface-local two-octave fractal noise. A small polynomial hash
+// avoids the precision-dependent sine hash and does not animate with time.
 float random(vec2 point) {
-    return fract(sin(dot(point, vec2(12.9898, 78.233))) * 43758.5453);
+    vec3 p = fract(vec3(point.xyx) * 0.1031);
+    p += dot(p, p.yzx + 33.33);
+    return fract((p.x + p.y) * p.z);
+}
+float noise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(random(i), random(i + vec2(1.0, 0.0)), f.x),
+        mix(random(i + vec2(0.0, 1.0)), random(i + vec2(1.0)), f.x), f.y);
 }
 
-float kernel_weight(int tap) {
-    int distance = tap < 0 ? -tap : tap;
-    if (distance == 0) {
-        return 6.0;
-    }
-    if (distance == 1) {
-        return 4.0;
-    }
-    return 1.0;
+float kernel_weight(float distance) {
+    return exp(-distance * distance / 18.0);
 }
 
 void main() {
@@ -286,22 +339,41 @@ void main() {
         return;
     }
 
-    vec2 step_size = vec2(blur_radius * 0.5) / max(texture_size, vec2(1.0));
+    vec2 step_size = vec2(blur_radius / 6.0) / max(texture_size, vec2(1.0));
     vec4 color = vec4(0.0);
-    for (int y = -2; y <= 2; y++) {
-        for (int x = -2; x <= 2; x++) {
-            float weight = kernel_weight(x) * kernel_weight(y);
-            vec2 offset = vec2(float(x), float(y)) * step_size;
+    float weight_sum = 0.0;
+    for (int y = -6; y <= 6; y++) {
+        if (abs(float(y)) * tap_scale > 6.0) { continue; }
+        for (int x = -6; x <= 6; x++) {
+            if (abs(float(x)) * tap_scale > 6.0) { continue; }
+            float weight = kernel_weight(float(x) * tap_scale) * kernel_weight(float(y) * tap_scale);
+            vec2 offset = vec2(float(x), float(y)) * step_size * tap_scale;
             color += texture2D(tex, v_coords + offset) * weight;
+            weight_sum += weight;
         }
     }
-    color /= 256.0;
+    color /= weight_sum;
 
     float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
     vec3 adjusted = mix(vec3(luma), color.rgb, saturation) * brightness;
     adjusted = mix(adjusted, tint.rgb, tint.a);
-    adjusted += vec3((random(point) - 0.5) * noise_amount);
-    gl_FragColor = vec4(clamp(adjusted, 0.0, 1.0) * alpha, alpha);
+    vec2 relative = point - local_origin;
+    vec2 local = vec2(dot(relative, local_axes.xy), dot(relative, local_axes.zw)) / pixel_scale;
+    vec2 size = logical_size;
+    // CSS 155deg: direction (sin(155deg), -cos(155deg)). Project onto
+    // the full gradient line, including the aspect ratio of the surface.
+    vec2 direction = vec2(0.422618, 0.906308);
+    float position = dot(local, direction) / max(dot(size, direction), 1.0);
+    adjusted = mix(adjusted, vec3(1.0), 0.10 * clamp(1.0 - position / 0.40, 0.0, 1.0));
+    float grain = (noise(local * 0.8) + 0.5 * noise(local * 1.6)) / 1.5;
+    vec3 overlay = mix(2.0 * adjusted * grain,
+        1.0 - 2.0 * (1.0 - adjusted) * (1.0 - grain), step(vec3(0.5), adjusted));
+    adjusted = mix(adjusted, overlay, noise_amount);
+    vec2 half_size = visible_rect.zw * 0.5;
+    vec2 distance = abs(point - visible_rect.xy - half_size) - (half_size - vec2(material_radius));
+    float sdf = length(max(distance, 0.0)) + min(max(distance.x, distance.y), 0.0) - material_radius;
+    float coverage = alpha * (1.0 - smoothstep(-0.5, 0.5, sdf));
+    gl_FragColor = vec4(clamp(adjusted, 0.0, 1.0) * coverage, coverage);
 }
 "#;
 
@@ -333,6 +405,16 @@ pub(crate) struct BackdropProgram(GlesTexProgram);
 
 #[derive(Clone, Debug, PartialEq)]
 struct MaterialParameters {
+    radius: f32,
+    pixel_scale: f32,
+    local_origin: [f32; 2],
+    local_axes: [f32; 4],
+    logical_size: [f32; 2],
+    glass_edges: f32,
+    edge_bar: f32,
+    shadow_rect: [f32; 4],
+    shadow_values: [f32; 2],
+    shadow_bounds: Rectangle<i32, Logical>,
     geometry: Rectangle<i32, Logical>,
     tint: [f32; 4],
     noise: f32,
@@ -340,6 +422,7 @@ struct MaterialParameters {
     scene_generation: u64,
     opaque: bool,
     blur: f32,
+    tap_scale: f32,
     saturation: f32,
     brightness: f32,
     sample_geometry: Rectangle<i32, Logical>,
@@ -352,6 +435,8 @@ struct MaterialParameters {
 struct CachedMaterial {
     element: CachedMaterialElement,
     parameters: MaterialParameters,
+    edge: PixelShaderElement,
+    shadow: PixelShaderElement,
 }
 
 #[derive(Clone, Debug)]
@@ -367,6 +452,7 @@ pub(crate) struct MaterialBuffers {
 
 #[derive(Clone, Debug)]
 struct BackdropRenderElement {
+    capture_dirty: Arc<AtomicBool>,
     texture: GlesTexture,
     program: GlesTexProgram,
     id: Id,
@@ -379,6 +465,7 @@ struct BackdropRenderElement {
 impl BackdropRenderElement {
     fn new(texture: GlesTexture, program: GlesTexProgram, parameters: &MaterialParameters) -> Self {
         Self {
+            capture_dirty: Arc::new(AtomicBool::new(true)),
             texture,
             program,
             id: Id::new(),
@@ -390,6 +477,7 @@ impl BackdropRenderElement {
     }
 
     fn update(&mut self, parameters: &MaterialParameters) {
+        self.capture_dirty.store(true, Ordering::Relaxed);
         self.geometry = parameters.sample_geometry;
         self.capture_rect = framebuffer_capture_rect(parameters.sample_framebuffer);
         self.uniforms = backdrop_uniforms(parameters);
@@ -419,11 +507,7 @@ impl Element for BackdropRenderElement {
         scale: RenderScale<f64>,
         commit: Option<CommitCounter>,
     ) -> DamageSet<i32, Physical> {
-        if commit == Some(self.commit) {
-            DamageSet::default()
-        } else {
-            DamageSet::from_slice(&[Rectangle::from_size(self.geometry(scale).size)])
-        }
+        backdrop_damage(self.geometry(scale).size, self.commit, commit)
     }
 
     fn opaque_regions(&self, _scale: RenderScale<f64>) -> OpaqueRegions<i32, Physical> {
@@ -441,6 +525,19 @@ impl Element for BackdropRenderElement {
     }
 }
 
+fn backdrop_damage(
+    size: Size<i32, Physical>,
+    current: CommitCounter,
+    previous: Option<CommitCounter>,
+) -> DamageSet<i32, Physical> {
+    if previous == Some(current) {
+        DamageSet::default()
+    } else {
+        // A new scene needs its entire sampling halo repainted before capture.
+        DamageSet::from_slice(&[Rectangle::from_size(size)])
+    }
+}
+
 impl RenderElement<GlesRenderer> for BackdropRenderElement {
     fn draw(
         &self,
@@ -452,30 +549,36 @@ impl RenderElement<GlesRenderer> for BackdropRenderElement {
     ) -> Result<(), GlesError> {
         let texture = self.texture.tex_id();
         let [x, y, width, height] = self.capture_rect;
-        frame.with_context(|gl| unsafe {
-            gl.BindTexture(smithay::backend::renderer::gles::ffi::TEXTURE_2D, texture);
-            gl.TexParameteri(
-                smithay::backend::renderer::gles::ffi::TEXTURE_2D,
-                smithay::backend::renderer::gles::ffi::TEXTURE_WRAP_S,
-                smithay::backend::renderer::gles::ffi::CLAMP_TO_EDGE as i32,
-            );
-            gl.TexParameteri(
-                smithay::backend::renderer::gles::ffi::TEXTURE_2D,
-                smithay::backend::renderer::gles::ffi::TEXTURE_WRAP_T,
-                smithay::backend::renderer::gles::ffi::CLAMP_TO_EDGE as i32,
-            );
-            gl.CopyTexSubImage2D(
-                smithay::backend::renderer::gles::ffi::TEXTURE_2D,
-                0,
-                0,
-                0,
-                x,
-                y,
-                width,
-                height,
-            );
-            gl.BindTexture(smithay::backend::renderer::gles::ffi::TEXTURE_2D, 0);
-        })?;
+        // Buffer-age restoration and unrelated partial damage must reuse the
+        // clean captured scene. Recapturing a partly repainted framebuffer
+        // would feed previous glass pixels back into the blur.
+        if self.capture_dirty.load(Ordering::Relaxed) {
+            frame.with_context(|gl| unsafe {
+                gl.BindTexture(smithay::backend::renderer::gles::ffi::TEXTURE_2D, texture);
+                gl.TexParameteri(
+                    smithay::backend::renderer::gles::ffi::TEXTURE_2D,
+                    smithay::backend::renderer::gles::ffi::TEXTURE_WRAP_S,
+                    smithay::backend::renderer::gles::ffi::CLAMP_TO_EDGE as i32,
+                );
+                gl.TexParameteri(
+                    smithay::backend::renderer::gles::ffi::TEXTURE_2D,
+                    smithay::backend::renderer::gles::ffi::TEXTURE_WRAP_T,
+                    smithay::backend::renderer::gles::ffi::CLAMP_TO_EDGE as i32,
+                );
+                gl.CopyTexSubImage2D(
+                    smithay::backend::renderer::gles::ffi::TEXTURE_2D,
+                    0,
+                    0,
+                    0,
+                    x,
+                    y,
+                    width,
+                    height,
+                );
+                gl.BindTexture(smithay::backend::renderer::gles::ffi::TEXTURE_2D, 0);
+            })?;
+            self.capture_dirty.store(false, Ordering::Relaxed);
+        }
 
         frame.render_texture_from_to(
             &self.texture,
@@ -1452,45 +1555,149 @@ fn layer_elements(
 
     let mut elements = Vec::new();
     for (geometry, layer) in layers {
-        elements.extend(
-            AsRenderElements::<GlesRenderer>::render_elements::<
-                WaylandSurfaceRenderElement<GlesRenderer>,
-            >(
-                &layer,
+        for (popup, offset) in PopupManager::popups_for_surface(layer.wl_surface()) {
+            let mut bounds = popup.geometry();
+            let content_origin = geometry.loc + offset - bounds.loc;
+            bounds.loc = geometry.loc + offset;
+            append_material_surface(
+                state,
                 renderer,
-                geometry.loc.to_physical_precise_round(scale),
-                scale.into(),
-                1.0,
-            )
-            .into_iter()
-            .filter_map(|element| {
-                let origin = Point::<i32, Physical>::default();
-                let element = RescaleRenderElement::from_element(element, origin, 1.0);
-                let element =
-                    RelocateRenderElement::from_element(element, origin, Relocate::Relative);
-
-                CropRenderElement::from_element(element, scale, output_crop).map(Into::into)
-            }),
-        );
-
-        if let Some(material) = material_element(state, renderer, output, &layer, geometry) {
-            elements.push(material);
+                output,
+                popup.wl_surface(),
+                bounds,
+                content_origin,
+                scale,
+                output_crop,
+                &mut elements,
+            );
         }
+        append_material_surface(
+            state,
+            renderer,
+            output,
+            layer.wl_surface(),
+            geometry,
+            geometry.loc,
+            scale,
+            output_crop,
+            &mut elements,
+        );
     }
 
     elements
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_material_surface(
+    state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    geometry: Rectangle<i32, Logical>,
+    content_origin: Point<i32, Logical>,
+    scale: f64,
+    output_crop: Rectangle<i32, Physical>,
+    elements: &mut Vec<AnimatedWindowRenderElement>,
+) {
+    let radius = if crate::effects::surface_role(surface)
+        .is_some_and(|(role, _)| role == crate::effects::SemanticRole::Panel)
+    {
+        state.theme_settings.panel_radius
+    } else {
+        state.theme_settings.material_radius
+    };
+    let material = material_element(state, renderer, output, surface, geometry, radius as f32);
+    let clip = material.as_ref().and_then(|_| {
+        let mode = output.current_mode()?;
+        let program = rounded_clip_program(state, renderer)?;
+        Some((
+            program.texture,
+            framebuffer_clip_rect(
+                geometry.to_physical_precise_round(scale),
+                mode.size,
+                output.current_transform().invert(),
+            ),
+            scaled_effect_value(radius, geometry, scale),
+        ))
+    });
+    // Smithay element lists are front to back: edges, content, material, shadow.
+    let material = material.map(|(edge, background, shadow)| {
+        elements.push(edge);
+        (background, shadow)
+    });
+    let content = render_elements_from_surface_tree::<
+        GlesRenderer,
+        WaylandSurfaceRenderElement<GlesRenderer>,
+    >(
+        renderer,
+        surface,
+        content_origin.to_physical_precise_round(scale),
+        scale,
+        1.0,
+        RenderElementKind::Unspecified,
+    );
+    elements.extend(content.into_iter().filter_map(|element| {
+        let origin = Point::<i32, Physical>::default();
+        let element = if let Some((program, clip_rect, radius)) = &clip {
+            WindowContentRenderElement::Rounded(RoundedSurfaceRenderElement {
+                inner: element,
+                program: program.clone(),
+                clip_rect: *clip_rect,
+                radius: *radius,
+                clip_changed: false,
+            })
+        } else {
+            WindowContentRenderElement::Popup(element)
+        };
+        let element = RescaleRenderElement::from_element(element, origin, 1.0);
+        let element = RelocateRenderElement::from_element(element, origin, Relocate::Relative);
+        CropRenderElement::from_element(element, scale, output_crop).map(Into::into)
+    }));
+    if let Some((background, shadow)) = material {
+        elements.push(background);
+        elements.push(shadow);
+    }
 }
 
 fn material_element(
     state: &mut Ferese,
     renderer: &mut GlesRenderer,
     output: &Output,
-    layer: &LayerSurface,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     geometry: Rectangle<i32, Logical>,
-) -> Option<AnimatedWindowRenderElement> {
-    let surface = layer.wl_surface();
+    radius: f32,
+) -> Option<(
+    AnimatedWindowRenderElement,
+    AnimatedWindowRenderElement,
+    AnimatedWindowRenderElement,
+)> {
+    material_element_for_style(
+        state,
+        renderer,
+        output,
+        surface,
+        geometry,
+        radius,
+        state.theme_settings.material_style,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn material_element_for_style(
+    state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    geometry: Rectangle<i32, Logical>,
+    radius: f32,
+    style: crate::config::MaterialStyle,
+) -> Option<(
+    AnimatedWindowRenderElement,
+    AnimatedWindowRenderElement,
+    AnimatedWindowRenderElement,
+)> {
     let (role, generation) = crate::effects::surface_role(surface)?;
-    let material = crate::effects::resolve_material(role, state.theme_settings.material_style);
+    let material = crate::effects::resolve_material(role, style, state.theme_settings.glass);
     let mode = output.current_mode()?;
     let scale = output.current_scale().fractional_scale();
     let output_logical = smithay::utils::Size::<i32, Logical>::from((
@@ -1501,9 +1708,46 @@ fn material_element(
         expanded_blur_region(geometry, material.blur.ceil() as i32, output_logical);
     let sample_physical = sample_geometry.to_physical_precise_round(scale);
     let transform = output.current_transform().invert();
-    let [red, green, blue, _] = state.theme_settings.surface_base_color.0;
+    let [red, green, blue, _] =
+        if state.theme_settings.material_style == crate::config::MaterialStyle::Glass {
+            state.theme_settings.glass.tint.0
+        } else {
+            state.theme_settings.surface_base_color.0
+        };
+    let radius = radius.min(geometry.size.w.min(geometry.size.h) as f32 * 0.5);
+    let [offset_y, shadow_blur, shadow_opacity] = material.shadow;
+    let edge_bar =
+        role == crate::effects::SemanticRole::Panel && radius == 0.0 && geometry.loc.y == 0;
+    let shadow_opacity = if edge_bar { 0.0 } else { shadow_opacity };
+    let shadow_geometry = Rectangle::new(
+        (geometry.loc.x, geometry.loc.y + offset_y.round() as i32).into(),
+        geometry.size,
+    );
     let tint = [red, green, blue, material.opacity];
+    let (local_origin, local_axes) = material_local_coordinates(
+        geometry.loc.to_physical_precise_round(scale),
+        mode.size,
+        transform,
+    );
     let parameters = MaterialParameters {
+        radius: radius * scale as f32,
+        pixel_scale: scale as f32,
+        local_origin,
+        local_axes,
+        logical_size: [geometry.size.w as f32, geometry.size.h as f32],
+        edge_bar: if edge_bar { 1.0 } else { 0.0 },
+        glass_edges: if material.style == crate::config::MaterialStyle::Glass {
+            1.0
+        } else {
+            0.0
+        },
+        shadow_rect: framebuffer_clip_rect(
+            shadow_geometry.to_physical_precise_round(scale),
+            mode.size,
+            transform,
+        ),
+        shadow_values: [(shadow_blur * scale) as f32, shadow_opacity as f32],
+        shadow_bounds: shadow_bounds(geometry, offset_y, shadow_blur),
         geometry,
         tint,
         noise: material.noise,
@@ -1511,8 +1755,14 @@ fn material_element(
         scene_generation: matches!(material.style, crate::config::MaterialStyle::Glass)
             .then(|| state.material_scene_generation())
             .unwrap_or(0),
-        opaque: material.opacity == 1.0,
+        opaque: material.opacity == 1.0 && radius == 0.0,
         blur: material.blur * scale as f32,
+        tap_scale: if state.theme_settings.glass.quality >= crate::config::GlassQuality::ReducedBlur
+        {
+            2.0
+        } else {
+            1.0
+        },
         saturation: material.saturation,
         brightness: material.brightness,
         sample_geometry,
@@ -1574,6 +1824,21 @@ fn material_element(
             }
         })
         .flatten();
+    if needs_replacement
+        && replacement.is_none()
+        && material.style == crate::config::MaterialStyle::Glass
+    {
+        return material_element_for_style(
+            state,
+            renderer,
+            output,
+            surface,
+            geometry,
+            radius,
+            crate::config::MaterialStyle::Translucent,
+        );
+    }
+    let decoration_program = material_program(state, renderer)?;
     let buffers = state.material_buffers.entry(surface.clone()).or_default();
     if !buffers.contexts.contains_key(&context) {
         buffers.contexts.insert(
@@ -1581,12 +1846,39 @@ fn material_element(
             CachedMaterial {
                 element: replacement.take()?,
                 parameters: parameters.clone(),
+                edge: PixelShaderElement::new(
+                    decoration_program.0.clone(),
+                    geometry,
+                    None,
+                    1.0,
+                    decoration_uniforms(&parameters, 1.0),
+                    RenderElementKind::Unspecified,
+                ),
+                shadow: PixelShaderElement::new(
+                    decoration_program.0.clone(),
+                    parameters.shadow_bounds,
+                    None,
+                    1.0,
+                    decoration_uniforms(&parameters, 2.0),
+                    RenderElementKind::Unspecified,
+                ),
             },
         );
     }
 
     let cached = buffers.contexts.get_mut(&context)?;
+    if let Some(replacement) = replacement.take() {
+        cached.element = replacement;
+    }
     if cached.parameters != parameters {
+        cached.edge.resize(geometry, None);
+        cached
+            .edge
+            .update_uniforms(decoration_uniforms(&parameters, 1.0));
+        cached.shadow.resize(parameters.shadow_bounds, None);
+        cached
+            .shadow
+            .update_uniforms(decoration_uniforms(&parameters, 2.0));
         match &mut cached.element {
             CachedMaterialElement::Tint(element) => {
                 if cached.parameters.geometry != parameters.geometry
@@ -1599,20 +1891,22 @@ fn material_element(
                 }
                 element.update_uniforms(material_uniforms(&parameters));
             }
-            CachedMaterialElement::Backdrop(element)
-                if cached.parameters.sample_physical.size == parameters.sample_physical.size =>
-            {
+            CachedMaterialElement::Backdrop(element) => {
                 element.update(&parameters);
             }
-            _ => cached.element = replacement.take()?,
         }
         cached.parameters = parameters;
     }
 
-    Some(match &cached.element {
+    let background = match &cached.element {
         CachedMaterialElement::Tint(element) => element.clone().into(),
         CachedMaterialElement::Backdrop(element) => element.clone().into(),
-    })
+    };
+    Some((
+        cached.edge.clone().into(),
+        background,
+        cached.shadow.clone().into(),
+    ))
 }
 
 fn material_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<MaterialProgram> {
@@ -1622,8 +1916,18 @@ fn material_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<M
     }
 
     let uniforms = [
+        UniformName::new("visible_rect", UniformType::_4f),
+        UniformName::new("material_radius", UniformType::_1f),
         UniformName::new("tint", UniformType::_4f),
-        UniformName::new("noise_amount", UniformType::_1f),
+        UniformName::new("pixel_scale", UniformType::_1f),
+        UniformName::new("local_origin", UniformType::_2f),
+        UniformName::new("local_axes", UniformType::_4f),
+        UniformName::new("logical_size", UniformType::_2f),
+        UniformName::new("paint_mode", UniformType::_1f),
+        UniformName::new("glass_edges", UniformType::_1f),
+        UniformName::new("edge_bar", UniformType::_1f),
+        UniformName::new("shadow_rect", UniformType::_4f),
+        UniformName::new("shadow_values", UniformType::_2f),
     ];
     match renderer.compile_custom_pixel_shader(MATERIAL_SHADER, &uniforms) {
         Ok(program) => {
@@ -1646,12 +1950,18 @@ fn backdrop_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<B
 
     let uniforms = [
         UniformName::new("visible_rect", UniformType::_4f),
+        UniformName::new("material_radius", UniformType::_1f),
         UniformName::new("texture_size", UniformType::_2f),
         UniformName::new("blur_radius", UniformType::_1f),
+        UniformName::new("tap_scale", UniformType::_1f),
         UniformName::new("saturation", UniformType::_1f),
         UniformName::new("brightness", UniformType::_1f),
         UniformName::new("tint", UniformType::_4f),
         UniformName::new("noise_amount", UniformType::_1f),
+        UniformName::new("pixel_scale", UniformType::_1f),
+        UniformName::new("local_origin", UniformType::_2f),
+        UniformName::new("local_axes", UniformType::_4f),
+        UniformName::new("logical_size", UniformType::_2f),
     ];
     match renderer.compile_custom_texture_shader(BACKDROP_SHADER, &uniforms) {
         Ok(program) => {
@@ -1667,14 +1977,33 @@ fn backdrop_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<B
 }
 
 fn material_uniforms(parameters: &MaterialParameters) -> Vec<Uniform<'static>> {
+    decoration_uniforms(parameters, 0.0)
+}
+
+fn decoration_uniforms(parameters: &MaterialParameters, paint_mode: f32) -> Vec<Uniform<'static>> {
     vec![
+        Uniform::new("pixel_scale", parameters.pixel_scale).into_owned(),
+        Uniform::new("local_origin", parameters.local_origin).into_owned(),
+        Uniform::new("local_axes", parameters.local_axes).into_owned(),
+        Uniform::new("logical_size", parameters.logical_size).into_owned(),
+        Uniform::new("paint_mode", paint_mode).into_owned(),
+        Uniform::new("glass_edges", parameters.glass_edges).into_owned(),
+        Uniform::new("edge_bar", parameters.edge_bar).into_owned(),
+        Uniform::new("shadow_rect", parameters.shadow_rect).into_owned(),
+        Uniform::new("shadow_values", parameters.shadow_values).into_owned(),
+        Uniform::new("visible_rect", parameters.visible_framebuffer).into_owned(),
+        Uniform::new("material_radius", parameters.radius).into_owned(),
         Uniform::new("tint", parameters.tint).into_owned(),
-        Uniform::new("noise_amount", parameters.noise).into_owned(),
     ]
 }
 
 fn backdrop_uniforms(parameters: &MaterialParameters) -> Vec<Uniform<'static>> {
     vec![
+        Uniform::new("pixel_scale", parameters.pixel_scale).into_owned(),
+        Uniform::new("local_origin", parameters.local_origin).into_owned(),
+        Uniform::new("local_axes", parameters.local_axes).into_owned(),
+        Uniform::new("logical_size", parameters.logical_size).into_owned(),
+        Uniform::new("material_radius", parameters.radius).into_owned(),
         Uniform::new("visible_rect", parameters.visible_framebuffer).into_owned(),
         Uniform::new(
             "texture_size",
@@ -1685,11 +2014,27 @@ fn backdrop_uniforms(parameters: &MaterialParameters) -> Vec<Uniform<'static>> {
         )
         .into_owned(),
         Uniform::new("blur_radius", parameters.blur).into_owned(),
+        Uniform::new("tap_scale", parameters.tap_scale).into_owned(),
         Uniform::new("saturation", parameters.saturation).into_owned(),
         Uniform::new("brightness", parameters.brightness).into_owned(),
         Uniform::new("tint", parameters.tint).into_owned(),
         Uniform::new("noise_amount", parameters.noise).into_owned(),
     ]
+}
+
+fn material_local_coordinates(
+    origin: Point<i32, Physical>,
+    output_size: Size<i32, Physical>,
+    transform: Transform,
+) -> ([f32; 2], [f32; 4]) {
+    let area = transform.transform_size(output_size);
+    let mapped = transform.transform_point_in(origin, &area);
+    let x = transform.transform_point_in(origin + Point::from((1, 0)), &area) - mapped;
+    let y = transform.transform_point_in(origin + Point::from((0, 1)), &area) - mapped;
+    (
+        [mapped.x as f32, mapped.y as f32],
+        [x.x as f32, x.y as f32, y.x as f32, y.y as f32],
+    )
 }
 
 fn framebuffer_capture_rect(rect: [f32; 4]) -> [i32; 4] {
@@ -1809,18 +2154,20 @@ mod tests {
             element::{Element, Id},
             utils::CommitCounter,
         },
-        utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform},
+        utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
     };
 
     use super::{
         color_with_alpha, expanded_blur_region, framebuffer_capture_rect, framebuffer_clip_rect,
-        normalized_scale, rounded_visual_rect, scaled_visual_rect, shadow_bounds,
+        material_local_coordinates, normalized_scale, rounded_visual_rect, scaled_visual_rect,
+        shadow_bounds,
     };
 
     #[derive(Debug)]
     struct DamageElement {
         id: Id,
         geometry: Rectangle<i32, Logical>,
+        commit: CommitCounter,
     }
 
     impl DamageElement {
@@ -1828,6 +2175,7 @@ mod tests {
             Self {
                 id: Id::new(),
                 geometry,
+                commit: CommitCounter::default(),
             }
         }
     }
@@ -1838,7 +2186,7 @@ mod tests {
         }
 
         fn current_commit(&self) -> CommitCounter {
-            CommitCounter::default()
+            self.commit
         }
 
         fn src(&self) -> Rectangle<f64, Buffer> {
@@ -1852,6 +2200,38 @@ mod tests {
 
         fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
             self.geometry.to_physical_precise_round(scale)
+        }
+
+        fn damage_since(
+            &self,
+            scale: Scale<f64>,
+            commit: Option<CommitCounter>,
+        ) -> smithay::backend::renderer::utils::DamageSet<i32, Physical> {
+            super::backdrop_damage(self.geometry(scale).size, self.current_commit(), commit)
+        }
+    }
+
+    #[test]
+    fn backdrop_is_idle_until_scene_changes_then_repaints_full_sampling_region() {
+        for scale in [1.0, 1.25, 1.8, 2.0] {
+            for transform in [Transform::Normal, Transform::Flipped180] {
+                let mut tracker = OutputDamageTracker::new((1600, 1200), scale, transform);
+                let mut backdrop =
+                    DamageElement::new(Rectangle::new((50, 40).into(), (400, 240).into()));
+                tracker.damage_output(0, &[&backdrop]).unwrap();
+                for _ in 0..3 {
+                    assert!(tracker.damage_output(1, &[&backdrop]).unwrap().0.is_none());
+                    backdrop.commit.increment();
+                    let damage = tracker
+                        .damage_output(1, &[&backdrop])
+                        .unwrap()
+                        .0
+                        .cloned()
+                        .unwrap();
+                    let bounds = backdrop.geometry(scale.into());
+                    assert!(damage.iter().any(|rect| rect.contains_rect(bounds)));
+                }
+            }
         }
     }
 
@@ -1875,6 +2255,42 @@ mod tests {
             framebuffer_clip_rect(geometry, (100, 80).into(), Transform::Normal),
             [10.0, 5.0, 30.0, 40.0]
         );
+    }
+
+    #[test]
+    fn glass_lighting_coordinates_follow_every_output_transform() {
+        let origin = Point::<i32, Physical>::from((120, 90));
+        let size = Size::<i32, Physical>::from((1000, 800));
+        for transform in [
+            Transform::Normal,
+            Transform::_90,
+            Transform::_180,
+            Transform::_270,
+            Transform::Flipped,
+            Transform::Flipped90,
+            Transform::Flipped180,
+            Transform::Flipped270,
+        ] {
+            let (mapped_origin, axes) = material_local_coordinates(origin, size, transform);
+            for local in [(0, 0), (24, 0), (0, 35), (57, 81)] {
+                let point = transform.transform_point_in(
+                    origin + Point::from(local),
+                    &transform.transform_size(size),
+                );
+                let relative = [
+                    point.x as f32 - mapped_origin[0],
+                    point.y as f32 - mapped_origin[1],
+                ];
+                assert_eq!(
+                    relative[0] * axes[0] + relative[1] * axes[1],
+                    local.0 as f32
+                );
+                assert_eq!(
+                    relative[0] * axes[2] + relative[1] * axes[3],
+                    local.1 as f32
+                );
+            }
+        }
     }
 
     #[test]

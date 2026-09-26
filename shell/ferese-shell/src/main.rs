@@ -1,7 +1,16 @@
 mod config;
 mod control;
+mod motion;
+mod status;
+mod status_ui;
 
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+// Older libcosmic backends expose native surfaces in frame events. Keep
+// that compatibility path gated; current backends use Window::Opened and
+// window::run to retrieve handles without updates at the display refresh rate.
+static EFFECT_FRAME_PENDING: AtomicBool = AtomicBool::new(true);
 
 use cosmic::Element;
 use cosmic::app::{Core, Settings, Task};
@@ -39,6 +48,7 @@ struct BarMetrics {
     height: f32,
     text_size: u16,
     icon_size: u16,
+    overview_icon_size: u16,
     control_height: f32,
     workspace_hit_width: f32,
     active_marker_width: f32,
@@ -53,14 +63,17 @@ impl From<ShellTheme> for BarMetrics {
 
         Self {
             height,
-            text_size: (height * 0.368).round() as u16,
-            icon_size: (height * 0.553).round() as u16,
-            control_height: height * 0.79,
-            workspace_hit_width: height * 0.68,
-            active_marker_width: height * 0.47,
-            active_marker_height: height * 0.13,
-            dot_marker_size: height * 0.18,
-            empty_marker_size: height * 0.13,
+            // Logical sizes: Wayland/iced applies each surface's output scale.
+            // Compacting the bar must not also shrink its readable content.
+            text_size: 13,
+            icon_size: 19,
+            overview_icon_size: 19,
+            control_height: (height - 4.0).max(21.0).min(height),
+            workspace_hit_width: 22.0,
+            active_marker_width: 14.0,
+            active_marker_height: 4.0,
+            dot_marker_size: 4.0,
+            empty_marker_size: 3.0,
         }
     }
 }
@@ -90,14 +103,28 @@ struct FereseShell {
     overview_active: bool,
     clock: String,
     effects: Option<EffectsBinding>,
+    status_service: status::Service,
+    status: status::Snapshot,
+    status_error: Option<String>,
+    menu: Option<status_ui::OpenMenu>,
 }
 
 #[derive(Clone, Debug)]
 enum Message {
     Event(Event, window::Id),
+    NativeSurface(
+        window::Id,
+        Result<(Connection, wl_surface::WlSurface), String>,
+    ),
     Tick,
     ActivateWorkspace(u64),
     ToggleOverview,
+    StatusTick,
+    AnimateMenu,
+    OpenMenu(status_ui::Menu, cosmic::iced::Rectangle<i32>),
+    Control(status::Action),
+    ConfirmPower(status::Action),
+    CancelPower,
 }
 
 impl cosmic::Application for FereseShell {
@@ -123,6 +150,10 @@ impl cosmic::Application for FereseShell {
         let app = Self {
             core,
             bar_surface_id,
+            status_service: status::Service::start(config.status.settings_command.clone()),
+            status: status::Snapshot::default(),
+            status_error: None,
+            menu: None,
             config,
             control: ShellControl::connect()
                 .map_err(|error| {
@@ -167,7 +198,10 @@ impl cosmic::Application for FereseShell {
                 },
                 size: Some((None, Some(bar.height.round() as u32))),
                 size_limits: Limits::NONE,
-                exclusive_zone: bar.height.round() as i32,
+                // Reserve breathing room below the visible bar; layer-shell
+                // accounts for the top margin separately.
+                exclusive_zone: (bar.height.round() as i32)
+                    .saturating_add(shell_theme.bar_window_gap),
                 ..Default::default()
             },
             Some(Box::new(Self::view_layer)),
@@ -182,13 +216,92 @@ impl cosmic::Application for FereseShell {
 
     fn subscription(&self) -> Subscription<Self::Message> {
         Subscription::batch([
-            event::listen_with(|event, _status, id| Some(Message::Event(event, id))),
-            cosmic::iced::time::every(Duration::from_millis(250)).map(|_| Message::Tick),
+            event::listen_with(|event, _status, id| match &event {
+                Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(..))) => {
+                    EFFECT_FRAME_PENDING
+                        .load(Ordering::Relaxed)
+                        .then_some(Message::Event(event, id))
+                }
+                Event::Keyboard(_)
+                | Event::Window(window::Event::Opened { .. } | window::Event::Closed)
+                | Event::PlatformSpecific(PlatformSpecific::Wayland(
+                    wayland::Event::Popup(..) | wayland::Event::Layer(..),
+                )) => Some(Message::Event(event, id)),
+                _ => None,
+            }),
+            cosmic::iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick),
+            cosmic::iced::time::every(Duration::from_millis(250)).map(|_| Message::StatusTick),
+            if self.menu.as_ref().is_some_and(|menu| menu.animating()) {
+                cosmic::iced::time::every(Duration::from_millis(16)).map(|_| Message::AnimateMenu)
+            } else {
+                Subscription::none()
+            },
         ])
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
+            Message::NativeSurface(id, result) => {
+                match result {
+                    Ok((_connection, surface)) if id == self.bar_surface_id => {
+                        self.attach_effects(&surface)
+                    }
+                    Ok((_connection, surface)) => {
+                        if let Some(menu) = &mut self.menu
+                            && menu.id == id
+                            && menu.effects.is_none()
+                        {
+                            match EffectsBinding::attach_role(
+                                &surface,
+                                Some(ferese_surface_effects_v1::Role::Popover),
+                            ) {
+                                Ok(binding) => menu.effects = Some(binding),
+                                Err(error) => {
+                                    eprintln!("ferese-shell: popover material unavailable: {error}")
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => eprintln!("ferese-shell: native surface unavailable: {error}"),
+                }
+                Task::none()
+            }
+            Message::StatusTick => {
+                if let Some(update) = self.status_service.poll()
+                    && update.generation >= self.status_service.generation
+                {
+                    self.status = update.snapshot;
+                    self.status_error = update.error;
+                }
+                Task::none()
+            }
+            Message::AnimateMenu => Task::none(),
+            Message::OpenMenu(kind, anchor) => self.open_menu(kind, anchor),
+            Message::ConfirmPower(action) => {
+                if let Some(menu) = &mut self.menu {
+                    menu.confirm = Some(action);
+                }
+                Task::none()
+            }
+            Message::CancelPower => {
+                if let Some(menu) = &mut self.menu {
+                    menu.confirm = None;
+                }
+                Task::none()
+            }
+            Message::Control(action) => {
+                self.status_error = self.status_service.send(action.clone()).err();
+                if self.status_error.is_none() {
+                    self.optimistic_status(&action);
+                }
+                if matches!(
+                    action,
+                    status::Action::Notifications | status::Action::Settings
+                ) {
+                    return self.destroy_menu();
+                }
+                Task::none()
+            }
             Message::Event(event, id) => self.handle_event(event, id),
             Message::Tick => {
                 self.clock = current_time();
@@ -216,7 +329,10 @@ impl cosmic::Application for FereseShell {
 
                             let input_zone = if hidden { Some(Vec::new()) } else { None };
 
-                            return set_input_zone(self.bar_surface_id, input_zone);
+                            return Task::batch([
+                                set_input_zone(self.bar_surface_id, input_zone),
+                                self.destroy_menu(),
+                            ]);
                         }
                     }
                 }
@@ -238,6 +354,12 @@ impl cosmic::Application for FereseShell {
         }
     }
 
+    fn style(&self) -> Option<cosmic::iced::theme::Style> {
+        // Shell surfaces own their backgrounds. Never inherit an opaque
+        // application clear color during startup or a system-theme change.
+        Some(shell_surface_style(self.config.theme))
+    }
+
     fn view(&self) -> Element<'_, Self::Message> {
         text("").into()
     }
@@ -250,8 +372,93 @@ impl cosmic::Application for FereseShell {
 impl FereseShell {
     fn handle_event(&mut self, event: Event, id: window::Id) -> Task<Message> {
         match event {
+            Event::Window(window::Event::Opened { .. })
+                if id == self.bar_surface_id
+                    || self.menu.as_ref().is_some_and(|menu| menu.id == id) =>
+            {
+                window::run(id, native_wayland_surface)
+                    .map(move |surface| cosmic::Action::App(Message::NativeSurface(id, surface)))
+            }
+            Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+                key: cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::Escape),
+                ..
+            }) if self.menu.is_some() => self.destroy_menu(),
+            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Popup(
+                event,
+                surface,
+                popup_id,
+            ))) => {
+                if let Some(menu) = &mut self.menu
+                    && menu.id == popup_id
+                {
+                    match event {
+                        wayland::PopupEvent::Done => {
+                            self.menu = None;
+                            EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
+                        }
+                        wayland::PopupEvent::Focused => {
+                            if menu.effects.is_none() {
+                                match EffectsBinding::attach_role(
+                                    &surface,
+                                    Some(ferese_surface_effects_v1::Role::Popover),
+                                ) {
+                                    Ok(binding) => menu.effects = Some(binding),
+                                    Err(error) => eprintln!(
+                                        "ferese-shell: popover material unavailable: {error}"
+                                    ),
+                                }
+                                EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
+                            }
+                        }
+                        wayland::PopupEvent::Configured { .. } => {
+                            if menu.effects.is_none() {
+                                match EffectsBinding::attach_role(
+                                    &surface,
+                                    Some(ferese_surface_effects_v1::Role::Popover),
+                                ) {
+                                    Ok(binding) => menu.effects = Some(binding),
+                                    Err(error) => eprintln!(
+                                        "ferese-shell: popover material unavailable: {error}"
+                                    ),
+                                }
+                                EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Task::none()
+            }
+            Event::Window(window::Event::Closed)
+                if self.menu.as_ref().is_some_and(|menu| menu.id == id) =>
+            {
+                self.menu = None;
+                EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
+                Task::none()
+            }
             Event::Window(window::Event::Closed) if id == self.bar_surface_id => {
                 cosmic::iced::exit()
+            }
+            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(
+                _,
+                surface,
+                frame_id,
+            ))) if self.menu.as_ref().is_some_and(|menu| menu.id == frame_id) => {
+                if let Some(menu) = &mut self.menu {
+                    if menu.effects.is_none() {
+                        match EffectsBinding::attach_role(
+                            &surface,
+                            Some(ferese_surface_effects_v1::Role::Popover),
+                        ) {
+                            Ok(binding) => menu.effects = Some(binding),
+                            Err(error) => {
+                                eprintln!("ferese-shell: popover material unavailable: {error}")
+                            }
+                        }
+                        EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
+                    }
+                }
+                Task::none()
             }
             Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(
                 _,
@@ -278,6 +485,8 @@ impl FereseShell {
             return;
         }
 
+        EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
+
         match EffectsBinding::attach(surface, !bar_hidden(&self.snapshot)) {
             Ok(binding) => self.effects = Some(binding),
             Err(error) => eprintln!("ferese-shell: panel material unavailable: {error}"),
@@ -299,24 +508,28 @@ impl FereseShell {
             .find(|output| output.focused)
             .or_else(|| self.snapshot.outputs.first());
         let focused_output_id = focused_output.map(|output| output.id);
-        let shell_theme = self.config.theme;
+        let shell_theme = self.config.theme.for_bar();
         let bar = BarMetrics::from(shell_theme);
         let mut workspace_row = row::with_capacity(self.snapshot.workspaces.len() + 1)
             .spacing(1)
             .align_y(cosmic::iced::Alignment::Center);
 
         workspace_row = workspace_row.push(
-            button::custom(overview_control(bar, shell_theme))
+            button::custom(overview_control(bar, color(shell_theme.text_primary)))
                 .height(bar.control_height)
-                .padding(0)
-                .class(theme::Button::Transparent)
+                .padding([0, 7])
+                .class(status_ui::button_style(
+                    color(shell_theme.text_primary),
+                    self.overview_active,
+                    1.0,
+                ))
                 .on_press(cosmic::Action::App(Message::ToggleOverview)),
         );
         for workspace in self
             .snapshot
             .workspaces
             .iter()
-            .filter(|workspace| workspace.output == focused_output_id)
+            .filter(|workspace| self.overview_active && workspace.output == focused_output_id)
         {
             let occupied = self
                 .snapshot
@@ -327,7 +540,11 @@ impl FereseShell {
             let workspace_button = button::custom(indicator)
                 .height(bar.control_height)
                 .padding(0)
-                .class(theme::Button::Transparent)
+                .class(status_ui::button_style(
+                    color(shell_theme.text_primary),
+                    false,
+                    1.0,
+                ))
                 .on_press(cosmic::Action::App(Message::ActivateWorkspace(
                     workspace.id,
                 )));
@@ -346,36 +563,49 @@ impl FereseShell {
             })
             .map(display_app_name)
             .unwrap_or_else(|| "Desktop".to_owned());
-        let left = row![workspace_row, text(app_name).size(bar.text_size)]
-            .spacing(shell_theme.control_gap)
-            .align_y(cosmic::iced::Alignment::Center);
-        let center = text(&self.clock).size(bar.text_size);
-        let right = row![
-            symbolic_icon(include_bytes!("../assets/icons/wifi.svg"), bar.icon_size),
-            symbolic_icon(include_bytes!("../assets/icons/volume.svg"), bar.icon_size),
-            symbolic_icon(include_bytes!("../assets/icons/battery.svg"), bar.icon_size),
+        let foreground = color(shell_theme.text_primary);
+        let app_name = if self.overview_active {
+            "Overview".to_owned()
+        } else {
+            app_name
+        };
+        let left = row![
+            workspace_row,
+            text(app_name)
+                .size(bar.text_size)
+                .font(cosmic::font::semibold())
+                .width(Length::Fill)
+                .wrapping(cosmic::iced::core::text::Wrapping::None)
+                .class(theme::Text::Color(foreground))
         ]
-        .spacing(shell_theme.control_gap)
+        .spacing(8)
         .align_y(cosmic::iced::Alignment::Center);
+        let clock = container(
+            text(&self.clock)
+                .size(bar.text_size)
+                .wrapping(cosmic::iced::core::text::Wrapping::None)
+                .class(theme::Text::Color(foreground)),
+        )
+        .padding([0, 6]);
+        let right = row![self.view_status_bar(), clock]
+            .spacing(10)
+            .align_y(cosmic::iced::Alignment::Center);
         let content = row![
-            container(left)
-                .width(Length::FillPortion(1))
-                .align_x(alignment::Horizontal::Left),
-            container(center)
-                .width(Length::FillPortion(1))
-                .align_x(alignment::Horizontal::Center),
-            container(right)
-                .width(Length::FillPortion(1))
-                .align_x(alignment::Horizontal::Right),
+            container(left).width(Length::Fill),
+            container(right).width(Length::Shrink),
         ]
+        .spacing(16)
         .align_y(cosmic::iced::Alignment::Center)
         .height(Length::Fill);
 
+        let compositor_material = self.effects.is_some();
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .padding([0, shell_theme.panel_padding.round() as u16])
-            .class(theme::Container::custom(move |_| bar_style(shell_theme)))
+            .class(theme::Container::custom(move |_| {
+                bar_style(shell_theme, compositor_material)
+            }))
             .into()
     }
 
@@ -392,11 +622,16 @@ impl FereseShell {
             WallpaperMode::Fit => ContentFit::Contain,
         };
 
-        image(path.clone())
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .content_fit(content_fit)
-            .into()
+        container(
+            image(path.clone())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .content_fit(content_fit),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .class(theme::Container::custom(wallpaper_fallback_style))
+        .into()
     }
 }
 
@@ -407,29 +642,29 @@ fn symbolic_icon(source: &'static [u8], size: u16) -> icon::Icon {
         .size(size)
 }
 
+fn bar_icon(source: &'static [u8], size: u16, foreground: Color) -> icon::Icon {
+    // COSMIC's transparent containers replace inherited foreground colors.
+    // Pin the bar glyph color rather than relying on those container defaults.
+    symbolic_icon(source, size).class(theme::Svg::custom(move |_| {
+        cosmic::iced::widget::svg::Style {
+            color: Some(foreground),
+        }
+    }))
+}
+
 fn overview_control(
     bar: BarMetrics,
-    shell_theme: ShellTheme,
+    foreground: Color,
 ) -> Element<'static, cosmic::Action<Message>> {
-    container(symbolic_icon(
-        include_bytes!("../assets/icons/overview.svg"),
-        bar.icon_size,
+    container(bar_icon(
+        include_bytes!("../assets/icons/ferese.svg"),
+        bar.overview_icon_size,
+        foreground,
     ))
-    .width(bar.control_height)
+    .width(bar.overview_icon_size)
     .height(bar.control_height)
     .align_x(alignment::Horizontal::Center)
     .align_y(alignment::Vertical::Center)
-    .class(theme::Container::custom(move |_| container::Style {
-        icon_color: Some(color(shell_theme.text_primary)),
-        background: Some(Background::Color(color(shell_theme.accent))),
-        border: Border {
-            color: color_with_opacity(shell_theme.text_primary, 0.14),
-            width: 1.0,
-            radius: (bar.control_height * 0.34).into(),
-        },
-        snap: true,
-        ..container::Style::default()
-    }))
     .into()
 }
 
@@ -523,28 +758,34 @@ fn display_app_name(window: &control::WindowSnapshot) -> String {
 }
 
 fn current_time() -> String {
-    Zoned::now().strftime("%H:%M").to_string()
+    Zoned::now().strftime("%a  ·  %H:%M").to_string()
 }
 
-fn bar_style(theme: ShellTheme) -> container::Style {
-    let mut shadow = color(theme.shadow);
-    shadow.a *= theme.shadow_opacity;
+fn shell_surface_style(theme: ShellTheme) -> cosmic::iced::theme::Style {
+    cosmic::iced::theme::Style {
+        background_color: Color::TRANSPARENT,
+        text_color: color(theme.text_primary),
+        icon_color: color(theme.text_primary),
+    }
+}
 
+fn bar_style(theme: ShellTheme, compositor_material: bool) -> container::Style {
     container::Style {
         icon_color: Some(color(theme.text_primary)),
         text_color: Some(color(theme.text_primary)),
-        background: None,
-        border: Border {
-            color: color(theme.border),
-            width: 1.0,
-            radius: theme.bar_radius.into(),
+        // The compositor paints the selected panel material behind this surface.
+        // A client-side fill would cover its blur and tint; use it only as fallback.
+        background: if compositor_material {
+            None
+        } else {
+            Some(Background::Color(color(theme.bar_background)))
         },
-        shadow: Shadow {
-            color: shadow,
-            offset: Vector::new(0.0, theme.shadow_offset_y),
-            blur_radius: theme.shadow_blur,
+        border: Border {
+            radius: theme.bar_radius.into(),
+            ..Border::default()
         },
         snap: true,
+        ..container::Style::default()
     }
 }
 
@@ -566,6 +807,39 @@ fn wallpaper_fallback_style(_theme: &cosmic::Theme) -> container::Style {
     }
 }
 
+// Resolve a surface while iced guarantees the native handles are alive. Keep
+// the borrowed-display connection alive until the effects binding takes over.
+fn native_wayland_surface(
+    window: &dyn cosmic::iced::window::Window,
+) -> Result<(Connection, wl_surface::WlSurface), String> {
+    use cosmic::iced::window::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+    let display = window.display_handle().map_err(|error| error.to_string())?;
+    let handle = window.window_handle().map_err(|error| error.to_string())?;
+    let (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(handle)) =
+        (display.as_raw(), handle.as_raw())
+    else {
+        return Err("shell material requires a Wayland surface".to_owned());
+    };
+    // SAFETY: iced lends matching, live Wayland handles for this callback.
+    // This backend borrows the display; it never disconnects iced's connection.
+    // Both handles belong to the runtime, which outlives the shell bindings.
+    let backend = unsafe {
+        wayland_client::backend::Backend::from_foreign_display(display.display.as_ptr().cast())
+    };
+    let connection = Connection::from_backend(backend);
+    // SAFETY: raw-window-handle identifies this pointer as a live wl_surface.
+    let id = unsafe {
+        wayland_client::backend::ObjectId::from_ptr(
+            wl_surface::WlSurface::interface(),
+            handle.surface.as_ptr().cast(),
+        )
+    }
+    .map_err(|error| error.to_string())?;
+    let surface =
+        wl_surface::WlSurface::from_id(&connection, id).map_err(|error| error.to_string())?;
+    Ok((connection, surface))
+}
+
 struct EffectsBinding {
     connection: Connection,
     _manager: FereseEffectsManagerV1,
@@ -578,6 +852,16 @@ impl EffectsBinding {
         surface: &wl_surface::WlSurface,
         visible: bool,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::attach_role(
+            surface,
+            visible.then_some(ferese_surface_effects_v1::Role::Panel),
+        )
+    }
+
+    fn attach_role(
+        surface: &wl_surface::WlSurface,
+        role: Option<ferese_surface_effects_v1::Role>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let backend = surface
             .backend()
             .upgrade()
@@ -588,8 +872,8 @@ impl EffectsBinding {
         let manager = globals.bind::<FereseEffectsManagerV1, _, _>(&qh, 1..=1, ())?;
         let effects = manager.get_surface_effects(surface, &qh, ());
 
-        if visible {
-            effects.set_role(ferese_surface_effects_v1::Role::Panel);
+        if let Some(role) = role {
+            effects.set_role(role);
         } else {
             effects.clear_role();
         }
@@ -637,6 +921,64 @@ delegate_noop!(EffectsState: ignore FereseSurfaceEffectsV1);
 mod tests {
     use super::*;
     use crate::control::{OutputSnapshot, WindowSnapshot};
+
+    #[test]
+    fn startup_surface_clear_is_transparent_and_bar_fallback_is_dark() {
+        let theme = ShellTheme::default();
+        assert_eq!(
+            shell_surface_style(theme).background_color,
+            Color::TRANSPARENT
+        );
+        let Some(Background::Color(background)) = bar_style(theme.for_bar(), false).background
+        else {
+            panic!("first frame needs a fallback fill before material attachment");
+        };
+        assert!(background.r < 0.15 && background.g < 0.15 && background.b < 0.20);
+        assert!(background.a > 0.9);
+        assert!(
+            theme.bar_text_primary[..3]
+                .iter()
+                .all(|channel| *channel > 220)
+        );
+    }
+
+    #[test]
+    fn bar_fallback_uses_the_matching_dark_palette_and_geometry() {
+        let theme = ShellTheme::default().for_bar();
+        let style = bar_style(theme, false);
+        assert_eq!(
+            style.background,
+            Some(Background::Color(color(theme.bar_background)))
+        );
+        assert_eq!(style.text_color, Some(color(theme.bar_text_primary)));
+        assert_eq!(style.border.radius, theme.bar_radius.into());
+        assert_eq!(style.shadow, cosmic::iced::Shadow::default());
+    }
+
+    #[test]
+    fn bar_does_not_cover_the_selected_compositor_material() {
+        let theme = ShellTheme::default().for_bar();
+        let style = bar_style(theme, true);
+        assert_eq!(style.background, None);
+        assert_eq!(style.text_color, Some(color(theme.bar_text_primary)));
+        assert_eq!(style.border.radius, theme.bar_radius.into());
+        assert_eq!(style.shadow, cosmic::iced::Shadow::default());
+    }
+
+    #[test]
+    fn compact_bar_preserves_logical_text_and_icon_sizes() {
+        for height in [24.0, 26.0, 32.0, 38.0, 44.0] {
+            let metrics = BarMetrics::from(ShellTheme {
+                bar_height: height,
+                ..ShellTheme::default()
+            });
+            assert_eq!(metrics.text_size, 13);
+            assert_eq!(metrics.icon_size, 19);
+            assert_eq!(metrics.overview_icon_size, 19);
+            assert!(metrics.control_height >= f32::from(metrics.icon_size));
+            assert!(metrics.control_height <= height);
+        }
+    }
 
     #[test]
     fn fullscreen_on_the_active_workspace_hides_the_bar() {

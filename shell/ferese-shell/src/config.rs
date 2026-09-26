@@ -11,11 +11,34 @@ pub(crate) struct ShellConfig {
     pub(crate) font_family: Option<String>,
     pub(crate) wallpaper: WallpaperConfig,
     pub(crate) theme: ShellTheme,
+    pub(crate) status: StatusConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default)]
+pub(crate) struct StatusConfig {
+    pub(crate) battery_percentage: bool,
+    pub(crate) low_battery_threshold: u8,
+    pub(crate) settings_command: Option<Vec<String>>,
+}
+
+impl Default for StatusConfig {
+    fn default() -> Self {
+        Self {
+            battery_percentage: true,
+            low_battery_threshold: 20,
+            settings_command: None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ShellTheme {
+    pub(crate) bar_background: [u8; 4],
+    pub(crate) bar_text_primary: [u8; 4],
+    pub(crate) bar_text_muted: [u8; 4],
     pub(crate) surface_base: [u8; 4],
+    pub(crate) surface_popover: [u8; 4],
     pub(crate) text_primary: [u8; 4],
     pub(crate) text_muted: [u8; 4],
     pub(crate) accent: [u8; 4],
@@ -23,8 +46,10 @@ pub(crate) struct ShellTheme {
     pub(crate) shadow: [u8; 4],
     pub(crate) bar_height: f32,
     pub(crate) bar_margin_top: i32,
+    pub(crate) bar_window_gap: i32,
     pub(crate) bar_margin_horizontal: i32,
     pub(crate) bar_radius: f32,
+    pub(crate) material_radius: f32,
     pub(crate) panel_padding: f32,
     pub(crate) control_gap: f32,
     pub(crate) shadow_offset_y: f32,
@@ -35,22 +60,37 @@ pub(crate) struct ShellTheme {
 impl Default for ShellTheme {
     fn default() -> Self {
         Self {
+            bar_background: [28, 32, 46, 242],
+            bar_text_primary: [240, 243, 250, 255],
+            bar_text_muted: [170, 180, 199, 255],
             surface_base: [17, 24, 33, 255],
+            surface_popover: [17, 24, 33, 245],
             text_primary: [244, 247, 251, 255],
             text_muted: [127, 138, 152, 255],
             accent: [91, 140, 255, 255],
             border: [255, 255, 255, 24],
             shadow: [0, 0, 0, 85],
-            bar_height: 38.0,
-            bar_margin_top: 4,
-            bar_margin_horizontal: 10,
-            bar_radius: 19.0,
+            bar_height: 28.0,
+            bar_margin_top: 0,
+            bar_window_gap: 8,
+            bar_margin_horizontal: 0,
+            bar_radius: 0.0,
+            material_radius: 14.0,
             panel_padding: 12.0,
-            control_gap: 8.0,
+            control_gap: 12.0,
             shadow_offset_y: 4.0,
             shadow_blur: 18.0,
             shadow_opacity: 0.20,
         }
+    }
+}
+
+impl ShellTheme {
+    // The bar has its own foreground tokens, matched to its dark glass surface.
+    pub(crate) fn for_bar(mut self) -> Self {
+        self.text_primary = self.bar_text_primary;
+        self.text_muted = self.bar_text_muted;
+        self
     }
 }
 
@@ -72,11 +112,22 @@ pub(crate) enum WallpaperMode {
 #[derive(Debug, Default, Deserialize)]
 struct FereseConfig {
     #[serde(default)]
+    appearance: AppearanceConfig,
+    #[serde(default)]
     theme: ThemeConfig,
+    #[serde(default)]
+    status: StatusConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AppearanceConfig {
+    corner_radius: Option<f32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct ThemeConfig {
+    #[serde(default)]
+    surface: SurfaceConfig,
     #[serde(default)]
     colors: ThemeColorsConfig,
     #[serde(default)]
@@ -87,6 +138,50 @@ struct ThemeConfig {
     typography: TypographyConfig,
     #[serde(default)]
     background: WallpaperConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct SurfaceConfig {
+    #[serde(default)]
+    bar: BarConfig,
+    #[serde(default)]
+    popover: PopoverConfig,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+struct BarConfig {
+    background: String,
+    // If omitted, preserve the alpha supplied in `background`.
+    opacity: Option<f32>,
+    text_primary: String,
+    text_muted: String,
+}
+
+impl Default for BarConfig {
+    fn default() -> Self {
+        Self {
+            background: "#1C202EF2".to_owned(),
+            opacity: None,
+            text_primary: "#F0F3FA".to_owned(),
+            text_muted: "#AAB4C7".to_owned(),
+        }
+    }
+}
+#[derive(Debug, Deserialize)]
+struct PopoverConfig {
+    #[serde(default = "default_popover_opacity")]
+    opacity: f32,
+}
+impl Default for PopoverConfig {
+    fn default() -> Self {
+        Self {
+            opacity: default_popover_opacity(),
+        }
+    }
+}
+const fn default_popover_opacity() -> f32 {
+    0.96
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -129,6 +224,8 @@ struct ThemeGeometryConfig {
     top_bar_height: f32,
     #[serde(default = "default_bar_margin_top")]
     top_bar_margin_top: i32,
+    #[serde(default = "default_bar_window_gap")]
+    top_bar_window_gap: i32,
     #[serde(default = "default_bar_margin_horizontal")]
     top_bar_margin_horizontal: i32,
     #[serde(default = "default_bar_radius")]
@@ -144,6 +241,7 @@ impl Default for ThemeGeometryConfig {
         Self {
             top_bar_height: default_bar_height(),
             top_bar_margin_top: default_bar_margin_top(),
+            top_bar_window_gap: default_bar_window_gap(),
             top_bar_margin_horizontal: default_bar_margin_horizontal(),
             top_bar_radius: default_bar_radius(),
             panel_padding: default_panel_padding(),
@@ -188,12 +286,18 @@ pub(crate) fn load() -> ShellConfig {
 
     match toml::from_str::<FereseConfig>(&source) {
         Ok(config) => {
-            let theme = shell_theme(&config.theme);
+            let mut theme = shell_theme(&config.theme);
+            theme.material_radius =
+                nonnegative_or(config.appearance.corner_radius.unwrap_or(14.0), 14.0);
 
             ShellConfig {
                 font_family: config.theme.typography.font_family,
                 wallpaper: config.theme.background,
                 theme,
+                status: StatusConfig {
+                    low_battery_threshold: config.status.low_battery_threshold.min(100),
+                    ..config.status
+                },
             }
         }
         Err(error) => {
@@ -207,7 +311,31 @@ fn shell_theme(theme: &ThemeConfig) -> ShellTheme {
     let defaults = ShellTheme::default();
 
     ShellTheme {
+        material_radius: defaults.material_radius,
+        bar_background: {
+            let mut background =
+                parse_color(&theme.surface.bar.background).unwrap_or(defaults.bar_background);
+            if let Some(opacity) = theme.surface.bar.opacity {
+                background[3] =
+                    (finite_or(opacity, f32::from(background[3]) / 255.0).clamp(0.0, 1.0) * 255.0)
+                        .round() as u8;
+            }
+            background
+        },
+        bar_text_primary: parse_color(&theme.surface.bar.text_primary)
+            .unwrap_or(defaults.bar_text_primary),
+        bar_text_muted: parse_color(&theme.surface.bar.text_muted)
+            .unwrap_or(defaults.bar_text_muted),
         surface_base: parse_color(&theme.colors.surface_base).unwrap_or(defaults.surface_base),
+        surface_popover: {
+            let mut color =
+                parse_color(&theme.colors.surface_base).unwrap_or(defaults.surface_base);
+            color[3] = (finite_or(theme.surface.popover.opacity, default_popover_opacity())
+                .clamp(0.0, 1.0)
+                * 255.0)
+                .round() as u8;
+            color
+        },
         text_primary: parse_color(&theme.colors.text_primary).unwrap_or(defaults.text_primary),
         text_muted: parse_color(&theme.colors.text_muted).unwrap_or(defaults.text_muted),
         accent: parse_color(&theme.colors.accent).unwrap_or(defaults.accent),
@@ -215,13 +343,15 @@ fn shell_theme(theme: &ThemeConfig) -> ShellTheme {
         shadow: parse_color(&theme.colors.shadow).unwrap_or(defaults.shadow),
         bar_height: positive_or(theme.geometry.top_bar_height, defaults.bar_height),
         bar_margin_top: theme.geometry.top_bar_margin_top.max(0),
+        bar_window_gap: theme.geometry.top_bar_window_gap.max(0),
         bar_margin_horizontal: theme.geometry.top_bar_margin_horizontal.max(0),
         bar_radius: nonnegative_or(theme.geometry.top_bar_radius, defaults.bar_radius),
         panel_padding: nonnegative_or(theme.geometry.panel_padding, defaults.panel_padding),
         control_gap: nonnegative_or(theme.geometry.control_gap, defaults.control_gap),
         shadow_offset_y: finite_or(theme.shadow.soft.offset_y, defaults.shadow_offset_y),
         shadow_blur: nonnegative_or(theme.shadow.soft.blur, defaults.shadow_blur),
-        shadow_opacity: theme.shadow.soft.opacity.clamp(0.0, 1.0),
+        shadow_opacity: finite_or(theme.shadow.soft.opacity, defaults.shadow_opacity)
+            .clamp(0.0, 1.0),
     }
 }
 
@@ -282,22 +412,25 @@ fn default_shadow() -> String {
     "#00000055".to_owned()
 }
 const fn default_bar_height() -> f32 {
-    38.0
+    28.0
+}
+const fn default_bar_window_gap() -> i32 {
+    8
 }
 const fn default_bar_margin_top() -> i32 {
-    4
+    0
 }
 const fn default_bar_margin_horizontal() -> i32 {
-    10
+    0
 }
 const fn default_bar_radius() -> f32 {
-    19.0
+    0.0
 }
 const fn default_panel_padding() -> f32 {
     12.0
 }
 const fn default_control_gap() -> f32 {
-    8.0
+    12.0
 }
 const fn default_shadow_offset_y() -> f32 {
     4.0
@@ -363,5 +496,47 @@ mod tests {
         assert_eq!(config.theme.typography.font_family, None);
         assert_eq!(config.theme.background.path, None);
         assert_eq!(config.theme.background.mode, WallpaperMode::Fill);
+        let theme = shell_theme(&config.theme);
+        assert_eq!(theme.bar_margin_top, 0);
+        assert_eq!(theme.bar_height, 28.0);
+        assert_eq!(theme.bar_margin_horizontal, 0);
+        assert_eq!(theme.bar_radius, 0.0);
+        assert_eq!(theme.bar_background, ShellTheme::default().bar_background);
+        assert_eq!(theme.for_bar().text_primary, theme.bar_text_primary);
+        assert_ne!(theme.for_bar().text_primary, theme.text_primary);
+    }
+
+    #[test]
+    fn bar_palette_can_be_changed_without_changing_popovers() {
+        let config: FereseConfig = toml::from_str(
+            r##"
+            [theme.surface.bar]
+            background = "#EAECEEDD"
+            text_primary = "#222222"
+            text_muted = "#666666"
+            "##,
+        )
+        .unwrap();
+        let theme = shell_theme(&config.theme);
+        assert_eq!(theme.bar_background, [234, 236, 238, 221]);
+        assert_eq!(theme.for_bar().text_primary, [34, 34, 34, 255]);
+        assert_eq!(theme.for_bar().text_muted, [102, 102, 102, 255]);
+        assert_eq!(theme.text_primary, ShellTheme::default().text_primary);
+    }
+
+    #[test]
+    fn bar_transparency_and_shadow_opacity_are_independent() {
+        let config: FereseConfig = toml::from_str(
+            r#"
+            [theme.surface.bar]
+            opacity = 0.6
+            [theme.shadow.soft]
+            opacity = 0.07
+            "#,
+        )
+        .unwrap();
+        let theme = shell_theme(&config.theme);
+        assert_eq!(theme.bar_background[3], 153);
+        assert_eq!(theme.shadow_opacity, 0.07);
     }
 }

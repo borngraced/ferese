@@ -63,6 +63,10 @@ impl CompositorHandler for Ferese {
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
+        // A removed popup changes the backdrop even without a final buffer
+        // commit. Invalidate expanded sampling regions as well as its bounds.
+        self.invalidate_material_scene();
+        crate::backends::direct::render_all(self);
         if self.idle_inhibitors.remove(surface).is_some() {
             self.idle_notifier_state
                 .set_is_inhibited(!self.idle_inhibitors.is_empty());
