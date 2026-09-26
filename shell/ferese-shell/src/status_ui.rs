@@ -152,33 +152,26 @@ impl FereseShell {
         let metrics = BarMetrics::from(theme);
         let mut controls = row::with_capacity(6).spacing(3).align_y(Alignment::Center);
         for kind in [
+            Menu::System,
             Menu::Network,
             Menu::Bluetooth,
             Menu::Audio,
-            Menu::Battery,
             Menu::Notifications,
-            Menu::System,
+            Menu::Battery,
         ] {
             if !kind.available(&self.status) {
                 continue;
             }
-            let (source, active) = status_icon(kind, &self.status);
-            let warning = kind == Menu::Battery
-                && self.status.battery.as_ref().is_some_and(|b| {
-                    b.percent < self.config.status.low_battery_threshold && b.status != "Charging"
-                });
-            let foreground = if warning {
-                Color::from_rgb8(245, 193, 105)
-            } else {
-                color(if active {
-                    theme.text_primary
-                } else {
-                    theme.text_muted
-                })
-            };
-            let mut content = row![bar_icon(source, metrics.icon_size, foreground)]
-                .spacing(4)
-                .align_y(Alignment::Center);
+            let (source, _) = status_icon(kind, &self.status);
+            let foreground = color(theme.text_primary);
+            let mut content = row![accented_icon(
+                source,
+                metrics.icon_size,
+                foreground,
+                color(theme.accent)
+            )]
+            .spacing(4)
+            .align_y(Alignment::Center);
             if kind == Menu::Battery && self.config.status.battery_percentage {
                 if let Some(battery) = &self.status.battery {
                     content = content.push(
@@ -210,11 +203,16 @@ impl FereseShell {
             // A fixed button height does not center its child in libcosmic.
             // Keep the visual content centered inside the entire click target.
             let content = container(content)
-                .height(metrics.control_height)
+                .align_x(alignment::Horizontal::Center)
+                .height(metrics.height)
                 .align_y(alignment::Vertical::Center);
             let control = button::custom(content)
-                .padding([0, 7])
-                .height(metrics.control_height)
+                .name(status_label(kind, &self.status))
+                .padding([
+                    0.0,
+                    ((metrics.height - f32::from(metrics.icon_size)) * 0.5).max(7.0),
+                ])
+                .height(metrics.height)
                 .class(button_style(foreground, selected, 1.0))
                 .on_press_with_rectangle(move |offset, bounds| {
                     cosmic::Action::App(Message::OpenMenu(
@@ -365,6 +363,7 @@ impl FereseShell {
                         },
                         primary,
                         muted,
+                        color_with_opacity(theme.accent, p),
                         p,
                     ));
                     if connected {
@@ -408,6 +407,7 @@ impl FereseShell {
                         },
                         primary,
                         muted,
+                        color_with_opacity(theme.accent, p),
                         p,
                     ));
                     if b.enabled && !b.devices.is_empty() {
@@ -439,7 +439,14 @@ impl FereseShell {
                         ]
                         .align_y(Alignment::Center),
                         text(&a.output).size(12).class(theme::Text::Color(muted)),
-                        slider_row(audio_icon(a.volume, a.muted), a.volume, false, primary, p,)
+                        slider_row(
+                            audio_icon(a.volume, a.muted),
+                            a.volume,
+                            false,
+                            primary,
+                            color_with_opacity(theme.accent, p),
+                            p,
+                        )
                     ]
                     .spacing(4);
                     rows = rows.push(control_card(audio.into(), primary, p));
@@ -454,6 +461,7 @@ impl FereseShell {
                             value,
                             true,
                             primary,
+                            color_with_opacity(theme.accent, p),
                             p,
                         )
                     ]
@@ -502,7 +510,12 @@ impl FereseShell {
                         container(
                             row![
                                 text(format!("{}%", b.percent)).size(40).width(Length::Fill),
-                                symbolic_icon(status_icon(Menu::Battery, &self.status).0, 40),
+                                accented_icon(
+                                    status_icon(Menu::Battery, &self.status).0,
+                                    40,
+                                    battery_color,
+                                    color_with_opacity(theme.accent, p),
+                                ),
                             ]
                             .align_y(Alignment::Center),
                         )
@@ -639,9 +652,10 @@ fn status_summary<'a>(
     subtitle: &'a str,
     primary: Color,
     muted: Color,
+    accent: Color,
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
-    let badge = container(symbolic_icon(source, 24))
+    let badge = container(accented_icon(source, 24, primary, accent))
         .width(48)
         .height(48)
         .align_x(alignment::Horizontal::Center)
@@ -742,8 +756,9 @@ fn connection_control<'a>(
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
     let foreground = color_with_opacity(theme.text_primary, opacity);
+    let icon_accent = color_with_opacity(theme.accent, opacity);
     let accent = color_with_opacity(theme.accent, opacity * 0.14);
-    let icon = container(symbolic_icon(source, 18))
+    let icon = container(accented_icon(source, 18, foreground, icon_accent))
         .width(32)
         .height(32)
         .align_x(alignment::Horizontal::Center)
@@ -850,6 +865,7 @@ fn slider_row(
     value: u8,
     brightness: bool,
     foreground: Color,
+    icon_accent: Color,
     opacity: f32,
 ) -> Element<'static, cosmic::Action<Message>> {
     let style = std::rc::Rc::new(move |_: &cosmic::Theme| {
@@ -900,13 +916,43 @@ fn slider_row(
         dragging: style,
     });
     row![
-        symbolic_icon(source, 18),
+        accented_icon(source, 18, foreground, icon_accent),
         control,
         text(format!("{value}%")).size(12).width(36)
     ]
     .spacing(8)
     .align_y(Alignment::Center)
     .into()
+}
+
+fn status_label(kind: Menu, s: &Snapshot) -> String {
+    match kind {
+        Menu::Network => match &s.network {
+            Some(n) if n.enabled => format!(
+                "Wi-Fi: {}",
+                n.connection.as_deref().unwrap_or("not connected")
+            ),
+            _ => "Wi-Fi: off".into(),
+        },
+        Menu::Bluetooth => match &s.bluetooth {
+            Some(b) if b.enabled => format!("Bluetooth: on, {} devices connected", b.devices.len()),
+            _ => "Bluetooth: off".into(),
+        },
+        Menu::Audio => match &s.audio {
+            Some(a) if !a.muted && a.volume > 0 => format!("Audio: {}%", a.volume),
+            _ => "Audio: muted".into(),
+        },
+        Menu::Notifications => match &s.notifications {
+            Some(n) if n.dnd => "Notifications: do not disturb".into(),
+            Some(n) => format!("Notifications: {} unread", n.count),
+            _ => "Notifications: unavailable".into(),
+        },
+        Menu::Battery => s.battery.as_ref().map_or_else(
+            || "Battery: unavailable".into(),
+            |b| format!("Battery: {}%, {}", b.percent, b.status),
+        ),
+        Menu::System => "Control Center".into(),
+    }
 }
 
 fn audio_icon(volume: u8, muted: bool) -> &'static [u8] {
@@ -940,7 +986,7 @@ fn status_icon(kind: Menu, s: &Snapshot) -> (&'static [u8], bool) {
             }
         }
         Menu::Bluetooth => match &s.bluetooth {
-            Some(b) if !b.devices.is_empty() => (
+            Some(b) if b.enabled && !b.devices.is_empty() => (
                 include_bytes!("../assets/icons/status/bluetooth-connected.svg"),
                 true,
             ),
@@ -965,13 +1011,13 @@ fn status_icon(kind: Menu, s: &Snapshot) -> (&'static [u8], bool) {
             };
             let icon: &'static [u8] = if b.status == "Charging" {
                 include_bytes!("../assets/icons/status/battery-charging.svg")
-            } else if b.percent > 87 {
+            } else if b.percent >= 80 {
                 include_bytes!("../assets/icons/status/battery-full.svg")
-            } else if b.percent > 62 {
+            } else if b.percent >= 50 {
                 include_bytes!("../assets/icons/status/battery-75.svg")
-            } else if b.percent > 37 {
+            } else if b.percent >= 20 {
                 include_bytes!("../assets/icons/status/battery-50.svg")
-            } else if b.percent > 12 {
+            } else if b.percent > 0 {
                 include_bytes!("../assets/icons/status/battery-25.svg")
             } else {
                 include_bytes!("../assets/icons/status/battery-empty.svg")
@@ -980,7 +1026,10 @@ fn status_icon(kind: Menu, s: &Snapshot) -> (&'static [u8], bool) {
         }
         Menu::Notifications => {
             if s.notifications.as_ref().is_some_and(|n| n.dnd) {
-                (include_bytes!("../assets/icons/status/dnd.svg"), false)
+                (
+                    include_bytes!("../assets/icons/status/notifications-off.svg"),
+                    false,
+                )
             } else {
                 (
                     include_bytes!("../assets/icons/status/notifications.svg"),
@@ -1042,5 +1091,62 @@ mod tests {
             status_icon(Menu::Battery, &s).0,
             include_bytes!("../assets/icons/status/battery-charging.svg")
         );
+        s.notifications = Some(status::Notifications {
+            count: 3,
+            dnd: true,
+        });
+        assert_eq!(
+            status_icon(Menu::Notifications, &s).0,
+            include_bytes!("../assets/icons/status/notifications-off.svg")
+        );
+        assert_eq!(
+            status_label(Menu::Notifications, &s),
+            "Notifications: do not disturb"
+        );
+        s.bluetooth = Some(status::Bluetooth {
+            enabled: false,
+            devices: vec!["Headphones".into()],
+        });
+        assert_eq!(
+            status_icon(Menu::Bluetooth, &s).0,
+            include_bytes!("../assets/icons/status/bluetooth-off.svg")
+        );
+    }
+
+    #[test]
+    fn battery_bands_and_live_label_follow_charge_state() {
+        let mut s = Snapshot::default();
+        for (percent, expected) in [
+            (
+                0,
+                include_bytes!("../assets/icons/status/battery-empty.svg").as_slice(),
+            ),
+            (
+                19,
+                include_bytes!("../assets/icons/status/battery-25.svg").as_slice(),
+            ),
+            (
+                20,
+                include_bytes!("../assets/icons/status/battery-50.svg").as_slice(),
+            ),
+            (
+                50,
+                include_bytes!("../assets/icons/status/battery-75.svg").as_slice(),
+            ),
+            (
+                80,
+                include_bytes!("../assets/icons/status/battery-full.svg").as_slice(),
+            ),
+        ] {
+            s.battery = Some(status::Battery {
+                percent,
+                status: "Discharging".into(),
+            });
+            assert_eq!(status_icon(Menu::Battery, &s).0, expected);
+            assert_eq!(
+                status_label(Menu::Battery, &s),
+                format!("Battery: {percent}%, Discharging")
+            );
+        }
     }
 }

@@ -1,6 +1,26 @@
 # Fedora / SDDM installation
 
-Build and test in the checkout:
+From the checkout, run the installer as your normal user:
+
+```sh
+./scripts/install.sh
+```
+
+It builds all three release binaries with the locked dependencies, then uses
+`sudo` (or `pkexec`) for installation. Install the Rust toolchain, native build
+dependencies, `desktop-file-utils`, and D-Bus first. Cargo reports missing native
+libraries during the build. The shell requires Rust 1.93 or newer.
+
+Useful options:
+
+```sh
+./scripts/install.sh --dry-run
+./scripts/install.sh --offline --release-id my-demo
+./scripts/install.sh --skip-build --release-id existing-build
+```
+
+The script works from any directory and preserves your user configuration.
+Use `--help` for all options. To test and install manually:
 
 ```sh
 cargo test -p ferese -p feresectl -p ferese-animation -p ferese-core -p ferese-layout -p ferese-shell --locked

@@ -165,7 +165,8 @@ target/release/ferese --backend nested --grant-effects --grant-shell-control -- 
 ```
 
 The Ferese mark enters overview, where workspace indicators become available.
-The focused app appears on the left; status controls and day/time sit on the
+The active workspace's window list appears on the left, with click-to-focus
+and a highlighted active window; status controls and day/time sit on the
 right. The 28px bar has square screen edges, 19px icons, and no border or drop
 shadow. Window spacing uses the workspace outer gap; `top_bar_window_gap` under
 `[theme.geometry]` adds optional extra space (default 0). Solid and translucent

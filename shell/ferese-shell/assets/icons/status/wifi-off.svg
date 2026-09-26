@@ -1,5 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M2.5 7.8a14.5 14.5 0 0 1 2.2-1.5M9 4.8a14.5 14.5 0 0 1 12.5 3M5.7 11.4a9.6 9.6 0 0 1 2.1-1.3M13.5 9.1a9.6 9.6 0 0 1 4.8 2.3M8.9 15a4.7 4.7 0 0 1 6.2 0"/>
-  <circle cx="12" cy="18.4" r="1.2" fill="currentColor" stroke="none"/>
-  <path d="M4 4l16 16"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 60 60" role="img" aria-label="Wifi off">
+<g transform="translate(3 -1.5) scale(0.9)">
+<circle cx="30" cy="53" r="3" fill="currentColor" opacity="0.5"/>
+<path d="M21,44 Q30,34 39,44" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" opacity="0.5"/>
+<path d="M12,35 Q30,15 48,35" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" opacity="0.5"/>
+<path d="M3,26 Q30,5 57,26" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round" opacity="0.5"/>
+<path d="M6,6 L54,54" fill="none" stroke="currentColor" stroke-width="5" stroke-linecap="round"/>
+</g>
 </svg>

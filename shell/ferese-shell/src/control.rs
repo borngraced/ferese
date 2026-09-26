@@ -41,6 +41,7 @@ pub(crate) struct WorkspaceSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct WindowSnapshot {
+    pub(crate) id: u64,
     pub(crate) workspace: u64,
     pub(crate) app_id: String,
     pub(crate) title: String,
@@ -117,6 +118,12 @@ impl ShellControl {
         let (hi, lo) = split_id(id);
 
         self.shell.activate_workspace(hi, lo);
+        let _ = self.connection.flush();
+    }
+
+    pub(crate) fn activate_window(&self, id: u64) {
+        let (hi, lo) = split_id(id);
+        self.shell.activate_window(hi, lo);
         let _ = self.connection.flush();
     }
 
@@ -218,8 +225,8 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
                 });
             }
             ferese_shell_v1::Event::Window {
-                window_hi: _,
-                window_lo: _,
+                window_hi,
+                window_lo,
                 workspace_hi,
                 workspace_lo,
                 app_id,
@@ -235,6 +242,7 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
                 };
 
                 state.pending.windows.push(WindowSnapshot {
+                    id: join_id(window_hi, window_lo),
                     workspace: join_id(workspace_hi, workspace_lo),
                     app_id,
                     title,

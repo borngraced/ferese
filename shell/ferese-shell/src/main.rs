@@ -144,6 +144,7 @@ enum Message {
     ),
     Tick,
     ActivateWorkspace(u64),
+    ActivateWindow(u64),
     ToggleOverview,
     StatusTick,
     AnimateMenu,
@@ -383,6 +384,12 @@ impl cosmic::Application for FereseShell {
                 }
                 Task::none()
             }
+            Message::ActivateWindow(id) => {
+                if let Some(control) = &self.control {
+                    control.activate_window(id);
+                }
+                Task::none()
+            }
             Message::ActivateWorkspace(id) => {
                 if let Some(control) = &self.control {
                     control.activate_workspace(id);
@@ -597,34 +604,43 @@ impl FereseShell {
             workspace_row = workspace_row.push(workspace_button);
         }
 
-        let app_name = self
-            .snapshot
-            .windows
-            .iter()
-            .find(|window| {
-                window.focused
-                    && focused_output
-                        .is_none_or(|output| window.workspace == output.active_workspace)
-            })
-            .map(display_app_name)
-            .unwrap_or_else(|| "Desktop".to_owned());
         let foreground = color(shell_theme.text_primary);
-        let app_name = if self.overview_active {
-            "Overview".to_owned()
-        } else {
-            app_name
-        };
-        let left = row![
-            workspace_row,
-            text(app_name)
-                .size(bar.text_size)
-                .font(cosmic::font::semibold())
-                .width(Length::Fill)
-                .wrapping(cosmic::iced::core::text::Wrapping::None)
-                .class(theme::Text::Color(foreground))
-        ]
-        .spacing(8)
-        .align_y(cosmic::iced::Alignment::Center);
+        let mut windows = row::with_capacity(self.snapshot.windows.len())
+            .spacing(4)
+            .align_y(cosmic::iced::Alignment::Center);
+        for window in self.snapshot.windows.iter().filter(|window| {
+            focused_output.is_some_and(|output| window.workspace == output.active_workspace)
+        }) {
+            let label = compact_window_label(window);
+            let foreground = color(if window.focused {
+                shell_theme.text_primary
+            } else {
+                shell_theme.text_muted
+            });
+            windows = windows.push(
+                button::custom(
+                    text(label)
+                        .size(bar.text_size)
+                        .wrapping(cosmic::iced::core::text::Wrapping::None)
+                        .class(theme::Text::Color(foreground)),
+                )
+                .padding([0, 8])
+                .height(bar.control_height)
+                .class(status_ui::button_style(foreground, window.focused, 1.0))
+                .on_press(cosmic::Action::App(Message::ActivateWindow(window.id))),
+            );
+        }
+        let windows = cosmic::iced::widget::scrollable(windows)
+            .direction(cosmic::iced::widget::scrollable::Direction::Horizontal(
+                cosmic::iced::widget::scrollable::Scrollbar::default()
+                    .width(0)
+                    .scroller_width(0),
+            ))
+            .width(Length::Fill)
+            .height(bar.control_height);
+        let left = row![workspace_row, windows]
+            .spacing(8)
+            .align_y(cosmic::iced::Alignment::Center);
         let clock = container(
             text(&self.clock)
                 .size(bar.text_size)
@@ -680,21 +696,47 @@ impl FereseShell {
     }
 }
 
-fn symbolic_icon(source: &'static [u8], size: u16) -> icon::Icon {
-    icon::from_svg_bytes(source)
-        .symbolic(true)
-        .icon()
-        .size(size)
+fn bar_icon(source: &'static [u8], size: u16, foreground: Color) -> icon::Icon {
+    accented_icon(source, size, foreground, foreground)
 }
 
-fn bar_icon(source: &'static [u8], size: u16, foreground: Color) -> icon::Icon {
-    // COSMIC's transparent containers replace inherited foreground colors.
-    // Pin the bar glyph color rather than relying on those container defaults.
-    symbolic_icon(source, size).class(theme::Svg::custom(move |_| {
-        cosmic::iced::widget::svg::Style {
-            color: Some(foreground),
-        }
-    }))
+fn accented_icon(source: &'static [u8], size: u16, foreground: Color, accent: Color) -> icon::Icon {
+    let svg = std::str::from_utf8(source).expect("embedded SVG must be UTF-8");
+    // Battery canvases are wider; reserve that space instead of stretching
+    // or clipping them into the square slot used by the other status icons.
+    let aspect = if svg.contains("viewBox=\"0 0 32 24\"") {
+        4.0 / 3.0
+    } else {
+        1.0
+    };
+    icon::from_svg_bytes(tinted_svg(source, foreground, accent))
+        .symbolic(false)
+        .icon()
+        .size(size)
+        .width(Length::Fixed(f32::from(size) * aspect))
+        .content_fit(ContentFit::Contain)
+        .class(theme::Svg::custom(move |_| {
+            cosmic::iced::widget::svg::Style { color: None }
+        }))
+}
+
+fn tinted_svg(source: &[u8], foreground: Color, accent: Color) -> Vec<u8> {
+    let rgba = |foreground: Color| {
+        format!(
+            "rgba({},{},{},{})",
+            (foreground.r * 255.0).round() as u8,
+            (foreground.g * 255.0).round() as u8,
+            (foreground.b * 255.0).round() as u8,
+            foreground.a,
+        )
+    };
+    std::str::from_utf8(source)
+        .expect("embedded icons must be UTF-8 SVG")
+        .replace("currentColor", &rgba(foreground))
+        // The source artwork's blue swatch is the semantic theme accent.
+        // Battery warning/success swatches remain status colors.
+        .replace("#3d7be6", &rgba(accent))
+        .into_bytes()
 }
 
 fn overview_control(
@@ -804,6 +846,22 @@ fn display_app_name(window: &control::WindowSnapshot) -> String {
 
 fn current_time() -> String {
     Zoned::now().strftime("%a  ·  %H:%M").to_string()
+}
+
+fn compact_window_label(window: &crate::control::WindowSnapshot) -> String {
+    let title = window.title.trim();
+    let label = if title.is_empty() {
+        display_app_name(window)
+    } else {
+        title.to_owned()
+    };
+    let mut characters = label.chars();
+    let prefix: String = characters.by_ref().take(24).collect();
+    if characters.next().is_some() {
+        format!("{prefix}…")
+    } else {
+        prefix
+    }
 }
 
 fn shell_surface_style(theme: ShellTheme) -> cosmic::iced::theme::Style {
@@ -968,6 +1026,70 @@ mod tests {
     use crate::control::{OutputSnapshot, WindowSnapshot};
 
     #[test]
+    fn icons_use_theme_accent_and_preserve_battery_status_colors() {
+        for (source, accent) in [
+            (
+                include_bytes!("../assets/icons/status/battery-full.svg").as_slice(),
+                "#63c168",
+            ),
+            (
+                include_bytes!("../assets/icons/status/battery-50.svg").as_slice(),
+                "#3d7be6",
+            ),
+            (
+                include_bytes!("../assets/icons/status/battery-25.svg").as_slice(),
+                "#e0654f",
+            ),
+            (
+                include_bytes!("../assets/icons/status/wifi-full.svg").as_slice(),
+                "#3d7be6",
+            ),
+            (
+                include_bytes!("../assets/icons/status/control-center.svg").as_slice(),
+                "#3d7be6",
+            ),
+        ] {
+            let svg = String::from_utf8(tinted_svg(
+                source,
+                Color::from_rgb8(205, 214, 244),
+                Color::from_rgb8(203, 166, 247),
+            ))
+            .unwrap();
+            assert!(!svg.contains("currentColor"));
+            assert!(svg.contains("rgba(205,214,244,1)"));
+            assert!(!svg.contains("#3d7be6"));
+            assert!(svg.contains(if accent == "#3d7be6" {
+                "rgba(203,166,247,1)"
+            } else {
+                accent
+            }));
+        }
+    }
+
+    #[test]
+    fn window_list_labels_use_titles_and_fall_back_to_the_app_name() {
+        let snapshot = snapshot_with_fullscreen_window(7);
+        let mut window = snapshot.windows[0].clone();
+        window.title = "  editor.rs — Project  ".to_owned();
+        assert_eq!(compact_window_label(&window), "editor.rs — Project");
+        window.title = " ".to_owned();
+        assert_eq!(compact_window_label(&window), display_app_name(&window));
+    }
+
+    #[test]
+    fn window_list_labels_truncate_unicode_without_breaking_characters() {
+        let snapshot = snapshot_with_fullscreen_window(7);
+        let mut window = snapshot.windows[0].clone();
+        window.title = "界".repeat(25);
+        assert_eq!(
+            compact_window_label(&window),
+            format!("{}…", "界".repeat(24))
+        );
+        window.title = "界".repeat(24);
+        assert_eq!(compact_window_label(&window), window.title);
+    }
+
+    #[test]
     fn startup_surface_clear_is_transparent_and_bar_fallback_is_dark() {
         let theme = ShellTheme::default();
         assert_eq!(
@@ -1048,6 +1170,7 @@ mod tests {
             }],
             workspaces: Vec::new(),
             windows: vec![WindowSnapshot {
+                id: 1,
                 workspace,
                 app_id: "dev.ferese.Test".to_owned(),
                 title: "Test".to_owned(),
