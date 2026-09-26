@@ -80,6 +80,20 @@ impl From<ShellTheme> for BarMetrics {
 
 fn main() -> cosmic::iced::Result {
     let config = config::load();
+    // Decode alongside toolkit/GPU initialization, never during a UI draw.
+    let wallpaper = config.wallpaper.path.clone().map(|path| {
+        let (sender, receiver) = cosmic::iced::futures::channel::oneshot::channel();
+        std::thread::spawn(move || {
+            let result =
+                cosmic::iced::advanced::graphics::image::load(&image::Handle::from_path(path))
+                    .map(|pixels| {
+                        image::Handle::from_rgba(pixels.width(), pixels.height(), pixels.into_raw())
+                    })
+                    .map_err(|error| format!("{error:?}"));
+            let _ = sender.send(result);
+        });
+        receiver
+    });
     let mut settings = Settings::default()
         .no_main_window(true)
         .client_decorations(false)
@@ -91,13 +105,17 @@ fn main() -> cosmic::iced::Result {
         settings = settings.default_font(cosmic::font::Font::with_name(font_family));
     }
 
-    cosmic::app::run::<FereseShell>(settings, config)
+    cosmic::app::run::<FereseShell>(settings, (config, wallpaper))
 }
+
+type WallpaperLoad =
+    cosmic::iced::futures::channel::oneshot::Receiver<Result<image::Handle, String>>;
 
 struct FereseShell {
     core: Core,
     bar_surface_id: window::Id,
     config: ShellConfig,
+    wallpaper: Option<image::Handle>,
     control: Option<ShellControl>,
     snapshot: ShellSnapshot,
     overview_active: bool,
@@ -111,6 +129,7 @@ struct FereseShell {
 
 #[derive(Clone, Debug)]
 enum Message {
+    WallpaperLoaded(Result<image::Handle, String>),
     Event(Event, window::Id),
     NativeSurface(
         window::Id,
@@ -129,7 +148,7 @@ enum Message {
 
 impl cosmic::Application for FereseShell {
     type Executor = cosmic::executor::Default;
-    type Flags = ShellConfig;
+    type Flags = (ShellConfig, Option<WallpaperLoad>);
     type Message = Message;
 
     const APP_ID: &'static str = APP_ID;
@@ -142,7 +161,7 @@ impl cosmic::Application for FereseShell {
         &mut self.core
     }
 
-    fn init(core: Core, config: Self::Flags) -> (Self, Task<Self::Message>) {
+    fn init(core: Core, (config, wallpaper): Self::Flags) -> (Self, Task<Self::Message>) {
         let bar_surface_id = window::Id::unique();
         let wallpaper_surface_id = window::Id::unique();
         let shell_theme = config.theme;
@@ -155,6 +174,7 @@ impl cosmic::Application for FereseShell {
             status_error: None,
             menu: None,
             config,
+            wallpaper: None,
             control: ShellControl::connect()
                 .map_err(|error| {
                     eprintln!("ferese-shell: shell control unavailable: {error}");
@@ -211,7 +231,17 @@ impl cosmic::Application for FereseShell {
             .map(cosmic::Action::Surface)
             .map(cosmic::task::message);
 
-        (app, Task::batch(tasks))
+        let wallpaper_task = match wallpaper {
+            Some(receiver) => cosmic::task::future(async move {
+                cosmic::Action::App(Message::WallpaperLoaded(
+                    receiver
+                        .await
+                        .unwrap_or_else(|error| Err(error.to_string())),
+                ))
+            }),
+            None => Task::none(),
+        };
+        (app, Task::batch([Task::batch(tasks), wallpaper_task]))
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
@@ -241,6 +271,13 @@ impl cosmic::Application for FereseShell {
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
         match message {
+            Message::WallpaperLoaded(result) => {
+                match result {
+                    Ok(handle) => self.wallpaper = Some(handle),
+                    Err(error) => eprintln!("ferese-shell: wallpaper unavailable: {error}"),
+                }
+                Task::none()
+            }
             Message::NativeSurface(id, result) => {
                 match result {
                     Ok((_connection, surface)) if id == self.bar_surface_id => {
@@ -610,7 +647,7 @@ impl FereseShell {
     }
 
     fn view_wallpaper(&self) -> Element<'_, cosmic::Action<Message>> {
-        let Some(path) = self.config.wallpaper.path.as_ref() else {
+        let Some(handle) = self.wallpaper.as_ref() else {
             return container(text(""))
                 .width(Length::Fill)
                 .height(Length::Fill)
@@ -623,7 +660,7 @@ impl FereseShell {
         };
 
         container(
-            image(path.clone())
+            image(handle.clone())
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .content_fit(content_fit),
