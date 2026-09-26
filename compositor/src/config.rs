@@ -17,6 +17,8 @@ use crate::window_rules::{self, WindowRule, WindowRuleConfig};
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
     #[serde(default)]
+    pub(crate) autostart: Vec<DaemonConfig>,
+    #[serde(default)]
     animations: AnimationsConfig,
     #[serde(default)]
     layout: LayoutConfig,
@@ -36,6 +38,26 @@ pub struct Config {
     scrolling: ScrollingConfig,
     #[serde(default)]
     output_profiles: Vec<OutputProfileConfig>,
+    #[serde(default, rename = "status")]
+    _status: ShellStatusConfig,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) struct DaemonConfig {
+    pub command: Vec<String>,
+    #[serde(default = "default_true")]
+    pub restart: bool,
+    #[serde(default)]
+    pub nested: bool,
+}
+
+// Validate shell-only fields too, before publishing an accepted source.
+#[derive(Debug, Default, Deserialize)]
+#[allow(dead_code)]
+struct ShellStatusConfig {
+    battery_percentage: Option<bool>,
+    low_battery_threshold: Option<u8>,
+    settings_command: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -106,11 +128,61 @@ struct OutputConfig {
 pub struct RgbaColor(pub [f32; 4]);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BorderGradient {
+    pub from: RgbaColor,
+    pub to: RgbaColor,
+    pub angle: f64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct BorderPaintConfig {
+    gradient: Option<BorderGradientConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BorderGradientConfig {
+    from: String,
+    to: String,
+    #[serde(default)]
+    angle: f64,
+}
+
+impl BorderPaintConfig {
+    fn settings(&self, name: &str) -> Result<Option<BorderGradient>, ConfigError> {
+        let (from_name, to_name, angle_name) = if name == "focus_ring" {
+            (
+                "focus_ring.gradient.from",
+                "focus_ring.gradient.to",
+                "focus_ring.gradient.angle",
+            )
+        } else {
+            (
+                "border.gradient.from",
+                "border.gradient.to",
+                "border.gradient.angle",
+            )
+        };
+        self.gradient
+            .as_ref()
+            .map(|gradient| {
+                Ok(BorderGradient {
+                    from: parse_color(&gradient.from, from_name)?,
+                    to: parse_color(&gradient.to, to_name)?,
+                    angle: finite_theme_value(gradient.angle, angle_name)?.rem_euclid(360.0),
+                })
+            })
+            .transpose()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ThemeSettings {
     pub border_width: f64,
     pub focus_ring_width: f64,
     pub border_color: RgbaColor,
     pub accent_color: RgbaColor,
+    pub border_gradient: Option<BorderGradient>,
+    pub focus_ring_gradient: Option<BorderGradient>,
     pub shadow_color: RgbaColor,
     pub surface_base_color: RgbaColor,
     pub panel_opacity: f64,
@@ -168,6 +240,10 @@ impl Default for InactiveDimConfig {
 #[derive(Debug, Default, Deserialize)]
 struct ThemeConfig {
     #[serde(default)]
+    border: BorderPaintConfig,
+    #[serde(default)]
+    focus_ring: BorderPaintConfig,
+    #[serde(default)]
     typography: OverviewTypographyConfig,
     #[serde(default)]
     background: crate::wallpaper::WallpaperConfig,
@@ -184,6 +260,46 @@ struct ThemeConfig {
 }
 
 impl Config {
+    pub(crate) fn parse_source(source: &str) -> Result<Self, ConfigError> {
+        toml::from_str(source).map_err(|source| ConfigError::Parse {
+            path: config_path().unwrap_or_default(),
+            source,
+        })
+    }
+
+    pub(crate) fn runtime_config(&self) -> Result<crate::RuntimeConfig, ConfigError> {
+        for daemon in &self.autostart {
+            if daemon
+                .command
+                .first()
+                .is_none_or(|program| program.trim().is_empty())
+            {
+                return Err(ConfigError::InvalidBinding(
+                    "autostart command must contain a program".into(),
+                ));
+            }
+        }
+        let input_settings = self.input_settings()?;
+        let bindings = self.bindings(&input_settings)?;
+        Ok(crate::RuntimeConfig {
+            layout_mode: self.layout_mode(),
+            gap_config: self.gap_config()?,
+            input_settings,
+            bindings,
+            window_rules: self.window_rules()?,
+            theme_settings: self.theme_settings()?,
+            default_column_width: self.default_column_width()?,
+            scrolling_focus_strategy: self.scrolling_focus_strategy(),
+            column_width_presets: self.width_presets()?,
+            animations_enabled: self.animations_enabled(),
+            animation_speed: self.animation_speed()?,
+            spring_config: self.spring_config()?,
+            viewport_spring_config: self.viewport_spring_config()?,
+            output_profiles: self.output_profiles()?,
+            wallpaper: self.wallpaper_settings(),
+            overview_font_family: self.overview_font_family(),
+        })
+    }
     pub(crate) fn overview_font_family(&self) -> String {
         self.theme
             .typography
@@ -905,6 +1021,8 @@ impl Config {
             focus_ring_width,
             border_color: parse_color(&self.theme.colors.border, "colors.border")?,
             accent_color: parse_color(&self.theme.colors.accent, "colors.accent")?,
+            border_gradient: self.theme.border.settings("border")?,
+            focus_ring_gradient: self.theme.focus_ring.settings("focus_ring")?,
             shadow_color: parse_color(&self.theme.colors.shadow, "colors.shadow")?,
             surface_base_color: parse_color(
                 &self.theme.colors.surface_base,
@@ -1576,7 +1694,7 @@ fn parse_column_width(
     }
 }
 
-fn config_path() -> Option<PathBuf> {
+pub(crate) fn config_path() -> Option<PathBuf> {
     if let Some(directory) = env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
         return Some(PathBuf::from(directory).join("ferese/config.toml"));
     }
@@ -1724,6 +1842,8 @@ mod tests {
                 focus_ring_width: 3.0,
                 border_color: RgbaColor([17.0 / 255.0, 34.0 / 255.0, 51.0 / 255.0, 68.0 / 255.0,]),
                 accent_color: RgbaColor([170.0 / 255.0, 187.0 / 255.0, 0.8, 1.0]),
+                border_gradient: None,
+                focus_ring_gradient: None,
                 shadow_color: RgbaColor([1.0 / 255.0, 2.0 / 255.0, 3.0 / 255.0, 128.0 / 255.0]),
                 surface_base_color: RgbaColor([17.0 / 255.0, 24.0 / 255.0, 33.0 / 255.0, 1.0,]),
                 panel_opacity: 0.78,
@@ -1755,6 +1875,45 @@ mod tests {
             MaterialStyle::Solid
         );
         assert!(toml::from_str::<Config>("[theme.material]\nstyle = \"glass\"").is_err());
+    }
+
+    #[test]
+    fn border_gradients_are_optional_and_independent() {
+        let defaults = parse("").theme_settings().unwrap();
+        assert_eq!(defaults.border_gradient, None);
+        assert_eq!(defaults.focus_ring_gradient, None);
+        let configured =
+            parse("[theme.focus_ring.gradient]\nfrom = '#e5c890'\nto = '#b98d5880'\nangle = -45")
+                .theme_settings()
+                .unwrap();
+        let gradient = configured.focus_ring_gradient.unwrap();
+        assert_eq!(configured.border_gradient, None);
+        assert_eq!(gradient.angle, 315.0);
+        assert_eq!(gradient.to.0[3], 128.0 / 255.0);
+        let border = parse("[theme.border.gradient]\nfrom = '#112233'\nto = '#445566'")
+            .theme_settings()
+            .unwrap();
+        assert_eq!(border.border_gradient.unwrap().angle, 0.0);
+        assert_eq!(border.focus_ring_gradient, None);
+        assert_eq!(configured.border_color, defaults.border_color);
+        assert_eq!(configured.accent_color, defaults.accent_color);
+    }
+
+    #[test]
+    fn border_gradients_reject_invalid_colors_and_nonfinite_angles() {
+        for settings in [
+            "from = 'invalid'\nto = '#445566'",
+            "from = '#112233'\nto = 'invalid'",
+            "from = '#112233'\nto = '#445566'\nangle = nan",
+            "from = '#112233'\nto = '#445566'\nangle = inf",
+        ] {
+            assert!(
+                parse(&format!("[theme.focus_ring.gradient]\n{settings}"))
+                    .theme_settings()
+                    .is_err()
+            );
+        }
+        assert!(toml::from_str::<Config>("[theme.border.gradient]\nfrom = '#112233'").is_err());
     }
 
     #[test]

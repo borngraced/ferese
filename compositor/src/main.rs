@@ -3,6 +3,7 @@
 mod backends;
 mod config;
 mod cursor;
+mod daemon;
 mod dimming;
 mod effects;
 mod grabs;
@@ -13,7 +14,9 @@ mod metrics;
 mod overview;
 mod presentation;
 mod private_client;
+mod reload;
 mod resize_transaction;
+mod session_lock;
 mod shell_control;
 mod stacking;
 mod state;
@@ -42,11 +45,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let launch = LaunchConfig::from_environment()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let config = Config::load()?;
-    let input_settings = config.input_settings()?;
-    let bindings = config.bindings(&input_settings)?;
-    let window_rules = config.window_rules()?;
-    let output_profiles = config.output_profiles()?;
+    let initial_source = config::config_path().and_then(|path| std::fs::read_to_string(path).ok());
+    let config = match initial_source.as_deref() {
+        Some(source) => Config::parse_source(source)?,
+        None => Config::load()?,
+    };
     let mut event_loop = EventLoop::try_new()?;
     let signals = Signals::new(&[Signal::SIGINT, Signal::SIGTERM])?;
     event_loop
@@ -56,29 +59,55 @@ fn main() -> Result<(), Box<dyn Error>> {
             state.loop_signal.stop();
         })?;
     let display = Display::new()?;
-    let runtime = RuntimeConfig {
-        layout_mode: config.layout_mode(),
-        gap_config: config.gap_config()?,
-        input_settings,
-        bindings,
-        window_rules,
-        theme_settings: config.theme_settings()?,
-        default_column_width: config.default_column_width()?,
-        scrolling_focus_strategy: config.scrolling_focus_strategy(),
-        column_width_presets: config.width_presets()?,
-        animations_enabled: config.animations_enabled(),
-        animation_speed: config.animation_speed()?,
-        spring_config: config.spring_config()?,
-        viewport_spring_config: config.viewport_spring_config()?,
-        output_profiles,
-        wallpaper: config.wallpaper_settings(),
-        overview_font_family: config.overview_font_family(),
-    };
+    let runtime = config.runtime_config()?;
     let mut state = Ferese::new(&mut event_loop, display, runtime)?;
+    state.config_source = initial_source.filter(|source| source.len() <= 60 * 1024);
     backends::init(launch.backend, &mut event_loop, &mut state)?;
+    let mut monitor =
+        config::config_path().and_then(|path| match reload::ConfigMonitor::new(path) {
+            Ok(monitor) => Some(monitor),
+            Err(error) => {
+                warn!(%error, "automatic config watching unavailable; use feresectl reload-config");
+                None
+            }
+        });
+    use calloop::timer::{TimeoutAction, Timer};
+    event_loop.handle().insert_source(
+        Timer::from_duration(Duration::from_millis(150)),
+        move |_, _, state: &mut Ferese| {
+            // Decoders finish on a worker even when an idle DRM output has no
+            // pending frame. Wake rendering once, never continuously for wallpaper.
+            if state.wallpaper.poll() {
+                state.backdrop_generation = state.backdrop_generation.wrapping_add(1);
+                backends::direct::render_all(state);
+            }
+            if let Some(result) = monitor
+                .as_mut()
+                .and_then(|monitor| monitor.poll(std::time::Instant::now()))
+            {
+                if let Err(error) = result.and_then(|source| state.reload_config_source(source)) {
+                    warn!(%error, "config reload rejected; retaining last working config");
+                }
+            }
+            TimeoutAction::ToDuration(Duration::from_millis(150))
+        },
+    )?;
 
     info!(socket = ?state.socket_name, backend = ?launch.backend, "Ferese is accepting Wayland clients");
     let mut child = spawn_client(&mut state, launch.client, launch.client_capabilities);
+    let runner = std::rc::Rc::new(std::cell::RefCell::new(daemon::Runner::new(
+        &config.autostart,
+        launch.backend == backends::BackendKind::Nested,
+    )));
+    runner.borrow_mut().tick(&mut state);
+    let services = runner.clone();
+    event_loop.handle().insert_source(
+        Timer::from_duration(Duration::from_secs(1)),
+        move |_, _, state: &mut Ferese| {
+            services.borrow_mut().tick(state);
+            TimeoutAction::ToDuration(Duration::from_secs(1))
+        },
+    )?;
     let result = event_loop.run(None, &mut state, |state| {
         // All input/Wayland callbacks have returned, releasing seat locks.
         // Coalesce cursor changes and redraw here, never inside cursor_image.
@@ -93,6 +122,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     });
 
+    runner.borrow_mut().stop();
     if let Some(child) = &mut child {
         terminate_child(child);
     }
@@ -122,9 +152,9 @@ fn spawn_client(
     // Wallpaper decoding and drivers may already have worker threads. Set
     // the child's display explicitly instead of mutating the process env.
     command.env("WAYLAND_DISPLAY", &state.socket_name);
-    if state.wallpaper.owns_background() {
-        command.env("FERESE_COMPOSITOR_WALLPAPER", "1");
-    }
+    command.env_remove("WAYLAND_SOCKET");
+    command.env_remove("FERESE_SHELL_CONTROL_SOCKET");
+    command.env("FERESE_COMPOSITOR_WALLPAPER", "1");
     let private_connection = if capabilities.is_empty() {
         None
     } else {

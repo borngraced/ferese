@@ -90,6 +90,12 @@ impl CompositorHandler for Ferese {
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
+        if self.session_lock.active {
+            self.session_lock
+                .surfaces
+                .retain(|_, lock| lock.wl_surface() != surface);
+            self.focus_lock_surface();
+        }
         self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
         crate::backends::direct::render_all(self);
         if self.idle_inhibitors.remove(surface).is_some() {

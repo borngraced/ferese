@@ -76,12 +76,15 @@ pub struct Update {
     pub error: Option<String>,
 }
 pub struct Service {
+    settings: Arc<Mutex<Option<Vec<String>>>>,
     tx: SyncSender<(u64, Action)>,
     rx: Receiver<Update>,
     pub generation: u64,
 }
 impl Service {
     pub fn start(settings: Option<Vec<String>>) -> Self {
+        let live_settings = Arc::new(Mutex::new(settings));
+        let settings = live_settings.clone();
         let (tx, commands) = mpsc::sync_channel::<(u64, Action)>(64);
         let (updates, rx) = mpsc::sync_channel(1);
         // Polling and writes have separate workers: a missing D-Bus service must
@@ -132,6 +135,7 @@ impl Service {
                         state.0 = id;
                         state.1 = true;
                     }
+                    let settings = settings.lock().unwrap().clone();
                     let error = execute(&action, settings.as_deref()).err();
                     let mut state = shared.0.lock().unwrap();
                     state.1 = false;
@@ -143,6 +147,7 @@ impl Service {
             shared.1.notify_one();
         });
         Self {
+            settings: live_settings,
             tx,
             rx,
             generation: 0,
@@ -155,6 +160,9 @@ impl Service {
             .map_err(|_| "Controls are busy; please try again".to_owned())?;
         self.generation = generation;
         Ok(())
+    }
+    pub fn update_settings(&self, settings: Option<Vec<String>>) {
+        *self.settings.lock().unwrap() = settings;
     }
     pub fn poll(&self) -> Option<Update> {
         self.rx.try_iter().last()

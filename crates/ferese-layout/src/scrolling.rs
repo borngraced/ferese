@@ -100,6 +100,9 @@ impl Default for ScrollingLayout {
 }
 
 impl ScrollingLayout {
+    pub fn set_default_width(&mut self, width: ColumnWidth) {
+        self.default_width = normalized_width(width);
+    }
     pub fn with_default_width(default_width: ColumnWidth) -> Self {
         Self {
             default_width: normalized_width(default_width),

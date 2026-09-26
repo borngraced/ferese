@@ -1,0 +1,10 @@
+[package]
+name = "ferese-lock-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+wayland-client.workspace = true
+wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }

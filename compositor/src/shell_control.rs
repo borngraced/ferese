@@ -14,7 +14,28 @@ use smithay::{
 use crate::{Ferese, private_client::ClientCapabilities, state::ClientState};
 
 pub(crate) fn init_global(display: &DisplayHandle) {
-    display.create_global::<Ferese, FereseShellManagerV1, _>(1, ());
+    display.create_global::<Ferese, FereseShellManagerV1, _>(2, ());
+}
+
+pub(crate) fn config_chunks(source: &str) -> Vec<&str> {
+    let mut remaining = source;
+    let mut chunks = Vec::new();
+    while !remaining.is_empty() {
+        let mut boundary = remaining.len().min(1024);
+        while !remaining.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        chunks.push(&remaining[..boundary]);
+        remaining = &remaining[boundary..];
+    }
+    chunks
+}
+pub(crate) fn send_shell_config(shell: &FereseShellV1, source: &str) {
+    shell.config_begin();
+    for chunk in config_chunks(source) {
+        shell.config_chunk(chunk.to_owned());
+    }
+    shell.config_end();
 }
 
 impl GlobalDispatch<FereseShellManagerV1, ()> for Ferese {
@@ -53,6 +74,11 @@ impl Dispatch<FereseShellManagerV1, ()> for Ferese {
                 let shell = data_init.init(id, ());
 
                 shell.capabilities(1);
+                if shell.version() >= 2
+                    && let Some(source) = &state.config_source
+                {
+                    send_shell_config(&shell, source);
+                }
                 shell.overview_state(u32::from(state.overview.is_active()));
                 state.send_shell_snapshot(&shell);
                 state.shell_resources.push(shell.downgrade());
@@ -73,6 +99,9 @@ impl Dispatch<FereseShellV1, ()> for Ferese {
         _display: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
+        if state.session_lock.active {
+            return;
+        }
         match request {
             ferese_shell_v1::Request::ActivateWindow {
                 window_hi,
@@ -370,6 +399,19 @@ fn send_request_failed(shell: &FereseShellV1, request: ferese_shell_v1::FailedRe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_chunks_are_bounded_and_preserve_unicode() {
+        let source = "abc🌲é".repeat(9000);
+        let chunks = config_chunks(&source);
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| !chunk.is_empty() && chunk.len() <= 1024)
+        );
+        assert_eq!(chunks.concat(), source);
+        assert!(config_chunks("").is_empty());
+    }
 
     #[test]
     fn window_ids_round_trip_through_protocol_words() {

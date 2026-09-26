@@ -17,7 +17,7 @@ use smithay::{
 };
 use std::{collections::HashMap, path::PathBuf, sync::mpsc};
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 pub(crate) struct WallpaperConfig {
     pub path: Option<PathBuf>,
     #[serde(default)]
@@ -36,6 +36,9 @@ struct WallpaperTexture {
     id: Id,
 }
 pub(crate) struct WallpaperState {
+    config: WallpaperConfig,
+    pending: Option<WallpaperConfig>,
+    commit: CommitCounter,
     owned: bool,
     mode: WallpaperMode,
     receiver: Option<mpsc::Receiver<Result<image::RgbaImage, String>>>,
@@ -45,6 +48,7 @@ pub(crate) struct WallpaperState {
 
 impl WallpaperState {
     pub fn new(config: WallpaperConfig) -> Self {
+        let retained = config.clone();
         let (sender, receiver) = mpsc::channel();
         let owned = config.path.as_ref().is_some_and(|path| path.is_file());
         if owned {
@@ -64,6 +68,9 @@ impl WallpaperState {
             });
         }
         Self {
+            config: retained,
+            pending: None,
+            commit: CommitCounter::default(),
             owned,
             mode: config.mode,
             receiver: owned.then_some(receiver),
@@ -71,8 +78,37 @@ impl WallpaperState {
             textures: HashMap::new(),
         }
     }
+    #[cfg(test)]
     pub fn owns_background(&self) -> bool {
         self.owned
+    }
+    pub fn reload(&mut self, config: WallpaperConfig) {
+        if self.receiver.is_some() {
+            self.pending = (self.config != config).then_some(config);
+            return;
+        }
+        if self.config == config {
+            return;
+        }
+        if self.config.path == config.path {
+            self.mode = config.mode;
+            self.config = config;
+            self.commit.increment();
+            return;
+        }
+        if config.path.as_ref().is_some_and(|path| !path.is_file()) {
+            tracing::warn!("new wallpaper is unavailable; retaining previous image");
+            return;
+        }
+        let mut replacement = Self::new(config);
+        self.config = replacement.config;
+        self.mode = replacement.mode;
+        self.owned = replacement.owned;
+        self.receiver = replacement.receiver.take();
+        if self.config.path.is_none() {
+            self.pixels = None;
+            self.textures.clear();
+        }
     }
     pub fn forget_context(&mut self, context: &ErasedContextId) {
         self.textures.remove(context);
@@ -84,6 +120,14 @@ impl WallpaperState {
         match receiver.try_recv() {
             Ok(result) => {
                 self.receiver = None;
+                if let Some(pending) = self.pending.take() {
+                    if pending.path != self.config.path {
+                        self.reload(pending);
+                        return true;
+                    }
+                    self.config = pending;
+                    self.mode = self.config.mode;
+                }
                 match result {
                     Ok(pixels) => {
                         tracing::info!(
@@ -93,6 +137,8 @@ impl WallpaperState {
                             "decoded compositor wallpaper once"
                         );
                         self.pixels = Some(pixels);
+                        self.textures.clear();
+                        self.commit.increment();
                     }
                     Err(error) => {
                         tracing::warn!(%error, "wallpaper unavailable; using output clear color")
@@ -147,7 +193,7 @@ impl WallpaperState {
         );
         Some(NativeTextureElement {
             id: cached.id.clone(),
-            commit: CommitCounter::default(),
+            commit: self.commit,
             texture: cached.texture.clone(),
             geometry,
             source,
@@ -203,6 +249,44 @@ fn image_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn live_reload_coalesces_decoders_and_mode_changes_invalidate_damage() {
+        let mut state = WallpaperState::new(WallpaperConfig::default());
+        let (sender, receiver) = mpsc::channel();
+        state.receiver = Some(receiver);
+        state.reload(WallpaperConfig {
+            path: None,
+            mode: WallpaperMode::Fit,
+        });
+        assert!(state.receiver.is_some());
+        let before = state.commit;
+        sender.send(Ok(image::RgbaImage::new(2, 2))).unwrap();
+        assert!(state.poll());
+        assert_eq!(state.mode, WallpaperMode::Fit);
+        assert!(state.pixels.is_some());
+        assert_ne!(state.commit, before);
+        assert!(state.receiver.is_none());
+        let before = state.commit;
+        state.reload(state.config.clone());
+        assert_eq!(state.commit, before);
+    }
+    #[test]
+    fn reverting_a_pending_reload_keeps_latest_request_and_failed_decode_keeps_pixels() {
+        let mut state = WallpaperState::new(WallpaperConfig::default());
+        state.pixels = Some(image::RgbaImage::new(2, 2));
+        let (sender, receiver) = mpsc::channel();
+        state.receiver = Some(receiver);
+        state.reload(WallpaperConfig {
+            path: None,
+            mode: WallpaperMode::Fit,
+        });
+        state.reload(WallpaperConfig::default());
+        assert!(state.pending.is_none());
+        sender.send(Err("bad image".into())).unwrap();
+        assert!(state.poll());
+        assert!(state.pixels.is_some());
+        assert_eq!(state.mode, WallpaperMode::Fill);
+    }
     #[test]
     fn fill_crops_and_fit_letterboxes_without_reallocating_image() {
         let (geometry, source) = image_geometry(

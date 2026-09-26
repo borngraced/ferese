@@ -85,6 +85,7 @@ render_elements! {
     Surface=SurfaceRenderElement,
     Memory=MemoryRenderElement,
     Solid=SolidColorRenderElement,
+    LockSurface=WaylandSurfaceRenderElement<GlesRenderer>,
     Border=PixelShaderElement,
     Blur=BlurRenderElement,
     Effect=PhysicalShaderElement,
@@ -226,13 +227,19 @@ void main() {
 "#;
 
 const ROUNDED_BORDER_SHADER: &str = r#"
-precision mediump float;
+precision highp float;
 
 uniform float alpha;
 uniform vec4 clip_rect;
 uniform float radius;
 uniform float border_width;
 uniform vec4 border_color;
+uniform vec4 border_color_to;
+uniform vec4 gradient_line;
+uniform vec4 focus_color;
+uniform vec4 focus_color_to;
+uniform vec4 focus_gradient_line;
+uniform float focus_mix;
 varying vec2 v_coords;
 
 #if defined(DEBUG_FLAGS)
@@ -257,8 +264,15 @@ void main() {
         - inner_radius;
     float inner_coverage = 1.0 - smoothstep(-0.5, 0.5, inner_signed_distance);
     float coverage = max(outer_coverage - inner_coverage, 0.0);
-    vec4 color = vec4(border_color.rgb * border_color.a, border_color.a)
-        * coverage * alpha;
+    float progress = clamp(dot(gl_FragCoord.xy - gradient_line.xy, gradient_line.zw), 0.0, 1.0);
+    // Interpolate premultiplied endpoints: a transparent endpoint must not
+    // leak its RGB into the visible border or create a dark halo.
+    vec4 from = vec4(border_color.rgb * border_color.a, border_color.a);
+    vec4 to = vec4(border_color_to.rgb * border_color_to.a, border_color_to.a);
+    float focus_progress = clamp(dot(gl_FragCoord.xy - focus_gradient_line.xy, focus_gradient_line.zw), 0.0, 1.0);
+    vec4 focus_from = vec4(focus_color.rgb * focus_color.a, focus_color.a);
+    vec4 focus_to = vec4(focus_color_to.rgb * focus_color_to.a, focus_color_to.a);
+    vec4 color = mix(mix(from, to, progress), mix(focus_from, focus_to, focus_progress), focus_mix) * coverage * alpha;
 
 #if defined(DEBUG_FLAGS)
     if (tint == 1.0)
@@ -357,13 +371,14 @@ uniform vec4 visible_rect;
 uniform float material_radius;
 uniform vec2 texture_size;
 uniform float blur_radius;
+uniform float presentation_alpha;
 uniform vec4 tint;
 varying vec2 v_coords;
 void main() {
     vec2 half_size = visible_rect.zw * 0.5;
     vec2 d = abs(gl_FragCoord.xy - visible_rect.xy - half_size) - (half_size - vec2(material_radius));
     float sdf = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - material_radius;
-    float coverage = alpha * (1.0 - smoothstep(-0.5, 0.5, sdf));
+    float coverage = alpha * presentation_alpha * (1.0 - smoothstep(-0.5, 0.5, sdf));
     if (coverage <= 0.0) { gl_FragColor = vec4(0.0); return; }
     // Denser Gaussian sampling preserves the same radius and softness without
     // the visible grid left by widely spaced taps on detailed wallpapers.
@@ -562,6 +577,7 @@ pub(crate) struct MaterialProgram(GlesPixelProgram);
 
 #[derive(Clone, Debug, PartialEq)]
 struct MaterialParameters {
+    presentation_alpha: f32,
     blur: f32,
     scene_generation: u64,
     sample_geometry: Rectangle<i32, Logical>,
@@ -604,6 +620,12 @@ struct BorderParameters {
     radius: f32,
     width: f32,
     color: [f32; 4],
+    color_to: [f32; 4],
+    gradient_line: [f32; 4],
+    focus_color: [f32; 4],
+    focus_color_to: [f32; 4],
+    focus_gradient_line: [f32; 4],
+    focus_mix: f32,
 }
 
 #[derive(Debug)]
@@ -902,6 +924,9 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                         state.loop_signal.stop();
                         return;
                     }
+                    if state.session_lock.active {
+                        state.lock_frame_presented(&output);
+                    }
                     let elapsed = render_started.elapsed();
                     if elapsed > refresh.get() {
                         missed_deadlines += (elapsed.as_nanos() / refresh.get().as_nanos()) as u64;
@@ -946,6 +971,10 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
 }
 
 fn send_nested_frame_callbacks(state: &mut Ferese, output: &Output, refresh: Duration) {
+    if state.session_lock.active {
+        state.lock_frame_callbacks(output);
+        return;
+    }
     let time = state.start_time.elapsed();
     for window in state.space.elements() {
         window.send_frame(output, time, Some(refresh), |_, _| Some(output.clone()));
@@ -985,6 +1014,58 @@ fn output_elements(
     output: &Output,
     include_cursor: bool,
 ) -> Vec<AnimatedWindowRenderElement> {
+    if state.session_lock.active {
+        state.configure_lock_surfaces();
+        let Some(geometry) = state.space.output_geometry(output) else {
+            return Vec::new();
+        };
+        let scale = output.current_scale().fractional_scale();
+        let background = state
+            .session_lock
+            .backgrounds
+            .entry(output.clone())
+            .or_insert_with(|| {
+                smithay::backend::renderer::element::solid::SolidColorBuffer::new(
+                    geometry.size,
+                    [0.0, 0.0, 0.0, 1.0],
+                )
+            });
+        background.resize(geometry.size);
+        let mut elements = Vec::new();
+        if let Some(surface) = state
+            .session_lock
+            .surfaces
+            .get(output)
+            .filter(|surface| surface.alive())
+        {
+            elements.extend(
+                render_elements_from_surface_tree::<
+                    GlesRenderer,
+                    WaylandSurfaceRenderElement<GlesRenderer>,
+                >(
+                    renderer,
+                    surface.wl_surface(),
+                    (0, 0),
+                    scale,
+                    1.0,
+                    RenderElementKind::Unspecified,
+                )
+                .into_iter()
+                .map(AnimatedWindowRenderElement::from),
+            );
+        }
+        elements.push(
+            SolidColorRenderElement::from_buffer(
+                background,
+                (0, 0),
+                scale,
+                1.0,
+                RenderElementKind::Unspecified,
+            )
+            .into(),
+        );
+        return elements;
+    }
     if state.wallpaper.poll() {
         state.backdrop_generation = state.backdrop_generation.wrapping_add(1);
     }
@@ -1082,18 +1163,15 @@ fn output_elements(
             } else {
                 state.focused_window == Some(id)
             };
-            let border_width = if focused {
-                state.theme_settings.focus_ring_width
-            } else {
-                state.theme_settings.border_width
-            };
-            let border_color = if focused {
-                state.theme_settings.accent_color.0
-            } else {
-                state.theme_settings.border_color.0
-            };
-            let border_color =
-                color_with_alpha(border_color, close_alpha * decoration_progress as f32);
+            let focus = state
+                .window_focus
+                .get(&id)
+                .map_or(if focused { 1.0 } else { 0.0 }, |v| v.current);
+            let border_width = state.theme_settings.border_width
+                + (state.theme_settings.focus_ring_width - state.theme_settings.border_width)
+                    * focus;
+            let border_color = state.theme_settings.border_color.0;
+            let gradient = state.theme_settings.border_gradient;
 
             if let Some(border) = window_border_element(
                 state,
@@ -1105,6 +1183,9 @@ fn output_elements(
                 window_radius,
                 border_width,
                 border_color,
+                gradient,
+                focus as f32,
+                close_alpha * decoration_progress as f32,
                 output,
                 &programs,
             ) {
@@ -1263,6 +1344,12 @@ fn overview_chrome_element(
         radius: (radius * scale) as f32,
         width: (width * scale) as f32,
         color,
+        color_to: color,
+        gradient_line: [0.0; 4],
+        focus_color: color,
+        focus_color_to: color,
+        focus_gradient_line: [0.0; 4],
+        focus_mix: 0.0,
     };
     let program = if key.1 {
         rounded_clip_program(state, renderer)?.border
@@ -1472,6 +1559,12 @@ fn rounded_clip_program(
         UniformName::new("radius", UniformType::_1f),
         UniformName::new("border_width", UniformType::_1f),
         UniformName::new("border_color", UniformType::_4f),
+        UniformName::new("border_color_to", UniformType::_4f),
+        UniformName::new("gradient_line", UniformType::_4f),
+        UniformName::new("focus_color", UniformType::_4f),
+        UniformName::new("focus_color_to", UniformType::_4f),
+        UniformName::new("focus_gradient_line", UniformType::_4f),
+        UniformName::new("focus_mix", UniformType::_1f),
     ];
     let shadow_uniforms = [
         UniformName::new("shadow_rect", UniformType::_4f),
@@ -1516,6 +1609,9 @@ fn window_border_element(
     requested_radius: f64,
     requested_width: f64,
     color: [f32; 4],
+    gradient: Option<crate::config::BorderGradient>,
+    focus_mix: f32,
+    opacity: f32,
     output: &Output,
     programs: &RoundedClipPrograms,
 ) -> Option<PhysicalShaderElement> {
@@ -1525,12 +1621,49 @@ fn window_border_element(
         return None;
     }
 
+    let (from, to, gradient_line) = match gradient {
+        Some(gradient) => (
+            gradient.from.0,
+            gradient.to.0,
+            border_gradient_line(
+                physical,
+                mode.size,
+                output.current_transform().invert(),
+                gradient.angle,
+            ),
+        ),
+        None => (color, color, [0.0; 4]),
+    };
+    let (focus_from, focus_to, focus_gradient_line) = match state.theme_settings.focus_ring_gradient
+    {
+        Some(g) => (
+            g.from.0,
+            g.to.0,
+            border_gradient_line(
+                physical,
+                mode.size,
+                output.current_transform().invert(),
+                g.angle,
+            ),
+        ),
+        None => (
+            state.theme_settings.accent_color.0,
+            state.theme_settings.accent_color.0,
+            [0.0; 4],
+        ),
+    };
     let parameters = BorderParameters {
         geometry,
         clip_rect: framebuffer_clip_rect(physical, mode.size, output.current_transform().invert()),
         radius: scaled_effect_value(requested_radius, geometry, scale),
         width,
-        color,
+        color: color_with_alpha(from, opacity),
+        color_to: color_with_alpha(to, opacity),
+        gradient_line,
+        focus_color: color_with_alpha(focus_from, opacity),
+        focus_color_to: color_with_alpha(focus_to, opacity),
+        focus_gradient_line,
+        focus_mix,
     };
     let context = renderer.context_id().erased();
     let buffers = state.window_borders.entry(id).or_default();
@@ -1573,6 +1706,12 @@ fn border_uniforms(parameters: &BorderParameters) -> Vec<Uniform<'static>> {
         Uniform::new("radius", parameters.radius).into_owned(),
         Uniform::new("border_width", parameters.width).into_owned(),
         Uniform::new("border_color", parameters.color).into_owned(),
+        Uniform::new("border_color_to", parameters.color_to).into_owned(),
+        Uniform::new("gradient_line", parameters.gradient_line).into_owned(),
+        Uniform::new("focus_color", parameters.focus_color).into_owned(),
+        Uniform::new("focus_color_to", parameters.focus_color_to).into_owned(),
+        Uniform::new("focus_gradient_line", parameters.focus_gradient_line).into_owned(),
+        Uniform::new("focus_mix", parameters.focus_mix).into_owned(),
     ]
 }
 
@@ -1605,6 +1744,12 @@ fn window_tint_element(
         radius: scaled_effect_value(radius, geometry, scale),
         width: 0.0,
         color,
+        color_to: color,
+        gradient_line: [0.0; 4],
+        focus_color: color,
+        focus_color_to: color,
+        focus_gradient_line: [0.0; 4],
+        focus_mix: 0.0,
     };
     let uniforms = |p: &BorderParameters| {
         vec![
@@ -1921,6 +2066,34 @@ fn framebuffer_clip_rect(
     ]
 }
 
+fn border_gradient_line(
+    geometry: Rectangle<i32, Physical>,
+    output_size: Size<i32, Physical>,
+    transform: Transform,
+    angle: f64,
+) -> [f32; 4] {
+    let angle = angle.to_radians();
+    let direction = (angle.cos(), angle.sin());
+    let width = f64::from(geometry.size.w);
+    let height = f64::from(geometry.size.h);
+    let extent = (width * direction.0.abs() + height * direction.1.abs()) * 0.5;
+    let center = geometry.loc.to_f64() + Point::from((width * 0.5, height * 0.5));
+    let offset: Point<f64, Physical> = (direction.0 * extent, direction.1 * extent).into();
+    // Apply the same output-to-framebuffer transform as the rounded clip.
+    // This keeps angles in window coordinates on rotated/flipped monitors.
+    let area = transform.transform_size(output_size).to_f64();
+    let start = transform.transform_point_in(center - offset, &area);
+    let end = transform.transform_point_in(center + offset, &area);
+    let delta = end - start;
+    let length_squared = (delta.x * delta.x + delta.y * delta.y).max(0.000001);
+    [
+        start.x as f32,
+        start.y as f32,
+        (delta.x / length_squared) as f32,
+        (delta.y / length_squared) as f32,
+    ]
+}
+
 pub(crate) fn redraw_output<R, E>(
     renderer: &mut R,
     framebuffer: &mut R::Framebuffer<'_>,
@@ -2087,7 +2260,7 @@ fn append_material_surface(
         surface,
         content_origin.to_physical_precise_round(scale),
         scale,
-        1.0,
+        crate::effects::surface_opacity(surface),
         RenderElementKind::Unspecified,
     );
     elements.extend(content.into_iter().filter_map(|element| {
@@ -2125,6 +2298,7 @@ fn material_element(
 ) -> Option<(AnimatedWindowRenderElement, AnimatedWindowRenderElement)> {
     let (role, generation) = crate::effects::surface_role(surface)?;
     let mut material = crate::effects::resolve_material(role, state.theme_settings.material_style);
+    let presentation_alpha = crate::effects::surface_opacity(surface);
     if role == crate::effects::SemanticRole::Panel
         && material.style == crate::config::MaterialStyle::Translucent
     {
@@ -2138,7 +2312,11 @@ fn material_element(
     let [offset_y, shadow_blur, shadow_opacity] = material.shadow;
     let edge_bar =
         role == crate::effects::SemanticRole::Panel && radius == 0.0 && geometry.loc.y == 0;
-    let shadow_opacity = if edge_bar { 0.0 } else { shadow_opacity };
+    let shadow_opacity = if edge_bar {
+        0.0
+    } else {
+        shadow_opacity * f64::from(presentation_alpha)
+    };
     let shadow_geometry = Rectangle::new(
         (geometry.loc.x, geometry.loc.y + offset_y.round() as i32).into(),
         geometry.size,
@@ -2157,6 +2335,7 @@ fn material_element(
     let sample_geometry = expanded_blur_region(capture_geometry, blur.ceil() as i32, output_size);
     let sample_physical = sample_geometry.to_physical_precise_round(scale);
     let parameters = MaterialParameters {
+        presentation_alpha,
         blur: (blur * scale) as f32,
         scene_generation: if blur > 0.0 {
             state.backdrop_generation
@@ -2175,9 +2354,14 @@ fn material_element(
         shadow_values: [(shadow_blur * scale) as f32, shadow_opacity as f32],
         shadow_bounds: shadow_bounds(geometry, offset_y, shadow_blur),
         geometry,
-        tint: [red, green, blue, material.opacity],
+        tint: [
+            red,
+            green,
+            blue,
+            material.opacity * if blur > 0.0 { 1.0 } else { presentation_alpha },
+        ],
         generation,
-        opaque: material.opacity == 1.0 && radius == 0.0,
+        opaque: material.opacity == 1.0 && presentation_alpha == 1.0 && radius == 0.0,
         visible_framebuffer: framebuffer_clip_rect(
             geometry.to_physical_precise_round(scale),
             mode.size,
@@ -2304,6 +2488,7 @@ fn blur_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<BlurP
         UniformName::new("material_radius", UniformType::_1f),
         UniformName::new("texture_size", UniformType::_2f),
         UniformName::new("blur_radius", UniformType::_1f),
+        UniformName::new("presentation_alpha", UniformType::_1f),
         UniformName::new("tint", UniformType::_4f),
     ];
     match renderer.compile_custom_texture_shader(BLUR_SHADER, &uniforms) {
@@ -2332,6 +2517,7 @@ fn blur_uniforms(p: &MaterialParameters) -> Vec<Uniform<'static>> {
         )
         .into_owned(),
         Uniform::new("blur_radius", p.blur).into_owned(),
+        Uniform::new("presentation_alpha", p.presentation_alpha).into_owned(),
         Uniform::new("tint", p.tint).into_owned(),
     ]
 }
@@ -2491,9 +2677,66 @@ mod tests {
     };
 
     use super::{
-        color_with_alpha, framebuffer_clip_rect, normalized_scale, resize_content_behavior,
-        rounded_visual_rect, scaled_visual_rect, shadow_bounds,
+        border_gradient_line, color_with_alpha, framebuffer_clip_rect, normalized_scale,
+        resize_content_behavior, rounded_visual_rect, scaled_visual_rect, shadow_bounds,
     };
+
+    #[test]
+    fn gradient_direction_survives_every_output_transform() {
+        let mode = (2560, 1600).into();
+        for transform in [
+            Transform::Normal,
+            Transform::_90,
+            Transform::_180,
+            Transform::_270,
+            Transform::Flipped,
+            Transform::Flipped90,
+            Transform::Flipped180,
+            Transform::Flipped270,
+        ] {
+            let area = transform.transform_size(mode).to_f64();
+            let rect: Rectangle<i32, Physical> =
+                Rectangle::new((110, 60).into(), (800, 600).into());
+            for (angle, first, last) in [
+                (0.0, (110.0, 360.0), (910.0, 360.0)),
+                (90.0, (510.0, 60.0), (510.0, 660.0)),
+                (45.0, (110.0, 60.0), (910.0, 660.0)),
+                (135.0, (910.0, 60.0), (110.0, 660.0)),
+            ] {
+                let line = border_gradient_line(rect, mode, transform, angle);
+                let progress = |point: smithay::utils::Point<f64, Physical>| {
+                    let point = transform.transform_point_in(point, &area);
+                    (point.x - f64::from(line[0])) * f64::from(line[2])
+                        + (point.y - f64::from(line[1])) * f64::from(line[3])
+                };
+                assert!(
+                    progress(first.into()).abs() < 0.00001,
+                    "{transform:?}, {angle}"
+                );
+                assert!(
+                    (progress(last.into()) - 1.0).abs() < 0.00001,
+                    "{transform:?}, {angle}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gradient_coordinates_follow_fractional_resize_and_translation() {
+        for scale in [1.0, 1.25, 1.5, 1.8, 2.0] {
+            for width in [500.0, 733.25, 1000.0] {
+                let rect = crate::presentation::physical_rect(
+                    ferese_layout::Rect::new(40.25, 60.75, width, 600.5),
+                    (0, 0).into(),
+                    scale,
+                );
+                let line = border_gradient_line(rect, (3840, 2160).into(), Transform::Normal, 0.0);
+                assert!((f64::from(line[0]) - f64::from(rect.loc.x)).abs() < 0.001);
+                assert!((f64::from(line[2]) * f64::from(rect.size.w) - 1.0).abs() < 0.00001);
+                assert!(line.iter().all(|component| component.is_finite()));
+            }
+        }
+    }
 
     #[derive(Debug)]
     struct DamageElement {

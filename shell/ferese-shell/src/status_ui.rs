@@ -5,7 +5,6 @@ use cosmic::widget::{column, slider};
 use status::{Action, Snapshot};
 
 const DEVICE_LIST_HEIGHT: f32 = 180.0;
-const OPEN_MS: f32 = 160.0;
 
 fn device_list_height(count: usize) -> Option<f32> {
     (count > 4).then_some(DEVICE_LIST_HEIGHT)
@@ -48,30 +47,30 @@ impl Menu {
 pub struct OpenMenu {
     pub id: window::Id,
     pub kind: Menu,
-    opened: Instant,
+    pub motion: super::motion::PopupMotion,
     pub confirm: Option<Action>,
     pub effects: Option<EffectsBinding>,
     pub regions: super::motion::Regions,
 }
 impl OpenMenu {
     pub fn progress(&self) -> f32 {
-        let ease = |t: f32| {
-            let t = t.clamp(0.0, 1.0);
-            1.0 - (1.0 - t).powi(3)
-        };
-        ease(self.opened.elapsed().as_secs_f32() * 1000.0 / OPEN_MS)
+        self.motion.progress()
     }
     pub fn animating(&self) -> bool {
-        self.progress() < 1.0
+        self.motion.animating()
     }
 }
 
 impl FereseShell {
     pub fn open_menu(&mut self, kind: Menu, anchor: Rectangle<i32>) -> Task<Message> {
         if self.menu.as_ref().is_some_and(|menu| menu.kind == kind) {
-            // Close atomically. Per-widget alpha cannot fade SVG/text caches
-            // as one surface and leaves bright fragments during the fade.
-            return self.destroy_menu();
+            if let Some(menu) = &mut self.menu {
+                if menu.motion.closing() {
+                    menu.motion.retarget(1.0, Instant::now());
+                    return Task::none();
+                }
+            }
+            return self.close_menu();
         }
         let destroy = self.destroy_menu();
         if !kind.available(&self.status) {
@@ -81,7 +80,7 @@ impl FereseShell {
         self.menu = Some(OpenMenu {
             id,
             kind,
-            opened: Instant::now(),
+            motion: super::motion::PopupMotion::new(self.config.animations),
             confirm: None,
             effects: None,
             regions: Default::default(),
@@ -123,6 +122,36 @@ impl FereseShell {
                 cosmic::surface::action::destroy_popup(menu.id),
             ))
         })
+    }
+    pub fn close_menu(&mut self) -> Task<Message> {
+        let Some(menu) = &mut self.menu else {
+            return Task::none();
+        };
+        if menu.motion.closing() {
+            return Task::none();
+        }
+        if menu
+            .effects
+            .as_ref()
+            .is_some_and(|effects| effects.surface.version() >= 3)
+        {
+            menu.motion.retarget(0.0, Instant::now());
+            if menu.animating() {
+                return Task::none();
+            }
+        }
+        self.destroy_menu()
+    }
+    pub fn animate_menu(&mut self) -> Task<Message> {
+        if let Some(menu) = &self.menu {
+            if let Some(effects) = &menu.effects {
+                let _ = effects.set_opacity(menu.progress());
+            }
+            if menu.motion.closing() && !menu.animating() {
+                return self.destroy_menu();
+            }
+        }
+        Task::none()
     }
     pub fn optimistic_status(&mut self, action: &Action) {
         match action {
@@ -221,7 +250,6 @@ impl FereseShell {
                     ((metrics.height - f32::from(metrics.icon_size)) * 0.5).max(4.0),
                 ])
                 .height(metrics.height)
-                .class(button_style(foreground, selected, 1.0))
                 .on_press_with_rectangle(move |offset, bounds| {
                     cosmic::Action::App(Message::OpenMenu(
                         kind,
@@ -233,7 +261,7 @@ impl FereseShell {
                         },
                     ))
                 });
-            controls = controls.push(control);
+            controls = controls.push(motion::button(control, foreground, selected, 1.0));
         }
         controls.into()
     }
@@ -243,7 +271,8 @@ impl FereseShell {
             return text("").into();
         };
         let theme = self.config.theme;
-        let p = menu.progress();
+        // The compositor fades the complete surface, not individual caches.
+        let p = 1.0;
         let kind = menu.kind;
         let primary = color_with_opacity(theme.text_primary, p);
         let muted = color_with_opacity(theme.text_muted, p);
@@ -615,7 +644,7 @@ impl FereseShell {
                 }));
         // Keep the outer surface transparent; only inner cards paint a background.
         cosmic::widget::autosize::autosize(
-            super::motion::animated(panel.into(), p, menu.regions.clone()),
+            super::motion::animated(panel.into(), menu.progress(), menu.regions.clone()),
             cosmic::iced::advanced::widget::Id::new("ferese-status-menu"),
         )
         .limits(
@@ -661,12 +690,15 @@ fn status_summary<'a>(
             ..Default::default()
         }));
     let badge: Element<'_, cosmic::Action<Message>> = if let Some((_, action)) = toggle {
-        button::custom(badge)
-            .padding(0)
-            .name(if enabled { "Turn off" } else { "Turn on" })
-            .class(button_style(badge_color, false, opacity))
-            .on_press(cosmic::Action::App(Message::Control(action)))
-            .into()
+        motion::button(
+            button::custom(badge)
+                .padding(0)
+                .name(if enabled { "Turn off" } else { "Turn on" })
+                .on_press(cosmic::Action::App(Message::Control(action))),
+            badge_color,
+            false,
+            opacity,
+        )
     } else {
         badge.into()
     };
@@ -800,13 +832,15 @@ fn connection_control<'a>(
             .padding(4)
             .into();
     };
-    container(
+    container(motion::button(
         button::custom(content)
             .width(Length::FillPortion(1))
             .padding(4)
-            .class(button_style(foreground, false, opacity))
             .on_press(cosmic::Action::App(Message::Control(action))),
-    )
+        foreground,
+        false,
+        opacity,
+    ))
     .id("ferese-blur-card")
     .width(Length::FillPortion(1))
     .into()
@@ -818,11 +852,14 @@ fn menu_button<'a>(
     foreground: Color,
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
-    button::custom(text(label).size(13))
-        .padding([6, 8])
-        .class(button_style(foreground, false, opacity))
-        .on_press(cosmic::Action::App(message))
-        .into()
+    motion::button(
+        button::custom(text(label).size(13))
+            .padding([6, 8])
+            .on_press(cosmic::Action::App(message)),
+        foreground,
+        false,
+        opacity,
+    )
 }
 fn toggle_row<'a>(
     label: &'a str,
@@ -842,24 +879,6 @@ fn toggle_row<'a>(
     ]
     .align_y(Alignment::Center)
     .into()
-}
-pub(super) fn button_style(foreground: Color, selected: bool, opacity: f32) -> theme::Button {
-    let style = move |strength: f32| button::Style {
-        text_color: Some(foreground),
-        icon_color: Some(foreground),
-        border_radius: 6.0.into(),
-        background: Some(Background::Color(Color {
-            a: strength * opacity,
-            ..foreground
-        })),
-        ..Default::default()
-    };
-    theme::Button::Custom {
-        active: Box::new(move |_, _| style(if selected { 0.14 } else { 0.0 })),
-        hovered: Box::new(move |_, _| style(if selected { 0.16 } else { 0.08 })),
-        pressed: Box::new(move |_, _| style(0.20)),
-        disabled: Box::new(move |_| style(0.0)),
-    }
 }
 
 fn slider_row(
@@ -1071,10 +1090,12 @@ mod tests {
     #[test]
     fn completed_open_stops_requesting_animation_ticks() {
         let past = Instant::now() - Duration::from_secs(1);
+        let mut motion = super::motion::PopupMotion::new(Default::default());
+        motion.begin(past);
         let menu = OpenMenu {
             id: window::Id::unique(),
             kind: Menu::Network,
-            opened: past,
+            motion,
             confirm: None,
             effects: None,
             regions: Default::default(),

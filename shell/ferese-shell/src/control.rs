@@ -36,6 +36,7 @@ pub(crate) struct OutputSnapshot {
 #[derive(Clone, Debug)]
 pub(crate) struct WorkspaceSnapshot {
     pub(crate) id: u64,
+    pub(crate) name: String,
     pub(crate) output: Option<u64>,
     pub(crate) active: bool,
 }
@@ -58,12 +59,14 @@ pub(crate) struct ShellControl {
 }
 
 pub(crate) struct ControlPoll {
+    pub(crate) config: Option<String>,
     pub(crate) snapshot: Option<ShellSnapshot>,
     pub(crate) overview_active: Option<bool>,
     pub(crate) disconnected: bool,
 }
 
 enum ControlUpdate {
+    Config(String),
     Snapshot(ShellSnapshot),
     OverviewState(bool),
     Disconnected,
@@ -74,7 +77,7 @@ impl ShellControl {
         let connection = control_connection()?;
         let (globals, mut queue) = registry_queue_init::<ControlState>(&connection)?;
         let qh = queue.handle();
-        let manager = globals.bind::<FereseShellManagerV1, _, _>(&qh, 1..=1, ())?;
+        let manager = globals.bind::<FereseShellManagerV1, _, _>(&qh, 1..=2, ())?;
         let shell = manager.get_shell(&qh, ());
         let (sender, updates) = mpsc::channel();
         let mut state = ControlState::new(sender);
@@ -97,6 +100,7 @@ impl ShellControl {
 
     pub(crate) fn poll(&self) -> ControlPoll {
         let mut poll = ControlPoll {
+            config: None,
             snapshot: None,
             overview_active: None,
             disconnected: false,
@@ -104,6 +108,7 @@ impl ShellControl {
 
         loop {
             match self.updates.try_recv() {
+                Ok(ControlUpdate::Config(source)) => poll.config = Some(source),
                 Ok(ControlUpdate::Snapshot(snapshot)) => poll.snapshot = Some(snapshot),
                 Ok(ControlUpdate::OverviewState(active)) => poll.overview_active = Some(active),
                 Ok(ControlUpdate::Disconnected) | Err(TryRecvError::Disconnected) => {
@@ -156,6 +161,7 @@ fn control_connection() -> Result<Connection, Box<dyn Error>> {
 }
 
 struct ControlState {
+    config: Option<String>,
     sender: Sender<ControlUpdate>,
     pending: ShellSnapshot,
     serial: Option<u32>,
@@ -165,6 +171,7 @@ impl ControlState {
     fn new(sender: Sender<ControlUpdate>) -> Self {
         Self {
             sender,
+            config: None,
             pending: ShellSnapshot::default(),
             serial: None,
         }
@@ -193,6 +200,15 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
         _qh: &QueueHandle<Self>,
     ) {
         match event {
+            ferese_shell_v1::Event::ConfigBegin => state.config = Some(String::new()),
+            ferese_shell_v1::Event::ConfigChunk { source } => {
+                append_config_chunk(&mut state.config, &source);
+            }
+            ferese_shell_v1::Event::ConfigEnd => {
+                if let Some(source) = state.config.take() {
+                    let _ = state.sender.send(ControlUpdate::Config(source));
+                }
+            }
             ferese_shell_v1::Event::SnapshotBegin { serial } => {
                 state.serial = Some(serial);
                 state.pending = ShellSnapshot::default();
@@ -215,13 +231,14 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
                 workspace_lo,
                 output_hi,
                 output_lo,
-                name: _,
+                name,
                 active,
             } => {
                 let output = join_id(output_hi, output_lo);
 
                 state.pending.workspaces.push(WorkspaceSnapshot {
                     id: join_id(workspace_hi, workspace_lo),
+                    name,
                     output: (output != 0).then_some(output),
                     active: active != 0,
                 });
@@ -275,4 +292,35 @@ fn split_id(id: u64) -> (u32, u32) {
 
 fn join_id(hi: u32, lo: u32) -> u64 {
     (u64::from(hi) << 32) | u64::from(lo)
+}
+
+fn append_config_chunk(config: &mut Option<String>, source: &str) {
+    if let Some(buffer) = config {
+        if buffer.len() + source.len() > 60 * 1024 {
+            *config = None;
+        } else {
+            buffer.push_str(source);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_transfer_is_bounded_and_requires_begin() {
+        let mut config = None;
+        append_config_chunk(&mut config, "ignored");
+        assert!(config.is_none());
+        config = Some(String::new());
+        append_config_chunk(&mut config, "🌲");
+        append_config_chunk(&mut config, "theme");
+        assert_eq!(config.take().as_deref(), Some("🌲theme"));
+        config = Some("a".repeat(60 * 1024));
+        append_config_chunk(&mut config, "overflow");
+        assert!(config.is_none());
+        append_config_chunk(&mut config, "ignored after overflow");
+        assert!(config.is_none());
+    }
 }

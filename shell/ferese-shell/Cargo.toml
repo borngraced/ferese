@@ -11,6 +11,7 @@ jiff.workspace = true
 # Keep GPU rendering available as a fallback/override. The shell defaults to
 # tiny-skia to avoid a second GPU initialization during desktop startup.
 libcosmic = { workspace = true, features = ["wgpu", "a11y"] }
+iced_accessibility = { git = "https://github.com/pop-os/libcosmic", rev = "03d7dcb832bc6d15bc1bb07327a1aa426b2d5bc0" }
 serde.workspace = true
 toml.workspace = true
 wayland-client.workspace = true

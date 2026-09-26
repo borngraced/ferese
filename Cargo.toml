@@ -11,6 +11,7 @@ members = [
     "tools/ferese-effects-probe",
     "tools/ferese-malformed-client",
     "tools/ferese-shell-control-probe",
+    "tools/ferese-lock-probe",
     "tools/ferese-shell-spike",
 ]
 resolver = "3"

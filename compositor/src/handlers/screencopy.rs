@@ -137,6 +137,10 @@ impl Ferese {
         with_damage: bool,
     ) {
         let mut used = data.used.lock().unwrap();
+        if self.session_lock.active {
+            frame.failed();
+            return;
+        }
         if *used {
             frame.post_error(
                 zwlr_screencopy_frame_v1::Error::AlreadyUsed,

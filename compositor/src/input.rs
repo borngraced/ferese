@@ -1,3 +1,4 @@
+use smithay::reexports::wayland_server::Resource;
 use std::process::Command;
 
 use smithay::{
@@ -26,6 +27,21 @@ impl Ferese {
         let seat = self.seat.clone();
         self.idle_notifier_state.notify_activity(&seat);
 
+        if self.session_lock.active {
+            // An already-bound IME or drag client may install a grab after the
+            // lock request. Never let that grab receive subsequent lock input.
+            if let Some(keyboard) = seat.get_keyboard() {
+                keyboard.unset_grab(self);
+            }
+            if let Some(pointer) = seat.get_pointer() {
+                pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), 0);
+            }
+            if let Some(touch) = seat.get_touch() {
+                touch.unset_grab(self);
+            }
+            self.focus_lock_surface();
+        }
+
         match event {
             InputEvent::SwitchToggle { event } if event.switch() == Some(Switch::Lid) => {
                 crate::backends::direct::set_lid_closed(self, event.state() == SwitchState::On);
@@ -42,6 +58,9 @@ impl Ferese {
                     SERIAL_COUNTER.next_serial(),
                     Event::time(&event) as u32,
                     |data, modifiers, keysym| {
+                        if data.session_lock.active {
+                            return FilterResult::Forward;
+                        }
                         if state == KeyState::Released && data.intercepted_keys.remove(&keycode) {
                             return FilterResult::Intercept(());
                         }
@@ -177,6 +196,30 @@ impl Ferese {
             InputEvent::PointerButton { event, .. } => {
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
                 let serial = SERIAL_COUNTER.next_serial();
+
+                // Native popup_done destroys Iced's window immediately. For
+                // effects-capable shell popups, release input now but defer
+                // popup_done until the compositor's whole-surface fade ends.
+                if event.state() == ButtonState::Pressed
+                    && pointer.is_grabbed()
+                    && let Some(surface) = self.seat.get_keyboard().and_then(|k| k.current_focus())
+                    && let Some(popup) = self.popups.find_popup(&surface)
+                    && !self
+                        .surface_under(pointer.current_location())
+                        .is_some_and(|(target, _)| surface.id().same_client_as(&target.id()))
+                    && let Ok(root) = smithay::desktop::find_popup_root_surface(&popup)
+                    && crate::effects::begin_surface_dismiss(&surface)
+                {
+                    let opacity = crate::effects::surface_opacity(&surface);
+                    self.dismissing_popups.push((
+                        root,
+                        popup,
+                        crate::dimming::DimAnimation::new(f64::from(opacity)),
+                    ));
+                    pointer.unset_grab(self, serial, event.time() as u32);
+                    self.focus_window_at(pointer.current_location(), serial);
+                    crate::backends::direct::render_all(self);
+                }
 
                 if self.overview.is_active() {
                     let position = pointer.current_location();
@@ -345,6 +388,11 @@ impl Ferese {
     }
 
     fn focus_window_at(&mut self, position: Point<f64, Logical>, serial: Serial) {
+        if self.session_lock.active {
+            self.focus_output_at(position);
+            self.focus_lock_surface();
+            return;
+        }
         let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
         self.focus_output_at(position);
 
@@ -390,6 +438,9 @@ impl Ferese {
         pointer: &PointerHandle<Self>,
         position: Point<f64, Logical>,
     ) {
+        if self.session_lock.active {
+            return;
+        }
         if self.overview.is_active()
             || !self.input_settings.focus_follows_mouse
             || pointer.is_grabbed()
@@ -436,6 +487,9 @@ impl Ferese {
         pointer: &PointerHandle<Self>,
         requested: Point<f64, Logical>,
     ) -> Point<f64, Logical> {
+        if self.session_lock.active {
+            return requested;
+        }
         let current = pointer.current_location();
         let Some(focused_surface) = pointer.current_focus() else {
             return requested;
@@ -473,6 +527,9 @@ impl Ferese {
     }
 
     pub fn activate_focused_pointer_constraint(&self, pointer: &PointerHandle<Self>) {
+        if self.session_lock.active {
+            return;
+        }
         let position = pointer.current_location();
         let Some((surface, origin)) = self.surface_under(position) else {
             return;

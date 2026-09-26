@@ -54,11 +54,43 @@ impl DimAnimation {
         self.current = self.start + (target - self.start) * eased;
         self.current != target
     }
+
+    /// The target changed at this tick, not at the beginning of a potentially
+    /// long idle interval. Do not spend that old elapsed time on a new fade.
+    pub fn advance_visual(&mut self, target: f64, delta: Duration, duration_ms: f64) -> bool {
+        self.advance(
+            target,
+            if self.target != target {
+                Duration::ZERO
+            } else {
+                delta
+            },
+            duration_ms,
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn visual_focus_and_dimming_start_together_after_idle_and_reverse() {
+        let mut focus = DimAnimation::new(0.0);
+        let mut dim = DimAnimation::new(0.15);
+        assert!(focus.advance_visual(1.0, Duration::from_secs(30), 150.0));
+        assert!(dim.advance_visual(0.0, Duration::from_secs(30), 150.0));
+        assert_eq!(focus.current, 0.0);
+        assert_eq!(dim.current, 0.15);
+        focus.advance_visual(1.0, Duration::from_millis(75), 150.0);
+        dim.advance_visual(0.0, Duration::from_millis(75), 150.0);
+        assert!((focus.current + dim.current / 0.15 - 1.0).abs() < 1e-9);
+        let before = focus.current;
+        focus.advance_visual(0.0, Duration::from_millis(16), 150.0);
+        assert_eq!(focus.current, before);
+        assert!(!focus.advance_visual(0.0, Duration::from_millis(150), 150.0));
+        assert!(!focus.advance_visual(1.0, Duration::from_secs(30), 0.0));
+        assert_eq!(focus.current, 1.0);
+    }
 
     #[test]
     fn only_unfocused_windows_dim_and_overview_disables_it() {

@@ -107,7 +107,8 @@ pub fn handle_commit(state: &mut Ferese, surface: &WlSurface) {
     }
 
     let policy = layer.cached_state();
-    if policy.keyboard_interactivity == KeyboardInteractivity::Exclusive
+    if !state.session_lock.active
+        && policy.keyboard_interactivity == KeyboardInteractivity::Exclusive
         && matches!(policy.layer, Layer::Top | Layer::Overlay)
     {
         state

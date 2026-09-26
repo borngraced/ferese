@@ -103,6 +103,14 @@ fn centered_row_start(strip: Rect, count: usize, card_width: f64) -> f64 {
 }
 
 impl OverviewState {
+    pub(crate) fn set_font_family(&mut self, family: String) {
+        if self.font_family != family {
+            self.font_family = family;
+            self.font_loaded = false;
+            self.font = None;
+            self.labels.clear();
+        }
+    }
     pub(crate) fn with_font_family(font_family: String) -> Self {
         Self {
             font_family,

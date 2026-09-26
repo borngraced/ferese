@@ -107,6 +107,9 @@ impl ClosingAnimation {
 }
 
 pub struct Ferese {
+    pub(crate) session_lock_state: smithay::wayland::session_lock::SessionLockManagerState,
+    pub(crate) session_lock: crate::session_lock::Lock,
+    pub(crate) config_source: Option<String>,
     pub start_time: Instant,
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
@@ -125,10 +128,12 @@ pub struct Ferese {
     maximized_windows: HashSet<WindowId>,
     maximized_column_widths: HashMap<WindowId, ColumnWidth>,
     window_stack: crate::stacking::WindowStack,
+    natural_floating_pending: HashSet<WindowId>,
     pub(crate) window_borders: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
     pub(crate) window_dims: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
     pub(crate) window_resize_fills: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
     pub(crate) window_dimming: HashMap<WindowId, crate::dimming::DimAnimation>,
+    pub(crate) window_focus: HashMap<WindowId, crate::dimming::DimAnimation>,
     pub(crate) window_shadows: HashMap<WindowId, crate::winit::WindowShadowBuffers>,
     pub(crate) rounded_clip_programs: HashMap<ErasedContextId, crate::winit::RoundedClipPrograms>,
     pub(crate) overview_scrims: HashMap<OutputId, crate::winit::OverviewScrim>,
@@ -178,6 +183,11 @@ pub struct Ferese {
     next_output_id: u64,
     last_animation_tick: Instant,
     pub popups: PopupManager,
+    pub(crate) dismissing_popups: Vec<(
+        WlSurface,
+        smithay::desktop::PopupKind,
+        crate::dimming::DimAnimation,
+    )>,
     pub seat: Seat<Self>,
     pub alpha_modifier_state: AlphaModifierState,
     pub compositor_state: CompositorState,
@@ -227,6 +237,65 @@ pub struct RuntimeConfig {
 }
 
 impl Ferese {
+    pub(crate) fn apply_runtime_config(&mut self, config: RuntimeConfig) -> Result<(), String> {
+        let keyboard_changed = self.input_settings.xkb_layout != config.input_settings.xkb_layout
+            || self.input_settings.xkb_variant != config.input_settings.xkb_variant
+            || self.input_settings.xkb_options != config.input_settings.xkb_options;
+        if let Some(keyboard) = self.seat.get_keyboard() {
+            if keyboard_changed {
+                let options = (!config.input_settings.xkb_options.is_empty())
+                    .then(|| config.input_settings.xkb_options.join(","));
+                keyboard
+                    .set_xkb_config(
+                        self,
+                        XkbConfig {
+                            layout: &config.input_settings.xkb_layout,
+                            variant: &config.input_settings.xkb_variant,
+                            options,
+                            ..XkbConfig::default()
+                        },
+                    )
+                    .map_err(|e| format!("keymap reload failed: {e}"))?;
+            }
+            keyboard.change_repeat_info(
+                config.input_settings.repeat_rate,
+                config.input_settings.repeat_delay_ms,
+            );
+        }
+        self.advance_animations(Instant::now());
+        if self.input_settings.touchpad != config.input_settings.touchpad {
+            tracing::warn!(
+                "touchpad changes apply when the device reconnects or the session restarts"
+            );
+        }
+        if self.output_profiles != config.output_profiles {
+            tracing::warn!(
+                "output profile changes apply on output reconnect; current modes are preserved"
+            );
+        }
+        self.workspaces.reconfigure_defaults(
+            config.layout_mode,
+            config.default_column_width,
+            config.scrolling_focus_strategy,
+        );
+        self.gap_config = config.gap_config;
+        self.input_settings = config.input_settings;
+        self.bindings = config.bindings;
+        self.window_rules = config.window_rules;
+        self.theme_settings = config.theme_settings;
+        self.column_width_presets = config.column_width_presets;
+        self.animations_enabled = config.animations_enabled;
+        self.animation_speed = config.animation_speed;
+        self.spring_config = config.spring_config;
+        self.viewport_spring_config = config.viewport_spring_config;
+        self.output_profiles = config.output_profiles;
+        self.overview.set_font_family(config.overview_font_family);
+        self.wallpaper.reload(config.wallpaper);
+        self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
+        self.relayout();
+        crate::backends::direct::render_all(self);
+        Ok(())
+    }
     pub fn register_output(&mut self, output: &Output, identity: String) {
         let Some(geometry) = self.space.output_geometry(output) else {
             tracing::error!(output = %output.name(), "cannot register an unmapped output");
@@ -286,6 +355,8 @@ impl Ferese {
             }
         });
         self.space.unmap_output(output);
+        self.session_lock.surfaces.remove(output);
+        self.session_lock.backgrounds.remove(output);
 
         match self.output_workspaces.disconnect(output_id) {
             Ok(Some(target)) => {
@@ -406,6 +477,10 @@ impl Ferese {
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&display_handle);
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&display_handle);
         let idle_notifier_state = IdleNotifierState::new(&display_handle, event_loop.handle());
+        let session_lock_state = smithay::wayland::session_lock::SessionLockManagerState::new::<
+            Self,
+            _,
+        >(&display_handle, |_| true);
         let input_method_enabled =
             std::env::var_os("FERESE_ENABLE_INPUT_METHOD").is_some_and(|value| value == "1");
         let input_method_manager_state =
@@ -456,6 +531,9 @@ impl Ferese {
         let named_cursors = HashMap::from([(CursorIcon::Default, default_cursor)]);
 
         let mut state = Self {
+            session_lock_state,
+            session_lock: crate::session_lock::Lock::default(),
+            config_source: None,
             start_time,
             socket_name,
             display_handle,
@@ -478,10 +556,12 @@ impl Ferese {
             maximized_windows: HashSet::new(),
             maximized_column_widths: HashMap::new(),
             window_stack: crate::stacking::WindowStack::default(),
+            natural_floating_pending: HashSet::new(),
             window_borders: HashMap::new(),
             window_dims: HashMap::new(),
             window_resize_fills: HashMap::new(),
             window_dimming: HashMap::new(),
+            window_focus: HashMap::new(),
             window_shadows: HashMap::new(),
             rounded_clip_programs: HashMap::new(),
             overview_scrims: HashMap::new(),
@@ -525,6 +605,7 @@ impl Ferese {
             next_output_id: 1,
             last_animation_tick: start_time,
             popups: PopupManager::default(),
+            dismissing_popups: Vec::new(),
             seat,
             alpha_modifier_state,
             compositor_state,
@@ -588,6 +669,9 @@ impl Ferese {
         &self,
         position: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        if self.session_lock.active {
+            return self.lock_surface_under(position);
+        }
         self.layer_surface_under(position, &[Layer::Overlay, Layer::Top])
             .map(|(_, surface, origin)| (surface, origin))
             .or_else(|| self.window_surface_under(position))
@@ -601,6 +685,9 @@ impl Ferese {
         &self,
         position: Point<f64, Logical>,
     ) -> Option<(LayerSurface, WlSurface, Point<f64, Logical>)> {
+        if self.session_lock.active {
+            return None;
+        }
         if let Some(layer) = self.layer_surface_under(position, &[Layer::Overlay, Layer::Top]) {
             return Some(layer);
         }
@@ -739,9 +826,18 @@ impl Ferese {
         let mut windows = self.space.elements().cloned().collect::<Vec<_>>();
         windows.sort_by_key(|window| {
             let id = self.window_ids.get(window).copied();
-            let priority = id
-                .and_then(|id| self.window_geometry.get(&id))
-                .is_some_and(|geometry| geometry.is_fullscreen() || geometry.is_zooming());
+            let geometry = id.and_then(|id| self.window_geometry.get(&id));
+            let floating = id.is_some_and(|id| {
+                matches!(
+                    self.workspaces.placement(id),
+                    Some(WindowPlacement::Floating { .. })
+                )
+            });
+            let priority = crate::stacking::layer_priority(
+                floating,
+                geometry.is_some_and(|geometry| geometry.is_zooming()),
+                geometry.is_some_and(|geometry| geometry.is_fullscreen()),
+            );
             (
                 priority,
                 id.map_or(usize::MAX, |id| self.window_stack.rank(id)),
@@ -891,6 +987,13 @@ impl Ferese {
                 Some(WindowPlacement::Floating { .. })
             );
             let mut rect = centered_floating_rect(bounds);
+            if should_float && rule.width.is_none() && rule.height.is_none() {
+                if let Some(size) = client_size(window) {
+                    rect = natural_floating_rect(bounds, size);
+                } else {
+                    self.natural_floating_pending.insert(id);
+                }
+            }
             rect.width = rule.width.unwrap_or(rect.width).min(bounds.width);
             rect.height = rule.height.unwrap_or(rect.height).min(bounds.height);
             rect.x = bounds.x + (bounds.width - rect.width) / 2.0;
@@ -974,9 +1077,11 @@ impl Ferese {
         self.maximized_windows.remove(&id);
         self.maximized_column_widths.remove(&id);
         self.window_stack.remove(id);
+        self.natural_floating_pending.remove(&id);
         self.window_borders.remove(&id);
         self.window_dims.remove(&id);
         self.window_dimming.remove(&id);
+        self.window_focus.remove(&id);
         self.window_shadows.remove(&id);
         self.closing_windows.remove(&id);
         self.window_rules_applied.remove(&id);
@@ -994,6 +1099,9 @@ impl Ferese {
     }
 
     pub fn relayout(&mut self) {
+        if self.session_lock.active {
+            self.configure_lock_surfaces();
+        }
         // Consume idle time before setting new targets; it must not become a
         // large first animation step after a keypress on an idle desktop.
         self.advance_animations(Instant::now());
@@ -1214,12 +1322,21 @@ impl Ferese {
                 }
             }
             let visual = geometry.visual.current;
+            let natural_pending = self.natural_floating_pending.contains(&id)
+                && is_floating
+                && !is_fullscreen
+                && !is_maximized;
+            if natural_pending {
+                requested_size = None;
+            }
             let location = (visual.x.round() as i32, visual.y.round() as i32);
 
             self.space.map_element(window.clone(), location, false);
             if let Some(toplevel) = window.toplevel() {
                 let state_changed = toplevel.with_pending_state(|state| {
-                    if let Some(size) = requested_size {
+                    if natural_pending {
+                        state.size = None;
+                    } else if let Some(size) = requested_size {
                         state.size = Some((size.width, size.height).into());
                     }
 
@@ -1258,7 +1375,7 @@ impl Ferese {
                     fullscreen_changed || maximized_changed || tiled_changed || decoration_changed
                 });
 
-                if requested_size.is_some() || state_changed {
+                if natural_pending || requested_size.is_some() || state_changed {
                     if let Some(serial) = toplevel.send_pending_configure()
                         && requested_size.is_some()
                         && had_geometry
@@ -1327,6 +1444,19 @@ impl Ferese {
             })
             .collect::<Vec<_>>();
         let mut active_animation = false;
+        self.dismissing_popups.retain_mut(|(root, popup, motion)| {
+            if !smithay::utils::IsAlive::alive(popup.wl_surface()) {
+                return false;
+            }
+            let duration = if self.animations_enabled { 140.0 } else { 0.0 };
+            let active = motion.advance_visual(0.0, delta, duration);
+            crate::effects::fade_dismissed_surface(popup.wl_surface(), motion.current);
+            active_animation |= active;
+            if !active {
+                let _ = PopupManager::dismiss_popup(root, popup);
+            }
+            active
+        });
 
         let dim_settings = self.theme_settings.inactive_dim;
         let duration = if self.animations_enabled {
@@ -1335,6 +1465,22 @@ impl Ferese {
             0.0
         };
         let mut dim_changed = false;
+        // Include hidden workspace windows: overview can present them too.
+        for id in self.window_ids.values().copied().collect::<Vec<_>>() {
+            let selected = if self.overview.is_active() {
+                self.overview_selected(id)
+            } else {
+                self.focused_window == Some(id)
+            };
+            let target = if selected { 1.0 } else { 0.0 };
+            let focus = self
+                .window_focus
+                .entry(id)
+                .or_insert_with(|| crate::dimming::DimAnimation::new(target));
+            let previous = focus.current;
+            active_animation |= focus.advance_visual(target, delta, duration);
+            dim_changed |= previous != focus.current;
+        }
         for (_, id) in &windows {
             let target = crate::dimming::target(
                 dim_settings,
@@ -1347,7 +1493,7 @@ impl Ferese {
                 .entry(*id)
                 .or_insert_with(|| crate::dimming::DimAnimation::new(target));
             let previous = dim.current;
-            active_animation |= dim.advance(target, delta, duration);
+            active_animation |= dim.advance_visual(target, delta, duration);
             dim_changed |= previous != dim.current;
         }
 
@@ -1504,6 +1650,7 @@ impl Ferese {
                 );
             }
             if let Some(size) = geometry.presentation_size_request(self.start_time.elapsed())
+                && !self.natural_floating_pending.contains(&id)
                 && let Some(toplevel) = window.toplevel()
             {
                 toplevel.with_pending_state(|state| {
@@ -1625,7 +1772,7 @@ impl Ferese {
     }
 
     pub fn record_client_commit(&mut self, window: &Window) {
-        let Some(id) = self.window_ids.get(window) else {
+        let Some(&id) = self.window_ids.get(window) else {
             return;
         };
         // current_serial is promoted by Smithay on commit, unlike
@@ -1640,15 +1787,32 @@ impl Ferese {
         });
         if self
             .resize_transactions
-            .get(id)
+            .get(&id)
             .is_some_and(|transaction| transaction.accepts(committed_serial))
         {
-            self.resize_transactions.remove(id);
+            self.resize_transactions.remove(&id);
         }
         let Some(size) = client_size(window) else {
             return;
         };
-        let Some(geometry) = self.window_geometry.get_mut(id) else {
+        if self.natural_floating_pending.remove(&id)
+            && matches!(
+                self.workspaces.placement(id),
+                Some(WindowPlacement::Floating { .. })
+            )
+            && let Some(bounds) = self.floating_bounds_for_window(id)
+        {
+            let rect = natural_floating_rect(bounds, size);
+            if self.workspaces.set_floating_rect(id, rect).is_ok() {
+                // This is the first mapped client buffer, not a user resize.
+                // Do not animate from the temporary placement box.
+                self.window_geometry
+                    .insert(id, WindowGeometry::new(rect, Some(size)));
+                self.resize_transactions.remove(&id);
+                self.relayout();
+            }
+        }
+        let Some(geometry) = self.window_geometry.get_mut(&id) else {
             return;
         };
 
@@ -2204,6 +2368,10 @@ impl Ferese {
     }
 
     pub(crate) fn restore_keyboard_focus(&mut self) {
+        if self.session_lock.active {
+            self.focus_lock_surface();
+            return;
+        }
         let surface = self.focused_window.and_then(|focused| {
             self.window_ids.iter().find_map(|(window, id)| {
                 (*id == focused)
@@ -2224,6 +2392,18 @@ impl Ferese {
             .focused_output()
             .or_else(|| self.space.outputs().next())?;
         self.output_bounds_for(output)
+    }
+
+    fn floating_bounds_for_window(&self, window: WindowId) -> Option<Rect> {
+        let output_id = self
+            .workspaces
+            .workspace_for_window(window)
+            .and_then(|workspace| self.output_workspaces.output_for_workspace(workspace));
+        self.output_ids
+            .iter()
+            .find(|(_, id)| Some(**id) == output_id)
+            .and_then(|(output, _)| self.output_bounds_for(output))
+            .or_else(|| self.output_bounds())
     }
 
     pub(crate) fn output_bounds_for(&self, output: &Output) -> Option<Rect> {
@@ -2339,6 +2519,17 @@ fn centered_floating_rect(bounds: Rect) -> Rect {
     )
 }
 
+fn natural_floating_rect(bounds: Rect, size: ClientSize) -> Rect {
+    let width = f64::from(size.width).clamp(1.0, bounds.width.max(1.0));
+    let height = f64::from(size.height).clamp(1.0, bounds.height.max(1.0));
+    Rect::new(
+        bounds.x + (bounds.width - width) / 2.0,
+        bounds.y + (bounds.height - height) / 2.0,
+        width,
+        height,
+    )
+}
+
 fn smoothstep(progress: f64) -> f64 {
     let progress = progress.clamp(0.0, 1.0);
 
@@ -2393,6 +2584,20 @@ impl ClientData for ClientState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn floating_dialog_keeps_its_client_size_not_workspace_proportion() {
+        assert_eq!(
+            natural_floating_rect(
+                Rect::new(100.0, 48.0, 1600.0, 900.0),
+                ClientSize {
+                    width: 400,
+                    height: 200
+                }
+            ),
+            Rect::new(700.0, 398.0, 400.0, 200.0)
+        );
+    }
 
     #[test]
     fn maximization_respects_layer_exclusion_and_outer_gaps() {

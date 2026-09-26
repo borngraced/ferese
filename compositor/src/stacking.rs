@@ -1,5 +1,17 @@
 use ferese_layout::WindowId;
 
+pub(crate) fn layer_priority(floating: bool, zooming: bool, fullscreen: bool) -> u8 {
+    if fullscreen {
+        3
+    } else if floating {
+        2
+    } else if zooming {
+        1
+    } else {
+        0
+    }
+}
+
 /// Persistent back-to-front order. Geometry updates never change this order.
 #[derive(Default)]
 pub(crate) struct WindowStack {
@@ -33,6 +45,13 @@ impl WindowStack {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn floating_windows_stay_above_tiled_and_maximized_windows() {
+        assert!(layer_priority(true, false, false) > layer_priority(false, true, false));
+        assert!(layer_priority(false, true, false) > layer_priority(false, false, false));
+        assert!(layer_priority(false, false, true) > layer_priority(true, false, false));
+    }
 
     #[test]
     fn remapping_neighbours_does_not_change_order() {

@@ -49,7 +49,8 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(String, Value),
         }
         "toggle-floating" | "toggle-fullscreen" | "toggle-maximized" | "toggle-layout"
         | "toggle-overview" | "cycle-column-width" | "center-column" | "consume" | "expel"
-        | "close" | "get-focused-window" | "get-workspaces" | "get-outputs" | "exit" => {
+        | "close" | "get-focused-window" | "get-workspaces" | "get-outputs" | "reload-config"
+        | "exit" => {
             if !positional.is_empty() {
                 return Err(format!("{command} does not accept arguments"));
             }
@@ -78,7 +79,7 @@ fn socket_path() -> Result<PathBuf, io::Error> {
 }
 
 fn usage() -> String {
-    "usage: feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit>\n       feresectl <get-focused-window|get-workspaces|get-outputs>".to_owned()
+    "usage: feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit>\n       feresectl <get-focused-window|get-workspaces|get-outputs|reload-config>".to_owned()
 }
 
 #[cfg(test)]
@@ -122,6 +123,7 @@ mod tests {
         );
         assert!(parse_args(["exit".to_owned(), "extra".to_owned()]).is_err());
         assert!(parse_args(["focus".to_owned()]).is_err());
-        assert!(parse_args(["reload-config".to_owned()]).is_err());
+        assert!(parse_args(["reload-config".to_owned()]).is_ok());
+        assert!(parse_args(["reload-config".to_owned(), "extra".to_owned()]).is_err());
     }
 }

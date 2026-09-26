@@ -8,6 +8,7 @@ const DEFAULT_BACKGROUND: [u8; 3] = [11, 15, 20];
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ShellConfig {
+    pub(crate) animations: crate::motion::Settings,
     pub(crate) font_family: Option<String>,
     pub(crate) wallpaper: WallpaperConfig,
     pub(crate) theme: ShellTheme,
@@ -111,6 +112,8 @@ pub(crate) enum WallpaperMode {
 
 #[derive(Debug, Default, Deserialize)]
 struct FereseConfig {
+    #[serde(default)]
+    animations: crate::motion::Settings,
     #[serde(default)]
     appearance: AppearanceConfig,
     #[serde(default)]
@@ -284,13 +287,24 @@ pub(crate) fn load() -> ShellConfig {
         return ShellConfig::default();
     };
 
-    match toml::from_str::<FereseConfig>(&source) {
+    match parse_source(&source) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("ferese-shell: failed to read {}: {error}", path.display());
+            ShellConfig::default()
+        }
+    }
+}
+
+pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, toml::de::Error> {
+    match toml::from_str::<FereseConfig>(source) {
         Ok(config) => {
             let mut theme = shell_theme(&config.theme);
             theme.material_radius =
                 nonnegative_or(config.appearance.corner_radius.unwrap_or(14.0), 14.0);
 
-            ShellConfig {
+            Ok(ShellConfig {
+                animations: config.animations,
                 font_family: config.theme.typography.font_family,
                 wallpaper: config.theme.background,
                 theme,
@@ -298,12 +312,9 @@ pub(crate) fn load() -> ShellConfig {
                     low_battery_threshold: config.status.low_battery_threshold.min(100),
                     ..config.status
                 },
-            }
+            })
         }
-        Err(error) => {
-            eprintln!("ferese-shell: failed to read {}: {error}", path.display());
-            ShellConfig::default()
-        }
+        Err(error) => Err(error),
     }
 }
 

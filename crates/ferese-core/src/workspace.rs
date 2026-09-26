@@ -376,6 +376,23 @@ impl Default for WorkspaceSet {
 }
 
 impl WorkspaceSet {
+    /// Update policy without moving windows or replacing existing column widths.
+    pub fn reconfigure_defaults(
+        &mut self,
+        mode: LayoutMode,
+        width: ColumnWidth,
+        strategy: ViewportFocusStrategy,
+    ) {
+        self.default_layout_mode = mode;
+        self.default_column_width = width;
+        self.scrolling_focus_strategy = strategy;
+        for workspace in self.workspaces.values_mut() {
+            if let WorkspaceLayout::Scrolling(layout) = &mut workspace.layout {
+                layout.set_default_width(width);
+                layout.set_focus_strategy(strategy);
+            }
+        }
+    }
     pub fn new(
         default_layout_mode: LayoutMode,
         default_column_width: ColumnWidth,
@@ -994,6 +1011,34 @@ fn finite_or_zero(value: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reconfiguration_preserves_windows_and_current_widths_but_updates_defaults() {
+        let mut workspaces = WorkspaceSet::default();
+        workspaces
+            .insert_window(WindowId(1), Axis::Horizontal, 0.5)
+            .unwrap();
+        let workspace = workspaces.active_id();
+        workspaces.reconfigure_defaults(
+            LayoutMode::Tree,
+            ColumnWidth::Full,
+            ViewportFocusStrategy::Minimal,
+        );
+        let WorkspaceLayout::Scrolling(layout) = &workspaces.active().layout else {
+            panic!("existing layout must survive");
+        };
+        assert_eq!(layout.columns()[0].width, ColumnWidth::Proportion(0.5));
+        assert_eq!(layout.default_width(), ColumnWidth::Full);
+        assert_eq!(
+            workspaces.workspace_for_window(WindowId(1)),
+            Some(workspace)
+        );
+        workspaces.switch_to_numeric(2).unwrap();
+        assert_eq!(workspaces.active().layout.mode(), LayoutMode::Tree);
+        assert_eq!(
+            workspaces.workspace_for_window(WindowId(1)),
+            Some(workspace)
+        );
+    }
     use super::*;
 
     #[test]

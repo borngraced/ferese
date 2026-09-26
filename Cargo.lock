@@ -1580,6 +1580,7 @@ dependencies = [
  "fontdb",
  "image",
  "libc",
+ "notify",
  "serde",
  "serde_json",
  "smithay",
@@ -1626,6 +1627,14 @@ name = "ferese-layout"
 version = "0.1.0"
 
 [[package]]
+name = "ferese-lock-probe"
+version = "0.1.0"
+dependencies = [
+ "wayland-client",
+ "wayland-protocols",
+]
+
+[[package]]
 name = "ferese-malformed-client"
 version = "0.1.0"
 
@@ -1645,6 +1654,7 @@ name = "ferese-shell"
 version = "0.1.0"
 dependencies = [
  "ferese-protocols",
+ "iced_accessibility",
  "jiff",
  "libcosmic",
  "serde",

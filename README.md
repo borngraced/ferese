@@ -11,6 +11,55 @@ For a versioned installation alongside Plasma in SDDM, see
 [installation and recovery](docs/installation.md). `Super+Shift+E` or
 `feresectl exit` logs out immediately; save your work first.
 
+## Live configuration
+
+Saving `~/.config/ferese/config.toml` (or `$XDG_CONFIG_HOME/ferese/config.toml`)
+reloads it automatically. Atomic editor saves are supported and bursts are
+debounced. Invalid edits keep the last working compositor and shell config;
+the rejection is logged. Idle watching does not reread the file.
+
+Use `feresectl reload-config` to reload manually and report validation errors.
+Live sources are limited to 60 KiB for safe delivery over the private protocol.
+
+Appearance, fonts, wallpaper, animations, keybindings, keyboard layout/repeat,
+gaps, scrolling focus policy/default widths, and bar geometry reload live.
+Wallpaper decoding stays off the render thread and keeps the old image until
+the replacement is ready. Existing windows, widths and layouts are preserved;
+layout-mode defaults and initial window rules affect new workspaces/windows.
+Output profiles and touchpad changes apply on reconnect or session restart.
+The compositor and shell need one initial update/restart to enable this feature.
+
+## Session services and locking
+
+`[[autostart]]` entries run after the compositor's public socket is ready:
+
+```toml
+[[autostart]]
+command = ["awari"]
+restart = true
+
+[[autostart]]
+command = ["swayidle", "-w", "timeout", "600", "ferese-lock", "before-sleep", "ferese-lock", "lock", "ferese-lock"]
+restart = true
+```
+
+Services are session-owned, reaped, and restarted with a five-second retry delay.
+They receive the correct public Wayland display without private shell privileges.
+Nested previews skip them unless `nested = true` is explicitly configured.
+Autostart changes require a session restart; live config edits do not restart services.
+Run foreground daemons here, not commands that fork themselves into the background.
+
+Ferese implements `ext-session-lock-v1`. While locked, only lock surfaces over an
+opaque fallback are rendered, normal input/shortcuts and IPC are blocked, and
+screencopy is unavailable. DRM confirmation waits for safe page flips on active
+outputs. A missing/crashed locker leaves the session locked; it is not an unlock.
+`ferese-lock` runs swaylock/swaylock-effects with optional
+`~/.config/ferese/swaylock.conf`, waiting for lock confirmation before daemonizing.
+The compositor authenticates no passwords itself; authentication belongs to the locker.
+Validate password unlock in a disposable nested session before enabling automatic
+locking on a primary session. Crash recovery currently requires ending that session
+from another VT; there is deliberately no unauthenticated IPC unlock.
+
 ## Development
 
 Install the native dependencies required by Smithay's winit and GLES backends,
@@ -119,6 +168,11 @@ duration_ms = 150 # 0 snaps immediately; reduced motion also snaps
 ```
 
 Inactive dimming follows window focus with a smooth, interruption-safe fade.
+Focus-ring paint (including gradients) and width use the same `duration_ms`,
+even when dimming is disabled. Focus changes never scale or move the window.
+Shell buttons fade their hover tint over 120 ms. Both transitions respect
+`animations.speed`, `animations.enabled`, and `animations.reduced_motion`;
+click actions remain immediate and settled hover states do not animate.
 It keeps window opacity intact, respects animated geometry and rounded corners,
 and leaves shell bars/popovers untouched. Overview temporarily removes dimming.
 
@@ -198,6 +252,28 @@ out over 80 ms, with a 64 MiB total snapshot budget and automatic release.
 All monitors share one elapsed-time animation clock, and window content,
 clips, borders and shadows use the same physical-pixel edges.
 
+Window borders and focus rings use solid colors by default. Optional linear
+gradients can be configured independently:
+
+```toml
+[theme.focus_ring.gradient]
+from = "#e5c890"
+to = "#b98d58"
+angle = 135.0
+
+# Optional unfocused-window gradient:
+[theme.border.gradient]
+from = "#3e3e43"
+to = "#242429"
+angle = 90.0
+```
+
+Angles are clockwise in window coordinates: 0 is left-to-right and 90 is
+top-to-bottom. Both endpoints accept `#RRGGBB` or `#RRGGBBAA`. Remove either
+gradient section to restore its solid `theme.colors.accent` or `border` color.
+Gradients share the existing rounded-border shader and add no animation or
+extra render pass. Configuration changes reload live.
+
 Overview has a horizontally scrollable workspace strip with live window
 thumbnails and an accent outline on the workspace shown by each output.
 Click a workspace to change the window grid without leaving overview; click
@@ -214,7 +290,8 @@ no image reload or full-screen shell buffers. The launched shell receives
 `FERESE_COMPOSITOR_WALLPAPER=1` to disable its redundant wallpaper surfaces.
 When no valid image path is configured, the shell's existing fallback remains.
 
-Keyboard and direct-session touchpad settings are applied at startup:
+Keyboard settings reload live. Direct-session touchpad settings apply on device
+reconnect or session restart:
 
 ```toml
 [input]
@@ -267,7 +344,8 @@ Unspecified connected outputs remain enabled with their preferred mode, scale
 `1.0`, normal transform, and automatic horizontal placement. Supported
 transforms are `normal`, `rotate_90`, `rotate_180`, `rotate_270`, `flipped`,
 and their rotated flipped variants. Output configuration is applied at startup
-and on hotplug; live configuration reload remains deferred.
+and on hotplug. Reloaded output profiles take effect on reconnect or session
+restart; they do not change an already-connected output's mode.
 
 On DRM, closing the laptop lid disables internal panels when a usable external
 output is available. With no usable external output, the panel stays enabled;
@@ -307,6 +385,10 @@ Initial window rules match `app_id`, exact title, and/or transient status. All
 matching rules are applied in declaration order; later rules override only the
 fields they specify. Width or height implies floating placement when `floating`
 is omitted:
+
+With `floating = true` and no explicit dimensions, the application chooses its
+initial size and Ferese centers that size on its workspace's output. Small
+dialogs are not forced into a workspace-sized container.
 
 ```toml
 [[window_rules]]

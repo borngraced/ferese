@@ -134,6 +134,7 @@ struct DirectOutput {
     damage_tracker: OutputDamageTracker,
     render_metrics: RenderMetrics,
     frame_pending: bool,
+    lock_frame_pending: bool,
 }
 
 struct OutputSelection {
@@ -369,13 +370,17 @@ fn open_primary_device(
         .insert_source(notifier, move |event, metadata, state| match event {
             DrmEvent::VBlank(crtc) => {
                 if let Some(metadata) = metadata {
+                    let mut retired = false;
                     let feedback = state
                         .direct_backend
                         .as_mut()
                         .and_then(|backend| backend.devices.get_mut(&node))
                         .and_then(|device| device.outputs.get_mut(&crtc))
                         .and_then(|output| match output.surface.frame_submitted() {
-                            Ok(feedback) => feedback,
+                            Ok(feedback) => {
+                                retired = true;
+                                feedback
+                            }
                             Err(error) => {
                                 tracing::error!(?node, ?crtc, %error, "failed to retire DRM frame");
                                 None
@@ -397,6 +402,21 @@ fn open_primary_device(
                         .and_then(|backend| backend.devices.get(&node))
                         .and_then(|device| device.outputs.get(&crtc))
                         .is_some_and(|output| state.is_focused_output(&output.output));
+                    let lock_output = state
+                        .direct_backend
+                        .as_mut()
+                        .and_then(|backend| backend.devices.get_mut(&node))
+                        .and_then(|device| device.outputs.get_mut(&crtc))
+                        .and_then(|output| {
+                            if retired && std::mem::take(&mut output.lock_frame_pending) {
+                                Some(output.output.clone())
+                            } else {
+                                None
+                            }
+                        });
+                    if let Some(output) = lock_output {
+                        state.lock_frame_presented(&output);
+                    }
                     if let Some(output) = state
                         .direct_backend
                         .as_mut()
@@ -632,6 +652,7 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
             effects,
         );
         output.frame_pending = true;
+        output.lock_frame_pending = state.session_lock.active;
         Ok(true)
     })();
 
@@ -852,6 +873,10 @@ fn refresh_duration(state: &Ferese, node: DrmNode, crtc: crtc::Handle) -> Durati
 }
 
 fn send_frame_callbacks(state: &mut Ferese, output: &Output) {
+    if state.session_lock.active {
+        state.lock_frame_callbacks(output);
+        return;
+    }
     state.space.elements().for_each(|window| {
         window.send_frame(
             output,
@@ -1099,6 +1124,7 @@ fn create_direct_output(
         damage_tracker,
         render_metrics,
         frame_pending: false,
+        lock_frame_pending: false,
     })
 }
 

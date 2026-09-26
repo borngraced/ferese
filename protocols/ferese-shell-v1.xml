@@ -22,7 +22,7 @@
     DEALINGS IN THE SOFTWARE.
   </copyright>
 
-  <interface name="ferese_shell_manager_v1" version="1">
+  <interface name="ferese_shell_manager_v1" version="2">
     <description summary="create a capability-scoped Ferese shell controller">
       This private global is visible only to clients granted the shell-control
       capability. It does not assign a Wayland surface role.
@@ -35,7 +35,7 @@
     <request name="destroy" type="destructor"/>
   </interface>
 
-  <interface name="ferese_shell_v1" version="1">
+  <interface name="ferese_shell_v1" version="2">
     <description summary="managed-window metadata and shell control">
       Window, workspace, and output identifiers are unsigned 64-bit values
       encoded as high and low 32-bit words. Each snapshot atomically replaces
@@ -132,5 +132,16 @@
       <description summary="marks completion of initial protocol setup"/>
       <arg name="version" type="uint"/>
     </event>
+    <event name="config_begin" since="2">
+      <description summary="complete validated configuration for live reload">
+        Sent only after the compositor has accepted the complete configuration.
+        Followed by bounded UTF-8 chunks and config_end. Clients apply only the
+        completed source, preserving their current appearance if parsing fails.
+      </description>
+    </event>
+    <event name="config_chunk" since="2">
+      <arg name="source" type="string"/>
+    </event>
+    <event name="config_end" since="2"/>
   </interface>
 </protocol>

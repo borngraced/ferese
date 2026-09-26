@@ -27,6 +27,9 @@ impl XdgActivationHandler for Ferese {
         data: XdgActivationTokenData,
         surface: WlSurface,
     ) {
+        if self.session_lock.active {
+            return;
+        }
         let valid = data.serial.is_some() && data.timestamp.elapsed() <= TOKEN_MAX_AGE;
         self.xdg_activation_state.remove_token(&token);
         if !valid {

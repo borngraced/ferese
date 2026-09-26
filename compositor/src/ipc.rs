@@ -209,6 +209,13 @@ fn serve_connection(
 
 impl Ferese {
     fn handle_ipc_request(&mut self, request: Request) -> Response {
+        if self.session_lock.active {
+            return Response::error(
+                request.id,
+                "session_locked",
+                "IPC unavailable while session is locked",
+            );
+        }
         if let Err(error) = validate_request(&request) {
             return Response::error(request.id, error.code, error.message);
         }
@@ -222,6 +229,9 @@ impl Ferese {
     fn dispatch_ipc_command(&mut self, command: &str, args: &Value) -> Result<Value, CommandError> {
         match command {
             "exit" => {} // The IPC worker stops the loop after writing the response.
+            "reload-config" => self
+                .reload_config()
+                .map_err(|e| CommandError::new("invalid_config", e))?,
             "focus" => self.focus_direction(direction_arg(args)?),
             "move" => self.move_direction(direction_arg(args)?),
             "resize" => self.resize_direction(direction_arg(args)?),
