@@ -114,6 +114,7 @@ pub struct ThemeSettings {
     pub shadow_color: RgbaColor,
     pub surface_base_color: RgbaColor,
     pub panel_opacity: f64,
+    pub inactive_dim: InactiveDimSettings,
     pub window_radius: f64,
     pub shadow_offset_y: f64,
     pub shadow_blur: f64,
@@ -135,6 +136,33 @@ pub enum MaterialStyle {
 #[derive(Debug, Default, Deserialize)]
 struct AppearanceConfig {
     corner_radius: Option<f64>,
+    #[serde(default)]
+    inactive_dim: InactiveDimConfig,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct InactiveDimSettings {
+    pub enabled: bool,
+    pub amount: f64,
+    pub duration_ms: f64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+struct InactiveDimConfig {
+    enabled: bool,
+    amount: f64,
+    duration_ms: f64,
+}
+
+impl Default for InactiveDimConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            amount: 0.15,
+            duration_ms: 150.0,
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -518,6 +546,7 @@ struct ScrollingConfig {
 enum FocusStrategyValue {
     Minimal,
     CenterOnFocus,
+    Paged,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -680,6 +709,7 @@ impl Config {
         {
             FocusStrategyValue::Minimal => ViewportFocusStrategy::Minimal,
             FocusStrategyValue::CenterOnFocus => ViewportFocusStrategy::Center,
+            FocusStrategyValue::Paged => ViewportFocusStrategy::Paged,
         }
     }
 
@@ -862,6 +892,17 @@ impl Config {
                 self.theme.surface.bar.opacity.unwrap_or(0.78),
                 "surface.bar.opacity",
             )?,
+            inactive_dim: InactiveDimSettings {
+                enabled: self.appearance.inactive_dim.enabled,
+                amount: unit_theme_value(
+                    self.appearance.inactive_dim.amount,
+                    "appearance.inactive_dim.amount",
+                )?,
+                duration_ms: nonnegative_theme_value(
+                    self.appearance.inactive_dim.duration_ms,
+                    "appearance.inactive_dim.duration_ms",
+                )?,
+            },
             window_radius,
             shadow_offset_y,
             shadow_blur,
@@ -1576,6 +1617,11 @@ mod tests {
     fn parses_scrolling_focus_strategy() {
         let minimal = parse("");
         let centered = parse("[scrolling]\nfocus_strategy = \"center_on_focus\"");
+        let paged = parse("[scrolling]\nfocus_strategy = \"paged\"");
+        assert_eq!(
+            paged.scrolling_focus_strategy(),
+            ViewportFocusStrategy::Paged
+        );
 
         assert_eq!(
             minimal.scrolling_focus_strategy(),
@@ -1659,6 +1705,11 @@ mod tests {
                 shadow_color: RgbaColor([1.0 / 255.0, 2.0 / 255.0, 3.0 / 255.0, 128.0 / 255.0]),
                 surface_base_color: RgbaColor([17.0 / 255.0, 24.0 / 255.0, 33.0 / 255.0, 1.0,]),
                 panel_opacity: 0.78,
+                inactive_dim: InactiveDimSettings {
+                    enabled: false,
+                    amount: 0.15,
+                    duration_ms: 150.0
+                },
                 window_radius: 12.0,
                 shadow_offset_y: -2.0,
                 shadow_blur: 24.0,
@@ -1733,6 +1784,35 @@ mod tests {
         for value in ["-1", "nan", "inf"] {
             assert!(
                 parse(&format!("[theme.material]\nblur_radius = {value}"))
+                    .theme_settings()
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn inactive_dimming_is_opt_in_and_configurable() {
+        let defaults = parse("").theme_settings().unwrap().inactive_dim;
+        assert!(!defaults.enabled);
+        assert_eq!(defaults.amount, 0.15);
+        assert_eq!(defaults.duration_ms, 150.0);
+        let settings =
+            parse("[appearance.inactive_dim]\nenabled = true\namount = 0.25\nduration_ms = 100")
+                .theme_settings()
+                .unwrap()
+                .inactive_dim;
+        assert!(settings.enabled);
+        assert_eq!(settings.amount, 0.25);
+        assert_eq!(settings.duration_ms, 100.0);
+        for (key, value) in [
+            ("amount", "-0.1"),
+            ("amount", "1.1"),
+            ("amount", "nan"),
+            ("duration_ms", "-1"),
+            ("duration_ms", "inf"),
+        ] {
+            assert!(
+                parse(&format!("[appearance.inactive_dim]\n{key} = {value}"))
                     .theme_settings()
                     .is_err()
             );

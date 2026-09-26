@@ -913,6 +913,22 @@ fn output_elements(
     for (window, id, visual, decoration_progress, close_alpha) in windows {
         let constrain = rounded_visual_rect(visual, output_geometry.loc);
 
+        let dim = state.window_dimming.get(&id).map_or(0.0, |dim| dim.current);
+        if let Some(overlay) = window_dim_element(
+            state,
+            renderer,
+            id,
+            constrain,
+            scale,
+            state.theme_settings.window_radius * decoration_progress,
+            dim as f32 * close_alpha,
+            output,
+        ) {
+            // Front-to-back: dim the application and its border, not its shadow
+            // or other windows/layer surfaces. The overlay is input-transparent.
+            elements.push(overlay.into());
+        }
+
         if let Some(programs) = rounded_clip_program.clone() {
             let window_radius = state.theme_settings.window_radius * decoration_progress;
             let shadow_offset_y = state.theme_settings.shadow_offset_y;
@@ -1161,6 +1177,72 @@ fn border_uniforms(parameters: &BorderParameters) -> Vec<Uniform<'static>> {
         Uniform::new("border_width", parameters.width).into_owned(),
         Uniform::new("border_color", parameters.color).into_owned(),
     ]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn window_dim_element(
+    state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+    id: ferese_layout::WindowId,
+    geometry: Rectangle<i32, Logical>,
+    scale: f64,
+    radius: f64,
+    amount: f32,
+    output: &Output,
+) -> Option<PixelShaderElement> {
+    if amount <= 0.0 {
+        state.window_dims.remove(&id);
+        return None;
+    }
+    let mode = output.current_mode()?;
+    let program = material_program(state, renderer)?;
+    let parameters = BorderParameters {
+        geometry,
+        clip_rect: framebuffer_clip_rect(
+            geometry.to_physical_precise_round(scale),
+            mode.size,
+            output.current_transform().invert(),
+        ),
+        radius: scaled_effect_value(radius, geometry, scale),
+        width: 0.0,
+        color: [0.0, 0.0, 0.0, amount.clamp(0.0, 1.0)],
+    };
+    let uniforms = |p: &BorderParameters| {
+        vec![
+            Uniform::new("visible_rect", p.clip_rect).into_owned(),
+            Uniform::new("material_radius", p.radius).into_owned(),
+            Uniform::new("tint", p.color).into_owned(),
+            Uniform::new("paint_mode", 0.0_f32).into_owned(),
+            Uniform::new("shadow_rect", p.clip_rect).into_owned(),
+            Uniform::new("shadow_values", [0.0_f32; 2]).into_owned(),
+        ]
+    };
+    let context = renderer.context_id().erased();
+    let buffers = state.window_dims.entry(id).or_default();
+    let cached = buffers
+        .contexts
+        .entry(context)
+        .or_insert_with(|| CachedBorder {
+            element: PixelShaderElement::new(
+                program.0,
+                geometry,
+                None,
+                1.0,
+                uniforms(&parameters),
+                RenderElementKind::Unspecified,
+            ),
+            parameters: parameters.clone(),
+        });
+    if cached.parameters != parameters {
+        if cached.parameters.geometry != geometry {
+            cached.element.resize(geometry, None);
+        }
+        // Updating uniforms advances the element's commit so unchanged client
+        // buffers still repaint while focus dimming animates.
+        cached.element.update_uniforms(uniforms(&parameters));
+        cached.parameters = parameters;
+    }
+    Some(cached.element.clone())
 }
 
 #[allow(clippy::too_many_arguments)]

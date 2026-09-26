@@ -9,7 +9,7 @@ use std::{
 use ferese_animation::{AnimatedValue, ClientSize, PresentationMode, SpringConfig, WindowGeometry};
 use ferese_core::{
     LayoutMode, OutputGeometry, OutputId, OutputWorkspaceMap, WindowPlacement, WorkspaceId,
-    WorkspaceSet,
+    WorkspaceLayout, WorkspaceSet,
 };
 use ferese_layout::{
     Axis, ColumnWidth, Direction, GapConfig, LayoutResult, Rect, SizeConstraints,
@@ -119,8 +119,11 @@ pub struct Ferese {
     pub window_ids: HashMap<Window, WindowId>,
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
     maximized_windows: HashSet<WindowId>,
+    maximized_column_widths: HashMap<WindowId, ColumnWidth>,
     window_stack: crate::stacking::WindowStack,
     pub(crate) window_borders: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
+    pub(crate) window_dims: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
+    pub(crate) window_dimming: HashMap<WindowId, crate::dimming::DimAnimation>,
     pub(crate) window_shadows: HashMap<WindowId, crate::winit::WindowShadowBuffers>,
     pub(crate) rounded_clip_programs: HashMap<ErasedContextId, crate::winit::RoundedClipPrograms>,
     pub(crate) overview_scrims: HashMap<OutputId, crate::winit::OverviewScrim>,
@@ -451,8 +454,11 @@ impl Ferese {
             window_ids: HashMap::new(),
             window_geometry: HashMap::new(),
             maximized_windows: HashSet::new(),
+            maximized_column_widths: HashMap::new(),
             window_stack: crate::stacking::WindowStack::default(),
             window_borders: HashMap::new(),
+            window_dims: HashMap::new(),
+            window_dimming: HashMap::new(),
             window_shadows: HashMap::new(),
             rounded_clip_programs: HashMap::new(),
             overview_scrims: HashMap::new(),
@@ -911,8 +917,11 @@ impl Ferese {
         self.space.unmap_elem(window);
         self.window_geometry.remove(&id);
         self.maximized_windows.remove(&id);
+        self.maximized_column_widths.remove(&id);
         self.window_stack.remove(id);
         self.window_borders.remove(&id);
+        self.window_dims.remove(&id);
+        self.window_dimming.remove(&id);
         self.window_shadows.remove(&id);
         self.closing_windows.remove(&id);
         self.window_rules_applied.remove(&id);
@@ -954,6 +963,7 @@ impl Ferese {
                 continue;
             };
             let workspace_fullscreen = workspace.fullscreen;
+            let is_scrolling_layout = matches!(workspace.layout, WorkspaceLayout::Scrolling(_));
             let workspace_focus = workspace.last_focused;
             let focused = self
                 .focused_window
@@ -1011,7 +1021,7 @@ impl Ferese {
                     self.maximized_windows.contains(id) && workspace_fullscreen != Some(*id);
                 let rect = if workspace_fullscreen == Some(*id) {
                     fullscreen_bounds
-                } else if is_maximized {
+                } else if is_maximized && !is_scrolling_layout {
                     maximized_rect(bounds, self.gap_config.outer)
                 } else {
                     match self.workspaces.placement(*id) {
@@ -1032,13 +1042,14 @@ impl Ferese {
                 );
 
                 visible.insert(*id);
-                let scrolling = if !is_fullscreen && !is_maximized && !is_floating {
-                    viewport_target
-                        .zip(viewport_current)
-                        .map(|(target, current)| (workspace_id, rect.x + target, current))
-                } else {
-                    None
-                };
+                let scrolling =
+                    if !is_fullscreen && !is_floating && (!is_maximized || is_scrolling_layout) {
+                        viewport_target
+                            .zip(viewport_current)
+                            .map(|(target, current)| (workspace_id, rect.x + target, current))
+                    } else {
+                        None
+                    };
 
                 placements.push((
                     window.clone(),
@@ -1241,6 +1252,29 @@ impl Ferese {
             .collect::<Vec<_>>();
         let mut active_animation = false;
 
+        let dim_settings = self.theme_settings.inactive_dim;
+        let duration = if self.animations_enabled {
+            dim_settings.duration_ms
+        } else {
+            0.0
+        };
+        let mut dim_changed = false;
+        for (_, id) in &windows {
+            let target = crate::dimming::target(
+                dim_settings,
+                self.focused_window,
+                *id,
+                self.overview.is_presenting(),
+            );
+            let dim = self
+                .window_dimming
+                .entry(*id)
+                .or_insert_with(|| crate::dimming::DimAnimation::new(target));
+            let previous = dim.current;
+            active_animation |= dim.advance(target, delta, duration);
+            dim_changed |= previous != dim.current;
+        }
+
         let mut ready_to_close = Vec::new();
         for (id, animation) in &mut self.closing_windows {
             if animation.advance(delta) {
@@ -1346,7 +1380,7 @@ impl Ferese {
                 .advance(delta, self.spring_config, self.animations_enabled);
         self.sync_window_stacking();
 
-        if active_animation {
+        if active_animation || dim_changed {
             self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
         }
         active_animation
@@ -1644,6 +1678,27 @@ impl Ferese {
             self.maximized_windows.insert(window);
         } else {
             self.maximized_windows.remove(&window);
+        }
+        if self.workspaces.placement(window) == Some(WindowPlacement::Tiled) {
+            let workspace_id = self.workspaces.workspace_for_window(window).unwrap();
+            if let Some(workspace) = self.workspaces.workspace_mut(workspace_id) {
+                if let WorkspaceLayout::Scrolling(layout) = &mut workspace.layout {
+                    if enabled {
+                        if let Some(column) = layout
+                            .columns()
+                            .iter()
+                            .find(|column| column.windows.contains(&window))
+                        {
+                            self.maximized_column_widths
+                                .entry(window)
+                                .or_insert(column.width);
+                        }
+                        let _ = layout.set_column_width(window, ColumnWidth::Proportion(1.0));
+                    } else if let Some(width) = self.maximized_column_widths.remove(&window) {
+                        let _ = layout.set_column_width(window, width);
+                    }
+                }
+            }
         }
         self.relayout();
     }

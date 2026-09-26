@@ -29,7 +29,10 @@ cargo run -p ferese -- foot
 Set `RUST_LOG=ferese=debug` for detailed compositor logging.
 
 `Super+F` toggles decorated maximization inside the workspace (bar and outer
-gaps retained). `Super+Shift+F` toggles true fullscreen (no bar or window
+gaps remain visible). In scrolling mode this expands the column to full width,
+keeps it in the strip, and restores its previous width when toggled off. New
+windows open to its right and scroll into focus.
+`Super+Shift+F` toggles true fullscreen (no bar or window
 decorations). Leaving fullscreen restores the previous maximized/tiled state.
 
 Set `FERESE_TRACE_PERFORMANCE=1` to emit five-second per-output summaries under
@@ -108,7 +111,16 @@ opacity = 0.20
 [theme.material]
 style = "solid" # solid or translucent
 blur_radius = 12.0 # logical pixels; translucent only, 0 disables blur
+
+[appearance.inactive_dim]
+enabled = true # opt-in; disabled by default
+amount = 0.15 # dark tint over unfocused windows, 0–1; 0 disables
+duration_ms = 150 # 0 snaps immediately; reduced motion also snaps
 ```
+
+Inactive dimming follows window focus with a smooth, interruption-safe fade.
+It keeps window opacity intact, respects animated geometry and rounded corners,
+and leaves shell bars/popovers untouched. Overview temporarily removes dimming.
 
 Material roles use the configured surface color and role-specific shadows.
 Solid is the default. Translucent adds backdrop blur behind the same surface
@@ -138,6 +150,13 @@ Scrolling keeps windows in stable workspace coordinates and animates the
 viewport only when focus must be revealed. Set
 `focus_strategy = "center_on_focus"` under `[scrolling]` to center focused
 columns instead.
+
+Use `focus_strategy = "paged"` to pack consecutive columns into viewport-sized
+pages. Half-width columns form pairs, thirds form triples, and full-width
+columns occupy their own page. Mixed widths and client minimum sizes use their
+actual allocated widths, including gaps. Focusing within a page keeps it still;
+crossing a page boundary scrolls to that page. Explicit centering remains in
+effect until focus changes or the output resizes.
 
 Scrolling controls use `Super+R` to cycle configured width presets, `Super+C`
 to center the focused column, `Super+[` to consume the focused window into an

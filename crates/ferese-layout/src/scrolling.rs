@@ -24,6 +24,7 @@ pub enum ViewportFocusStrategy {
     #[default]
     Minimal,
     Center,
+    Paged,
 }
 
 impl Default for ColumnWidth {
@@ -79,6 +80,7 @@ pub struct ScrollingLayout {
     focus_strategy: ViewportFocusStrategy,
     reveal_pending: bool,
     width_cycle_pending: bool,
+    last_viewport_width: Option<f64>,
 }
 
 impl Default for ScrollingLayout {
@@ -92,6 +94,7 @@ impl Default for ScrollingLayout {
             focus_strategy: ViewportFocusStrategy::Minimal,
             reveal_pending: false,
             width_cycle_pending: false,
+            last_viewport_width: None,
         }
     }
 }
@@ -106,6 +109,7 @@ impl ScrollingLayout {
 
     pub fn set_focus_strategy(&mut self, strategy: ViewportFocusStrategy) {
         self.focus_strategy = strategy;
+        self.reveal_pending = true;
     }
 
     pub fn default_width(&self) -> ColumnWidth {
@@ -183,7 +187,9 @@ impl ScrollingLayout {
             column.active = column.active.min(column.windows.len() - 1);
             column.normalize_heights();
         }
-        self.reveal_pending |= removed_active_column && !self.columns.is_empty();
+        self.reveal_pending |= (removed_active_column
+            || self.focus_strategy == ViewportFocusStrategy::Paged)
+            && !self.columns.is_empty();
 
         debug_assert!(self.validate().is_ok());
         Ok(())
@@ -256,6 +262,7 @@ impl ScrollingLayout {
             .window_location(window)
             .ok_or(LayoutError::UnknownWindow(window))?;
         self.columns[column].width = normalized_width(width);
+        self.reveal_pending = true;
         Ok(())
     }
 
@@ -464,11 +471,15 @@ impl ScrollingLayout {
             column_positions.push((next_column_x, width));
             next_column_x += width + inner;
         }
+        let viewport_resized = self.last_viewport_width != Some(viewport_width);
+        self.last_viewport_width = Some(viewport_width);
         if self.width_cycle_pending {
             self.retarget_after_width_cycle(&column_positions, viewport_width);
             self.width_cycle_pending = false;
             self.reveal_pending = false;
-        } else if self.reveal_pending {
+        } else if self.reveal_pending
+            || (viewport_resized && self.focus_strategy == ViewportFocusStrategy::Paged)
+        {
             self.reveal_active_column(&column_positions, viewport_width);
             self.reveal_pending = false;
         }
@@ -504,6 +515,10 @@ impl ScrollingLayout {
     }
 
     fn reveal_active_column(&mut self, positions: &[(f64, f64)], viewport_width: f64) {
+        if let Some(start) = self.paged_viewport(positions, viewport_width) {
+            self.viewport_x = start;
+            return;
+        }
         let Some(active) = self.active_column else {
             return;
         };
@@ -536,7 +551,37 @@ impl ScrollingLayout {
         }
     }
 
+    fn paged_viewport(&self, positions: &[(f64, f64)], viewport_width: f64) -> Option<f64> {
+        if self.focus_strategy != ViewportFocusStrategy::Paged {
+            return None;
+        }
+        let active = self.active_column?;
+        // Pack actual allocated widths, including gaps and client constraints.
+        // Page boundaries are independent of focus direction. An oversized
+        // column occupies its own page rather than overlapping its neighbors.
+        let mut first = 0;
+        while first < positions.len() {
+            let (start, _) = positions[first];
+            let mut last = first;
+            while let Some(&(next_start, next_width)) = positions.get(last + 1) {
+                if next_start + next_width - start > viewport_width + 1e-6 {
+                    break;
+                }
+                last += 1;
+            }
+            if active <= last {
+                return Some(start);
+            }
+            first = last + 1;
+        }
+        None
+    }
+
     fn retarget_after_width_cycle(&mut self, positions: &[(f64, f64)], viewport_width: f64) {
+        if let Some(start) = self.paged_viewport(positions, viewport_width) {
+            self.viewport_x = start;
+            return;
+        }
         let Some(active) = self.active_column else {
             return;
         };
@@ -808,6 +853,188 @@ mod tests {
             second.geometry[&window(2)],
             Rect::new(505.0, 10.0, 485.0, 780.0)
         );
+    }
+
+    #[test]
+    fn full_width_column_stays_in_strip_when_new_half_window_opens() {
+        let (mut layout, bounds, gaps) = two_half_width_layout();
+        layout.set_focus_strategy(ViewportFocusStrategy::Paged);
+        layout
+            .set_column_width(window(2), ColumnWidth::Proportion(1.0))
+            .unwrap();
+        let zoomed = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(2)))
+            .unwrap();
+        assert_eq!(zoomed.geometry[&window(2)].width, 980.0);
+        layout.insert(window(3), Some(window(2))).unwrap();
+        let opened = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(3)))
+            .unwrap();
+        let previous = opened.geometry[&window(2)];
+        let new = opened.geometry[&window(3)];
+        assert_eq!(previous.width, 980.0);
+        assert_eq!(new, Rect::new(10.0, 10.0, 485.0, 780.0));
+        assert_eq!(previous.x + previous.width + gaps.inner, new.x);
+        assert_eq!(layout.active_window(), Some(window(3)));
+        layout
+            .set_column_width(window(2), ColumnWidth::Proportion(0.5))
+            .unwrap();
+        let restored = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(2)))
+            .unwrap();
+        assert_eq!(restored.geometry[&window(2)].width, 485.0);
+    }
+
+    fn paged_layout(count: u64) -> (ScrollingLayout, Rect, GapConfig) {
+        let (mut layout, bounds, gaps) = two_half_width_layout();
+        layout.set_focus_strategy(ViewportFocusStrategy::Paged);
+        for id in 3..=count {
+            layout.insert(window(id), Some(window(id - 1))).unwrap();
+        }
+        (layout, bounds, gaps)
+    }
+
+    #[test]
+    fn paged_focus_snaps_six_half_columns_in_both_directions() {
+        let (mut layout, bounds, gaps) = paged_layout(6);
+        for focused in [1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1] {
+            let geometry = layout
+                .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(focused)))
+                .unwrap()
+                .geometry;
+            let first = (focused - 1) / 2 * 2 + 1;
+            assert_eq!(layout.viewport_x(), ((first - 1) / 2) as f64 * 990.0);
+            assert_eq!(geometry[&window(first)].x, 10.0);
+            assert_eq!(geometry[&window(first + 1)].x, 505.0);
+            assert_eq!(
+                geometry[&window(first + 1)].x + geometry[&window(first + 1)].width,
+                990.0
+            );
+        }
+    }
+
+    #[test]
+    fn paged_focus_realigns_after_output_resize() {
+        let (mut layout, bounds, gaps) = paged_layout(6);
+        layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(5)))
+            .unwrap();
+        let bounds = Rect::new(20.0, 48.0, 1400.0, 800.0);
+        let result = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(5)))
+            .unwrap();
+        assert_eq!(layout.viewport_x(), 2780.0);
+        assert_eq!(result.geometry[&window(5)].x, 30.0);
+        assert_eq!(result.geometry[&window(6)].x, 725.0);
+    }
+
+    #[test]
+    fn paged_focus_preserves_explicit_center_until_focus_changes() {
+        let (mut layout, bounds, gaps) = paged_layout(4);
+        layout
+            .center_window(window(2), bounds, gaps, &HashMap::new())
+            .unwrap();
+        let result = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(2)))
+            .unwrap();
+        let rect = result.geometry[&window(2)];
+        assert_eq!(rect.x + rect.width / 2.0, 500.0);
+        let result = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(1)))
+            .unwrap();
+        assert_eq!(result.geometry[&window(1)].x, 10.0);
+    }
+
+    #[test]
+    fn full_width_column_occupies_its_own_page() {
+        let (mut layout, bounds, gaps) = paged_layout(4);
+        layout.columns[0].width = ColumnWidth::Full;
+        let result = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(3)))
+            .unwrap();
+        assert_eq!(result.geometry[&window(2)].x, 10.0);
+        assert_eq!(result.geometry[&window(3)].x, 505.0);
+        let result = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(4)))
+            .unwrap();
+        assert_eq!(result.geometry[&window(4)].x, 10.0);
+    }
+
+    #[test]
+    fn client_minimums_split_columns_across_pages() {
+        let (mut layout, bounds, gaps) = paged_layout(2);
+        let constraints = HashMap::from([(
+            window(1),
+            SizeConstraints {
+                min_width: 700.0,
+                ..Default::default()
+            },
+        )]);
+        let result = layout
+            .geometry_with_constraints(bounds, gaps, &constraints, Some(window(2)))
+            .unwrap();
+        assert!(layout.viewport_x() > 0.0);
+        let rect = result.geometry[&window(2)];
+        assert!(rect.x >= 10.0 && rect.x + rect.width <= 990.0);
+    }
+
+    #[test]
+    fn paged_focus_groups_thirds_in_both_directions_at_fractional_sizes() {
+        let (mut layout, _, gaps) = paged_layout(6);
+        for column in &mut layout.columns {
+            column.width = ColumnWidth::Proportion(1.0 / 3.0);
+        }
+        let bounds = Rect::new(13.25, 48.5, 1000.5, 800.25);
+        for focused in [1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1] {
+            let result = layout
+                .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(focused)))
+                .unwrap();
+            let first = (focused - 1) / 3 * 3 + 1;
+            assert!((result.geometry[&window(first)].x - 23.25).abs() < 1e-6);
+            let last = result.geometry[&window(first + 2)];
+            assert!((last.x + last.width - 1003.75).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn paged_focus_packs_mixed_widths_by_actual_fit() {
+        let (mut layout, bounds, gaps) = paged_layout(5);
+        let widths = [0.6, 0.4, 0.25, 0.5, 0.25];
+        for (column, width) in layout.columns.iter_mut().zip(widths) {
+            column.width = ColumnWidth::Proportion(width);
+        }
+        for (focused, first) in [(1, 1), (2, 1), (3, 3), (4, 3), (5, 3), (2, 1)] {
+            let result = layout
+                .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(focused)))
+                .unwrap();
+            assert_eq!(result.geometry[&window(first)].x, 10.0);
+            let rect = result.geometry[&window(focused)];
+            assert!(rect.x >= 10.0 && rect.x + rect.width <= 990.0 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn oversized_page_does_not_absorb_neighbor_and_removal_repacks() {
+        let (mut layout, bounds, gaps) = paged_layout(4);
+        let constraints = HashMap::from([(
+            window(1),
+            SizeConstraints {
+                min_width: 1200.0,
+                ..Default::default()
+            },
+        )]);
+        let result = layout
+            .geometry_with_constraints(bounds, gaps, &constraints, Some(window(2)))
+            .unwrap();
+        assert_eq!(result.geometry[&window(2)].x, 10.0);
+        assert_eq!(result.geometry[&window(3)].x, 505.0);
+        layout.remove(window(1)).unwrap();
+        let result = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(2)))
+            .unwrap();
+        assert_eq!(layout.viewport_x(), 0.0);
+        assert_eq!(result.geometry[&window(2)].x, 10.0);
+        assert_eq!(result.geometry[&window(3)].x, 505.0);
     }
 
     #[test]

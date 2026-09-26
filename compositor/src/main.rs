@@ -3,6 +3,7 @@
 mod backends;
 mod config;
 mod cursor;
+mod dimming;
 mod effects;
 mod grabs;
 mod handlers;
