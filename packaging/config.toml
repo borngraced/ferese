@@ -27,3 +27,13 @@ floating = true
 [[window_rules]]
 title = "Choose a wallpaper"
 floating = true
+
+# Optional desktop clock; all dimensions are logical pixels.
+[desktop_widgets.clock]
+enabled = false
+anchor = "top_left"
+margin_x = 64
+margin_y = 80
+time_size = 72.0
+date_size = 18.0
+opacity = 0.9

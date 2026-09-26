@@ -108,10 +108,11 @@ impl Snapshot {
                 *item = Item::Value(value);
             }
             Edit::Add(table, fields) => {
-                if self.doc.get(table).is_none() {
-                    self.doc[table] = Item::ArrayOfTables(Default::default());
+                let item = nested_item_mut(self.doc.as_item_mut(), table)?;
+                if item.is_none() {
+                    *item = Item::ArrayOfTables(Default::default());
                 }
-                let array = self.doc[table]
+                let array = item
                     .as_array_of_tables_mut()
                     .ok_or("Expected a list of settings.")?;
                 let mut record = toml_edit::Table::new();
@@ -121,7 +122,7 @@ impl Snapshot {
                 array.push(record);
             }
             Edit::Remove(table, index) => {
-                let array = self.doc[table]
+                let array = nested_item_mut(self.doc.as_item_mut(), table)?
                     .as_array_of_tables_mut()
                     .ok_or("This list no longer exists.")?;
                 if *index >= array.len() {
@@ -133,6 +134,19 @@ impl Snapshot {
         self.source = self.doc.to_string();
         Ok(())
     }
+}
+
+fn nested_item_mut<'a>(mut item: &'a mut Item, path: &str) -> Result<&'a mut Item, String> {
+    for key in path.split('.') {
+        if item.is_none() {
+            *item = Item::Table(toml_edit::Table::new());
+        }
+        let table = item
+            .as_table_like_mut()
+            .ok_or("Expected a settings table.")?;
+        item = table.entry(key).or_insert(Item::None);
+    }
+    Ok(item)
 }
 
 #[derive(Clone, Debug)]
@@ -349,6 +363,31 @@ mod tests {
         assert_eq!(snapshot.records("autostart"), 0);
     }
     #[test]
+    fn nested_note_lists_keep_existing_clock_settings() {
+        let mut snapshot =
+            Snapshot::parse("[desktop_widgets.clock]\nenabled = true\n".into()).unwrap();
+        snapshot
+            .edit(&Edit::Add(
+                "desktop_widgets.notes".into(),
+                vec![
+                    ("id".into(), "first".into()),
+                    ("text".into(), "one\ntwo".into()),
+                ],
+            ))
+            .unwrap();
+        assert_eq!(snapshot.records("desktop_widgets.notes"), 1);
+        assert!(snapshot.boolean("desktop_widgets.clock.enabled", false));
+        assert_eq!(
+            snapshot.string("desktop_widgets.notes.0.text", ""),
+            "one\ntwo"
+        );
+        snapshot
+            .edit(&Edit::Remove("desktop_widgets.notes".into(), 0))
+            .unwrap();
+        assert_eq!(snapshot.records("desktop_widgets.notes"), 0);
+    }
+
+    #[test]
     #[ignore = "requires a built compositor; run with FERESE_TEST_BINARY=target/debug/ferese"]
     fn all_gui_controls_and_presets_pass_compositor_validation() {
         let binary = std::env::var_os("FERESE_TEST_BINARY").expect("Set FERESE_TEST_BINARY");
@@ -369,7 +408,11 @@ mod tests {
             );
         };
         for page in crate::schema::Page::ALL {
-            for field in crate::schema::fields(page) {
+            let mut fields = crate::schema::fields(page);
+            if page == crate::schema::Page::Desktop {
+                fields.extend(crate::schema::note_fields(0));
+            }
+            for field in fields {
                 use crate::schema::Kind;
                 let values: Vec<Value> = match field.kind {
                     Kind::Toggle(_) => vec![true.into(), false.into()],
@@ -389,6 +432,14 @@ mod tests {
                 };
                 for value in values {
                     let mut snapshot = Snapshot::parse(String::new()).unwrap();
+                    if field.path.starts_with("desktop_widgets.notes.") {
+                        snapshot
+                            .edit(&Edit::Add(
+                                "desktop_widgets.notes".into(),
+                                vec![("id".into(), "test".into())],
+                            ))
+                            .unwrap();
+                    }
                     snapshot.edit(&set(&field.path, value)).unwrap();
                     validate(&snapshot);
                 }

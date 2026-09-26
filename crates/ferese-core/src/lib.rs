@@ -1,3 +1,4 @@
+pub mod desktop;
 mod output;
 mod workspace;
 

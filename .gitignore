@@ -2,3 +2,12 @@
 /tools/
 *.log
 ChatGPT Image*.png
+
+# Local implementation notes and validation plans
+/docs/adr/
+/docs/animation-validation.md
+/docs/nested-resize-testing.md
+/docs/native-soak-testing.md
+/docs/ferese-window-manager-spec.md
+/docs/ferese-theme-ui-spec.md
+/docs/ferese-shell-design.md

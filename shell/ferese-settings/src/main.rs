@@ -61,6 +61,9 @@ enum Message {
     Undo,
     Preset(usize),
     PickWallpaper,
+    AddNote,
+    NoteAction(String, widget::text_editor::Action),
+    SaveNote(String, u64),
     WallpaperPicked(Result<Option<String>, String>),
     NewCommand(String),
     AddCommand,
@@ -69,6 +72,7 @@ enum Message {
 }
 
 struct App {
+    note_editors: HashMap<String, NoteEditor>,
     core: Core,
     path: PathBuf,
     current: Snapshot,
@@ -89,6 +93,12 @@ struct App {
     thumbnail_path: String,
     thumbnail_loading: bool,
     thumbnail_error: Option<String>,
+}
+
+struct NoteEditor {
+    content: widget::text_editor::Content<cosmic::Renderer>,
+    revision: u64,
+    dirty: bool,
 }
 
 impl cosmic::Application for App {
@@ -114,6 +124,7 @@ impl cosmic::Application for App {
         let current = initial.unwrap_or_else(|_| Snapshot::parse(String::new()).unwrap());
         let font = visuals::configured_font(&current);
         let mut app = Self {
+            note_editors: HashMap::new(),
             core,
             path,
             draft: current.clone(),
@@ -140,10 +151,60 @@ impl cosmic::Application for App {
             .main_window_id()
             .map(|id| app.set_window_title("Ferese Settings".into(), id))
             .unwrap_or_else(Task::none);
+        app.sync_notes();
         (app, task)
     }
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::NoteAction(id, action) => {
+                if let Some(editor) = self.note_editors.get_mut(&id) {
+                    let edited = action.is_edit();
+                    editor.content.perform(action);
+                    if edited {
+                        editor.dirty = true;
+                        editor.revision = editor.revision.wrapping_add(1);
+                        let revision = editor.revision;
+                        return cosmic::task::future(async move {
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                            Message::SaveNote(id, revision)
+                        });
+                    }
+                }
+            }
+            Message::SaveNote(id, revision) => {
+                let Some(index) = self.note_index(&id) else {
+                    return Task::none();
+                };
+                if let Some(editor) = self.note_editors.get_mut(&id)
+                    && editor.dirty
+                    && editor.revision == revision
+                {
+                    let value = editor.content.text();
+                    editor.dirty = false;
+                    return self.change(set(&format!("desktop_widgets.notes.{index}.text"), value));
+                }
+            }
+            Message::AddNote
+                if !self.saving && self.draft.records("desktop_widgets.notes") < 32 =>
+            {
+                let id = format!(
+                    "note-{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                );
+                let task = self.change(Edit::Add(
+                    "desktop_widgets.notes".into(),
+                    vec![
+                        ("id".into(), id.into()),
+                        ("title".into(), "Note".into()),
+                        ("text".into(), "".into()),
+                    ],
+                ));
+                self.sync_notes();
+                return task;
+            }
             Message::DragWindow => return self.core.drag(None),
             Message::ExternalConfig(result) => match result {
                 Ok(snapshot)
@@ -151,6 +212,7 @@ impl cosmic::Application for App {
                         || snapshot.source == self.draft.source => {}
                 Ok(snapshot) => {
                     if self.saving
+                        || self.note_editors.values().any(|editor| editor.dirty)
                         || !self.inputs.is_empty()
                         || !self.ranges.is_empty()
                         || !self.pending.is_empty()
@@ -161,6 +223,7 @@ impl cosmic::Application for App {
                     } else {
                         self.current = snapshot.clone();
                         self.draft = snapshot;
+                        self.sync_notes();
                         self.font = visuals::configured_font(&self.current);
                         self.undo = None;
                         self.error = None;
@@ -174,6 +237,7 @@ impl cosmic::Application for App {
                 Err(error) => self.error = Some(format!("Config reload failed: {error}")),
             },
             Message::Page(page) => {
+                self.sync_notes();
                 self.page = page;
                 self.search.clear();
                 if page == Page::Wallpaper {
@@ -229,6 +293,7 @@ impl cosmic::Application for App {
                                 self.error = Some(error);
                             }
                         }
+                        self.sync_notes();
                         self.status = if live {
                             "Saved · desktop updated"
                         } else if self.path != store::config_path() {
@@ -256,6 +321,8 @@ impl cosmic::Application for App {
                 Ok(snapshot) => {
                     self.current = snapshot.clone();
                     self.draft = snapshot;
+                    self.note_editors.clear();
+                    self.sync_notes();
                     self.font = visuals::configured_font(&self.current);
                     self.pending.clear();
                     self.inputs.clear();
@@ -367,7 +434,9 @@ impl cosmic::Application for App {
             }
             Message::Remove(table, index) if !self.saving => {
                 self.inputs.clear();
-                return self.change(Edit::Remove(table, index));
+                let task = self.change(Edit::Remove(table, index));
+                self.sync_notes();
+                return task;
             }
             _ => {}
         }
@@ -533,6 +602,51 @@ impl cosmic::Application for App {
                 );
             }
             match self.page {
+                Page::Desktop => {
+                    let can_change_list =
+                        !self.saving && !self.note_editors.values().any(|e| e.dirty);
+                    body = body.push(self.label("Sticky notes", 16.));
+                    body = body.push(self.note("Edit here; notes save after you pause typing. Desktop cards stay behind windows and are click-through."));
+                    for index in 0..self.draft.records("desktop_widgets.notes") {
+                        let id = self
+                            .draft
+                            .string(&format!("desktop_widgets.notes.{index}.id"), "note");
+                        let mut group = column([]).spacing(8);
+                        for field in schema::note_fields(index) {
+                            group = group.push(self.field(field));
+                        }
+                        if let Some(editor) = self.note_editors.get(&id) {
+                            let id = id.clone();
+                            group = group.push(
+                                widget::TextEditor::new(&editor.content)
+                                    .height(160)
+                                    .font(self.font)
+                                    .size(14.)
+                                    .on_action(move |action| {
+                                        Message::NoteAction(id.clone(), action)
+                                    }),
+                            );
+                        }
+                        group =
+                            group.push(button::destructive("Remove note").on_press_maybe(
+                                can_change_list.then_some(Message::Remove(
+                                    "desktop_widgets.notes".into(),
+                                    index,
+                                )),
+                            ));
+                        body = body.push(
+                            container(group)
+                                .padding(12)
+                                .class(visuals::surface(palette.card, 14.)),
+                        );
+                    }
+                    body = body.push(
+                        button::standard("Add note").on_press_maybe(
+                            (can_change_list && self.draft.records("desktop_widgets.notes") < 32)
+                                .then_some(Message::AddNote),
+                        ),
+                    );
+                }
                 Page::Startup => {
                     body = body.push(self.note("Login items update live. Disabling or removing an item stops the session-owned process; enabling one starts it."));
                     for index in 0..self.draft.records("autostart") {
@@ -744,6 +858,34 @@ impl cosmic::Application for App {
 }
 
 impl App {
+    fn note_index(&self, id: &str) -> Option<usize> {
+        (0..self.draft.records("desktop_widgets.notes")).find(|index| {
+            self.draft
+                .string(&format!("desktop_widgets.notes.{index}.id"), "note")
+                == id
+        })
+    }
+    fn sync_notes(&mut self) {
+        let mut ids = Vec::new();
+        for index in 0..self.draft.records("desktop_widgets.notes") {
+            let prefix = format!("desktop_widgets.notes.{index}");
+            let id = self.draft.string(&format!("{prefix}.id"), "note");
+            let text = self.draft.string(&format!("{prefix}.text"), "");
+            let editor = self
+                .note_editors
+                .entry(id.clone())
+                .or_insert_with(|| NoteEditor {
+                    content: widget::text_editor::Content::with_text(&text),
+                    revision: 0,
+                    dirty: false,
+                });
+            if !editor.dirty && editor.content.text() != text {
+                editor.content = widget::text_editor::Content::with_text(&text);
+            }
+            ids.push(id);
+        }
+        self.note_editors.retain(|id, _| ids.contains(id));
+    }
     fn load_thumbnail(&mut self) -> Task<Message> {
         let path = self.current.string("theme.background.path", "");
         if self.page != Page::Wallpaper || self.thumbnail_loading || path == self.thumbnail_path {
@@ -990,6 +1132,51 @@ mod tests {
             ),
         )
         .0
+    }
+    #[test]
+    fn notes_save_only_the_latest_revision_and_preserve_multiline_text() {
+        let mut app = app();
+        app.draft
+            .edit(&Edit::Add(
+                "desktop_widgets.notes".into(),
+                vec![
+                    ("id".into(), "test".into()),
+                    ("text".into(), "first\nsecond".into()),
+                ],
+            ))
+            .unwrap();
+        app.sync_notes();
+        let editor = app.note_editors.get_mut("test").unwrap();
+        editor.dirty = true;
+        editor.revision = 2;
+        let _ = app.update(Message::SaveNote("test".into(), 1));
+        assert!(!app.saving);
+        assert!(app.note_editors["test"].dirty);
+        let _ = app.update(Message::SaveNote("test".into(), 2));
+        assert!(app.saving);
+        assert!(!app.note_editors["test"].dirty);
+        assert_eq!(
+            app.draft.string("desktop_widgets.notes.0.text", ""),
+            "first\nsecond"
+        );
+    }
+
+    #[test]
+    fn external_config_does_not_replace_an_unsaved_note() {
+        let mut app = app();
+        app.draft
+            .edit(&Edit::Add(
+                "desktop_widgets.notes".into(),
+                vec![("id".into(), "test".into())],
+            ))
+            .unwrap();
+        app.sync_notes();
+        app.note_editors.get_mut("test").unwrap().dirty = true;
+        let _ = app.update(Message::ExternalConfig(Snapshot::parse(
+            "[animations]\nspeed = 0.5".into(),
+        )));
+        assert!(app.note_editors.contains_key("test"));
+        assert!(app.status.contains("externally"));
     }
     #[test]
     fn rapid_edits_are_serialized_and_not_lost_when_a_save_finishes() {

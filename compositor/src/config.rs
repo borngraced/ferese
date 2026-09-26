@@ -17,6 +17,8 @@ use crate::window_rules::{self, WindowRule, WindowRuleConfig};
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
     #[serde(default)]
+    desktop_widgets: ferese_core::desktop::DesktopWidgets,
+    #[serde(default)]
     pub(crate) autostart: Vec<DaemonConfig>,
     #[serde(default)]
     animations: AnimationsConfig,
@@ -270,6 +272,9 @@ impl Config {
     }
 
     pub(crate) fn runtime_config(&self) -> Result<crate::RuntimeConfig, ConfigError> {
+        self.desktop_widgets
+            .validate()
+            .map_err(ConfigError::InvalidBinding)?;
         for daemon in &self.autostart {
             if daemon
                 .command
@@ -1711,6 +1716,26 @@ pub(crate) fn config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_clock_settings_are_validated_before_live_publication() {
+        assert!(
+            parse(
+                "[desktop_widgets.clock]\nenabled = true\nanchor = 'center'\ntime_format = '%H:%M'"
+            )
+            .runtime_config()
+            .is_ok()
+        );
+        for source in [
+            "[desktop_widgets.clock]\nwidth = 8192",
+            "[desktop_widgets.clock]\nopacity = nan",
+            "[desktop_widgets.clock]\ntime_format = '%'",
+            "[desktop_widgets.clock]\ntime_zone = 'invalid/zone'",
+        ] {
+            assert!(parse(source).runtime_config().is_err());
+        }
+        assert!(Config::parse_source("[desktop_widgets.clock]\nanchor = 'wrong'").is_err());
+    }
 
     fn parse(source: &str) -> Config {
         toml::from_str(source).unwrap()

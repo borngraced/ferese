@@ -6,6 +6,7 @@ license.workspace = true
 rust-version = "1.93"
 
 [dependencies]
+ferese-core = { path = "../../crates/ferese-core" }
 ferese-protocols = { path = "../../crates/ferese-protocols", default-features = false, features = ["client"] }
 jiff.workspace = true
 # Keep GPU rendering available as a fallback/override. The shell defaults to
@@ -14,4 +15,7 @@ libcosmic = { workspace = true, features = ["wgpu", "a11y"] }
 iced_accessibility = { git = "https://github.com/pop-os/libcosmic", rev = "03d7dcb832bc6d15bc1bb07327a1aa426b2d5bc0" }
 serde.workspace = true
 toml.workspace = true
+toml_edit = "0.25.15"
+tempfile.workspace = true
+tokio = { version = "1", features = ["time", "rt"] }
 wayland-client.workspace = true

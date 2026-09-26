@@ -1,6 +1,7 @@
 mod config;
 mod control;
 mod motion;
+mod note_store;
 mod status;
 mod status_ui;
 
@@ -20,7 +21,7 @@ use cosmic::iced::platform_specific::{
     runtime::wayland::layer_surface::{IcedMargin, IcedOutput, SctkLayerSurfaceSettings},
     shell::commands::layer_surface::{Anchor, KeyboardInteractivity, Layer},
     shell::commands::layer_surface::{
-        destroy_layer_surface, set_exclusive_zone, set_input_zone, set_margin, set_size,
+        destroy_layer_surface, set_anchor, set_exclusive_zone, set_input_zone, set_margin, set_size,
     },
 };
 use cosmic::iced::{
@@ -98,9 +99,9 @@ impl From<ShellTheme> for BarMetrics {
             height,
             // Logical sizes: Wayland/iced applies each surface's output scale.
             // Compacting the bar must not also shrink its readable content.
-            text_size: 13,
-            icon_size: 19,
-            overview_icon_size: 19,
+            text_size: 14,
+            icon_size: 20,
+            overview_icon_size: 20,
             control_height: (height - 4.0).max(21.0).min(height),
         }
     }
@@ -160,11 +161,36 @@ struct FereseShell {
     snapshot: ShellSnapshot,
     overview_active: bool,
     clock: String,
+    desktop_clock: (String, String),
     outputs: Vec<OutputSurfaces>,
     status_service: status::Service,
     status: status::Snapshot,
     status_error: Option<String>,
     menu: Option<status_ui::OpenMenu>,
+    note_editor: Option<DesktopNoteEditor>,
+    note_drag: Option<NoteDrag>,
+    note_pointer: std::collections::HashMap<window::Id, cosmic::iced::Point>,
+    note_pending: Vec<note_store::Edit>,
+    note_inflight: Vec<note_store::Edit>,
+    note_saving: bool,
+    note_error: Option<String>,
+}
+
+struct DesktopNoteEditor {
+    id: String,
+    content: cosmic::widget::text_editor::Content<cosmic::Renderer>,
+    revision: u64,
+}
+
+struct NoteDrag {
+    id: Option<String>,
+    source: window::Id,
+    overlay: window::Id,
+    start: cosmic::iced::Point,
+    origin: cosmic::iced::Point,
+    position: cosmic::iced::Point,
+    output_size: (i32, i32),
+    obstacles: Vec<cosmic::iced::Rectangle>,
 }
 
 struct OutputSurfaces {
@@ -172,12 +198,22 @@ struct OutputSurfaces {
     name: Option<String>,
     bar: window::Id,
     wallpaper: Option<window::Id>,
+    clock: Option<window::Id>,
+    notes: Vec<(String, window::Id)>,
+    size: Option<(i32, i32)>,
     effects: Option<EffectsBinding>,
     hidden: bool,
 }
 
 #[derive(Clone, Debug)]
 enum Message {
+    BeginNoteEdit(String),
+    NoteAction(String, cosmic::widget::text_editor::Action),
+    SaveNote(String, u64),
+    FinishNoteEdit,
+    BeginNoteDrag(String, window::Id),
+    BeginClockDrag(window::Id),
+    NotesStored(Result<(), String>),
     WallpaperLoaded(Result<image::Handle, String>),
     Event(Event, window::Id),
     NativeSurface(
@@ -213,6 +249,11 @@ impl cosmic::Application for FereseShell {
 
     fn init(core: Core, (config, wallpaper): Self::Flags) -> (Self, Task<Self::Message>) {
         let bar_surface_id = window::Id::unique();
+        let desktop_clock = config
+            .desktop_widgets
+            .clock
+            .labels(&Zoned::now())
+            .unwrap_or_default();
         let app = Self {
             core,
             bar_surface_id,
@@ -220,6 +261,13 @@ impl cosmic::Application for FereseShell {
             status: status::Snapshot::default(),
             status_error: None,
             menu: None,
+            note_editor: None,
+            note_drag: None,
+            note_pointer: Default::default(),
+            note_pending: Vec::new(),
+            note_inflight: Vec::new(),
+            note_saving: false,
+            note_error: None,
             config,
             wallpaper: None,
             control: ShellControl::connect()
@@ -230,6 +278,7 @@ impl cosmic::Application for FereseShell {
             snapshot: ShellSnapshot::default(),
             overview_active: false,
             clock: current_time(),
+            desktop_clock,
             outputs: Vec::new(),
         };
         let wallpaper_task = match wallpaper {
@@ -264,6 +313,20 @@ impl cosmic::Application for FereseShell {
             }),
             cosmic::iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick),
             cosmic::iced::time::every(Duration::from_millis(250)).map(|_| Message::StatusTick),
+            if self.config.desktop_widgets.clock.enabled
+                || self
+                    .config
+                    .desktop_widgets
+                    .notes
+                    .iter()
+                    .any(|note| note.enabled && note.interactive)
+            {
+                event::listen_with(|event, _, id| {
+                    matches!(&event, Event::Mouse(_)).then_some(Message::Event(event, id))
+                })
+            } else {
+                Subscription::none()
+            },
             if self
                 .menu
                 .as_ref()
@@ -289,6 +352,71 @@ impl cosmic::Application for FereseShell {
             }
         }
         match message {
+            Message::BeginNoteEdit(id) => {
+                let mut tasks = vec![self.finish_note_edit()];
+                if let Some(note) = self
+                    .config
+                    .desktop_widgets
+                    .notes
+                    .iter()
+                    .find(|note| note.id == id)
+                {
+                    self.note_editor = Some(DesktopNoteEditor {
+                        id,
+                        content: cosmic::widget::text_editor::Content::with_text(&note.text),
+                        revision: 0,
+                    });
+                }
+                tasks.push(Task::none());
+                Task::batch(tasks)
+            }
+            Message::FinishNoteEdit => self.finish_note_edit(),
+            Message::NoteAction(id, action) => {
+                if let Some(editor) = &mut self.note_editor
+                    && editor.id == id
+                {
+                    let edited = action.is_edit();
+                    editor.content.perform(action);
+                    if edited {
+                        editor.revision = editor.revision.wrapping_add(1);
+                        let revision = editor.revision;
+                        return cosmic::task::future(async move {
+                            // iced executor is Tokio; do not spawn blocking sleep threads.
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            Message::SaveNote(id, revision)
+                        });
+                    }
+                }
+                Task::none()
+            }
+            Message::SaveNote(id, revision) => {
+                if let Some(editor) = &self.note_editor
+                    && editor.id == id
+                    && editor.revision == revision
+                {
+                    let value = editor.content.text();
+                    self.set_note_text(&id, value)
+                } else {
+                    Task::none()
+                }
+            }
+            Message::BeginNoteDrag(id, surface) => self.begin_note_drag(id, surface),
+            Message::BeginClockDrag(surface) => self.begin_widget_drag(None, surface),
+            Message::NotesStored(result) => {
+                self.note_saving = false;
+                match result {
+                    Ok(()) => {
+                        self.note_inflight.clear();
+                        self.note_error = None;
+                        self.flush_note_changes()
+                    }
+                    Err(error) => {
+                        self.note_pending.splice(0..0, self.note_inflight.drain(..));
+                        self.note_error = Some(error);
+                        Task::none()
+                    }
+                }
+            }
             Message::WallpaperLoaded(result) => {
                 match result {
                     Ok(handle) => self.wallpaper = Some(handle),
@@ -372,6 +500,14 @@ impl cosmic::Application for FereseShell {
             Message::Event(event, id) => self.handle_event(event, id),
             Message::Tick => {
                 self.clock = current_time();
+                if self.config.desktop_widgets.clock.enabled {
+                    self.desktop_clock = self
+                        .config
+                        .desktop_widgets
+                        .clock
+                        .labels(&Zoned::now())
+                        .unwrap_or_default();
+                }
                 let mut reload_task = Task::none();
                 if let Some(control) = &self.control {
                     let poll = control.poll();
@@ -478,17 +614,62 @@ impl FereseShell {
         self.status_service
             .update_settings(config.status.settings_command.clone());
         let old = self.config.theme;
+        let old_clock = &self.config.desktop_widgets.clock;
+        let old_notes = &self.config.desktop_widgets.notes;
+        let new_notes = &config.desktop_widgets.notes;
+        let notes_changed = old_notes.len() != new_notes.len()
+            || old_notes
+                .iter()
+                .zip(new_notes)
+                .any(|(old, new)| !old.same_surface(new));
+        let new_clock = &config.desktop_widgets.clock;
+        let clock_changed = old_clock.enabled != new_clock.enabled
+            || old_clock.outputs != new_clock.outputs
+            || old_clock.anchor != new_clock.anchor
+            || old_clock.width != new_clock.width
+            || old_clock.height != new_clock.height
+            || old_clock.margin_x != new_clock.margin_x
+            || old_clock.margin_y != new_clock.margin_y;
         let theme = config.theme;
         let geometry_changed = old.bar_height != theme.bar_height
             || old.bar_margin_top != theme.bar_margin_top
             || old.bar_margin_horizontal != theme.bar_margin_horizontal
             || old.bar_window_gap != theme.bar_window_gap;
         self.config = config;
-        if !geometry_changed {
-            return Task::none();
+        self.desktop_clock = self
+            .config
+            .desktop_widgets
+            .clock
+            .labels(&Zoned::now())
+            .unwrap_or_default();
+        let mut tasks = vec![if clock_changed {
+            self.rebuild_clocks(true)
+        } else {
+            Task::none()
+        }];
+        if clock_changed
+            && self
+                .note_drag
+                .as_ref()
+                .is_some_and(|drag| drag.id.is_none())
+        {
+            tasks.push(self.finish_note_drag(false));
         }
-        let mut tasks = Vec::new();
-        for entry in &self.outputs {
+        if notes_changed {
+            tasks.push(self.finish_note_drag(false));
+            if self.note_editor.as_ref().is_some_and(|editor| {
+                !self
+                    .config
+                    .desktop_widgets
+                    .notes
+                    .iter()
+                    .any(|note| note.id == editor.id && note.interactive)
+            }) {
+                self.note_editor = None;
+            }
+            tasks.push(self.rebuild_notes(true));
+        }
+        for entry in self.outputs.iter().filter(|_| geometry_changed) {
             tasks.push(set_size(
                 entry.bar,
                 None,
@@ -522,23 +703,49 @@ impl FereseShell {
                     Task::none()
                 };
                 let mut tasks = vec![destroy_layer_surface(entry.bar), menu];
+                if self.note_drag.as_ref().is_some_and(|drag| {
+                    entry.clock == Some(drag.source)
+                        || entry.notes.iter().any(|(_, id)| *id == drag.source)
+                }) {
+                    tasks.push(self.finish_note_drag(false));
+                }
                 if let Some(wallpaper) = entry.wallpaper {
                     tasks.push(destroy_layer_surface(wallpaper));
+                }
+                if let Some(clock) = entry.clock {
+                    tasks.push(destroy_layer_surface(clock));
+                }
+                for (_, id) in entry.notes {
+                    self.note_pointer.remove(&id);
+                    tasks.push(destroy_layer_surface(id));
                 }
                 return Task::batch(tasks);
             }
             return Task::none();
         }
+        let size = match &event {
+            wayland::OutputEvent::Created(info) => info.as_ref().and_then(|info| info.logical_size),
+            wayland::OutputEvent::InfoUpdate(info) => info.logical_size,
+            _ => None,
+        };
         let name = match event {
             wayland::OutputEvent::Created(info) => info.and_then(|info| info.name),
             wayland::OutputEvent::InfoUpdate(info) => info.name,
             _ => None,
         };
         if let Some(entry) = self.outputs.iter_mut().find(|entry| entry.output == output) {
+            if size.is_some() {
+                entry.size = size;
+            }
+            let changed = name.is_some() && entry.name != name;
             if name.is_some() {
                 entry.name = name;
             }
-            return Task::none();
+            return if changed {
+                Task::batch([self.rebuild_clocks(true), self.rebuild_notes(true)])
+            } else {
+                Task::none()
+            };
         }
         let bar_surface_id = window::Id::unique();
         let wallpaper_surface_id = window::Id::unique();
@@ -562,6 +769,9 @@ impl FereseShell {
                 .is_none()
                 .then_some(wallpaper_surface_id),
             effects: None,
+            clock: None,
+            notes: Vec::new(),
+            size,
             hidden,
         });
         let wallpaper_action = cosmic::surface::action::app_layer_shell::<Self>(
@@ -620,7 +830,579 @@ impl FereseShell {
             .map(cosmic::Action::Surface)
             .map(cosmic::task::message);
 
+        Task::batch([
+            Task::batch(tasks),
+            self.rebuild_clocks(false),
+            self.rebuild_notes(false),
+        ])
+    }
+
+    fn flush_note_changes(&mut self) -> Task<Message> {
+        if self.note_saving || self.note_pending.is_empty() {
+            return Task::none();
+        }
+        let Some(path) = config::config_path() else {
+            self.note_error = Some("Configuration path unavailable.".into());
+            return Task::none();
+        };
+        self.note_saving = true;
+        self.note_inflight = std::mem::take(&mut self.note_pending);
+        let edits = self.note_inflight.clone();
+        cosmic::task::future(async move {
+            let (send, receive) = cosmic::iced::futures::channel::oneshot::channel();
+            std::thread::spawn(move || {
+                let _ = send.send(note_store::save(&path, &edits));
+            });
+            Message::NotesStored(
+                receive
+                    .await
+                    .unwrap_or_else(|_| Err("Note save worker stopped.".into())),
+            )
+        })
+    }
+
+    fn set_note_text(&mut self, id: &str, value: String) -> Task<Message> {
+        if let Some(note) = self
+            .config
+            .desktop_widgets
+            .notes
+            .iter_mut()
+            .find(|note| note.id == id)
+        {
+            if note.text != value || self.note_error.is_some() {
+                note.text = value.clone();
+                self.note_pending
+                    .push(note_store::Edit::Text(id.to_owned(), value));
+            }
+        }
+        self.flush_note_changes()
+    }
+
+    fn finish_note_edit(&mut self) -> Task<Message> {
+        if let Some(editor) = self.note_editor.take() {
+            self.set_note_text(&editor.id, editor.content.text())
+        } else {
+            self.flush_note_changes()
+        }
+    }
+
+    fn begin_note_drag(&mut self, id: String, surface: window::Id) -> Task<Message> {
+        self.begin_widget_drag(Some(id), surface)
+    }
+
+    fn begin_widget_drag(&mut self, id: Option<String>, surface: window::Id) -> Task<Message> {
+        if self.note_drag.is_some() {
+            return Task::none();
+        }
+        let Some(entry) = self.outputs.iter().find(|entry| {
+            entry.clock == Some(surface) || entry.notes.iter().any(|(_, window)| *window == surface)
+        }) else {
+            return Task::none();
+        };
+        let Some(size) = entry.size else {
+            return Task::none();
+        };
+        let (origin, dimensions) = if let Some(id) = &id {
+            let Some(note) = self
+                .config
+                .desktop_widgets
+                .notes
+                .iter()
+                .find(|note| &note.id == id)
+            else {
+                return Task::none();
+            };
+            (note_origin(note, size), (note.width, note.height))
+        } else {
+            let clock = &self.config.desktop_widgets.clock;
+            (
+                widget_origin(
+                    clock.anchor,
+                    clock.margin_x,
+                    clock.margin_y,
+                    (clock.width, clock.height),
+                    size,
+                ),
+                (clock.width, clock.height),
+            )
+        };
+        let output = entry.output.clone();
+        let mut obstacles = Vec::new();
+        let clock = &self.config.desktop_widgets.clock;
+        if id.is_some() && clock.on_output(entry.name.as_deref()) {
+            let position = widget_origin(
+                clock.anchor,
+                clock.margin_x,
+                clock.margin_y,
+                (clock.width, clock.height),
+                size,
+            );
+            obstacles.push(cosmic::iced::Rectangle::new(
+                position,
+                cosmic::iced::Size::new(clock.width as f32, clock.height as f32),
+            ));
+        }
+        for note in &self.config.desktop_widgets.notes {
+            if Some(&note.id) != id.as_ref() && note.on_output(entry.name.as_deref()) {
+                obstacles.push(cosmic::iced::Rectangle::new(
+                    note_origin(note, size),
+                    cosmic::iced::Size::new(note.width as f32, note.height as f32),
+                ));
+            }
+        }
+        let overlay = window::Id::unique();
+        self.note_drag = Some(NoteDrag {
+            id,
+            source: surface,
+            overlay,
+            origin,
+            position: origin,
+            start: self.note_pointer.get(&surface).copied().unwrap_or_default(),
+            output_size: size,
+            obstacles,
+        });
+        let action = cosmic::surface::action::app_layer_shell::<Self>(
+            |_| Default::default(),
+            move |_| SctkLayerSurfaceSettings {
+                id: overlay,
+                layer: Layer::Overlay,
+                keyboard_interactivity: KeyboardInteractivity::None,
+                input_zone: Some(Vec::new()),
+                anchor: Anchor::TOP | Anchor::LEFT,
+                margin: IcedMargin {
+                    top: origin.y.round() as i32,
+                    left: origin.x.round() as i32,
+                    ..Default::default()
+                },
+                output: IcedOutput::Output(output.clone()),
+                namespace: "ferese-shell-note-drag".into(),
+                exclusive_zone: -1,
+                size: Some((Some(dimensions.0), Some(dimensions.1))),
+                size_limits: Limits::NONE,
+                ..Default::default()
+            },
+            Some(Box::new(Self::view_note_drag)),
+        );
+        Task::batch([
+            self.finish_note_edit(),
+            cosmic::task::message(cosmic::Action::Surface(action)),
+        ])
+    }
+
+    fn view_note_drag(&self) -> Element<'_, cosmic::Action<Message>> {
+        let Some(drag) = &self.note_drag else {
+            return text("").into();
+        };
+        if let Some(id) = &drag.id {
+            self.view_note_content(id, drag.source)
+        } else {
+            self.view_clock_content()
+        }
+    }
+
+    fn finish_note_drag(&mut self, save: bool) -> Task<Message> {
+        let Some(drag) = self.note_drag.take() else {
+            return Task::none();
+        };
+        let mut tasks = vec![destroy_layer_surface(drag.overlay)];
+        if save {
+            if drag.id.is_none() {
+                let clock = &mut self.config.desktop_widgets.clock;
+                clock.anchor = ferese_core::desktop::Anchor::TopLeft;
+                clock.margin_x = drag.position.x.round() as i32;
+                clock.margin_y = drag.position.y.round() as i32;
+                for entry in &self.outputs {
+                    if let Some(id) = entry.clock {
+                        tasks.push(set_anchor(id, Anchor::TOP | Anchor::LEFT));
+                        tasks.push(set_margin(id, clock.margin_y, 0, 0, clock.margin_x));
+                    }
+                }
+                self.note_pending.push(note_store::Edit::ClockPosition(
+                    clock.margin_x,
+                    clock.margin_y,
+                ));
+            }
+            if let Some(note) = self
+                .config
+                .desktop_widgets
+                .notes
+                .iter_mut()
+                .find(|note| Some(&note.id) == drag.id.as_ref())
+            {
+                note.anchor = ferese_core::desktop::Anchor::TopLeft;
+                note.margin_x = drag.position.x.round() as i32;
+                note.margin_y = drag.position.y.round() as i32;
+                for entry in &self.outputs {
+                    if let Some((_, id)) = entry
+                        .notes
+                        .iter()
+                        .find(|(id, _)| Some(id) == drag.id.as_ref())
+                    {
+                        tasks.push(set_anchor(*id, Anchor::TOP | Anchor::LEFT));
+                        tasks.push(set_margin(*id, note.margin_y, 0, 0, note.margin_x));
+                    }
+                }
+                self.note_pending.push(note_store::Edit::Position(
+                    note.id.clone(),
+                    note.margin_x,
+                    note.margin_y,
+                ));
+            }
+            tasks.push(self.flush_note_changes());
+        }
         Task::batch(tasks)
+    }
+
+    fn rebuild_notes(&mut self, reset: bool) -> Task<Message> {
+        let mut tasks = Vec::new();
+        for entry in &mut self.outputs {
+            if reset {
+                for (_, id) in entry.notes.drain(..) {
+                    self.note_pointer.remove(&id);
+                    tasks.push(destroy_layer_surface(id));
+                }
+            }
+            for note in &self.config.desktop_widgets.notes {
+                if !note.on_output(entry.name.as_deref())
+                    || entry.notes.iter().any(|(id, _)| id == &note.id)
+                {
+                    continue;
+                }
+                let id = window::Id::unique();
+                entry.notes.push((note.id.clone(), id));
+                let note = note.clone();
+                let note_id = note.id.clone();
+                let output = entry.output.clone();
+                let action = cosmic::surface::action::app_layer_shell::<Self>(
+                    |_| Default::default(),
+                    move |_| {
+                        let (anchor, margin) =
+                            widget_placement(note.anchor, note.margin_x, note.margin_y);
+                        SctkLayerSurfaceSettings {
+                            id,
+                            layer: Layer::Bottom,
+                            keyboard_interactivity: if note.interactive {
+                                KeyboardInteractivity::OnDemand
+                            } else {
+                                KeyboardInteractivity::None
+                            },
+                            input_zone: if note.interactive {
+                                None
+                            } else {
+                                Some(Vec::new())
+                            },
+                            anchor,
+                            margin,
+                            output: IcedOutput::Output(output.clone()),
+                            namespace: "ferese-shell-sticky-note".into(),
+                            exclusive_zone: -1,
+                            size: Some((Some(note.width), Some(note.height))),
+                            size_limits: Limits::NONE,
+                            ..Default::default()
+                        }
+                    },
+                    Some(Box::new(move |app| app.view_note(&note_id, id))),
+                );
+                tasks.push(cosmic::task::message(cosmic::Action::Surface(action)));
+            }
+        }
+        Task::batch(tasks)
+    }
+
+    fn view_note(&self, id: &str, surface: window::Id) -> Element<'_, cosmic::Action<Message>> {
+        if self
+            .note_drag
+            .as_ref()
+            .is_some_and(|drag| drag.id.as_deref() == Some(id))
+        {
+            return container(text(""))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+        }
+        self.view_note_content(id, surface)
+    }
+
+    fn view_note_content(
+        &self,
+        id: &str,
+        surface: window::Id,
+    ) -> Element<'_, cosmic::Action<Message>> {
+        let Some(note) = self
+            .config
+            .desktop_widgets
+            .notes
+            .iter()
+            .find(|note| note.id == id)
+        else {
+            return text("").into();
+        };
+        let alignment = match note.alignment {
+            ferese_core::desktop::Alignment::Left => alignment::Horizontal::Left,
+            ferese_core::desktop::Alignment::Center => alignment::Horizontal::Center,
+            ferese_core::desktop::Alignment::Right => alignment::Horizontal::Right,
+        };
+        let font = configured_font(
+            note.font_family
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .or(self.config.font_family.as_deref()),
+        );
+        let mut foreground = color(
+            note.color
+                .as_deref()
+                .and_then(config::parse_color)
+                .unwrap_or(self.config.theme.text_primary),
+        );
+        foreground.a *= note.opacity;
+        let background = if note.background.as_deref() == Some("") {
+            None
+        } else {
+            let mut tint = color(
+                note.background
+                    .as_deref()
+                    .and_then(config::parse_color)
+                    .unwrap_or(self.config.theme.surface_base),
+            );
+            tint.a *= note.opacity;
+            Some(Background::Color(tint))
+        };
+        let mut body = cosmic::widget::column([])
+            .spacing(note.gap)
+            .align_x(alignment);
+        if note.interactive {
+            let title = cosmic::widget::text(if note.title.is_empty() {
+                "⋮⋮"
+            } else {
+                &note.title
+            })
+            .font(font)
+            .size(note.title_size)
+            .class(theme::Text::Color(foreground));
+            let header = cosmic::widget::mouse_area(container(title).width(Length::Fill))
+                .interaction(cosmic::iced::mouse::Interaction::Grab)
+                .on_press(cosmic::Action::App(Message::BeginNoteDrag(
+                    id.to_owned(),
+                    surface,
+                )));
+            let editing = self
+                .note_editor
+                .as_ref()
+                .is_some_and(|editor| editor.id == id);
+            body = body.push(row([]).push(header).push(
+                button::text(if editing { "Done" } else { "Edit" }).on_press(cosmic::Action::App(
+                    if editing {
+                        Message::FinishNoteEdit
+                    } else {
+                        Message::BeginNoteEdit(id.to_owned())
+                    },
+                )),
+            ));
+        } else if !note.title.is_empty() {
+            body = body.push(
+                cosmic::widget::text(note.title.clone())
+                    .font(cosmic::font::Font {
+                        weight: cosmic::iced::font::Weight::Semibold,
+                        ..font
+                    })
+                    .size(note.title_size)
+                    .width(Length::Fill)
+                    .align_x(alignment)
+                    .class(theme::Text::Color(foreground)),
+            );
+        }
+        if let Some(editor) = &self.note_editor
+            && editor.id == id
+        {
+            let id = id.to_owned();
+            body = body.push(
+                cosmic::widget::TextEditor::new(&editor.content)
+                    .height(Length::Fill)
+                    .font(font)
+                    .size(note.text_size)
+                    .on_action(move |action| {
+                        cosmic::Action::App(Message::NoteAction(id.clone(), action))
+                    }),
+            );
+        } else {
+            body = body.push(
+                cosmic::widget::text(note.text.clone())
+                    .font(font)
+                    .size(note.text_size)
+                    .width(Length::Fill)
+                    .align_x(alignment)
+                    .class(theme::Text::Color(foreground)),
+            );
+        }
+        if let Some(error) = &self.note_error {
+            body = body.push(
+                text(error.clone())
+                    .size(10)
+                    .class(theme::Text::Color(foreground)),
+            );
+        }
+        let radius = note.radius;
+        container(body)
+            .padding(note.padding)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .class(theme::Container::custom(move |_| container::Style {
+                background,
+                border: Border {
+                    radius: radius.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }))
+            .into()
+    }
+
+    fn rebuild_clocks(&mut self, reset: bool) -> Task<Message> {
+        self.desktop_clock = self
+            .config
+            .desktop_widgets
+            .clock
+            .labels(&Zoned::now())
+            .unwrap_or_default();
+        let mut tasks = Vec::new();
+        for entry in &mut self.outputs {
+            if !reset && entry.clock.is_some() {
+                continue;
+            }
+            if let Some(id) = entry.clock.take() {
+                self.note_pointer.remove(&id);
+                tasks.push(destroy_layer_surface(id));
+            }
+            let clock = self.config.desktop_widgets.clock.clone();
+            if !clock.on_output(entry.name.as_deref()) {
+                continue;
+            }
+            let id = window::Id::unique();
+            entry.clock = Some(id);
+            let output = entry.output.clone();
+            let action = cosmic::surface::action::app_layer_shell::<Self>(
+                |_| Default::default(),
+                move |_| {
+                    let (anchor, margin) = clock_placement(&clock);
+                    SctkLayerSurfaceSettings {
+                        id,
+                        layer: Layer::Bottom,
+                        keyboard_interactivity: KeyboardInteractivity::OnDemand,
+                        input_zone: None,
+                        anchor,
+                        margin,
+                        output: IcedOutput::Output(output.clone()),
+                        namespace: "ferese-shell-desktop-clock".into(),
+                        exclusive_zone: -1,
+                        size: Some((Some(clock.width), Some(clock.height))),
+                        size_limits: Limits::NONE,
+                        ..Default::default()
+                    }
+                },
+                Some(Box::new(move |app| app.view_desktop_clock(id))),
+            );
+            tasks.push(cosmic::task::message(cosmic::Action::Surface(action)));
+        }
+        Task::batch(tasks)
+    }
+
+    fn view_desktop_clock(&self, id: window::Id) -> Element<'_, cosmic::Action<Message>> {
+        if self
+            .note_drag
+            .as_ref()
+            .is_some_and(|drag| drag.id.is_none() && drag.source == id)
+        {
+            return container(text(""))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into();
+        }
+        cosmic::widget::mouse_area(self.view_clock_content())
+            .on_press(cosmic::Action::App(Message::BeginClockDrag(id)))
+            .interaction(cosmic::iced::mouse::Interaction::Grab)
+            .into()
+    }
+
+    fn view_clock_content(&self) -> Element<'_, cosmic::Action<Message>> {
+        use ferese_core::desktop::Alignment as ClockAlignment;
+        let clock = &self.config.desktop_widgets.clock;
+        let alignment = match clock.alignment {
+            ClockAlignment::Left => alignment::Horizontal::Left,
+            ClockAlignment::Center => alignment::Horizontal::Center,
+            ClockAlignment::Right => alignment::Horizontal::Right,
+        };
+        let mut font = configured_font(
+            clock
+                .font_family
+                .as_deref()
+                .filter(|family| !family.trim().is_empty())
+                .or(self.config.font_family.as_deref()),
+        );
+        if clock.bold {
+            font.weight = cosmic::iced::font::Weight::Bold;
+        }
+        let tint = |custom: &Option<String>, fallback| {
+            let mut tint = color(
+                custom
+                    .as_deref()
+                    .and_then(config::parse_color)
+                    .unwrap_or(fallback),
+            );
+            tint.a *= clock.opacity;
+            tint
+        };
+        let mut labels = cosmic::widget::column([])
+            .spacing(clock.gap)
+            .align_x(alignment)
+            .push(
+                cosmic::widget::text(self.desktop_clock.0.clone())
+                    .font(font)
+                    .size(clock.time_size)
+                    .width(Length::Fill)
+                    .align_x(alignment)
+                    .class(theme::Text::Color(tint(
+                        &clock.color,
+                        self.config.theme.text_primary,
+                    ))),
+            );
+        if clock.show_date {
+            labels = labels.push(
+                cosmic::widget::text(self.desktop_clock.1.clone())
+                    .font(font)
+                    .size(clock.date_size)
+                    .width(Length::Fill)
+                    .align_x(alignment)
+                    .class(theme::Text::Color(tint(
+                        &clock.date_color,
+                        self.config.theme.text_muted,
+                    ))),
+            );
+        }
+        let background = clock
+            .background
+            .as_deref()
+            .and_then(config::parse_color)
+            .map(|rgba| {
+                let mut tint = color(rgba);
+                tint.a *= clock.opacity;
+                Background::Color(tint)
+            });
+        let radius = clock.radius;
+        container(labels)
+            .padding(clock.padding)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(alignment)
+            .center_y(Length::Fill)
+            .class(theme::Container::custom(move |_| container::Style {
+                background,
+                border: Border {
+                    radius: radius.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }))
+            .into()
     }
 
     fn output_for_bar(&self, id: window::Id) -> Option<&control::OutputSnapshot> {
@@ -644,6 +1426,80 @@ impl FereseShell {
     }
 
     fn handle_event(&mut self, event: Event, id: window::Id) -> Task<Message> {
+        if let Event::Mouse(mouse) = &event {
+            if !self.outputs.iter().any(|entry| {
+                entry.clock == Some(id) || entry.notes.iter().any(|(_, surface)| *surface == id)
+            }) {
+                return Task::none();
+            }
+            match mouse {
+                cosmic::iced::mouse::Event::CursorMoved { position } => {
+                    self.note_pointer.insert(id, *position);
+                    if let Some(drag) = &mut self.note_drag
+                        && drag.source == id
+                    {
+                        let delta = *position - drag.start;
+                        let dimensions = if let Some(id) = &drag.id {
+                            self.config
+                                .desktop_widgets
+                                .notes
+                                .iter()
+                                .find(|note| &note.id == id)
+                                .map(|note| (note.width, note.height))
+                        } else {
+                            let clock = &self.config.desktop_widgets.clock;
+                            Some((clock.width, clock.height))
+                        };
+                        if let Some(dimensions) = dimensions {
+                            let requested = clamp_note_position(
+                                drag.origin + delta,
+                                drag.output_size,
+                                dimensions,
+                            );
+                            drag.position = avoid_widget_overlap(
+                                drag.position,
+                                requested,
+                                dimensions,
+                                &drag.obstacles,
+                            );
+                            // Move a compact, cached buffer in the compositor instead of
+                            // repainting an output-sized buffer for every pointer event.
+                            return set_margin(
+                                drag.overlay,
+                                drag.position.y.round() as i32,
+                                0,
+                                0,
+                                drag.position.x.round() as i32,
+                            );
+                        }
+                    }
+                }
+                cosmic::iced::mouse::Event::ButtonReleased(cosmic::iced::mouse::Button::Left) => {
+                    if self
+                        .note_drag
+                        .as_ref()
+                        .is_some_and(|drag| drag.source == id)
+                    {
+                        return self.finish_note_drag(true);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if matches!(
+            &event,
+            Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+                key: cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::Escape),
+                ..
+            })
+        ) {
+            if self.note_drag.is_some() {
+                return self.finish_note_drag(false);
+            }
+            if self.note_editor.is_some() {
+                return self.finish_note_edit();
+            }
+        }
         match event {
             Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Output(
                 event,
@@ -1057,6 +1913,134 @@ fn workspace_selector_style(
     }
 }
 
+/// Sweep each axis, allowing edge sliding without tunnelling through a widget
+/// when pointer events skip ahead. Coordinates match integer layer margins.
+fn avoid_widget_overlap(
+    previous: cosmic::iced::Point,
+    requested: cosmic::iced::Point,
+    size: (u32, u32),
+    obstacles: &[cosmic::iced::Rectangle],
+) -> cosmic::iced::Point {
+    let mut position = previous;
+    let (width, height) = (size.0 as f32, size.1 as f32);
+    let mut x = requested.x.round();
+    for obstacle in obstacles {
+        if position.y < obstacle.y + obstacle.height && position.y + height > obstacle.y {
+            if x > position.x && position.x + width <= obstacle.x {
+                x = x.min((obstacle.x - width).floor());
+            } else if x < position.x && position.x >= obstacle.x + obstacle.width {
+                x = x.max((obstacle.x + obstacle.width).ceil());
+            }
+        }
+    }
+    position.x = x;
+    let mut y = requested.y.round();
+    for obstacle in obstacles {
+        if position.x < obstacle.x + obstacle.width && position.x + width > obstacle.x {
+            if y > position.y && position.y + height <= obstacle.y {
+                y = y.min((obstacle.y - height).floor());
+            } else if y < position.y && position.y >= obstacle.y + obstacle.height {
+                y = y.max((obstacle.y + obstacle.height).ceil());
+            }
+        }
+    }
+    position.y = y;
+    position
+}
+
+fn clamp_note_position(
+    position: cosmic::iced::Point,
+    output: (i32, i32),
+    size: (u32, u32),
+) -> cosmic::iced::Point {
+    cosmic::iced::Point::new(
+        position
+            .x
+            .clamp(0., ((output.0 as f32 - size.0 as f32).max(0.)).min(8192.)),
+        position
+            .y
+            .clamp(0., ((output.1 as f32 - size.1 as f32).max(0.)).min(8192.)),
+    )
+}
+
+fn note_origin(note: &ferese_core::desktop::StickyNote, output: (i32, i32)) -> cosmic::iced::Point {
+    widget_origin(
+        note.anchor,
+        note.margin_x,
+        note.margin_y,
+        (note.width, note.height),
+        output,
+    )
+}
+
+fn widget_origin(
+    anchor: ferese_core::desktop::Anchor,
+    margin_x: i32,
+    margin_y: i32,
+    size: (u32, u32),
+    output: (i32, i32),
+) -> cosmic::iced::Point {
+    use ferese_core::desktop::Anchor as A;
+    let x = match anchor {
+        A::TopLeft | A::CenterLeft | A::BottomLeft => margin_x as f32,
+        A::TopRight | A::CenterRight | A::BottomRight => {
+            output.0 as f32 - size.0 as f32 - margin_x as f32
+        }
+        _ => (output.0 as f32 - size.0 as f32) / 2.,
+    };
+    let y = match anchor {
+        A::TopLeft | A::TopCenter | A::TopRight => margin_y as f32,
+        A::BottomLeft | A::BottomCenter | A::BottomRight => {
+            output.1 as f32 - size.1 as f32 - margin_y as f32
+        }
+        _ => (output.1 as f32 - size.1 as f32) / 2.,
+    };
+    clamp_note_position(cosmic::iced::Point::new(x, y), output, size)
+}
+
+fn clock_placement(clock: &ferese_core::desktop::Clock) -> (Anchor, IcedMargin) {
+    widget_placement(clock.anchor, clock.margin_x, clock.margin_y)
+}
+
+fn widget_placement(
+    position: ferese_core::desktop::Anchor,
+    margin_x: i32,
+    margin_y: i32,
+) -> (Anchor, IcedMargin) {
+    use ferese_core::desktop::Anchor as Position;
+    let horizontal = match position {
+        Position::TopLeft | Position::CenterLeft | Position::BottomLeft => Anchor::LEFT,
+        Position::TopRight | Position::CenterRight | Position::BottomRight => Anchor::RIGHT,
+        _ => Anchor::empty(),
+    };
+    let vertical = match position {
+        Position::TopLeft | Position::TopCenter | Position::TopRight => Anchor::TOP,
+        Position::BottomLeft | Position::BottomCenter | Position::BottomRight => Anchor::BOTTOM,
+        _ => Anchor::empty(),
+    };
+    (
+        horizontal | vertical,
+        IcedMargin {
+            top: if vertical == Anchor::TOP { margin_y } else { 0 },
+            bottom: if vertical == Anchor::BOTTOM {
+                margin_y
+            } else {
+                0
+            },
+            left: if horizontal == Anchor::LEFT {
+                margin_x
+            } else {
+                0
+            },
+            right: if horizontal == Anchor::RIGHT {
+                margin_x
+            } else {
+                0
+            },
+        },
+    )
+}
+
 fn current_time() -> String {
     format_bar_time(&Zoned::now())
 }
@@ -1274,6 +2258,108 @@ delegate_noop!(EffectsState: ignore FereseSurfaceEffectsV1);
 #[cfg(test)]
 mod tests {
     #[test]
+    fn widget_drag_stops_at_edges_without_tunnelling_and_slides() {
+        use cosmic::iced::{Point, Rectangle};
+        let obstacles = [Rectangle {
+            x: 100.,
+            y: 0.,
+            width: 40.,
+            height: 100.,
+        }];
+        assert_eq!(
+            super::avoid_widget_overlap(
+                Point::new(0., 0.),
+                Point::new(300., 0.),
+                (20, 20),
+                &obstacles
+            ),
+            Point::new(80., 0.)
+        );
+        assert_eq!(
+            super::avoid_widget_overlap(
+                Point::new(80., 0.),
+                Point::new(120., 50.),
+                (20, 20),
+                &obstacles
+            ),
+            Point::new(80., 50.)
+        );
+        assert_eq!(
+            super::avoid_widget_overlap(
+                Point::new(160., 0.),
+                Point::new(0., 0.),
+                (20, 20),
+                &obstacles
+            ),
+            Point::new(140., 0.)
+        );
+        assert_eq!(
+            super::avoid_widget_overlap(
+                Point::new(100., 120.),
+                Point::new(100., 0.),
+                (20, 20),
+                &obstacles
+            ),
+            Point::new(100., 100.)
+        );
+        assert_eq!(
+            super::avoid_widget_overlap(
+                Point::new(0., 100.),
+                Point::new(200., 100.),
+                (20, 20),
+                &obstacles
+            ),
+            Point::new(200., 100.)
+        );
+    }
+    #[test]
+    fn note_drag_origin_and_bounds_use_logical_output_coordinates() {
+        use cosmic::iced::Point;
+        let mut note = ferese_core::desktop::StickyNote::default();
+        assert_eq!(
+            super::note_origin(&note, (1920, 1080)),
+            Point::new(1552., 80.)
+        );
+        note.anchor = ferese_core::desktop::Anchor::Center;
+        assert_eq!(
+            super::note_origin(&note, (1920, 1080)),
+            Point::new(800., 420.)
+        );
+        assert_eq!(
+            super::clamp_note_position(Point::new(-20., 1200.), (1920, 1080), (320, 240)),
+            Point::new(0., 840.)
+        );
+        assert_eq!(
+            super::clamp_note_position(Point::new(20., 30.), (200, 100), (320, 240)),
+            Point::ORIGIN
+        );
+    }
+    #[test]
+    fn desktop_clock_anchor_margins_match_only_anchored_edges() {
+        use ferese_core::desktop::{Anchor as Position, Clock};
+        let clock = Clock {
+            anchor: Position::BottomRight,
+            margin_x: 30,
+            margin_y: 40,
+            ..Clock::default()
+        };
+        let (anchor, margin) = super::clock_placement(&clock);
+        assert_eq!(anchor, super::Anchor::BOTTOM | super::Anchor::RIGHT);
+        assert_eq!(
+            (margin.top, margin.right, margin.bottom, margin.left),
+            (0, 30, 40, 0)
+        );
+        let (anchor, margin) = super::clock_placement(&Clock {
+            anchor: Position::Center,
+            ..clock
+        });
+        assert!(anchor.is_empty());
+        assert_eq!(
+            (margin.top, margin.right, margin.bottom, margin.left),
+            (0, 0, 0, 0)
+        );
+    }
+    #[test]
     fn clock_uses_lowercase_date_and_twelve_hour_time() {
         for (stamp, expected) in [
             (
@@ -1419,9 +2505,9 @@ mod tests {
                 bar_height: height,
                 ..ShellTheme::default()
             });
-            assert_eq!(metrics.text_size, 13);
-            assert_eq!(metrics.icon_size, 19);
-            assert_eq!(metrics.overview_icon_size, 19);
+            assert_eq!(metrics.text_size, 14);
+            assert_eq!(metrics.icon_size, 20);
+            assert_eq!(metrics.overview_icon_size, 20);
             assert!(metrics.control_height >= f32::from(metrics.icon_size));
             assert!(metrics.control_height <= height);
         }

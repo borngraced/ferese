@@ -8,6 +8,7 @@ const DEFAULT_BACKGROUND: [u8; 3] = [11, 15, 20];
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ShellConfig {
+    pub(crate) desktop_widgets: ferese_core::desktop::DesktopWidgets,
     pub(crate) animations: crate::motion::Settings,
     pub(crate) font_family: Option<String>,
     pub(crate) wallpaper: WallpaperConfig,
@@ -112,6 +113,8 @@ pub(crate) enum WallpaperMode {
 
 #[derive(Debug, Default, Deserialize)]
 struct FereseConfig {
+    #[serde(default)]
+    desktop_widgets: ferese_core::desktop::DesktopWidgets,
     #[serde(default)]
     animations: crate::motion::Settings,
     #[serde(default)]
@@ -299,11 +302,16 @@ pub(crate) fn load() -> ShellConfig {
 pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, toml::de::Error> {
     match toml::from_str::<FereseConfig>(source) {
         Ok(config) => {
+            config
+                .desktop_widgets
+                .validate()
+                .map_err(<toml::de::Error as serde::de::Error>::custom)?;
             let mut theme = shell_theme(&config.theme);
             theme.material_radius =
                 nonnegative_or(config.appearance.corner_radius.unwrap_or(14.0), 14.0);
 
             Ok(ShellConfig {
+                desktop_widgets: config.desktop_widgets,
                 animations: config.animations,
                 font_family: config.theme.typography.font_family,
                 wallpaper: config.theme.background,
@@ -366,7 +374,7 @@ fn shell_theme(theme: &ThemeConfig) -> ShellTheme {
     }
 }
 
-fn parse_color(value: &str) -> Option<[u8; 4]> {
+pub(crate) fn parse_color(value: &str) -> Option<[u8; 4]> {
     let value = value.strip_prefix('#')?;
     if value.len() != 6 && value.len() != 8 {
         return None;
@@ -457,7 +465,7 @@ pub(crate) const fn default_background() -> [u8; 3] {
     DEFAULT_BACKGROUND
 }
 
-fn config_path() -> Option<PathBuf> {
+pub(crate) fn config_path() -> Option<PathBuf> {
     if let Some(directory) = env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
         return Some(PathBuf::from(directory).join("ferese/config.toml"));
     }
@@ -470,6 +478,14 @@ fn config_path() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn desktop_clock_parses_and_rejects_invalid_reload_values() {
+        let clock = super::parse_source("[desktop_widgets.clock]\nenabled = true\nanchor = 'bottom_right'\nfont_family = ''\ncolor = ''\ntime_zone = ''").unwrap().desktop_widgets.clock;
+        assert!(clock.enabled);
+        assert_eq!(clock.anchor, ferese_core::desktop::Anchor::BottomRight);
+        assert!(super::parse_source("[desktop_widgets.clock]\nopacity = 1.1").is_err());
+        assert!(super::parse_source("[desktop_widgets.clock]\ntime_format = '%'").is_err());
+    }
     use super::*;
 
     #[test]
