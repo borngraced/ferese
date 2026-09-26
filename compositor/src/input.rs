@@ -217,7 +217,7 @@ impl Ferese {
                         crate::dimming::DimAnimation::new(f64::from(opacity)),
                     ));
                     pointer.unset_grab(self, serial, event.time() as u32);
-                    self.focus_window_at(pointer.current_location(), serial);
+                    self.focus_window_at(pointer.current_location(), serial, true);
                     crate::backends::direct::render_all(self);
                 }
 
@@ -254,7 +254,7 @@ impl Ferese {
                 }
 
                 if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
-                    self.focus_window_at(pointer.current_location(), serial);
+                    self.focus_window_at(pointer.current_location(), serial, true);
                 }
 
                 pointer.button(
@@ -320,7 +320,7 @@ impl Ferese {
                 let Some(location) = self.absolute_event_position(&event) else {
                     return;
                 };
-                self.focus_window_at(location, SERIAL_COUNTER.next_serial());
+                self.focus_window_at(location, SERIAL_COUNTER.next_serial(), true);
                 let touch = self.seat.get_touch().expect("seat has touch capability");
                 let serial = SERIAL_COUNTER.next_serial();
 
@@ -387,7 +387,7 @@ impl Ferese {
         Some(event.position_transformed(geometry.size) + geometry.loc.to_f64())
     }
 
-    fn focus_window_at(&mut self, position: Point<f64, Logical>, serial: Serial) {
+    fn focus_window_at(&mut self, position: Point<f64, Logical>, serial: Serial, raise: bool) {
         if self.session_lock.active {
             self.focus_output_at(position);
             self.focus_lock_surface();
@@ -412,7 +412,15 @@ impl Ferese {
                 return;
             }
             self.focused_window = focused;
-            self.raise_window(&window, true);
+            if raise {
+                self.raise_window(&window, true);
+            } else {
+                // Hover transfers keyboard focus without changing the persistent
+                // stack: an exposed window must not cover the floats above it.
+                for mapped in self.space.elements() {
+                    mapped.set_activated(mapped == &window);
+                }
+            }
             let surface = window
                 .toplevel()
                 .expect("mapped window has a toplevel")
@@ -455,7 +463,7 @@ impl Ferese {
             return;
         }
 
-        self.focus_window_at(position, SERIAL_COUNTER.next_serial());
+        self.focus_window_at(position, SERIAL_COUNTER.next_serial(), false);
     }
 
     fn clamp_pointer_position(&self, requested: Point<f64, Logical>) -> Point<f64, Logical> {

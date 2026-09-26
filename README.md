@@ -24,6 +24,7 @@ and native Settings app.
 - Built-in bar and control center
 - Native Settings app
 - Desktop widgets
+- Area screenshots saved to disk and copied to the clipboard
 - Themes, blur and gradient borders
 - Multi-monitor support and fractional scaling
 - Live configuration reload
@@ -50,6 +51,7 @@ Requirements (Fedora package names):
 - Default terminal: `foot` (or configure another terminal).
 - Optional: `zenity` for wallpaper browsing, `swayidle` for idle actions,
   and `swaylock` or `swaylock-effects` for locking.
+- Screenshots: `grim`, `slurp`, and `wl-clipboard`.
 
 For a login-screen session alongside your existing desktop:
 
@@ -77,7 +79,13 @@ Built-in defaults (your configuration can override them):
 | Super + Shift + F | True fullscreen |
 | Super + Tab | Open workspace and window overview |
 | Super + M | Switch scrolling / tree layout |
+| Super + Shift + S | Select a screenshot area |
 | Super + Shift + E | Log out immediately—save your work first |
+
+In an installed session, screenshots are saved to `Pictures/Screenshots` and
+copied to the clipboard. Press Escape to cancel the selection.
+When focus follows the mouse is enabled, hovering changes keyboard focus without
+raising the window; clicking raises it within its layer.
 
 ## Make it yours
 

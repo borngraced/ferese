@@ -5,6 +5,7 @@
 On Fedora with SDDM, install a Rust toolchain (1.93 or newer), native build
 dependencies, `desktop-file-utils`, D-Bus and `foot`. Wallpaper browsing also
 needs `zenity`; locking needs swaylock or swaylock-effects.
+Area screenshots need `grim`, `slurp`, and `wl-clipboard`.
 
 From the checkout, run as your normal user:
 
@@ -34,6 +35,11 @@ its DRM backend inside an active graphical session.
 
 Logs are stored in `${XDG_STATE_HOME:-~/.local/state}/ferese/`. Keep an existing
 desktop available while testing scaling, monitor hotplug, suspend and locking.
+
+The session launcher enables the screencopy protocol for screenshot tools.
+Set `FERESE_ENABLE_SCREENCOPY=0` in the session environment to disable it.
+When enabled, Wayland clients can capture the unlocked desktop. Capture remains
+blocked while the session is locked. Launcher changes take effect at next login.
 
 ## Logout and recovery
 

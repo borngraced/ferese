@@ -895,7 +895,13 @@ impl Config {
     }
 
     pub fn bindings(&self, input: &InputSettings) -> Result<Vec<Binding>, ConfigError> {
-        let mut commands = HashMap::from([("terminal".to_owned(), vec!["foot".to_owned()])]);
+        let mut commands = HashMap::from([
+            ("terminal".to_owned(), vec!["foot".to_owned()]),
+            (
+                "screenshot".to_owned(),
+                vec!["ferese-screenshot".to_owned()],
+            ),
+        ]);
         commands.extend(self.commands.clone());
         validate_commands(&commands)?;
 
@@ -1398,6 +1404,7 @@ fn parse_workspace(argument: &str) -> Result<u8, ConfigError> {
 fn default_bindings() -> Vec<BindingConfig> {
     let mut bindings = vec![
         binding("Super+Enter", "spawn", Some("terminal")),
+        binding("Super+Shift+S", "spawn", Some("screenshot")),
         binding("Super+Q", "close", None),
         binding("Super+F", "toggle-maximized", None),
         binding("Super+Shift+F", "toggle-fullscreen", None),
@@ -2069,7 +2076,7 @@ mod tests {
         let input = config.input_settings().unwrap();
         let bindings = config.bindings(&input).unwrap();
 
-        assert_eq!(bindings.len(), 42);
+        assert_eq!(bindings.len(), 43);
         for (shift, action) in [
             (false, BindingAction::ToggleMaximized),
             (true, BindingAction::ToggleFullscreen),
@@ -2091,6 +2098,12 @@ mod tests {
         }));
         assert!(bindings.iter().any(|binding| {
             binding.modifiers.logo
+                && binding.modifiers.shift
+                && binding.trigger == BindingTrigger::Keysym(keysyms::KEY_s)
+                && binding.action == BindingAction::Spawn(vec!["ferese-screenshot".to_owned()])
+        }));
+        assert!(bindings.iter().any(|binding| {
+            binding.modifiers.logo
                 && binding.trigger == BindingTrigger::Keysym(keysyms::KEY_Tab)
                 && binding.action == BindingAction::ToggleOverview
         }));
@@ -2105,7 +2118,7 @@ mod tests {
 
         let input = replaced.input_settings().unwrap();
         let bindings = replaced.bindings(&input).unwrap();
-        assert_eq!(bindings.len(), 42);
+        assert_eq!(bindings.len(), 43);
         assert!(bindings.iter().any(|binding| {
             binding.action
                 == BindingAction::Spawn(vec![
@@ -2117,7 +2130,7 @@ mod tests {
 
         let input = unbound.input_settings().unwrap();
         let bindings = unbound.bindings(&input).unwrap();
-        assert_eq!(bindings.len(), 41);
+        assert_eq!(bindings.len(), 42);
         assert!(
             !bindings
                 .iter()

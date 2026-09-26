@@ -2,6 +2,7 @@
 # Unspecified monitors use automatic placement and preferred modes.
 [commands]
 terminal = ["foot"]
+screenshot = ["ferese-screenshot"]
 
 [input]
 xkb_layout = "us"
@@ -17,7 +18,7 @@ opacity = 0.95
 text_primary = "#F0F3FA"
 text_muted = "#AAB4C7"
 
-# Super+Enter opens Foot. Super+Shift+E logs out.
+# Super+Enter opens Foot. Super+Shift+S selects a screenshot. Super+Shift+E logs out.
 # See README.md for monitor profiles and additional bindings.
 
 [[window_rules]]

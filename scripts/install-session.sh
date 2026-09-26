@@ -19,7 +19,7 @@ session_entry=/usr/share/wayland-sessions/ferese.desktop
 [[ ! -e $release_dir ]] || { echo "Release already exists: $release_dir" >&2; exit 1; }
 
 # Refuse to overwrite unrelated installations.
-for name in ferese ferese-shell ferese-settings feresectl ferese-session ferese-lock; do
+for name in ferese ferese-shell ferese-settings feresectl ferese-session ferese-lock ferese-screenshot; do
     link=/usr/local/bin/$name
     if [[ -e $link || -L $link ]]; then
         [[ -L $link && $(readlink -- "$link") == "$install_root/current/$name" ]] || {
@@ -54,6 +54,7 @@ for name in ferese ferese-shell ferese-settings feresectl; do
 done
 install -m 0755 -- "$repo_dir/packaging/ferese-session" "$release_dir/ferese-session"
 install -m 0755 -- "$repo_dir/packaging/ferese-lock" "$release_dir/ferese-lock"
+install -m 0755 -- "$repo_dir/packaging/ferese-screenshot" "$release_dir/ferese-screenshot"
 install -m 0644 -- "$repo_dir/packaging/config.toml" "$release_dir/config.example.toml"
 
 if [[ -L $install_root/current ]]; then
@@ -61,7 +62,7 @@ if [[ -L $install_root/current ]]; then
 fi
 ln -s -- "releases/$release_id" "$install_root/current-$release_id"
 mv -Tf -- "$install_root/current-$release_id" "$install_root/current"
-for name in ferese ferese-shell ferese-settings feresectl ferese-session ferese-lock; do
+for name in ferese ferese-shell ferese-settings feresectl ferese-session ferese-lock ferese-screenshot; do
     ln -sfn -- "$install_root/current/$name" "/usr/local/bin/$name"
 done
 install -m 0644 -- "$repo_dir/packaging/ferese.desktop" "$session_entry"

@@ -127,7 +127,7 @@ angle = 135.0
 
 | `[input]` key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `focus_follows_mouse` | boolean | `false` | Focus windows under the pointer |
+| `focus_follows_mouse` | boolean | `false` | Focus windows under the pointer without raising them; click to raise |
 | `xkb_layout` | nonempty string | `"us"` | XKB layout |
 | `xkb_variant` | string | `""` | XKB variant |
 | `xkb_options` | string array | `[]` | XKB options |
@@ -178,7 +178,13 @@ Super+Shift+H/J/K/L move; Super+Ctrl+H/J/K/L resize; Super+1–9 workspace;
 Super+Shift+1–9 move to workspace; Super+R width cycle; Super+C center;
 Super+[/] consume/expel; Super+F maximize; Super+Shift+F fullscreen;
 Super+M layout; Super+Shift+Space floating; Super+Tab overview;
-Super+Shift+E immediate logout.
+Super+Shift+S area screenshot; Super+Shift+E immediate logout.
+
+The screenshot shortcut runs `ferese-screenshot`: drag to select an area, or
+press Escape to cancel. Captures are saved under your Pictures directory in
+`Screenshots` and copied to the clipboard as PNG images. It requires `grim`,
+`slurp`, and `wl-copy` (from `wl-clipboard`). Override the `screenshot` command
+to use another screenshot tool.
 
 ## Window rules
 
@@ -273,5 +279,7 @@ ending the session from another TTY.
 These are launch-time environment switches, not TOML keys. Enable only for
 trusted clients: `FERESE_ENABLE_INPUT_METHOD=1`,
 `FERESE_ENABLE_SHORTCUT_INHIBIT=1`, `FERESE_ENABLE_SCREENCOPY=1`.
+The installed session launcher enables screencopy for screenshots unless
+`FERESE_ENABLE_SCREENCOPY=0` is explicitly set in its environment.
 Text input is available by default; Ctrl+Alt+Escape releases an active shortcut
 inhibitor. Use `feresectl --help` for runtime control commands.

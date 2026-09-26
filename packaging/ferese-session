@@ -26,6 +26,8 @@ export XDG_SESSION_DESKTOP=ferese
 export XDG_SESSION_TYPE=wayland
 export MOZ_ENABLE_WAYLAND=1
 export QT_QPA_PLATFORM=wayland
+# Used by the area screenshot shortcut; explicitly set 0 to disable capture.
+export FERESE_ENABLE_SCREENCOPY=${FERESE_ENABLE_SCREENCOPY:-1}
 export PATH="$release_dir:$PATH"
 unset WAYLAND_SOCKET
 if [[ $backend == drm ]]; then
