@@ -4,7 +4,7 @@ use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
         KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
-        TouchEvent,
+        Switch, SwitchState, SwitchToggleEvent, TouchEvent,
     },
     input::{
         keyboard::{FilterResult, keysyms},
@@ -27,6 +27,9 @@ impl Ferese {
         self.idle_notifier_state.notify_activity(&seat);
 
         match event {
+            InputEvent::SwitchToggle { event } if event.switch() == Some(Switch::Lid) => {
+                crate::backends::direct::set_lid_closed(self, event.state() == SwitchState::On);
+            }
             InputEvent::Keyboard { event, .. } => {
                 let keyboard = self.seat.get_keyboard().expect("seat has a keyboard");
                 let keycode = event.key_code();
@@ -339,12 +342,14 @@ impl Ferese {
         }
 
         if let Some(window) = self.window_under_visual(position) {
-            self.focused_window = self.window_ids.get(&window).copied();
-            if let Some(focused) = self.focused_window
+            let focused = self.window_ids.get(&window).copied();
+            if let Some(focused) = focused
                 && let Err(error) = self.workspaces.focus_window(focused)
             {
                 tracing::error!(%error, ?focused, "failed to update workspace focus");
+                return;
             }
+            self.focused_window = focused;
             self.raise_window(&window, true);
             let surface = window
                 .toplevel()
@@ -481,7 +486,12 @@ impl Ferese {
             BindingAction::Spawn(mut argv) => {
                 let program = argv.remove(0);
 
-                match Command::new(&program).args(argv).spawn() {
+                match Command::new(&program)
+                    .args(argv)
+                    .env("WAYLAND_DISPLAY", &self.socket_name)
+                    .env_remove("WAYLAND_SOCKET")
+                    .spawn()
+                {
                     Ok(child) => {
                         tracing::info!(%program, pid = child.id(), "spawned binding command")
                     }

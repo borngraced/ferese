@@ -16,6 +16,7 @@ pub(crate) struct RenderMetrics {
     damaged_pixels: u64,
     total_render_time: Duration,
     longest_render_time: Duration,
+    frame_times: Vec<Duration>,
 }
 
 impl RenderMetrics {
@@ -36,6 +37,7 @@ impl RenderMetrics {
             damaged_pixels: 0,
             total_render_time: Duration::ZERO,
             longest_render_time: Duration::ZERO,
+            frame_times: Vec::new(),
         }
     }
 
@@ -54,6 +56,10 @@ impl RenderMetrics {
         self.damaged_pixels += damage.iter().map(rectangle_area).sum::<u64>();
         self.total_render_time += render_time;
         self.longest_render_time = self.longest_render_time.max(render_time);
+        if self.frame_times.len() == 512 {
+            self.frame_times.remove(0);
+        }
+        self.frame_times.push(render_time);
 
         let now = Instant::now();
         let elapsed = now.saturating_duration_since(self.interval_started);
@@ -66,6 +72,17 @@ impl RenderMetrics {
             .as_micros()
             .checked_div(u128::from(self.rendered_frames))
             .unwrap_or(0);
+        self.frame_times.sort_unstable();
+        let percentile = |percent: usize| {
+            let index = (self.frame_times.len() * percent)
+                .div_ceil(100)
+                .saturating_sub(1);
+            self.frame_times
+                .get(index)
+                .copied()
+                .unwrap_or_default()
+                .as_micros()
+        };
         tracing::info!(
             target: "ferese::render",
             output = %self.output,
@@ -74,6 +91,8 @@ impl RenderMetrics {
             damaged_pixels = self.damaged_pixels,
             average_render_us,
             longest_render_us = self.longest_render_time.as_micros(),
+            p95_render_us = percentile(95),
+            p99_render_us = percentile(99),
             missed_deadlines,
             "render performance"
         );
@@ -83,6 +102,7 @@ impl RenderMetrics {
         self.damaged_pixels = 0;
         self.total_render_time = Duration::ZERO;
         self.longest_render_time = Duration::ZERO;
+        self.frame_times.clear();
     }
 }
 
@@ -128,5 +148,15 @@ mod tests {
         assert_eq!(metrics.damaged_pixels, 5_200);
         assert_eq!(metrics.total_render_time, Duration::from_millis(2));
         assert_eq!(metrics.longest_render_time, Duration::from_millis(2));
+        assert_eq!(metrics.frame_times, vec![Duration::from_millis(2)]);
+    }
+
+    #[test]
+    fn profiling_samples_are_bounded() {
+        let mut metrics = RenderMetrics::new("test", true, Instant::now());
+        for _ in 0..2000 {
+            metrics.record_frame(Duration::from_millis(1), &[], 0, FrameEffectMetrics);
+        }
+        assert_eq!(metrics.frame_times.len(), 512);
     }
 }

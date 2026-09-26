@@ -12,7 +12,9 @@ use smithay::{
             Fourcc,
             gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
         },
-        drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode, GbmBufferedSurface},
+        drm::{
+            DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode, GbmBufferedSurface, NodeType,
+        },
         egl::{EGLContext, EGLDisplay},
         input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
@@ -36,7 +38,7 @@ use smithay::{
         wayland_server::backend::GlobalId,
     },
     utils::{DeviceFd, Monotonic, Time, Transform},
-    wayland::presentation::Refresh,
+    wayland::{dmabuf::DmabufFeedbackBuilder, presentation::Refresh},
 };
 
 use crate::{
@@ -51,9 +53,37 @@ use crate::{
 pub struct DirectBackendState {
     pub session: LibSeatSession,
     pub active: bool,
+    lid_closed: bool,
     devices: HashMap<DrmNode, DirectDevice>,
     presentation: HashMap<(DrmNode, crtc::Handle), PresentationClock>,
     pub(crate) connected_outputs: Vec<ConnectedOutputInfo>,
+}
+
+impl DirectBackendState {
+    pub(crate) fn capture_resize_snapshot(
+        &mut self,
+        window: &smithay::desktop::Window,
+        geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+        output: &Output,
+        remaining: usize,
+    ) -> Result<Option<crate::winit::ResizeSnapshot>, smithay::backend::renderer::gles::GlesError>
+    {
+        let Some(device) = self.devices.values_mut().find(|device| {
+            device
+                .outputs
+                .values()
+                .any(|candidate| &candidate.output == output)
+        }) else {
+            return Ok(None);
+        };
+        crate::winit::capture_resize_snapshot(
+            &mut device.renderer,
+            window,
+            geometry,
+            output.current_scale().fractional_scale(),
+            remaining,
+        )
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -94,6 +124,7 @@ struct DirectDevice {
 }
 
 struct DirectOutput {
+    internal: bool,
     connector: connector::Handle,
     mode: DrmMode,
     settings: OutputSettings,
@@ -143,6 +174,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
     state.direct_backend = Some(DirectBackendState {
         session,
         active: session_active,
+        lid_closed: initial_lid_closed(),
         devices: HashMap::new(),
         presentation: HashMap::new(),
         connected_outputs: Vec::new(),
@@ -279,10 +311,25 @@ fn open_primary_device(
     state.shm_state.update_formats(renderer.shm_formats());
     let dmabuf_formats = renderer.dmabuf_formats();
     let display_handle = state.display_handle.clone();
+    // Mesa's Wayland EGL path needs the main device, not just a v3 format
+    // list, to choose a hardware render node. Without feedback, nested EGL
+    // clients can fall back to llvmpipe despite a GPU-backed DRM compositor.
+    let render_node = node
+        .node_with_type(NodeType::Render)
+        .and_then(Result::ok)
+        .unwrap_or(node);
+    let feedback = DmabufFeedbackBuilder::new(render_node.dev_id(), dmabuf_formats).build()?;
     state
         .dmabuf_state
-        .create_global::<Ferese>(&display_handle, dmabuf_formats);
-    let scan = select_outputs(&drm, &state.output_profiles)?;
+        .create_global_with_default_feedback::<Ferese>(&display_handle, &feedback);
+    let mut scan = select_outputs(&drm, &state.output_profiles)?;
+    apply_lid_policy(
+        &mut scan,
+        state
+            .direct_backend
+            .as_ref()
+            .is_some_and(|backend| backend.lid_closed),
+    );
     if scan.selections.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
@@ -416,6 +463,68 @@ pub fn switch_vt(state: &mut Ferese, vt: i32) {
     if let Err(error) = backend.session.change_vt(vt) {
         tracing::error!(vt, %error, "failed to switch virtual terminal");
     }
+}
+
+pub(crate) fn set_lid_closed(state: &mut Ferese, closed: bool) {
+    let Some(backend) = state.direct_backend.as_mut() else {
+        return;
+    };
+    if backend.lid_closed == closed {
+        return;
+    }
+    backend.lid_closed = closed;
+    tracing::info!(closed, "laptop lid state changed");
+    let nodes = backend.devices.keys().copied().collect::<Vec<_>>();
+    for node in nodes {
+        rescan_device(state, node);
+    }
+}
+
+fn initial_lid_closed() -> bool {
+    std::fs::read_dir("/proc/acpi/button/lid")
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| std::fs::read_to_string(entry.path().join("state")).ok())
+        .any(|state| state.split_whitespace().last() == Some("closed"))
+}
+
+fn internal_connector(interface: connector::Interface) -> bool {
+    matches!(
+        interface,
+        connector::Interface::EmbeddedDisplayPort
+            | connector::Interface::LVDS
+            | connector::Interface::DSI
+    )
+}
+
+fn apply_lid_policy(scan: &mut OutputScan, closed: bool) {
+    let external_available = scan
+        .selections
+        .iter()
+        .any(|selection| !internal_connector(selection.connector.interface()));
+    if !lid_hides_panel(closed, external_available) {
+        return;
+    }
+    let internal = scan
+        .selections
+        .iter()
+        .filter(|selection| internal_connector(selection.connector.interface()))
+        .map(|selection| selection.connector.to_string())
+        .collect::<HashSet<_>>();
+    scan.selections
+        .retain(|selection| !internal_connector(selection.connector.interface()));
+    for output in &mut scan.connected_outputs {
+        if internal.contains(&output.connector) {
+            output.enabled = false;
+            output.current_mode = None;
+        }
+    }
+}
+
+fn lid_hides_panel(closed: bool, external_available: bool) -> bool {
+    closed && external_available
 }
 
 fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
@@ -570,7 +679,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
         return;
     };
 
-    let scan = match select_outputs(&device.drm, &state.output_profiles) {
+    let mut scan = match select_outputs(&device.drm, &state.output_profiles) {
         Ok(scan) => scan,
         Err(error) => {
             tracing::error!(?node, %error, "failed to scan DRM connectors");
@@ -578,6 +687,11 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
             return;
         }
     };
+    let lid_closed = state
+        .direct_backend
+        .as_ref()
+        .is_some_and(|backend| backend.lid_closed);
+    apply_lid_policy(&mut scan, lid_closed);
     if let Some(backend) = state.direct_backend.as_mut() {
         backend.connected_outputs = scan.connected_outputs;
     }
@@ -587,6 +701,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
         .map(|selection| (selection.crtc, selection))
         .collect::<HashMap<_, _>>();
     let existing = device.outputs.keys().copied().collect::<Vec<_>>();
+    let mut deferred_removals = Vec::new();
 
     for crtc in existing {
         let unchanged = device.outputs.get(&crtc).is_some_and(|output| {
@@ -598,6 +713,14 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
         });
         if unchanged {
             selections.remove(&crtc);
+            continue;
+        }
+
+        // Add replacements on free CRTCs before removing vanished outputs so
+        // workspace evacuation always has a real destination. Reused CRTCs
+        // still need their old surface released first.
+        if !selections.contains_key(&crtc) {
+            deferred_removals.push(crtc);
             continue;
         }
 
@@ -643,7 +766,48 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
         }
     }
 
+    for crtc in deferred_removals {
+        let keep_internal = device
+            .outputs
+            .get(&crtc)
+            .is_some_and(|output| output.internal)
+            && lid_closed
+            && state.direct_backend.as_ref().is_some_and(|backend| {
+                device.outputs.get(&crtc).is_some_and(|output| {
+                    backend
+                        .connected_outputs
+                        .iter()
+                        .any(|info| info.connector == output.output.name())
+                })
+            })
+            && !device.outputs.values().any(|output| !output.internal);
+        if keep_internal {
+            tracing::warn!(
+                ?crtc,
+                "keeping laptop panel enabled: external output activation failed"
+            );
+            if let Some(output) = device.outputs.get(&crtc)
+                && let Some(backend) = state.direct_backend.as_mut()
+                && let Some(info) = backend
+                    .connected_outputs
+                    .iter_mut()
+                    .find(|info| info.connector == output.output.name())
+            {
+                info.enabled = true;
+                info.current_mode = Some(connected_mode_info(output.mode));
+            }
+            continue;
+        }
+        if let Some(output) = device.outputs.remove(&crtc) {
+            state.display_handle.disable_global::<Ferese>(output.global);
+            state.unregister_output(&output.output);
+            if let Some(backend) = state.direct_backend.as_mut() {
+                backend.presentation.remove(&(node, crtc));
+            }
+        }
+    }
     restore_device(state, node, device);
+    state.restore_output_focus();
     state.relayout();
     render_all(state);
 }
@@ -657,6 +821,11 @@ fn remove_device(state: &mut Ferese, node: DrmNode) {
         return;
     };
 
+    let context = device.renderer.context_id().erased();
+    state.wallpaper.forget_context(&context);
+    state
+        .resize_snapshots
+        .retain(|_, snapshot| snapshot.context != context);
     for (crtc, output) in device.outputs {
         state.display_handle.disable_global::<Ferese>(output.global);
         state.unregister_output(&output.output);
@@ -901,7 +1070,6 @@ fn create_direct_output(
     settings: &OutputSettings,
 ) -> Result<DirectOutput, Box<dyn Error>> {
     let identity = connector_identity(drm, &connector);
-    let (output, global) = create_output(state, &connector, mode, identity, settings);
     let drm_surface = drm.create_surface(crtc, mode, &[connector.handle()])?;
     let allocator = GbmAllocator::new(
         gbm.clone(),
@@ -913,11 +1081,15 @@ fn create_direct_output(
         &[Fourcc::Argb8888, Fourcc::Abgr8888],
         renderer.dmabuf_formats(),
     )?;
+    // Publish only after DRM/GBM creation succeeds; failed activation must not
+    // leave a phantom output/workspace that could receive evacuated windows.
+    let (output, global) = create_output(state, &connector, mode, identity, settings);
     let damage_tracker = OutputDamageTracker::from_output(&output);
     let render_metrics = RenderMetrics::from_environment(output.name());
 
     tracing::info!(?crtc, connector = %connector, "initialized DRM output");
     Ok(DirectOutput {
+        internal: internal_connector(connector.interface()),
         connector: connector.handle(),
         mode,
         settings: settings.clone(),
@@ -1089,6 +1261,25 @@ mod tests {
     use std::time::SystemTime;
 
     use super::*;
+
+    #[test]
+    fn lid_only_hides_panels_with_a_usable_external_output() {
+        assert!(lid_hides_panel(true, true));
+        assert!(!lid_hides_panel(false, true));
+        assert!(!lid_hides_panel(true, false));
+        assert!(!lid_hides_panel(false, false));
+    }
+
+    #[test]
+    fn panel_detection_uses_connector_type_not_monitor_name() {
+        assert!(internal_connector(
+            connector::Interface::EmbeddedDisplayPort
+        ));
+        assert!(internal_connector(connector::Interface::LVDS));
+        assert!(internal_connector(connector::Interface::DSI));
+        assert!(!internal_connector(connector::Interface::HDMIA));
+        assert!(!internal_connector(connector::Interface::DisplayPort));
+    }
 
     #[test]
     fn connector_identity_hash_is_stable() {

@@ -13,6 +13,7 @@ ferese-ipc = { path = "../crates/ferese-ipc" }
 ferese-layout = { path = "../crates/ferese-layout" }
 ferese-protocols = { path = "../crates/ferese-protocols", features = ["server"] }
 libc.workspace = true
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
 smithay.workspace = true
 serde.workspace = true
 serde_json.workspace = true

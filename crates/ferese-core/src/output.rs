@@ -271,7 +271,7 @@ impl OutputWorkspaceMap {
             return Ok(WorkspaceSwitch::FocusedExisting(owner));
         }
 
-        self.assignments.insert(workspace, output);
+        let reassigned = self.assignments.insert(workspace, output) != Some(output);
         let state = self
             .outputs
             .get_mut(&output)
@@ -279,7 +279,9 @@ impl OutputWorkspaceMap {
         state.workspaces.insert(workspace);
         state.active = workspace;
         self.focused = Some(output);
-        self.bump_revision(workspace);
+        if reassigned {
+            self.bump_revision(workspace);
+        }
 
         debug_assert!(self.validate());
         Ok(WorkspaceSwitch::Activated(output))
@@ -482,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_workspace_selection_prevents_automatic_return() {
+    fn using_an_evacuated_workspace_does_not_prevent_automatic_return() {
         let mut outputs = OutputWorkspaceMap::default();
         outputs
             .connect(OutputId(1), geometry(0), WorkspaceId(1))
@@ -498,12 +500,61 @@ mod tests {
 
         assert_eq!(
             outputs.connect(OutputId(2), geometry(1_920), WorkspaceId(3)),
-            Ok(WorkspaceId(3))
+            Ok(WorkspaceId(2))
         );
         assert_eq!(
             outputs.output_for_workspace(WorkspaceId(2)),
-            Some(OutputId(1))
+            Some(OutputId(2))
         );
+    }
+
+    #[test]
+    fn repeated_lid_and_monitor_handoffs_restore_both_workspace_owners() {
+        let mut outputs = OutputWorkspaceMap::default();
+        outputs
+            .connect(OutputId(1), geometry(0), WorkspaceId(1))
+            .unwrap();
+        outputs
+            .connect(OutputId(2), geometry(1920), WorkspaceId(2))
+            .unwrap();
+        for removed in [OutputId(1), OutputId(2), OutputId(1), OutputId(2)] {
+            let remaining = if removed == OutputId(1) {
+                OutputId(2)
+            } else {
+                OutputId(1)
+            };
+            outputs.focus_output(removed).unwrap();
+            outputs.disconnect(removed).unwrap();
+            assert_eq!(
+                outputs.output_for_workspace(WorkspaceId(1)),
+                Some(remaining)
+            );
+            assert_eq!(
+                outputs.output_for_workspace(WorkspaceId(2)),
+                Some(remaining)
+            );
+            // Switching between handed-off workspaces is normal use, not an
+            // explicit change of their home output.
+            outputs.switch_workspace(remaining, WorkspaceId(1)).unwrap();
+            outputs.switch_workspace(remaining, WorkspaceId(2)).unwrap();
+            outputs
+                .connect(
+                    removed,
+                    geometry(if removed == OutputId(1) { 0 } else { 1920 }),
+                    WorkspaceId(3),
+                )
+                .unwrap();
+            assert_eq!(
+                outputs.output_for_workspace(WorkspaceId(1)),
+                Some(OutputId(1))
+            );
+            assert_eq!(
+                outputs.output_for_workspace(WorkspaceId(2)),
+                Some(OutputId(2))
+            );
+            assert_eq!(outputs.active_workspace(OutputId(1)), Some(WorkspaceId(1)));
+            assert_eq!(outputs.active_workspace(OutputId(2)), Some(WorkspaceId(2)));
+        }
     }
 
     #[test]

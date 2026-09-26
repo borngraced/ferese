@@ -28,6 +28,7 @@ pub(crate) struct ShellSnapshot {
 #[derive(Clone, Debug)]
 pub(crate) struct OutputSnapshot {
     pub(crate) id: u64,
+    pub(crate) name: String,
     pub(crate) active_workspace: u64,
     pub(crate) focused: bool,
 }
@@ -199,12 +200,13 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
             ferese_shell_v1::Event::Output {
                 output_hi,
                 output_lo,
-                name: _,
+                name,
                 active_workspace_hi,
                 active_workspace_lo,
                 focused,
             } => state.pending.outputs.push(OutputSnapshot {
                 id: join_id(output_hi, output_lo),
+                name,
                 active_workspace: join_id(active_workspace_hi, active_workspace_lo),
                 focused: focused != 0,
             }),

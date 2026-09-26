@@ -11,10 +11,13 @@ mod input;
 mod ipc;
 mod metrics;
 mod overview;
+mod presentation;
 mod private_client;
+mod resize_transaction;
 mod shell_control;
 mod stacking;
 mod state;
+mod wallpaper;
 mod window_rules;
 mod winit;
 
@@ -68,13 +71,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         spring_config: config.spring_config()?,
         viewport_spring_config: config.viewport_spring_config()?,
         output_profiles,
+        wallpaper: config.wallpaper_settings(),
     };
     let mut state = Ferese::new(&mut event_loop, display, runtime)?;
     backends::init(launch.backend, &mut event_loop, &mut state)?;
-
-    // SAFETY: the backend has already read the host display and Ferese is
-    // single-threaded before the event loop and optional child start.
-    unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
 
     info!(socket = ?state.socket_name, backend = ?launch.backend, "Ferese is accepting Wayland clients");
     let mut child = spawn_client(&mut state, launch.client, launch.client_capabilities);
@@ -118,6 +118,12 @@ fn spawn_client(
 
     let mut command = Command::new(&program);
     command.args(args);
+    // Wallpaper decoding and drivers may already have worker threads. Set
+    // the child's display explicitly instead of mutating the process env.
+    command.env("WAYLAND_DISPLAY", &state.socket_name);
+    if state.wallpaper.owns_background() {
+        command.env("FERESE_COMPOSITOR_WALLPAPER", "1");
+    }
     let private_connection = if capabilities.is_empty() {
         None
     } else {

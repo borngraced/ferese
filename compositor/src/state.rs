@@ -64,7 +64,7 @@ use smithay::{
         shell::wlr_layer::Layer,
         shell::wlr_layer::WlrLayerShellState,
         shell::xdg::decoration::XdgDecorationState,
-        shell::xdg::{SurfaceCachedState, XdgShellState},
+        shell::xdg::{SurfaceCachedState, XdgShellState, XdgToplevelSurfaceData},
         shm::ShmState,
         single_pixel_buffer::SinglePixelBufferState,
         socket::ListeningSocketSource,
@@ -118,11 +118,16 @@ pub struct Ferese {
     output_identity_ids: HashMap<String, OutputId>,
     pub window_ids: HashMap<Window, WindowId>,
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
+    resize_transactions: HashMap<WindowId, crate::resize_transaction::ResizeTransaction>,
+    pub(crate) resize_snapshots: HashMap<WindowId, crate::winit::ResizeSnapshot>,
+    pub(crate) nested_backend: Option<crate::winit::NestedBackend>,
+    pub(crate) wallpaper: crate::wallpaper::WallpaperState,
     maximized_windows: HashSet<WindowId>,
     maximized_column_widths: HashMap<WindowId, ColumnWidth>,
     window_stack: crate::stacking::WindowStack,
     pub(crate) window_borders: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
     pub(crate) window_dims: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
+    pub(crate) window_resize_fills: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
     pub(crate) window_dimming: HashMap<WindowId, crate::dimming::DimAnimation>,
     pub(crate) window_shadows: HashMap<WindowId, crate::winit::WindowShadowBuffers>,
     pub(crate) rounded_clip_programs: HashMap<ErasedContextId, crate::winit::RoundedClipPrograms>,
@@ -203,6 +208,7 @@ pub struct Ferese {
 }
 
 pub struct RuntimeConfig {
+    pub(crate) wallpaper: crate::wallpaper::WallpaperConfig,
     pub layout_mode: LayoutMode,
     pub gap_config: GapConfig,
     pub input_settings: InputSettings,
@@ -321,6 +327,15 @@ impl Ferese {
             .find_map(|(output, id)| (*id == focused).then_some(output))
     }
 
+    pub(crate) fn restore_output_focus(&mut self) {
+        if let Some(output) = self.output_workspaces.focused_output()
+            && let Some(workspace) = self.output_workspaces.active_workspace(output)
+        {
+            self.activate_output_workspace(output, workspace);
+            self.restore_keyboard_focus();
+        }
+    }
+
     pub(crate) fn output_id(&self, output: &Output) -> Option<OutputId> {
         self.output_ids.get(output).copied()
     }
@@ -340,12 +355,14 @@ impl Ferese {
         let Some(output_id) = self.output_ids.get(&output).copied() else {
             return;
         };
-        if self.output_workspaces.focused_output() == Some(output_id) {
-            return;
-        }
         let Some(workspace) = self.output_workspaces.active_workspace(output_id) else {
             return;
         };
+        if self.output_workspaces.focused_output() == Some(output_id)
+            && self.workspaces.active_id() == workspace
+        {
+            return;
+        }
 
         self.activate_output_workspace(output_id, workspace);
         self.relayout();
@@ -453,11 +470,16 @@ impl Ferese {
             output_identity_ids: HashMap::new(),
             window_ids: HashMap::new(),
             window_geometry: HashMap::new(),
+            resize_transactions: HashMap::new(),
+            resize_snapshots: HashMap::new(),
+            nested_backend: None,
+            wallpaper: crate::wallpaper::WallpaperState::new(config.wallpaper),
             maximized_windows: HashSet::new(),
             maximized_column_widths: HashMap::new(),
             window_stack: crate::stacking::WindowStack::default(),
             window_borders: HashMap::new(),
             window_dims: HashMap::new(),
+            window_resize_fills: HashMap::new(),
             window_dimming: HashMap::new(),
             window_shadows: HashMap::new(),
             rounded_clip_programs: HashMap::new(),
@@ -596,8 +618,12 @@ impl Ferese {
             return None;
         }
 
+        let workspace = self.workspace_under_pointer(position)?;
         self.space.elements().rev().find_map(|window| {
             let id = self.window_ids.get(window)?;
+            if self.workspaces.workspace_for_window(*id) != Some(workspace) {
+                return None;
+            }
             let visual = self.presented_window_rect(*id)?;
             let inside_visual = position.x >= visual.x
                 && position.y >= visual.y
@@ -666,8 +692,12 @@ impl Ferese {
     }
 
     pub fn window_under_visual(&self, position: Point<f64, Logical>) -> Option<Window> {
+        let workspace = self.workspace_under_pointer(position)?;
         self.space.elements().rev().find_map(|window| {
             let id = self.window_ids.get(window)?;
+            if self.workspaces.workspace_for_window(*id) != Some(workspace) {
+                return None;
+            }
             let visual = self.presented_window_rect(*id)?;
 
             (position.x >= visual.x
@@ -676,6 +706,19 @@ impl Ferese {
                 && position.y < visual.y + visual.height)
                 .then(|| window.clone())
         })
+    }
+
+    fn workspace_under_pointer(&self, position: Point<f64, Logical>) -> Option<WorkspaceId> {
+        let output = self.space.output_under(position).next()?;
+        self.output_workspaces
+            .active_workspace(self.output_id(output)?)
+    }
+
+    pub(crate) fn window_belongs_to_output(&self, window: WindowId, output: &Output) -> bool {
+        let workspace = self
+            .output_id(output)
+            .and_then(|output| self.output_workspaces.active_workspace(output));
+        workspace.is_some() && self.workspaces.workspace_for_window(window) == workspace
     }
 
     pub(crate) fn raise_window(&mut self, window: &Window, activate: bool) {
@@ -704,6 +747,9 @@ impl Ferese {
     }
 
     pub fn visual_scale_for_window(&self, window: &Window) -> Option<(f64, f64)> {
+        if !self.overview.is_presenting() {
+            return Some((1.0, 1.0));
+        }
         let id = self.window_ids.get(window)?;
         let geometry = self.window_geometry.get(id)?;
         let source = geometry.client.committed_size?;
@@ -916,6 +962,9 @@ impl Ferese {
 
         self.space.unmap_elem(window);
         self.window_geometry.remove(&id);
+        self.resize_transactions.remove(&id);
+        self.resize_snapshots.remove(&id);
+        self.window_resize_fills.remove(&id);
         self.maximized_windows.remove(&id);
         self.maximized_column_widths.remove(&id);
         self.window_stack.remove(id);
@@ -939,7 +988,9 @@ impl Ferese {
     }
 
     pub fn relayout(&mut self) {
-        self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
+        // Consume idle time before setting new targets; it must not become a
+        // large first animation step after a keypress on an idle desktop.
+        self.advance_animations(Instant::now());
         self.arrange_layers();
         let mut previous_scrolling_world_x = std::mem::take(&mut self.scrolling_world_x);
         let pending_column_width_cycles = std::mem::take(&mut self.pending_column_width_cycles);
@@ -1071,6 +1122,9 @@ impl Ferese {
             .map(|(window, _)| window.clone())
             .collect::<Vec<_>>();
 
+        let mut layout_changed = hidden
+            .iter()
+            .any(|window| self.space.element_location(window).is_some());
         for window in hidden {
             self.space.unmap_elem(&window);
         }
@@ -1100,6 +1154,7 @@ impl Ferese {
             } else {
                 PresentationMode::Normal
             };
+            layout_changed |= !had_geometry || geometry.logical != rect;
             let mut requested_size = geometry.set_presentation_mode(rect, mode, now);
             if !self.animations_enabled {
                 geometry.advance(Duration::ZERO, self.spring_config, false);
@@ -1198,11 +1253,24 @@ impl Ferese {
                 });
 
                 if requested_size.is_some() || state_changed {
-                    toplevel.send_pending_configure();
+                    if let Some(serial) = toplevel.send_pending_configure()
+                        && requested_size.is_some()
+                        && had_geometry
+                        && self.animations_enabled
+                    {
+                        self.resize_transactions.insert(
+                            id,
+                            crate::resize_transaction::ResizeTransaction::new(serial, now)
+                                .with_source_geometry(window.geometry()),
+                        );
+                    }
                 }
             }
         }
         self.scrolling_world_x = scrolling_world_x;
+        if layout_changed {
+            self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
+        }
         self.sync_window_stacking();
         self.retarget_overview();
         self.send_shell_snapshots();
@@ -1211,8 +1279,7 @@ impl Ferese {
     }
 
     pub fn advance_animations(&mut self, now: Instant) -> bool {
-        let delta = now.saturating_duration_since(self.last_animation_tick);
-        self.last_animation_tick = now;
+        let delta = crate::presentation::frame_delta(&mut self.last_animation_tick, now);
         self.advance_animations_by(delta)
     }
 
@@ -1227,8 +1294,11 @@ impl Ferese {
             .direct_backend
             .as_mut()
             .and_then(|backend| backend.record_presentation(node, crtc, time, sequence));
-        if let Some(delta) = delta {
-            self.advance_animations_by(delta);
+        if delta.is_some() {
+            // All outputs animate the same scene. Summing each CRTC's frame
+            // interval makes motion run faster with two monitors (and uneven
+            // with mixed 60/120 Hz). Advance once by actual elapsed time.
+            self.advance_animations(Instant::now());
         }
     }
 
@@ -1287,8 +1357,71 @@ impl Ferese {
             self.send_window_close(id);
         }
 
+        let now = self.start_time.elapsed();
+        self.resize_transactions.retain(|id, transaction| {
+            if transaction.expired(now) {
+                tracing::warn!(?id, "resize presentation deadline reached");
+                false
+            } else {
+                true
+            }
+        });
+        let blocked_workspaces = self
+            .resize_transactions
+            .keys()
+            .filter_map(|id| self.workspaces.workspace_for_window(*id))
+            .collect::<HashSet<_>>();
+        let animations_enabled = self.animations_enabled;
+        let animation_speed = self.animation_speed;
+        self.resize_snapshots.retain(|id, snapshot| {
+            if !animations_enabled {
+                return false;
+            }
+            let waiting_for_client = self
+                .workspaces
+                .workspace_for_window(*id)
+                .is_some_and(|workspace| blocked_workspaces.contains(&workspace));
+            // A shrinking client's destination buffer arrives before the
+            // animated bounds reach it. Keep the old native pixels covering
+            // that strip rather than fading them into the neutral resize fill.
+            let uncovered = self.window_geometry.get(id).is_some_and(|geometry| {
+                geometry.client.committed_size.is_some_and(|size| {
+                    crate::presentation::resize_needs_old_frame(
+                        geometry.visual.current,
+                        geometry.logical,
+                        size.width,
+                        size.height,
+                    )
+                })
+            });
+            let blocked = waiting_for_client || uncovered;
+            let active = crate::presentation::advance_handoff(
+                &mut snapshot.elapsed,
+                &mut snapshot.last_tick,
+                now,
+                blocked,
+                animation_speed,
+            );
+            if !blocked {
+                snapshot.commit.increment();
+            }
+            if !active {
+                tracing::debug!(
+                    ?id,
+                    bytes = snapshot.bytes(),
+                    "released resize handoff snapshot"
+                );
+            }
+            active
+        });
+        active_animation |= !self.resize_snapshots.is_empty();
+        // Keep scheduling frames while waiting, so the deadline cannot stall.
+        active_animation |= !blocked_workspaces.is_empty();
         for (workspace, viewport) in &mut self.viewport_animations {
             if !visible_workspaces.contains(workspace) {
+                continue;
+            }
+            if blocked_workspaces.contains(workspace) {
                 continue;
             }
             if self.animations_enabled {
@@ -1300,6 +1433,13 @@ impl Ferese {
 
         let mut settled_coupled_widths = Vec::new();
         for (window, id) in windows {
+            if self
+                .workspaces
+                .workspace_for_window(id)
+                .is_some_and(|workspace| blocked_workspaces.contains(&workspace))
+            {
+                continue;
+            }
             let Some(geometry) = self.window_geometry.get_mut(&id) else {
                 continue;
             };
@@ -1390,10 +1530,115 @@ impl Ferese {
         self.animations_enabled
     }
 
+    pub(crate) fn capture_resize_before_commit(&mut self, surface: &WlSurface) {
+        let Some((window, id)) = self
+            .window_ids
+            .iter()
+            .find(|(window, _)| {
+                window
+                    .toplevel()
+                    .is_some_and(|toplevel| toplevel.wl_surface() == surface)
+            })
+            .map(|(window, id)| (window.clone(), *id))
+        else {
+            return;
+        };
+        let Some(transaction) = self.resize_transactions.get(&id) else {
+            return;
+        };
+        let serial = with_states(surface, |states| {
+            states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .and_then(|data| data.lock().ok().and_then(|data| data.current_serial))
+        });
+        if !transaction.accepts(serial) {
+            return;
+        }
+        let Some(output) = self
+            .space
+            .outputs()
+            .find(|output| self.window_belongs_to_output(id, output))
+            .cloned()
+        else {
+            return;
+        };
+        let source_geometry = transaction
+            .source_geometry()
+            .unwrap_or_else(|| window.geometry());
+        let scale = output.current_scale().fractional_scale();
+        let source_size = source_geometry.size.to_physical_precise_round(scale);
+        if self.resize_snapshots.get(&id).is_some_and(|snapshot| {
+            crate::presentation::snapshot_covers_source(
+                smithay::backend::renderer::Texture::size(&snapshot.texture),
+                source_size,
+                snapshot.scale,
+                scale,
+            )
+        }) {
+            return;
+        }
+        let used: usize = self
+            .resize_snapshots
+            .values()
+            .map(|snapshot| snapshot.bytes())
+            .sum();
+        let remaining = crate::presentation::SNAPSHOT_BUDGET.saturating_sub(used);
+        let result = if let Some(backend) = &self.nested_backend {
+            // Commit dispatch does not run inside the Winit event callback;
+            // still never risk reentrant renderer access or a compositor panic.
+            match backend.try_borrow_mut() {
+                Ok(mut backend) => crate::winit::capture_resize_snapshot(
+                    backend.renderer(),
+                    &window,
+                    source_geometry,
+                    output.current_scale().fractional_scale(),
+                    remaining,
+                ),
+                Err(_) => return,
+            }
+        } else if let Some(backend) = &mut self.direct_backend {
+            backend.capture_resize_snapshot(&window, source_geometry, &output, remaining)
+        } else {
+            return;
+        };
+        match result {
+            Ok(Some(snapshot)) => {
+                tracing::debug!(
+                    ?id,
+                    bytes = snapshot.bytes(),
+                    "captured native resize handoff"
+                );
+                self.resize_snapshots.insert(id, snapshot);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::debug!(%error, ?id, "resize snapshot unavailable; using native crop")
+            }
+        }
+    }
+
     pub fn record_client_commit(&mut self, window: &Window) {
         let Some(id) = self.window_ids.get(window) else {
             return;
         };
+        // current_serial is promoted by Smithay on commit, unlike
+        // configure_serial, which only records an acknowledgement.
+        let committed_serial = window.toplevel().and_then(|toplevel| {
+            with_states(toplevel.wl_surface(), |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .and_then(|data| data.lock().ok().and_then(|data| data.current_serial))
+            })
+        });
+        if self
+            .resize_transactions
+            .get(id)
+            .is_some_and(|transaction| transaction.accepts(committed_serial))
+        {
+            self.resize_transactions.remove(id);
+        }
         let Some(size) = client_size(window) else {
             return;
         };
@@ -1869,6 +2114,8 @@ impl Ferese {
 
         // Direct manipulation follows the pointer, including while the client is
         // still drawing its next buffer. Rendering and hit testing share this rect.
+        self.resize_transactions.remove(&id);
+        self.resize_snapshots.remove(&id);
         let geometry = self
             .window_geometry
             .entry(id)

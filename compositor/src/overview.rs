@@ -209,6 +209,9 @@ impl Ferese {
         y: f64,
     ) -> Option<(f64, f64)> {
         let geometry = self.window_geometry.get(&id)?;
+        if !self.overview.is_presenting() {
+            return Some((x - geometry.visual.current.x, y - geometry.visual.current.y));
+        }
         let source = geometry.client.committed_size?;
         let presented = self.overview.presented_rect(id, geometry.visual.current);
 

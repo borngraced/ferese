@@ -185,10 +185,25 @@ shadow. Window spacing uses the workspace outer gap; `top_bar_window_gap` under
 `[theme.geometry]` adds optional extra space (default 0). Solid and translucent
 shell surfaces also omit outlines. The dark startup fallback matches the material palette.
 
-The shell decodes wallpaper in parallel with startup and prefers the lightweight
+The compositor decodes wallpaper in parallel with startup. Small shell surfaces prefer the lightweight
 software renderer, with GPU rendering available as a fallback. Set `ICED_BACKEND=wgpu` to explicitly use GPU
 rendering for shell content. Use release builds when evaluating startup and
 animation performance; debug image processing is considerably slower.
+
+Resize presentation configures the destination once and coordinates the
+matching client commits with the workspace motion (300 ms maximum wait).
+Application content stays at native pixel size; animated bounds crop/reveal
+it rather than stretching text. A resize-only previous-frame snapshot fades
+out over 80 ms, with a 64 MiB total snapshot budget and automatic release.
+All monitors share one elapsed-time animation clock, and window content,
+clips, borders and shadows use the same physical-pixel edges.
+
+Ferese renders `[theme.background]` wallpapers directly: `path` selects the
+image and `mode = "fill"` or `"fit"` controls crop/letterboxing. One decoded
+image and one texture per GPU context serve every output; resizing requires
+no image reload or full-screen shell buffers. The launched shell receives
+`FERESE_COMPOSITOR_WALLPAPER=1` to disable its redundant wallpaper surfaces.
+When no valid image path is configured, the shell's existing fallback remains.
 
 Keyboard and direct-session touchpad settings are applied at startup:
 
@@ -244,6 +259,13 @@ Unspecified connected outputs remain enabled with their preferred mode, scale
 transforms are `normal`, `rotate_90`, `rotate_180`, `rotate_270`, `flipped`,
 and their rotated flipped variants. Output configuration is applied at startup
 and on hotplug; live configuration reload remains deferred.
+
+On DRM, closing the laptop lid disables internal panels when a usable external
+output is available. With no usable external output, the panel stays enabled;
+Ferese does not change the system's suspend policy. Workspaces are evacuated
+to a remaining output without merging their windows, and return to their
+original output when the lid reopens or a disconnected monitor returns.
+Normal use of an evacuated workspace does not cancel its automatic return.
 
 Commands are argv arrays and are started directly, without a shell. The
 default `Super+Enter` binding runs the built-in `terminal = ["foot"]` command:

@@ -168,6 +168,8 @@ impl Default for InactiveDimConfig {
 #[derive(Debug, Default, Deserialize)]
 struct ThemeConfig {
     #[serde(default)]
+    background: crate::wallpaper::WallpaperConfig,
+    #[serde(default)]
     surface: ThemeSurfaceConfig,
     #[serde(default)]
     colors: ThemeColorsConfig,
@@ -177,6 +179,12 @@ struct ThemeConfig {
     shadow: ThemeShadowConfig,
     #[serde(default)]
     material: ThemeMaterialConfig,
+}
+
+impl Config {
+    pub(crate) fn wallpaper_settings(&self) -> crate::wallpaper::WallpaperConfig {
+        self.theme.background.clone()
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]

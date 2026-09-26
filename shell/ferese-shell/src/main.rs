@@ -18,8 +18,8 @@ use cosmic::iced::alignment;
 use cosmic::iced::event::{self, PlatformSpecific, wayland};
 use cosmic::iced::platform_specific::{
     runtime::wayland::layer_surface::{IcedMargin, IcedOutput, SctkLayerSurfaceSettings},
-    shell::commands::layer_surface::set_input_zone,
     shell::commands::layer_surface::{Anchor, KeyboardInteractivity, Layer},
+    shell::commands::layer_surface::{destroy_layer_surface, set_input_zone},
 };
 use cosmic::iced::{
     Background, Border, Color, ContentFit, Event, Length, Limits, Subscription, window,
@@ -34,7 +34,7 @@ use jiff::Zoned;
 use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
-    protocol::{wl_registry, wl_surface},
+    protocol::{wl_output, wl_registry, wl_surface},
 };
 
 use crate::config::{ShellConfig, ShellTheme, WallpaperMode};
@@ -102,7 +102,13 @@ fn main() -> cosmic::iced::Result {
         // toolkit threads are started.
         unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia,wgpu") };
     }
-    let config = config::load();
+    let mut config = config::load();
+    let compositor_wallpaper = std::env::var_os("FERESE_COMPOSITOR_WALLPAPER").is_some();
+    if compositor_wallpaper {
+        // The compositor owns one GPU image, shared across output renderers;
+        // do not decode another copy or allocate full-screen software buffers.
+        config.wallpaper.path = None;
+    }
     let shell_font = configured_font(config.font_family.as_deref());
     let _ = SHELL_FONT.set(shell_font);
     // Decode alongside toolkit/GPU initialization, never during a UI draw.
@@ -141,11 +147,20 @@ struct FereseShell {
     snapshot: ShellSnapshot,
     overview_active: bool,
     clock: String,
-    effects: Option<EffectsBinding>,
+    outputs: Vec<OutputSurfaces>,
     status_service: status::Service,
     status: status::Snapshot,
     status_error: Option<String>,
     menu: Option<status_ui::OpenMenu>,
+}
+
+struct OutputSurfaces {
+    output: wl_output::WlOutput,
+    name: Option<String>,
+    bar: window::Id,
+    wallpaper: Option<window::Id>,
+    effects: Option<EffectsBinding>,
+    hidden: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -163,6 +178,7 @@ enum Message {
     StatusTick,
     AnimateMenu,
     OpenMenu(status_ui::Menu, cosmic::iced::Rectangle<i32>),
+    OpenMenuOn(window::Id, status_ui::Menu, cosmic::iced::Rectangle<i32>),
     Control(status::Action),
     ConfirmPower(status::Action),
     CancelPower,
@@ -185,9 +201,6 @@ impl cosmic::Application for FereseShell {
 
     fn init(core: Core, (config, wallpaper): Self::Flags) -> (Self, Task<Self::Message>) {
         let bar_surface_id = window::Id::unique();
-        let wallpaper_surface_id = window::Id::unique();
-        let shell_theme = config.theme;
-        let bar = BarMetrics::from(shell_theme);
         let app = Self {
             core,
             bar_surface_id,
@@ -205,58 +218,8 @@ impl cosmic::Application for FereseShell {
             snapshot: ShellSnapshot::default(),
             overview_active: false,
             clock: current_time(),
-            effects: None,
+            outputs: Vec::new(),
         };
-        let wallpaper_action = cosmic::surface::action::app_layer_shell::<Self>(
-            |_| Default::default(),
-            move |_| SctkLayerSurfaceSettings {
-                id: wallpaper_surface_id,
-                layer: Layer::Background,
-                keyboard_interactivity: KeyboardInteractivity::None,
-                input_zone: Some(Vec::new()),
-                anchor: Anchor::TOP | Anchor::RIGHT | Anchor::BOTTOM | Anchor::LEFT,
-                output: IcedOutput::Active,
-                namespace: "ferese-shell-wallpaper".to_owned(),
-                // Wallpaper covers the full output, including beneath the bar
-                // and its floating margins. Zero would use the remaining workspace.
-                exclusive_zone: -1,
-                size: Some((None, None)),
-                size_limits: Limits::NONE,
-                ..Default::default()
-            },
-            Some(Box::new(Self::view_wallpaper)),
-        );
-        let bar_action = cosmic::surface::action::app_layer_shell::<Self>(
-            |_| Default::default(),
-            move |_| SctkLayerSurfaceSettings {
-                id: bar_surface_id,
-                layer: Layer::Top,
-                keyboard_interactivity: KeyboardInteractivity::None,
-                anchor: Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
-                output: IcedOutput::Active,
-                namespace: "ferese-shell-top-bar".to_owned(),
-                margin: IcedMargin {
-                    top: shell_theme.bar_margin_top,
-                    right: shell_theme.bar_margin_horizontal,
-                    bottom: 0,
-                    left: shell_theme.bar_margin_horizontal,
-                },
-                size: Some((None, Some(bar.height.round() as u32))),
-                size_limits: Limits::NONE,
-                // Reserve breathing room below the visible bar; layer-shell
-                // accounts for the top margin separately.
-                exclusive_zone: (bar.height.round() as i32)
-                    .saturating_add(shell_theme.bar_window_gap),
-                ..Default::default()
-            },
-            Some(Box::new(Self::view_layer)),
-        );
-
-        // Submit the small interactive surface before the full-screen image.
-        let tasks = [bar_action, wallpaper_action]
-            .map(cosmic::Action::Surface)
-            .map(cosmic::task::message);
-
         let wallpaper_task = match wallpaper {
             Some(receiver) => cosmic::task::future(async move {
                 cosmic::Action::App(Message::WallpaperLoaded(
@@ -267,7 +230,7 @@ impl cosmic::Application for FereseShell {
             }),
             None => Task::none(),
         };
-        (app, Task::batch([Task::batch(tasks), wallpaper_task]))
+        (app, wallpaper_task)
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
@@ -281,7 +244,9 @@ impl cosmic::Application for FereseShell {
                 Event::Keyboard(_)
                 | Event::Window(window::Event::Opened { .. } | window::Event::Closed)
                 | Event::PlatformSpecific(PlatformSpecific::Wayland(
-                    wayland::Event::Popup(..) | wayland::Event::Layer(..),
+                    wayland::Event::Popup(..)
+                    | wayland::Event::Layer(..)
+                    | wayland::Event::Output(..),
                 )) => Some(Message::Event(event, id)),
                 _ => None,
             }),
@@ -314,8 +279,10 @@ impl cosmic::Application for FereseShell {
             }
             Message::NativeSurface(id, result) => {
                 match result {
-                    Ok((_connection, surface)) if id == self.bar_surface_id => {
-                        self.attach_effects(&surface)
+                    Ok((_connection, surface))
+                        if self.outputs.iter().any(|entry| entry.bar == id) =>
+                    {
+                        self.attach_effects(id, &surface)
                     }
                     Ok((_connection, surface)) => {
                         if let Some(menu) = &mut self.menu
@@ -345,6 +312,16 @@ impl cosmic::Application for FereseShell {
             }
             Message::AnimateMenu => Task::none(),
             Message::OpenMenu(kind, anchor) => self.open_menu(kind, anchor),
+            Message::OpenMenuOn(id, kind, anchor) => {
+                if self.bar_surface_id != id {
+                    let destroy = self.destroy_menu();
+                    self.bar_surface_id = id;
+                    let open = self.open_menu(kind, anchor);
+                    Task::batch([destroy, open])
+                } else {
+                    self.open_menu(kind, anchor)
+                }
+            }
             Message::ConfirmPower(action) => {
                 if let Some(menu) = &mut self.menu {
                     menu.confirm = Some(action);
@@ -383,25 +360,36 @@ impl cosmic::Application for FereseShell {
                         self.overview_active = active;
                     }
                     if let Some(snapshot) = poll.snapshot {
-                        let was_hidden = bar_hidden(&self.snapshot);
-
                         self.snapshot = snapshot;
-
-                        let hidden = bar_hidden(&self.snapshot);
-                        if hidden != was_hidden {
-                            if let Some(effects) = &self.effects
-                                && let Err(error) = effects.set_visible(!hidden)
-                            {
-                                eprintln!("ferese-shell: could not update panel material: {error}");
+                        let mut tasks = Vec::new();
+                        for entry in &mut self.outputs {
+                            let output = self
+                                .snapshot
+                                .outputs
+                                .iter()
+                                .find(|output| Some(output.name.as_str()) == entry.name.as_deref())
+                                .map(|output| output.id);
+                            let hidden = output_bar_hidden(&self.snapshot, output);
+                            if entry.hidden == hidden {
+                                continue;
                             }
-
-                            let input_zone = if hidden { Some(Vec::new()) } else { None };
-
-                            return Task::batch([
-                                set_input_zone(self.bar_surface_id, input_zone),
-                                self.destroy_menu(),
-                            ]);
+                            entry.hidden = hidden;
+                            if let Some(effects) = &entry.effects {
+                                if let Err(error) = effects.set_visible(!hidden) {
+                                    eprintln!(
+                                        "ferese-shell: could not update panel material: {error}"
+                                    );
+                                }
+                            }
+                            tasks.push(set_input_zone(
+                                entry.bar,
+                                if hidden { Some(Vec::new()) } else { None },
+                            ));
                         }
+                        if self.bar_hidden(self.bar_surface_id) {
+                            tasks.push(self.destroy_menu());
+                        }
+                        return Task::batch(tasks);
                     }
                 }
                 Task::none()
@@ -444,10 +432,149 @@ impl cosmic::Application for FereseShell {
 }
 
 impl FereseShell {
+    fn output_event(
+        &mut self,
+        event: wayland::OutputEvent,
+        output: wl_output::WlOutput,
+    ) -> Task<Message> {
+        if matches!(event, wayland::OutputEvent::Removed) {
+            if let Some(index) = self.outputs.iter().position(|entry| entry.output == output) {
+                let entry = self.outputs.remove(index);
+                let menu = if self.bar_surface_id == entry.bar {
+                    self.destroy_menu()
+                } else {
+                    Task::none()
+                };
+                let mut tasks = vec![destroy_layer_surface(entry.bar), menu];
+                if let Some(wallpaper) = entry.wallpaper {
+                    tasks.push(destroy_layer_surface(wallpaper));
+                }
+                return Task::batch(tasks);
+            }
+            return Task::none();
+        }
+        let name = match event {
+            wayland::OutputEvent::Created(info) => info.and_then(|info| info.name),
+            wayland::OutputEvent::InfoUpdate(info) => info.name,
+            _ => None,
+        };
+        if let Some(entry) = self.outputs.iter_mut().find(|entry| entry.output == output) {
+            if name.is_some() {
+                entry.name = name;
+            }
+            return Task::none();
+        }
+        let bar_surface_id = window::Id::unique();
+        let wallpaper_surface_id = window::Id::unique();
+        let shell_theme = self.config.theme;
+        let bar = BarMetrics::from(shell_theme);
+        let wallpaper_output = output.clone();
+        let bar_output = output.clone();
+        let hidden = output_bar_hidden(
+            &self.snapshot,
+            self.snapshot
+                .outputs
+                .iter()
+                .find(|output| Some(output.name.as_str()) == name.as_deref())
+                .map(|output| output.id),
+        );
+        self.outputs.push(OutputSurfaces {
+            output,
+            name,
+            bar: bar_surface_id,
+            wallpaper: std::env::var_os("FERESE_COMPOSITOR_WALLPAPER")
+                .is_none()
+                .then_some(wallpaper_surface_id),
+            effects: None,
+            hidden,
+        });
+        let wallpaper_action = cosmic::surface::action::app_layer_shell::<Self>(
+            |_| Default::default(),
+            move |_| SctkLayerSurfaceSettings {
+                id: wallpaper_surface_id,
+                layer: Layer::Background,
+                keyboard_interactivity: KeyboardInteractivity::None,
+                input_zone: Some(Vec::new()),
+                anchor: Anchor::TOP | Anchor::RIGHT | Anchor::BOTTOM | Anchor::LEFT,
+                output: IcedOutput::Output(wallpaper_output.clone()),
+                namespace: "ferese-shell-wallpaper".to_owned(),
+                // Wallpaper covers the full output, including beneath the bar
+                // and its floating margins. Zero would use the remaining workspace.
+                exclusive_zone: -1,
+                size: Some((None, None)),
+                size_limits: Limits::NONE,
+                ..Default::default()
+            },
+            Some(Box::new(Self::view_wallpaper)),
+        );
+        let bar_action = cosmic::surface::action::app_layer_shell::<Self>(
+            |_| Default::default(),
+            move |_| SctkLayerSurfaceSettings {
+                id: bar_surface_id,
+                input_zone: hidden.then(Vec::new),
+                layer: Layer::Top,
+                keyboard_interactivity: KeyboardInteractivity::None,
+                anchor: Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
+                output: IcedOutput::Output(bar_output.clone()),
+                namespace: "ferese-shell-top-bar".to_owned(),
+                margin: IcedMargin {
+                    top: shell_theme.bar_margin_top,
+                    right: shell_theme.bar_margin_horizontal,
+                    bottom: 0,
+                    left: shell_theme.bar_margin_horizontal,
+                },
+                size: Some((None, Some(bar.height.round() as u32))),
+                size_limits: Limits::NONE,
+                // Reserve breathing room below the visible bar; layer-shell
+                // accounts for the top margin separately.
+                exclusive_zone: (bar.height.round() as i32)
+                    .saturating_add(shell_theme.bar_window_gap),
+                ..Default::default()
+            },
+            Some(Box::new(move |app| app.view_layer(bar_surface_id))),
+        );
+
+        // Submit the small interactive surface before the full-screen image.
+        let mut surfaces = vec![bar_action];
+        if std::env::var_os("FERESE_COMPOSITOR_WALLPAPER").is_none() {
+            surfaces.push(wallpaper_action);
+        }
+        let tasks = surfaces
+            .into_iter()
+            .map(cosmic::Action::Surface)
+            .map(cosmic::task::message);
+
+        Task::batch(tasks)
+    }
+
+    fn output_for_bar(&self, id: window::Id) -> Option<&control::OutputSnapshot> {
+        let name = self
+            .outputs
+            .iter()
+            .find(|entry| entry.bar == id)?
+            .name
+            .as_deref()?;
+        self.snapshot
+            .outputs
+            .iter()
+            .find(|output| output.name == name)
+    }
+
+    fn bar_hidden(&self, id: window::Id) -> bool {
+        output_bar_hidden(
+            &self.snapshot,
+            self.output_for_bar(id).map(|output| output.id),
+        )
+    }
+
     fn handle_event(&mut self, event: Event, id: window::Id) -> Task<Message> {
         match event {
+            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Output(
+                event,
+                output,
+            ))) => self.output_event(event, output),
             Event::Window(window::Event::Opened { .. })
-                if id == self.bar_surface_id
+                if self.outputs.iter().any(|entry| entry.bar == id)
                     || self.menu.as_ref().is_some_and(|menu| menu.id == id) =>
             {
                 window::run(id, native_wayland_surface)
@@ -510,9 +637,7 @@ impl FereseShell {
                 EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
                 Task::none()
             }
-            Event::Window(window::Event::Closed) if id == self.bar_surface_id => {
-                cosmic::iced::exit()
-            }
+            Event::Window(window::Event::Closed) => Task::none(),
             Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(
                 _,
                 surface,
@@ -535,49 +660,48 @@ impl FereseShell {
                 _,
                 surface,
                 frame_id,
-            ))) if frame_id == self.bar_surface_id => {
-                self.attach_effects(&surface);
+            ))) if self.outputs.iter().any(|entry| entry.bar == frame_id) => {
+                self.attach_effects(frame_id, &surface);
                 Task::none()
             }
             Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Layer(
                 _,
                 surface,
                 layer_id,
-            ))) if layer_id == self.bar_surface_id => {
-                self.attach_effects(&surface);
+            ))) if self.outputs.iter().any(|entry| entry.bar == layer_id) => {
+                self.attach_effects(layer_id, &surface);
                 Task::none()
             }
             _ => Task::none(),
         }
     }
 
-    fn attach_effects(&mut self, surface: &wl_surface::WlSurface) {
-        if self.effects.is_some() {
+    fn attach_effects(&mut self, id: window::Id, surface: &wl_surface::WlSurface) {
+        let hidden = self.bar_hidden(id);
+        let Some(entry) = self.outputs.iter_mut().find(|entry| entry.bar == id) else {
+            return;
+        };
+        if entry.effects.is_some() {
             return;
         }
 
         EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
 
-        match EffectsBinding::attach(surface, !bar_hidden(&self.snapshot)) {
-            Ok(binding) => self.effects = Some(binding),
+        match EffectsBinding::attach(surface, !hidden) {
+            Ok(binding) => entry.effects = Some(binding),
             Err(error) => eprintln!("ferese-shell: panel material unavailable: {error}"),
         }
     }
 
-    fn view_layer(&self) -> Element<'_, cosmic::Action<Message>> {
-        if bar_hidden(&self.snapshot) {
+    fn view_layer(&self, id: window::Id) -> Element<'_, cosmic::Action<Message>> {
+        if self.bar_hidden(id) {
             return container(text(""))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into();
         }
 
-        let focused_output = self
-            .snapshot
-            .outputs
-            .iter()
-            .find(|output| output.focused)
-            .or_else(|| self.snapshot.outputs.first());
+        let focused_output = self.output_for_bar(id);
         let focused_output_id = focused_output.map(|output| output.id);
         let shell_theme = self.config.theme.for_bar();
         let bar = BarMetrics::from(shell_theme);
@@ -670,9 +794,16 @@ impl FereseShell {
                 .class(theme::Text::Color(foreground)),
         )
         .padding([0, 6]);
-        let right = row![self.view_status_bar(), clock]
-            .spacing(6)
-            .align_y(cosmic::iced::Alignment::Center);
+        let right = row![
+            self.view_status_bar().map(move |action| match action {
+                cosmic::Action::App(Message::OpenMenu(kind, anchor)) =>
+                    cosmic::Action::App(Message::OpenMenuOn(id, kind, anchor)),
+                other => other,
+            }),
+            clock
+        ]
+        .spacing(6)
+        .align_y(cosmic::iced::Alignment::Center);
         let content = row![
             container(left).width(Length::Fill),
             container(right).width(Length::Shrink),
@@ -681,7 +812,10 @@ impl FereseShell {
         .align_y(cosmic::iced::Alignment::Center)
         .height(Length::Fill);
 
-        let compositor_material = self.effects.is_some();
+        let compositor_material = self
+            .outputs
+            .iter()
+            .any(|entry| entry.bar == id && entry.effects.is_some());
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -777,12 +911,22 @@ fn overview_control(
     .into()
 }
 
+#[cfg(test)]
 fn bar_hidden(snapshot: &ShellSnapshot) -> bool {
-    let active_workspace = snapshot
+    let output = snapshot
         .outputs
         .iter()
         .find(|output| output.focused)
         .or_else(|| snapshot.outputs.first())
+        .map(|output| output.id);
+    output_bar_hidden(snapshot, output)
+}
+
+fn output_bar_hidden(snapshot: &ShellSnapshot, output: Option<u64>) -> bool {
+    let active_workspace = snapshot
+        .outputs
+        .iter()
+        .find(|candidate| Some(candidate.id) == output)
         .map(|output| output.active_workspace);
 
     active_workspace.is_some_and(|workspace| {
@@ -1250,10 +1394,29 @@ mod tests {
         assert!(!bar_hidden(&snapshot));
     }
 
+    #[test]
+    fn fullscreen_visibility_is_local_to_each_monitor() {
+        let mut snapshot = snapshot_with_fullscreen_window(7);
+        snapshot.outputs.push(OutputSnapshot {
+            id: 2,
+            name: "external-test".to_owned(),
+            active_workspace: 9,
+            focused: false,
+        });
+        assert!(output_bar_hidden(&snapshot, Some(1)));
+        assert!(!output_bar_hidden(&snapshot, Some(2)));
+        assert!(!output_bar_hidden(&snapshot, None));
+        snapshot.outputs[0].focused = false;
+        snapshot.outputs[1].focused = true;
+        assert!(output_bar_hidden(&snapshot, Some(1)));
+        assert!(!output_bar_hidden(&snapshot, Some(2)));
+    }
+
     fn snapshot_with_fullscreen_window(workspace: u64) -> ShellSnapshot {
         ShellSnapshot {
             outputs: vec![OutputSnapshot {
                 id: 1,
+                name: "eDP-1".to_owned(),
                 active_workspace: 7,
                 focused: true,
             }],

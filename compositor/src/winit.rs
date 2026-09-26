@@ -1,6 +1,8 @@
 use std::{
+    cell::{Cell, RefCell},
     collections::HashMap,
     error::Error,
+    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -12,7 +14,7 @@ use smithay::{
     backend::{
         allocator::Fourcc,
         renderer::{
-            Color32F, ErasedContextId, Frame, ImportDma, Offscreen, Renderer, Texture,
+            Bind, Color32F, ErasedContextId, Frame, ImportDma, Offscreen, Renderer, Texture,
             damage::OutputDamageTracker,
             element::{
                 Element, Id, Kind as RenderElementKind, RenderElement, UnderlyingStorage,
@@ -43,7 +45,10 @@ use smithay::{
     },
     input::pointer::{CursorImageStatus, CursorImageSurfaceData},
     output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
-    reexports::calloop::EventLoop,
+    reexports::calloop::{
+        EventLoop,
+        timer::{TimeoutAction, Timer},
+    },
     reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind as PresentationKind,
     reexports::wayland_server::Resource,
     utils::{
@@ -57,6 +62,7 @@ use smithay::{
 use crate::{
     Ferese,
     metrics::{FrameEffectMetrics, RenderMetrics},
+    presentation::{NativeTextureElement, PhysicalShaderElement, physical_rect},
 };
 
 type SurfaceRenderElement = CropRenderElement<
@@ -81,6 +87,85 @@ render_elements! {
     Solid=SolidColorRenderElement,
     Border=PixelShaderElement,
     Blur=BlurRenderElement,
+    Effect=PhysicalShaderElement,
+    Native=NativeTextureElement,
+}
+
+pub(crate) type NestedBackend = Rc<RefCell<winit::WinitGraphicsBackend<GlesRenderer>>>;
+
+#[derive(Debug)]
+pub(crate) struct ResizeSnapshot {
+    pub texture: GlesTexture,
+    pub context: ErasedContextId,
+    pub id: Id,
+    pub commit: CommitCounter,
+    pub elapsed: Duration,
+    pub last_tick: Option<Duration>,
+    pub scale: f64,
+}
+
+impl ResizeSnapshot {
+    pub(crate) fn bytes(&self) -> usize {
+        self.texture.size().w as usize * self.texture.size().h as usize * 4
+    }
+}
+
+pub(crate) fn capture_resize_snapshot(
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    geometry: Rectangle<i32, Logical>,
+    scale: f64,
+    remaining: usize,
+) -> Result<Option<ResizeSnapshot>, GlesError> {
+    let Some(toplevel) = window.toplevel() else {
+        return Ok(None);
+    };
+    let size: Size<i32, Physical> = geometry.size.to_physical_precise_round(scale);
+    let bytes = (size.w.max(0) as usize)
+        .saturating_mul(size.h.max(0) as usize)
+        .saturating_mul(4);
+    if bytes == 0 || bytes > remaining {
+        return Ok(None);
+    }
+    // Called before on_commit_buffer_handler: renderer surface state still
+    // owns the previous buffer. Copy only during an actual resize handoff.
+    let content = render_elements_from_surface_tree::<
+        GlesRenderer,
+        WaylandSurfaceRenderElement<GlesRenderer>,
+    >(
+        renderer,
+        toplevel.wl_surface(),
+        Point::<i32, Logical>::from((-geometry.loc.x, -geometry.loc.y))
+            .to_physical_precise_round(scale),
+        scale,
+        1.0,
+        RenderElementKind::Unspecified,
+    );
+    if content.is_empty() {
+        return Ok(None);
+    }
+    let mut texture = Offscreen::<GlesTexture>::create_buffer(
+        renderer,
+        Fourcc::Abgr8888,
+        (size.w, size.h).into(),
+    )?;
+    {
+        let mut target = renderer.bind(&mut texture)?;
+        let mut frame = renderer.render(&mut target, size, Transform::Normal)?;
+        let damage = Rectangle::from_size(size);
+        frame.clear(Color32F::new(0.0, 0.0, 0.0, 0.0), &[damage])?;
+        draw_render_elements(&mut frame, scale, &content, &[damage])?;
+        let _ = frame.finish()?;
+    }
+    Ok(Some(ResizeSnapshot {
+        texture,
+        context: renderer.context_id().erased(),
+        id: Id::new(),
+        commit: CommitCounter::default(),
+        elapsed: Duration::ZERO,
+        last_tick: None,
+        scale,
+    }))
 }
 
 render_elements! {
@@ -664,7 +749,11 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
     let initial_scale = normalized_scale(backend.scale_factor());
     let mode = Mode {
         size: backend.window_size(),
-        refresh: 60_000,
+        refresh: backend
+            .window()
+            .current_monitor()
+            .and_then(|monitor| monitor.refresh_rate_millihertz())
+            .unwrap_or(60_000) as i32,
     };
     let output = Output::new(
         "ferese-winit".into(),
@@ -689,161 +778,190 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
     let mut damage_tracker = OutputDamageTracker::from_output(&output);
     let clock = Clock::<Monotonic>::new();
     let mut sequence = 0_u64;
+    let mut missed_deadlines = 0_u64;
     let mut output_scale = initial_scale;
     let mut render_metrics = RenderMetrics::from_environment(output.name());
 
+    // Do not request a redraw recursively: a no-damage redraw has no EGL
+    // submission to pace it and otherwise spins at full CPU. Independently
+    // scheduled frames also let clients receive callbacks without damage.
+    let refresh = Rc::new(Cell::new(Duration::from_nanos(
+        1_000_000_000_000 / mode.refresh.max(1) as u64,
+    )));
+    let backend = Rc::new(RefCell::new(backend));
+    state.nested_backend = Some(backend.clone());
+    let redraw_backend = backend.clone();
+    let redraw_refresh = refresh.clone();
     event_loop
         .handle()
-        .insert_source(event_source, move |event, _, state| match event {
-            WinitEvent::Resized { size, scale_factor } => {
-                let scale = normalized_scale(scale_factor);
+        .insert_source(Timer::from_duration(refresh.get()), move |_, _, _| {
+            redraw_backend.borrow().window().request_redraw();
+            TimeoutAction::ToDuration(redraw_refresh.get())
+        })?;
 
-                output.change_current_state(
-                    Some(Mode {
-                        size,
-                        refresh: 60_000,
-                    }),
-                    None,
-                    Some(Scale::Fractional(scale)),
-                    None,
-                );
+    event_loop
+        .handle()
+        .insert_source(event_source, move |event, _, state| {
+            let mut backend = backend.borrow_mut();
+            match event {
+                WinitEvent::Resized { size, scale_factor } => {
+                    state.backdrop_generation = state.backdrop_generation.wrapping_add(1);
+                    let scale = normalized_scale(scale_factor);
+                    let rate = backend
+                        .window()
+                        .current_monitor()
+                        .and_then(|monitor| monitor.refresh_rate_millihertz())
+                        .unwrap_or(60_000) as i32;
+                    refresh.set(Duration::from_nanos(1_000_000_000_000 / rate.max(1) as u64));
 
-                if scale != output_scale {
-                    output_scale = scale;
-                    state.update_fractional_scale(scale);
+                    output.change_current_state(
+                        Some(Mode {
+                            size,
+                            refresh: rate,
+                        }),
+                        None,
+                        Some(Scale::Fractional(scale)),
+                        None,
+                    );
+
+                    if scale != output_scale {
+                        output_scale = scale;
+                        state.update_fractional_scale(scale);
+                    }
+
+                    state.relayout();
+                    if let Err(error) = state.display_handle.flush_clients() {
+                        tracing::debug!(%error, "failed to flush output-resize configure");
+                    }
+                    backend.window().request_redraw();
                 }
-
-                state.relayout();
-                if let Err(error) = state.display_handle.flush_clients() {
-                    tracing::debug!(%error, "failed to flush output-resize configure");
-                }
-                backend.window().request_redraw();
-            }
-            WinitEvent::Input(event) => state.process_input_event(event),
-            WinitEvent::Redraw => {
-                state.advance_animations(Instant::now());
-                let age = backend.buffer_age().unwrap_or(0);
-                let render_started = Instant::now();
-                let rendered = (|| -> DamageRenderResult {
-                    {
-                        let (renderer, mut framebuffer) = backend.bind()?;
-                        state.process_dmabuf_imports(renderer);
-                        let elements = animated_window_elements(state, renderer, &output);
-                        let effects = frame_effect_metrics(
-                            &elements,
-                            output.current_scale().fractional_scale(),
-                        );
-                        let result = damage_tracker.render_output(
-                            renderer,
-                            &mut framebuffer,
-                            age,
-                            &elements,
-                            [0.035, 0.04, 0.055, 1.0],
-                        )?;
-                        let cursorless_capture = state.has_pending_screencopy(&output, false);
-                        let captured_with_cursor =
-                            state.process_screencopies(renderer, &framebuffer, &output, true);
-
-                        if cursorless_capture {
-                            let cursorless_elements =
-                                output_elements(state, renderer, &output, false);
-                            redraw_output(
+                WinitEvent::Input(event) => state.process_input_event(event),
+                WinitEvent::Redraw => {
+                    state.advance_animations(Instant::now());
+                    let age = backend.buffer_age().unwrap_or(0);
+                    let render_started = Instant::now();
+                    let rendered = (|| -> DamageRenderResult {
+                        {
+                            let (renderer, mut framebuffer) = backend.bind()?;
+                            state.process_dmabuf_imports(renderer);
+                            let elements = animated_window_elements(state, renderer, &output);
+                            let effects = frame_effect_metrics(
+                                &elements,
+                                output.current_scale().fractional_scale(),
+                            );
+                            let result = damage_tracker.render_output(
                                 renderer,
                                 &mut framebuffer,
-                                &output,
-                                &cursorless_elements,
+                                age,
+                                &elements,
+                                [0.035, 0.04, 0.055, 1.0],
                             )?;
-                            state.process_screencopies(renderer, &framebuffer, &output, false);
-                            redraw_output(renderer, &mut framebuffer, &output, &elements)?;
-                        } else if captured_with_cursor {
-                            let _ = renderer
-                                .render(
-                                    &mut framebuffer,
-                                    output.current_mode().expect("output has a mode").size,
-                                    output.current_transform(),
-                                )?
-                                .finish()?;
-                        }
+                            let cursorless_capture = state.has_pending_screencopy(&output, false);
+                            let captured_with_cursor =
+                                state.process_screencopies(renderer, &framebuffer, &output, true);
 
-                        Ok((result.damage.cloned(), effects))
-                    }
-                })();
-                let (damage, effects) = match rendered {
-                    Ok((Some(damage), effects)) => (damage, effects),
-                    Ok((None, _)) => {
-                        state.space.refresh();
-                        state.popups.cleanup();
-                        layer_map_for_output(&output).cleanup();
-                        if let Err(error) = state.display_handle.flush_clients() {
-                            tracing::debug!(%error, "failed to flush clients");
+                            if cursorless_capture {
+                                let cursorless_elements =
+                                    output_elements(state, renderer, &output, false);
+                                redraw_output(
+                                    renderer,
+                                    &mut framebuffer,
+                                    &output,
+                                    &cursorless_elements,
+                                )?;
+                                state.process_screencopies(renderer, &framebuffer, &output, false);
+                                redraw_output(renderer, &mut framebuffer, &output, &elements)?;
+                            } else if captured_with_cursor {
+                                let _ = renderer
+                                    .render(
+                                        &mut framebuffer,
+                                        output.current_mode().expect("output has a mode").size,
+                                        output.current_transform(),
+                                    )?
+                                    .finish()?;
+                            }
+
+                            Ok((result.damage.cloned(), effects))
                         }
-                        backend.window().request_redraw();
-                        return;
-                    }
-                    Err(error) => {
-                        tracing::error!(%error, "nested renderer failed");
+                    })();
+                    let (damage, effects) = match rendered {
+                        Ok((Some(damage), effects)) => (damage, effects),
+                        Ok((None, _)) => {
+                            // A callback means permission to draw the next client
+                            // frame, not proof of a new compositor presentation.
+                            // No-damage frames must still unblock layer clients.
+                            send_nested_frame_callbacks(state, &output, refresh.get());
+                            state.space.refresh();
+                            state.popups.cleanup();
+                            layer_map_for_output(&output).cleanup();
+                            if let Err(error) = state.display_handle.flush_clients() {
+                                tracing::debug!(%error, "failed to flush clients");
+                            }
+                            return;
+                        }
+                        Err(error) => {
+                            tracing::error!(%error, "nested renderer failed");
+                            state.loop_signal.stop();
+                            return;
+                        }
+                    };
+                    if let Err(error) = backend.submit(Some(&damage)) {
+                        tracing::error!(%error, "nested buffer submission failed");
                         state.loop_signal.stop();
                         return;
                     }
-                };
-                if let Err(error) = backend.submit(Some(&damage)) {
-                    tracing::error!(%error, "nested buffer submission failed");
-                    state.loop_signal.stop();
-                    return;
-                }
-                render_metrics.record_frame(render_started.elapsed(), &damage, 0, effects);
+                    let elapsed = render_started.elapsed();
+                    if elapsed > refresh.get() {
+                        missed_deadlines += (elapsed.as_nanos() / refresh.get().as_nanos()) as u64;
+                    }
+                    render_metrics.record_frame(elapsed, &damage, missed_deadlines, effects);
 
-                let mut presentation = OutputPresentationFeedback::new(&output);
-                state.space.elements().for_each(|window| {
-                    window.take_presentation_feedback(
-                        &mut presentation,
-                        |_, _| Some(output.clone()),
-                        |_, _| PresentationKind::Vsync,
+                    let mut presentation = OutputPresentationFeedback::new(&output);
+                    state.space.elements().for_each(|window| {
+                        window.take_presentation_feedback(
+                            &mut presentation,
+                            |_, _| Some(output.clone()),
+                            |_, _| PresentationKind::Vsync,
+                        );
+                    });
+                    layer_surfaces(&output).iter().for_each(|layer| {
+                        layer.take_presentation_feedback(
+                            &mut presentation,
+                            |_, _| Some(output.clone()),
+                            |_, _| PresentationKind::Vsync,
+                        );
+                    });
+                    sequence = sequence.wrapping_add(1);
+                    presentation.presented(
+                        clock.now(),
+                        Refresh::fixed(refresh.get()),
+                        sequence,
+                        PresentationKind::Vsync,
                     );
-                });
-                layer_surfaces(&output).iter().for_each(|layer| {
-                    layer.take_presentation_feedback(
-                        &mut presentation,
-                        |_, _| Some(output.clone()),
-                        |_, _| PresentationKind::Vsync,
-                    );
-                });
-                sequence = sequence.wrapping_add(1);
-                presentation.presented(
-                    clock.now(),
-                    Refresh::fixed(Duration::from_nanos(1_000_000_000 / 60)),
-                    sequence,
-                    PresentationKind::Vsync,
-                );
-                state.space.elements().for_each(|window| {
-                    window.send_frame(
-                        &output,
-                        state.start_time.elapsed(),
-                        Some(Duration::ZERO),
-                        |_, _| Some(output.clone()),
-                    );
-                });
-                layer_surfaces(&output).iter().for_each(|layer| {
-                    layer.send_frame(
-                        &output,
-                        state.start_time.elapsed(),
-                        Some(Duration::ZERO),
-                        |_, _| Some(output.clone()),
-                    );
-                });
-                state.send_cursor_frame(&output);
-                state.space.refresh();
-                state.popups.cleanup();
-                layer_map_for_output(&output).cleanup();
-                if let Err(error) = state.display_handle.flush_clients() {
-                    tracing::debug!(%error, "failed to flush clients");
+                    send_nested_frame_callbacks(state, &output, refresh.get());
+                    state.space.refresh();
+                    state.popups.cleanup();
+                    layer_map_for_output(&output).cleanup();
+                    if let Err(error) = state.display_handle.flush_clients() {
+                        tracing::debug!(%error, "failed to flush clients");
+                    }
                 }
-                backend.window().request_redraw();
+                WinitEvent::CloseRequested => state.loop_signal.stop(),
+                _ => {}
             }
-            WinitEvent::CloseRequested => state.loop_signal.stop(),
-            _ => {}
         })?;
     Ok(())
+}
+
+fn send_nested_frame_callbacks(state: &mut Ferese, output: &Output, refresh: Duration) {
+    let time = state.start_time.elapsed();
+    for window in state.space.elements() {
+        window.send_frame(output, time, Some(refresh), |_, _| Some(output.clone()));
+    }
+    for layer in layer_surfaces(output) {
+        layer.send_frame(output, time, Some(refresh), |_, _| Some(output.clone()));
+    }
+    state.send_cursor_frame(output);
 }
 
 pub(crate) fn animated_window_elements(
@@ -875,6 +993,9 @@ fn output_elements(
     output: &Output,
     include_cursor: bool,
 ) -> Vec<AnimatedWindowRenderElement> {
+    if state.wallpaper.poll() {
+        state.backdrop_generation = state.backdrop_generation.wrapping_add(1);
+    }
     let Some(output_geometry) = state.space.output_geometry(output) else {
         return Vec::new();
     };
@@ -898,6 +1019,12 @@ fn output_elements(
         .rev()
         .filter_map(|window| {
             let id = *state.window_ids.get(window)?;
+            // Scrolling columns may sit outside their monitor's rectangle.
+            // They must not reappear on a neighboring output just because
+            // their global animated coordinates overlap it.
+            if !state.window_belongs_to_output(id, output) {
+                return None;
+            }
             let visual = state.presented_window_rect(id)?;
             let (close_scale, close_alpha) = state.closing_visual(id);
             let visual = scaled_visual_rect(visual, close_scale);
@@ -912,16 +1039,22 @@ fn output_elements(
 
     for (window, id, visual, decoration_progress, close_alpha) in windows {
         let constrain = rounded_visual_rect(visual, output_geometry.loc);
+        let pixels = physical_rect(visual, output_geometry.loc, scale);
+        // Only overview/close intentionally scale the complete application.
+        let scale_content = state.overview.is_presenting() || state.closing_visual(id).0 != 1.0;
+        let behavior = resize_content_behavior(scale_content);
 
         let dim = state.window_dimming.get(&id).map_or(0.0, |dim| dim.current);
-        if let Some(overlay) = window_dim_element(
+        if let Some(overlay) = window_tint_element(
             state,
             renderer,
             id,
             constrain,
+            pixels,
             scale,
             state.theme_settings.window_radius * decoration_progress,
-            dim as f32 * close_alpha,
+            [0.0, 0.0, 0.0, dim as f32 * close_alpha],
+            false,
             output,
         ) {
             // Front-to-back: dim the application and its border, not its shadow
@@ -958,6 +1091,7 @@ fn output_elements(
                 renderer,
                 id,
                 constrain,
+                pixels,
                 scale,
                 window_radius,
                 border_width,
@@ -972,6 +1106,7 @@ fn output_elements(
                 renderer,
                 id,
                 constrain,
+                pixels,
                 scale,
                 window_radius,
                 shadow_offset_y,
@@ -981,10 +1116,52 @@ fn output_elements(
                 output,
                 &programs,
             );
+            if !scale_content {
+                if let Some(snapshot) = state.resize_snapshots.get(&id)
+                    && snapshot.context == renderer.context_id().erased()
+                    && (snapshot.scale - scale).abs() < 0.001
+                {
+                    let size = snapshot.texture.size();
+                    let visible =
+                        Rectangle::new(pixels.loc, (size.w, size.h).into()).intersection(pixels);
+                    if let Some(visible) = visible {
+                        let clip = framebuffer_clip_rect(
+                            pixels,
+                            output.current_mode().unwrap().size,
+                            output.current_transform().invert(),
+                        );
+                        elements.push(
+                            NativeTextureElement {
+                                id: snapshot.id.clone(),
+                                commit: snapshot.commit,
+                                texture: snapshot.texture.clone(),
+                                geometry: visible,
+                                source: Rectangle::from_size(Size::from((
+                                    f64::from(visible.size.w),
+                                    f64::from(visible.size.h),
+                                ))),
+                                alpha: crate::presentation::handoff_alpha(snapshot.elapsed)
+                                    * close_alpha,
+                                program: Some(programs.texture.clone()),
+                                uniforms: vec![
+                                    Uniform::new("clip_rect", clip).into_owned(),
+                                    Uniform::new(
+                                        "radius",
+                                        scaled_effect_value(window_radius, constrain, scale),
+                                    )
+                                    .into_owned(),
+                                ],
+                            }
+                            .into(),
+                        );
+                    }
+                }
+            }
             elements.extend(rounded_window_elements(
                 renderer,
                 &window,
                 constrain,
+                pixels,
                 scale,
                 window_radius,
                 close_alpha,
@@ -994,7 +1171,31 @@ fn output_elements(
                     .is_some_and(|geometry| geometry.presentation_changed),
                 output,
                 programs.texture.clone(),
+                behavior,
             ));
+            let source = window.geometry().size;
+            if !scale_content && (source.w < constrain.size.w || source.h < constrain.size.h) {
+                let mut color = state.theme_settings.surface_base_color.0;
+                color[3] = close_alpha;
+                if let Some(fill) = window_tint_element(
+                    state,
+                    renderer,
+                    id,
+                    constrain,
+                    pixels,
+                    scale,
+                    window_radius,
+                    color,
+                    true,
+                    output,
+                ) {
+                    // Front-to-back: fill uncovered strips behind the native
+                    // content instead of stretching it or exposing wallpaper.
+                    elements.push(fill.into());
+                }
+            } else {
+                state.window_resize_fills.remove(&id);
+            }
             if let Some(shadow) = shadow {
                 elements.push(shadow.into());
             }
@@ -1012,7 +1213,7 @@ fn output_elements(
                 constrain,
                 ConstrainBehavior {
                     reference: ConstrainReference::Geometry,
-                    behavior: ConstrainScaleBehavior::Stretch,
+                    behavior,
                     align: ConstrainAlign::TOP | ConstrainAlign::LEFT,
                 },
             ));
@@ -1029,6 +1230,9 @@ fn output_elements(
         output,
         &[Layer::Bottom, Layer::Background],
     ));
+    if let Some(wallpaper) = state.wallpaper.element(renderer, output) {
+        elements.push(wallpaper.into());
+    }
     elements
 }
 
@@ -1114,13 +1318,14 @@ fn window_border_element(
     renderer: &GlesRenderer,
     id: ferese_layout::WindowId,
     geometry: Rectangle<i32, Logical>,
+    physical: Rectangle<i32, Physical>,
     scale: f64,
     requested_radius: f64,
     requested_width: f64,
     color: [f32; 4],
     output: &Output,
     programs: &RoundedClipPrograms,
-) -> Option<PixelShaderElement> {
+) -> Option<PhysicalShaderElement> {
     let mode = output.current_mode()?;
     let width = scaled_effect_value(requested_width, geometry, scale);
     if width == 0.0 {
@@ -1129,11 +1334,7 @@ fn window_border_element(
 
     let parameters = BorderParameters {
         geometry,
-        clip_rect: framebuffer_clip_rect(
-            geometry.to_physical_precise_round(scale),
-            mode.size,
-            output.current_transform().invert(),
-        ),
+        clip_rect: framebuffer_clip_rect(physical, mode.size, output.current_transform().invert()),
         radius: scaled_effect_value(requested_radius, geometry, scale),
         width,
         color,
@@ -1167,7 +1368,10 @@ fn window_border_element(
         cached.parameters = parameters;
     }
 
-    Some(cached.element.clone())
+    Some(PhysicalShaderElement {
+        inner: cached.element.clone(),
+        geometry: physical,
+    })
 }
 
 fn border_uniforms(parameters: &BorderParameters) -> Vec<Uniform<'static>> {
@@ -1180,32 +1384,34 @@ fn border_uniforms(parameters: &BorderParameters) -> Vec<Uniform<'static>> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn window_dim_element(
+fn window_tint_element(
     state: &mut Ferese,
     renderer: &mut GlesRenderer,
     id: ferese_layout::WindowId,
     geometry: Rectangle<i32, Logical>,
+    physical: Rectangle<i32, Physical>,
     scale: f64,
     radius: f64,
-    amount: f32,
+    color: [f32; 4],
+    resize_fill: bool,
     output: &Output,
-) -> Option<PixelShaderElement> {
-    if amount <= 0.0 {
-        state.window_dims.remove(&id);
+) -> Option<PhysicalShaderElement> {
+    if color[3] <= 0.0 {
+        if resize_fill {
+            state.window_resize_fills.remove(&id);
+        } else {
+            state.window_dims.remove(&id);
+        }
         return None;
     }
     let mode = output.current_mode()?;
     let program = material_program(state, renderer)?;
     let parameters = BorderParameters {
         geometry,
-        clip_rect: framebuffer_clip_rect(
-            geometry.to_physical_precise_round(scale),
-            mode.size,
-            output.current_transform().invert(),
-        ),
+        clip_rect: framebuffer_clip_rect(physical, mode.size, output.current_transform().invert()),
         radius: scaled_effect_value(radius, geometry, scale),
         width: 0.0,
-        color: [0.0, 0.0, 0.0, amount.clamp(0.0, 1.0)],
+        color,
     };
     let uniforms = |p: &BorderParameters| {
         vec![
@@ -1218,7 +1424,11 @@ fn window_dim_element(
         ]
     };
     let context = renderer.context_id().erased();
-    let buffers = state.window_dims.entry(id).or_default();
+    let buffers = if resize_fill {
+        state.window_resize_fills.entry(id).or_default()
+    } else {
+        state.window_dims.entry(id).or_default()
+    };
     let cached = buffers
         .contexts
         .entry(context)
@@ -1242,7 +1452,10 @@ fn window_dim_element(
         cached.element.update_uniforms(uniforms(&parameters));
         cached.parameters = parameters;
     }
-    Some(cached.element.clone())
+    Some(PhysicalShaderElement {
+        inner: cached.element.clone(),
+        geometry: physical,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1251,6 +1464,7 @@ fn window_shadow_element(
     renderer: &GlesRenderer,
     id: ferese_layout::WindowId,
     geometry: Rectangle<i32, Logical>,
+    physical: Rectangle<i32, Physical>,
     scale: f64,
     requested_radius: f64,
     offset_y: f64,
@@ -1259,22 +1473,26 @@ fn window_shadow_element(
     color: [f32; 4],
     output: &Output,
     programs: &RoundedClipPrograms,
-) -> Option<PixelShaderElement> {
+) -> Option<PhysicalShaderElement> {
     let mode = output.current_mode()?;
     if opacity == 0.0 || color[3] == 0.0 {
         return None;
     }
 
     let shadow_geometry = Rectangle::new(
-        (geometry.loc.x, geometry.loc.y + offset_y.round() as i32).into(),
-        geometry.size,
+        (
+            physical.loc.x,
+            physical.loc.y + (offset_y * scale).round() as i32,
+        )
+            .into(),
+        physical.size,
     );
     let bounds = shadow_bounds(geometry, offset_y, blur);
     let parameters = ShadowParameters {
         blur: (blur * scale) as f32,
         bounds,
         shadow_rect: framebuffer_clip_rect(
-            shadow_geometry.to_physical_precise_round(scale),
+            shadow_geometry,
             mode.size,
             output.current_transform().invert(),
         ),
@@ -1311,7 +1529,22 @@ fn window_shadow_element(
         cached.parameters = parameters;
     }
 
-    Some(cached.element.clone())
+    let extent = (blur * scale * 2.0).ceil() as i32;
+    Some(PhysicalShaderElement {
+        inner: cached.element.clone(),
+        geometry: Rectangle::new(
+            (
+                shadow_geometry.loc.x - extent,
+                shadow_geometry.loc.y - extent,
+            )
+                .into(),
+            (
+                shadow_geometry.size.w + 2 * extent,
+                shadow_geometry.size.h + 2 * extent,
+            )
+                .into(),
+        ),
+    })
 }
 
 fn shadow_uniforms(parameters: &ShadowParameters) -> Vec<Uniform<'static>> {
@@ -1350,12 +1583,14 @@ fn rounded_window_elements(
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
     constrain: Rectangle<i32, Logical>,
+    physical_constrain: Rectangle<i32, Physical>,
     scale: f64,
     requested_radius: f64,
     alpha: f32,
     clip_changed: bool,
     output: &Output,
     program: GlesTexProgram,
+    behavior: ConstrainScaleBehavior,
 ) -> Vec<AnimatedWindowRenderElement> {
     let Some(toplevel) = window.toplevel() else {
         return Vec::new();
@@ -1366,8 +1601,7 @@ fn rounded_window_elements(
 
     let geometry = window.geometry();
     let reference = geometry.to_physical_precise_round(scale);
-    let physical_constrain = constrain.to_physical_precise_round(scale);
-    let location = (constrain.loc - geometry.loc).to_physical_precise_round(scale);
+    let location = physical_constrain.loc - geometry.loc.to_physical_precise_round(scale);
     let clip = framebuffer_clip_rect(
         physical_constrain,
         mode.size,
@@ -1426,12 +1660,20 @@ fn rounded_window_elements(
         location,
         physical_constrain,
         reference,
-        ConstrainScaleBehavior::Stretch,
+        behavior,
         ConstrainAlign::TOP | ConstrainAlign::LEFT,
         scale,
     )
     .map(Into::into)
     .collect()
+}
+
+fn resize_content_behavior(intentional_scale: bool) -> ConstrainScaleBehavior {
+    if intentional_scale {
+        ConstrainScaleBehavior::Stretch
+    } else {
+        ConstrainScaleBehavior::CutOff
+    }
 }
 
 fn scaled_visual_rect(rect: ferese_layout::Rect, scale: f64) -> ferese_layout::Rect {
@@ -2056,8 +2298,8 @@ mod tests {
     };
 
     use super::{
-        color_with_alpha, framebuffer_clip_rect, normalized_scale, rounded_visual_rect,
-        scaled_visual_rect, shadow_bounds,
+        color_with_alpha, framebuffer_clip_rect, normalized_scale, resize_content_behavior,
+        rounded_visual_rect, scaled_visual_rect, shadow_bounds,
     };
 
     #[derive(Debug)]
@@ -2112,6 +2354,44 @@ mod tests {
                 )])
             }
         }
+    }
+
+    #[test]
+    fn resize_keeps_source_pixels_native_when_growing_and_shrinking() {
+        use smithay::backend::renderer::element::utils::{
+            ConstrainAlign, constrain_render_elements,
+        };
+        for scale in [1.0, 1.5, 1.8, 2.0] {
+            for width in [300, 600, 1200] {
+                let source = Rectangle::<i32, Logical>::from_size((600, 800).into());
+                let destination = Rectangle::<i32, Logical>::from_size((width, 800).into());
+                let element = constrain_render_elements(
+                    [DamageElement::new(source)],
+                    (0, 0),
+                    destination.to_physical_precise_round(scale),
+                    source.to_physical_precise_round(scale),
+                    resize_content_behavior(false),
+                    ConstrainAlign::TOP | ConstrainAlign::LEFT,
+                    scale,
+                )
+                .next()
+                .unwrap();
+                // Comparing destination pixels to sampled source pixels catches
+                // stretching, unlike tests of configure timing alone.
+                let physical = element.geometry(scale.into());
+                let sampled = element.src();
+                assert!((f64::from(physical.size.w) / sampled.size.w - scale).abs() < 0.01);
+                assert!((f64::from(physical.size.h) / sampled.size.h - scale).abs() < 0.01);
+            }
+        }
+    }
+
+    #[test]
+    fn overview_retains_intentional_content_scaling() {
+        assert!(matches!(
+            resize_content_behavior(true),
+            smithay::backend::renderer::element::utils::ConstrainScaleBehavior::Stretch
+        ));
     }
 
     #[test]

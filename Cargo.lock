@@ -1576,6 +1576,7 @@ dependencies = [
  "ferese-ipc",
  "ferese-layout",
  "ferese-protocols",
+ "image",
  "libc",
  "serde",
  "serde_json",
@@ -2674,6 +2675,7 @@ checksum = "85ab80394333c02fe689eaf900ab500fbd0c2213da414687ebf995a65d5a6104"
 dependencies = [
  "bytemuck",
  "byteorder-lite",
+ "image-webp",
  "moxcms",
  "num-traits",
  "png 0.18.1",

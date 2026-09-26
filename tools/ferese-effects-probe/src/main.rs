@@ -9,7 +9,9 @@ use ferese_protocols::effects::v1::client::{
 };
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
-    protocol::{wl_buffer, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface},
+    protocol::{
+        wl_buffer, wl_callback, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface,
+    },
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
@@ -25,12 +27,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         .iter()
         .any(|argument| argument == "--expect-hidden");
     let preview = arguments.iter().any(|argument| argument == "--preview");
+    let callbacks_only = arguments
+        .iter()
+        .any(|argument| argument == "--frame-callbacks");
     let connection = Connection::connect_to_env()?;
     let mut queue = connection.new_event_queue();
     let qh = queue.handle();
     connection.display().get_registry(&qh, ());
     let mut state = ProbeState {
         preview,
+        callbacks_only,
         ..ProbeState::default()
     };
 
@@ -43,12 +49,31 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    while state.effects.is_none() || !state.configured {
+    while (!callbacks_only && state.effects.is_none()) || !state.configured {
         queue.blocking_dispatch(&mut state)?;
         state.try_initialize(&qh)?;
         if state.closed {
             return Err("layer surface was closed before its first configure".into());
         }
+    }
+
+    if callbacks_only {
+        // Request frames without attaching a new buffer or damaging content.
+        // A compositor which ties callbacks to damage deadlocks this sequence.
+        for expected in 1..=8 {
+            state.surface.as_ref().unwrap().frame(&qh, ());
+            state.surface.as_ref().unwrap().commit();
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while state.frame_count < expected {
+                queue.roundtrip(&mut state)?;
+                if std::time::Instant::now() >= deadline {
+                    return Err("frame callback stalled on an unchanged layer buffer".into());
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+        println!("PASS eight frame callbacks delivered for an unchanged layer buffer");
+        return Ok(());
     }
 
     let effects = state.effects.clone().expect("effects initialized");
@@ -130,6 +155,8 @@ struct ProbeState {
     preview_background_layer: Option<ZwlrLayerSurfaceV1>,
     preview_background_buffer: Option<wl_buffer::WlBuffer>,
     preview: bool,
+    callbacks_only: bool,
+    frame_count: u32,
     configured: bool,
     closed: bool,
     configure_count: u32,
@@ -142,14 +169,16 @@ impl ProbeState {
         if self.surface.is_some() {
             return Ok(());
         }
-        let (Some(compositor), Some(_shm), Some(layer_shell), Some(effects_manager)) = (
+        let (Some(compositor), Some(_shm), Some(layer_shell)) = (
             self.compositor.as_ref(),
             self.shm.as_ref(),
             self.layer_shell.as_ref(),
-            self.effects_manager.as_ref(),
         ) else {
             return Ok(());
         };
+        if !self.callbacks_only && self.effects_manager.is_none() {
+            return Ok(());
+        }
 
         let surface = compositor.create_surface(qh, ());
         let layer = if self.preview {
@@ -182,8 +211,15 @@ impl ProbeState {
             layer_surface.set_exclusive_zone(HEIGHT as i32);
         }
 
-        let effects = effects_manager.get_surface_effects(&surface, qh, ());
-        effects.set_role(ferese_surface_effects_v1::Role::Panel);
+        let effects = (!self.callbacks_only).then(|| {
+            let effects =
+                self.effects_manager
+                    .as_ref()
+                    .unwrap()
+                    .get_surface_effects(&surface, qh, ());
+            effects.set_role(ferese_surface_effects_v1::Role::Panel);
+            effects
+        });
 
         surface.commit();
 
@@ -211,7 +247,7 @@ impl ProbeState {
 
         self.surface = Some(surface);
         self.layer_surface = Some(layer_surface);
-        self.effects = Some(effects);
+        self.effects = effects;
         Ok(())
     }
 }
@@ -376,6 +412,21 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for ProbeState {
             }
             zwlr_layer_surface_v1::Event::Closed => state.closed = true,
             _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_callback::WlCallback, ()> for ProbeState {
+    fn event(
+        state: &mut Self,
+        _: &wl_callback::WlCallback,
+        event: wl_callback::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if matches!(event, wl_callback::Event::Done { .. }) {
+            state.frame_count += 1;
         }
     }
 }

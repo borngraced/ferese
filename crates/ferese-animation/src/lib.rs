@@ -380,8 +380,9 @@ impl WindowGeometry {
         self.presentation_size_request(now)
     }
 
-    /// Configure the destination once. Intermediate sizes make clients reflow
-    /// and replace buffers on every frame, disrupting an otherwise smooth zoom.
+    /// Request the destination once, independently of the presentation clock.
+    /// The compositor coordinates commits; delaying this until settlement
+    /// forces presentation to use an obsolete buffer for the entire resize.
     pub fn presentation_size_request(&mut self, now: Duration) -> Option<ClientSize> {
         let size = ClientSize::from_rect(self.logical);
         self.client.request_size(size, now).then_some(size)
@@ -710,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn zoom_requests_destination_once_even_with_a_responsive_client() {
+    fn zoom_configures_destination_once_before_animating() {
         let start = Rect::new(0.0, 0.0, 600.0, 800.0);
         let end = Rect::new(0.0, 0.0, 1920.0, 1080.0);
         let mut geometry = WindowGeometry::new(start, Some(ClientSize::from_rect(start)));
@@ -718,18 +719,70 @@ mod tests {
             geometry.set_presentation_target(end, true, Duration::ZERO),
             Some(ClientSize::from_rect(end))
         );
-        geometry.client.commit(ClientSize::from_rect(end));
         for frame in 0..240 {
+            let now = Duration::from_millis(frame * 8);
             geometry.advance(Duration::from_millis(8), SpringConfig::default(), true);
-            assert_eq!(
-                geometry.presentation_size_request(Duration::from_millis(frame * 8)),
-                None
-            );
+            assert_eq!(geometry.presentation_size_request(now), None);
         }
+        assert_eq!(geometry.visual.current, end);
         assert_eq!(
             geometry.set_presentation_target(start, false, Duration::from_secs(2)),
             Some(ClientSize::from_rect(start))
         );
+    }
+
+    #[test]
+    fn animated_resize_configures_each_new_target_without_framewise_requests() {
+        let start = Rect::new(10.0, 10.0, 600.0, 800.0);
+        let middle = Rect::new(10.0, 10.0, 900.0, 800.0);
+        let end = Rect::new(10.0, 10.0, 450.0, 800.0);
+        let mut geometry = WindowGeometry::new(start, Some(ClientSize::from_rect(start)));
+        assert_eq!(
+            geometry.set_presentation_mode(middle, PresentationMode::Normal, Duration::ZERO),
+            Some(ClientSize::from_rect(middle))
+        );
+        geometry.advance(Duration::from_millis(64), SpringConfig::default(), true);
+        assert_eq!(
+            geometry.presentation_size_request(Duration::from_millis(64)),
+            None
+        );
+        assert_eq!(
+            geometry.set_presentation_mode(
+                end,
+                PresentationMode::Normal,
+                Duration::from_millis(64)
+            ),
+            Some(ClientSize::from_rect(end))
+        );
+        let mut requests = Vec::new();
+        for frame in 1..240 {
+            geometry.advance(Duration::from_millis(8), SpringConfig::default(), true);
+            if let Some(size) =
+                geometry.presentation_size_request(Duration::from_millis(64 + frame * 8))
+            {
+                assert_eq!(geometry.visual.current.width, end.width);
+                requests.push(size);
+            }
+        }
+        assert!(requests.is_empty());
+    }
+
+    #[test]
+    fn pointer_resize_stays_live_and_reduced_motion_configures_immediately() {
+        let start = Rect::new(0.0, 0.0, 600.0, 800.0);
+        let end = Rect::new(0.0, 0.0, 900.0, 800.0);
+        let mut pointer = WindowGeometry::new(start, Some(ClientSize::from_rect(start)));
+        assert_eq!(
+            pointer.follow_pointer(end, Duration::ZERO),
+            Some(ClientSize::from_rect(end))
+        );
+        let mut reduced = WindowGeometry::new(start, Some(ClientSize::from_rect(start)));
+        assert_eq!(
+            reduced.set_presentation_target(end, true, Duration::ZERO),
+            Some(ClientSize::from_rect(end))
+        );
+        reduced.advance(Duration::ZERO, SpringConfig::default(), false);
+        assert_eq!(reduced.presentation_size_request(Duration::ZERO), None);
     }
 
     #[test]
