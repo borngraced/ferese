@@ -23,3 +23,7 @@ text_muted = "#AAB4C7"
 [[window_rules]]
 app_id = "dev.ferese.Settings"
 floating = true
+
+[[window_rules]]
+title = "Choose a wallpaper"
+floating = true

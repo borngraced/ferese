@@ -174,6 +174,12 @@ pub fn brand_icon() -> svg_icon::Icon {
         .icon()
         .size(32)
 }
+pub fn action_icon(path: &str, tint: Color) -> svg_icon::Icon {
+    svg_icon::from_svg_bytes(format!(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="{path}" fill="none" stroke="{}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##, hex(tint)).into_bytes())
+        .symbolic(false)
+        .icon()
+        .size(16)
+}
 const PRESETS: [(&str, &str, &str, &str, &str); 3] = [
     ("#e5c890", "#0f1014", "#c9c7cd", "#9998a8", "#795e40"),
     ("#e5e5e5", "#101012", "#ededf0", "#97979f", "#696973"),

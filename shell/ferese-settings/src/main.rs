@@ -6,7 +6,7 @@ mod watch;
 use cosmic::{
     ApplicationExt, Element,
     app::{Core, Settings, Task},
-    iced::{Alignment, Length, Size},
+    iced::{Alignment, Length},
     widget::{self, button, column, container, row, scrollable, slider, text_input, toggler},
 };
 use schema::{Field, Kind, Page};
@@ -37,8 +37,6 @@ fn main() -> cosmic::iced::Result {
     let theme = visuals::native_theme(initial.as_ref().ok());
     cosmic::app::run::<App>(
         Settings::default()
-            .size(Size::new(960., 720.))
-            .size_limits(cosmic::iced::Limits::NONE.min_width(820.).min_height(560.))
             .theme(theme)
             .is_daemon(false)
             .antialiasing(true)
@@ -289,29 +287,38 @@ impl cosmic::Application for App {
             }
             Message::PickWallpaper => {
                 return cosmic::task::future(async {
-                    use cosmic::dialog::file_chooser::{self, FileFilter};
-                    let result = file_chooser::open::Dialog::new()
-                        .title("Choose a wallpaper")
-                        .filter(
-                            FileFilter::new("Images")
-                                .glob("*.png")
-                                .glob("*.jpg")
-                                .glob("*.jpeg")
-                                .glob("*.webp"),
-                        )
-                        .open_file()
-                        .await;
-                    Message::WallpaperPicked(match result {
-                        Ok(response) => response
-                            .url()
-                            .to_file_path()
-                            .map(|p| Some(p.to_string_lossy().into_owned()))
-                            .map_err(|_| "Choose a local image.".into()),
-                        Err(file_chooser::Error::Cancelled) => Ok(None),
-                        Err(error) => Err(format!(
-                            "Image picker unavailable: {error}. You can enter the image path instead."
-                        )),
-                    })
+                    let (send, receive) = cosmic::iced::futures::channel::oneshot::channel();
+                    // Native GTK file chooser, independent of the desktop portal.
+                    // Waiting for user input must never block the UI executor.
+                    std::thread::spawn(move || {
+                        let result = std::process::Command::new("zenity")
+                            .args([
+                                "--file-selection",
+                                "--title=Choose a wallpaper",
+                                "--file-filter=Images | *.png *.jpg *.jpeg *.webp *.PNG *.JPG *.JPEG *.WEBP",
+                                "--file-filter=All files | *",
+                            ])
+                            .output()
+                            .map_err(|error| format!("Could not open the file chooser: {error}. Install zenity or enter an image path."))
+                            .and_then(|output| {
+                                if output.status.code() == Some(1) {
+                                    return Ok(None); // User cancelled.
+                                }
+                                if !output.status.success() {
+                                    return Err(format!("File chooser failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+                                }
+                                let path = String::from_utf8(output.stdout)
+                                    .map_err(|_| "The image path is not valid UTF-8.".to_owned())?;
+                                let path = path.trim_end_matches(['\r', '\n']);
+                                Ok((!path.is_empty()).then(|| path.to_owned()))
+                            });
+                        let _ = send.send(result);
+                    });
+                    Message::WallpaperPicked(
+                        receive
+                            .await
+                            .unwrap_or_else(|_| Err("File chooser worker stopped.".into())),
+                    )
                 });
             }
             Message::WallpaperPicked(Ok(Some(path))) => {
@@ -661,9 +668,17 @@ impl cosmic::Application for App {
             scrollable(container(body).padding([0, 2]).width(Length::Fill)).height(Length::Fill),
         );
         let footer = row([])
-            .spacing(10)
+            .spacing(4)
             .align_y(Alignment::Center)
-            .push(
+            .push(widget::tooltip(
+                visuals::action_icon(
+                    if self.saving {
+                        "M12 3v9l5 3 M21 12a9 9 0 1 1-9-9"
+                    } else {
+                        "M9 12l2 2 4-4 M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0"
+                    },
+                    palette.muted,
+                ),
                 self.label(
                     if self.saving {
                         "Saving…"
@@ -671,24 +686,53 @@ impl cosmic::Application for App {
                         &self.status
                     },
                     11.,
-                )
-                .class(cosmic::theme::Text::Color(palette.muted))
-                .width(Length::Fill),
-            )
-            .push(
-                button::text("Undo")
-                    .on_press_maybe((self.undo.is_some() && !self.saving).then_some(Message::Undo)),
-            )
-            .push(button::text("Reload").on_press_maybe((!self.saving).then_some(Message::Reload)));
+                ),
+                widget::tooltip::Position::Top,
+            ))
+            .push(widget::Space::new().width(Length::Fill))
+            .push(widget::tooltip(
+                button::custom(visuals::action_icon(
+                    "M3 10h8 M3 10V3 M3 10c3-7 17-6 17 3a7 7 0 0 1-7 7",
+                    if self.undo.is_some() && !self.saving {
+                        palette.text
+                    } else {
+                        palette.muted
+                    },
+                ))
+                .padding(4)
+                .on_press_maybe((self.undo.is_some() && !self.saving).then_some(Message::Undo)),
+                self.label("Undo last change", 11.),
+                widget::tooltip::Position::Top,
+            ))
+            .push(widget::tooltip(
+                button::custom(visuals::action_icon(
+                    "M21 3v6h-6 M3 21v-6h6 M3 9a9 9 0 0 1 15-6l3 6 M21 15a9 9 0 0 1-15 6l-3-6",
+                    palette.text,
+                ))
+                .padding(4)
+                .on_press_maybe((!self.saving).then_some(Message::Reload)),
+                self.label("Reload configuration", 11.),
+                widget::tooltip::Position::Top,
+            ));
         row([])
             .push(sidebar)
             .push(
                 container(
-                    container(content.push(footer))
-                        .padding(20)
-                        .max_width(840)
-                        .width(Length::Fill)
-                        .height(Length::Fill),
+                    container(
+                        column([])
+                            .push(content.height(Length::Fill))
+                            .push(footer)
+                            .spacing(6),
+                    )
+                    .padding(cosmic::iced::Padding {
+                        top: 20.,
+                        right: 20.,
+                        bottom: 8.,
+                        left: 20.,
+                    })
+                    .max_width(840)
+                    .width(Length::Fill)
+                    .height(Length::Fill),
                 )
                 .width(Length::Fill)
                 .center_x(Length::Fill)

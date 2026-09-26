@@ -2,8 +2,9 @@
 
 The M6 soak runner repeatedly creates and destroys native Wayland clients while
 exercising focus, resize, column width, fullscreen, floating, and workspace
-paths. Every tenth iteration also terminates a client abruptly and opens three
-isolated connections that send malformed Wayland messages. The runner requires
+paths. Every tenth iteration also terminates a client abruptly. If a local
+malformed-client probe is available, it opens three isolated connections that
+send malformed Wayland messages. The runner requires
 Ferese to disconnect each malformed client and then checks that the compositor
 and authenticated IPC socket remain responsive. It also records compositor RSS
 growth.
@@ -32,11 +33,15 @@ FERESE_SOAK_SECONDS=300 \
 ./scripts/soak-native.sh
 ```
 
-The malformed-client check can also be run independently against a disposable
-Ferese session:
+Development probes are local-only, not distributed in the Cargo workspace.
+Supply an existing executable with `FERESE_MALFORMED_CLIENT` to enable protocol
+checks. An explicitly configured missing probe is an error; without a probe,
+the runner reports that protocol checks are skipped.
+
+The local probe can also be run independently against a disposable Ferese session:
 
 ```bash
-WAYLAND_DISPLAY=wayland-1 cargo run -p ferese-malformed-client
+WAYLAND_DISPLAY=wayland-1 /path/to/ferese-malformed-client
 target/debug/feresectl get-outputs
 ```
 

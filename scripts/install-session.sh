@@ -2,6 +2,12 @@
 # Install already-built binaries. Run from any directory with sudo.
 set -euo pipefail
 
+session_entry_matches() {
+    # App-icon metadata can change between managed releases. All other fields,
+    # especially Exec/TryExec, must still match before replacing an entry.
+    cmp -s -- <(sed '/^Icon=/d' "$1") <(sed '/^Icon=/d' "$2")
+}
+
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 release_id=${1:?usage: install-session.sh RELEASE_ID}
 [[ $release_id =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || exit 2
@@ -29,7 +35,7 @@ for link in current previous; do
     fi
 done
 if [[ -e $session_entry ]]; then
-    cmp -s -- "$repo_dir/packaging/ferese.desktop" "$session_entry" || {
+    session_entry_matches "$repo_dir/packaging/ferese.desktop" "$session_entry" || {
         echo "Different session entry exists: $session_entry" >&2; exit 1;
     }
 fi
@@ -40,6 +46,9 @@ desktop-file-validate "$repo_dir/packaging/ferese.desktop"
 desktop-file-validate "$repo_dir/packaging/dev.ferese.Settings.desktop"
 
 install -d -m 0755 -- "$release_dir" /usr/local/bin /usr/share/wayland-sessions
+if [[ -e $session_entry ]]; then
+    install -m 0644 -- "$session_entry" "$release_dir/session.previous.desktop"
+fi
 for name in ferese ferese-shell ferese-settings feresectl; do
     install -m 0755 -- "$repo_dir/target/release/$name" "$release_dir/$name"
 done

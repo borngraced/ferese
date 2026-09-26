@@ -835,6 +835,9 @@ impl Ferese {
             self.space.elements().rev().cloned().collect::<Vec<_>>()
         };
         candidates.iter().find_map(|window| {
+            if !self.window_content_ready(window) {
+                return None;
+            }
             let id = self.window_ids.get(window)?;
             if self.workspaces.workspace_for_window(*id) != Some(workspace) {
                 return None;
@@ -926,6 +929,15 @@ impl Ferese {
             (rect.x.round() as i32, rect.y.round() as i32).into(),
             (size.width, size.height).into(),
         ))
+    }
+
+    pub(crate) fn window_content_ready(&self, window: &Window) -> bool {
+        window_has_buffer(window)
+            && self
+                .window_ids
+                .get(window)
+                .and_then(|id| self.window_geometry.get(id))
+                .is_some_and(|geometry| geometry.client.committed_size.is_some())
     }
 
     pub(crate) fn add_rule_placed_window(
@@ -2453,7 +2465,10 @@ impl Ferese {
         self.viewport_coupled_widths.remove(&id);
         self.space.map_element(window.clone(), location, false);
         self.sync_window_stacking();
-        crate::backends::direct::render_all(self);
+        // Move/resize/cancel callbacks run with Smithay's pointer mutex held.
+        // Cursor rendering reads current_location(), which would lock it again.
+        // The event-loop epilogue coalesces this redraw after the grab returns.
+        self.cursor_redraw_pending = true;
     }
 
     pub fn switch_workspace(&mut self, index: u32) {
@@ -2724,11 +2739,26 @@ fn centered_transient_rect(parent: Rect) -> Rect {
 }
 
 fn client_size(window: &Window) -> Option<ClientSize> {
+    // XDG geometry alone is metadata, not a painted application frame.
+    // Initial empty commits must not make the placeholder presentation ready.
+    if !window_has_buffer(window) {
+        return None;
+    }
     let size = window.geometry().size;
 
     (size.w > 0 && size.h > 0).then_some(ClientSize {
         width: size.w,
         height: size.h,
+    })
+}
+
+fn window_has_buffer(window: &Window) -> bool {
+    window.toplevel().is_some_and(|toplevel| {
+        smithay::backend::renderer::utils::with_renderer_surface_state(
+            toplevel.wl_surface(),
+            |state| state.buffer().is_some(),
+        )
+        .unwrap_or(false)
     })
 }
 

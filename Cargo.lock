@@ -1605,16 +1605,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ferese-effects-probe"
-version = "0.1.0"
-dependencies = [
- "ferese-protocols",
- "tempfile",
- "wayland-client",
- "wayland-protocols-wlr",
-]
-
-[[package]]
 name = "ferese-ipc"
 version = "0.1.0"
 dependencies = [
@@ -1624,18 +1614,6 @@ dependencies = [
 
 [[package]]
 name = "ferese-layout"
-version = "0.1.0"
-
-[[package]]
-name = "ferese-lock-probe"
-version = "0.1.0"
-dependencies = [
- "wayland-client",
- "wayland-protocols",
-]
-
-[[package]]
-name = "ferese-malformed-client"
 version = "0.1.0"
 
 [[package]]
@@ -1674,23 +1652,6 @@ dependencies = [
  "libcosmic",
  "serde",
  "toml 0.9.12+spec-1.1.0",
- "wayland-client",
-]
-
-[[package]]
-name = "ferese-shell-control-probe"
-version = "0.1.0"
-dependencies = [
- "ferese-protocols",
- "wayland-client",
-]
-
-[[package]]
-name = "ferese-shell-spike"
-version = "0.1.0"
-dependencies = [
- "ferese-protocols",
- "libcosmic",
  "wayland-client",
 ]
 

@@ -1,3 +1,4 @@
 /target/
+/tools/
 *.log
 ChatGPT Image*.png

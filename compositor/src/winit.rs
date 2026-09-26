@@ -1108,6 +1108,11 @@ fn output_elements(
     let windows = candidates
         .iter()
         .filter_map(|window| {
+            // Configure immediately, but present the frame/shadow only after
+            // the first buffer commit has settled the actual client geometry.
+            if !state.window_content_ready(window) {
+                return None;
+            }
             let id = *state.window_ids.get(window)?;
             // Scrolling columns may sit outside their monitor's rectangle.
             // They must not reappear on a neighboring output just because

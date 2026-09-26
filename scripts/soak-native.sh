@@ -35,7 +35,11 @@ if [[ ! -x "$feresectl_program" ]]; then
 fi
 
 if [[ ! -x "$malformed_client_program" ]]; then
-    cargo build -p ferese-malformed-client
+    if [[ -n "${FERESE_MALFORMED_CLIENT:-}" ]]; then
+        echo "configured malformed-client probe is not executable: $malformed_client_program" >&2
+        exit 2
+    fi
+    echo "Local malformed-client probe unavailable; skipping protocol fuzz checks" >&2
 fi
 
 if ! command -v "$client_program" >/dev/null 2>&1; then
@@ -185,7 +189,9 @@ while ((SECONDS < deadline)); do
         launch_client
         wait_for_focus
         kill -TERM "${client_pids[-1]}" 2>/dev/null || true
-        "$malformed_client_program" >>"$log_path" 2>&1
+        if [[ -x "$malformed_client_program" ]]; then
+            "$malformed_client_program" >>"$log_path" 2>&1
+        fi
         control get-outputs
     fi
     reap_clients
