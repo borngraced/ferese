@@ -256,11 +256,9 @@ void main() {
             * shadow_values.y * (1.0 - coverage) * alpha;
         gl_FragColor = vec4(0.0, 0.0, 0.0, opacity);
     } else if (paint_mode > 0.5) {
-        if (edge_bar > 0.5) {
-            float bottom = logical_size.y * pixel_scale
-                - dot(gl_FragCoord.xy - local_origin, local_axes.zw);
-            float opacity = 0.10 * (1.0 - smoothstep(pixel_scale - 0.5, pixel_scale + 0.5, bottom)) * coverage * alpha;
-            gl_FragColor = vec4(vec3(opacity), opacity);
+        // Screen-edge bars and non-glass materials have no outline.
+        if (edge_bar > 0.5 || glass_edges < 0.5) {
+            gl_FragColor = vec4(0.0);
             return;
         }
         float border = smoothstep(-pixel_scale - 0.5, -pixel_scale + 0.5, sdf);

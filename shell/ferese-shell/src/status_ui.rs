@@ -599,13 +599,8 @@ impl FereseShell {
                 text_color: Some(primary),
                 icon_color: Some(primary),
                 border: Border {
-                    color: if compositor_material {
-                        Color::TRANSPARENT
-                    } else {
-                        color_with_opacity(theme.border, p * 0.6)
-                    },
-                    width: 1.0,
                     radius: theme.material_radius.into(),
+                    ..Default::default()
                 },
                 // Iced's shadow fills the silhouette behind the quad. With
                 // transparent client content that fill remains visible over

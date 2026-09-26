@@ -166,10 +166,10 @@ target/debug/ferese --backend nested --grant-effects --grant-shell-control -- \
 
 The Ferese mark enters overview, where workspace indicators become available.
 The focused app appears on the left; status controls and day/time sit on the
-right. The 28px bar has square screen edges, 19px icons, a fine bottom separator,
-and no drop shadow. An 8px gap separates it from windows; adjust
-`top_bar_window_gap` under `[theme.geometry]` to change it. This is additional to
-the workspace outer gap. Its dark startup fallback matches the material palette.
+right. The 28px bar has square screen edges, 19px icons, and no border or drop
+shadow. Window spacing uses the workspace outer gap; `top_bar_window_gap` under
+`[theme.geometry]` adds optional extra space (default 0). Solid and translucent
+shell surfaces also omit outlines. The dark startup fallback matches the material palette.
 
 Keyboard and direct-session touchpad settings are applied at startup:
 

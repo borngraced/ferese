@@ -72,7 +72,7 @@ impl Default for ShellTheme {
             shadow: [0, 0, 0, 85],
             bar_height: 28.0,
             bar_margin_top: 0,
-            bar_window_gap: 8,
+            bar_window_gap: 0,
             bar_margin_horizontal: 0,
             bar_radius: 0.0,
             material_radius: 14.0,
@@ -415,7 +415,7 @@ const fn default_bar_height() -> f32 {
     28.0
 }
 const fn default_bar_window_gap() -> i32 {
-    8
+    0
 }
 const fn default_bar_margin_top() -> i32 {
     0
