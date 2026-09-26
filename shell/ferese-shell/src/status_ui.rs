@@ -4,8 +4,12 @@ use cosmic::iced::{Alignment, Rectangle};
 use cosmic::widget::{column, slider};
 use status::{Action, Snapshot};
 
-const WIDTH: f32 = 320.0;
+const DEVICE_LIST_HEIGHT: f32 = 180.0;
 const OPEN_MS: f32 = 160.0;
+
+fn device_list_height(count: usize) -> Option<f32> {
+    (count > 4).then_some(DEVICE_LIST_HEIGHT)
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Menu {
@@ -17,6 +21,14 @@ pub enum Menu {
     System,
 }
 impl Menu {
+    fn width(self) -> f32 {
+        match self {
+            Self::System => 320.0,
+            Self::Network | Self::Bluetooth => 280.0,
+            Self::Battery => 250.0,
+            Self::Audio | Self::Notifications => 290.0,
+        }
+    }
     pub(super) fn material_role(self) -> Option<ferese_surface_effects_v1::Role> {
         // Popovers contain independent cards, with no shared material backing.
         None
@@ -93,8 +105,8 @@ impl FereseShell {
                     gravity: 6u32.try_into().unwrap(), // bottom-left
                     offset: (anchor.width / 2, 4),
                     size_limits: Limits::NONE
-                        .min_width(WIDTH)
-                        .max_width(WIDTH)
+                        .min_width(kind.width())
+                        .max_width(kind.width())
                         .max_height(720.0),
                     constraint_adjustment: 3, // slide X/Y, never flip above the bar
                     ..Default::default()
@@ -232,30 +244,10 @@ impl FereseShell {
         };
         let theme = self.config.theme;
         let p = menu.progress();
+        let kind = menu.kind;
         let primary = color_with_opacity(theme.text_primary, p);
         let muted = color_with_opacity(theme.text_muted, p);
         let mut rows = column::with_capacity(12).spacing(8).width(Length::Fill);
-        let radio = match menu.kind {
-            Menu::Network => self
-                .status
-                .network
-                .as_ref()
-                .map(|n| (n.enabled, Action::Wifi(!n.enabled))),
-            Menu::Bluetooth => self
-                .status
-                .bluetooth
-                .as_ref()
-                .map(|b| (b.enabled, Action::Bluetooth(!b.enabled))),
-            _ => None,
-        };
-        if let Some((enabled, action)) = radio {
-            rows = rows.push(menu_button(
-                if enabled { "Turn off" } else { "Turn on" },
-                Message::Control(action),
-                primary,
-                p,
-            ));
-        }
         if let Some(action) = &menu.confirm {
             let title = match action {
                 Action::Poweroff => "Power off this computer?",
@@ -352,6 +344,7 @@ impl FereseShell {
                         muted,
                         color_with_opacity(theme.accent, p),
                         p,
+                        Some((n.enabled, Action::Wifi(!n.enabled))),
                     ));
                     if connected {
                         let strength = match n.signal {
@@ -360,7 +353,7 @@ impl FereseShell {
                             25..=49 => "Fair",
                             _ => "Weak",
                         };
-                        rows = rows.push(control_card(
+                        rows = rows.push(
                             column![
                                 row![
                                     text("Signal strength").size(12).width(Length::Fill),
@@ -368,11 +361,8 @@ impl FereseShell {
                                 ],
                                 level_meter(n.signal, primary, p),
                             ]
-                            .spacing(8)
-                            .into(),
-                            primary,
-                            p,
-                        ));
+                            .spacing(8),
+                        );
                     }
                 }
             }
@@ -396,9 +386,10 @@ impl FereseShell {
                         muted,
                         color_with_opacity(theme.accent, p),
                         p,
+                        Some((b.enabled, Action::Bluetooth(!b.enabled))),
                     ));
                     if b.enabled && !b.devices.is_empty() {
-                        let mut devices = column::with_capacity(b.devices.len()).spacing(12);
+                        let mut devices = column::with_capacity(b.devices.len()).spacing(8);
                         for device in &b.devices {
                             devices = devices.push(
                                 column![
@@ -408,7 +399,16 @@ impl FereseShell {
                                 .spacing(3),
                             );
                         }
-                        rows = rows.push(control_card(devices.into(), primary, p));
+                        let list: Element<'_, cosmic::Action<Message>> =
+                            if let Some(height) = device_list_height(b.devices.len()) {
+                                cosmic::iced::widget::scrollable(devices)
+                                    .height(height)
+                                    .width(Length::Fill)
+                                    .into()
+                            } else {
+                                devices.into()
+                            };
+                        rows = rows.push(list);
                     }
                 }
             }
@@ -436,7 +436,12 @@ impl FereseShell {
                         )
                     ]
                     .spacing(4);
-                    rows = rows.push(control_card(audio.into(), primary, p));
+                    let audio: Element<'_, cosmic::Action<Message>> = if combined {
+                        control_card(audio.into(), primary, p)
+                    } else {
+                        audio.into()
+                    };
+                    rows = rows.push(audio);
                 }
             }
             if combined {
@@ -458,17 +463,25 @@ impl FereseShell {
             }
             if combined || menu.kind == Menu::Notifications {
                 if let Some(n) = &self.status.notifications {
-                    rows = rows.push(control_card(
-                        toggle_row("Do Not Disturb", n.dnd, Action::Dnd(!n.dnd), primary, p),
-                        primary,
-                        p,
-                    ));
+                    let toggle =
+                        toggle_row("Do Not Disturb", n.dnd, Action::Dnd(!n.dnd), primary, p);
+                    rows = rows.push(if combined {
+                        control_card(toggle, primary, p)
+                    } else {
+                        toggle
+                    });
                     if menu.kind == Menu::Notifications {
                         rows = rows
                             .push(
-                                text(format!("{} notifications", n.count))
-                                    .size(13)
-                                    .class(theme::Text::Color(muted)),
+                                text(if n.count == 0 {
+                                    "No notifications".to_owned()
+                                } else if n.count == 1 {
+                                    "1 notification".to_owned()
+                                } else {
+                                    format!("{} notifications", n.count)
+                                })
+                                .size(13)
+                                .class(theme::Text::Color(muted)),
                             )
                             .push(menu_button(
                                 "Open notification center",
@@ -494,17 +507,17 @@ impl FereseShell {
                     rows = rows.push(
                         container(
                             row![
-                                text(format!("{}%", b.percent)).size(40).width(Length::Fill),
+                                text(format!("{}%", b.percent)).size(24).width(Length::Fill),
                                 accented_icon(
                                     status_icon(Menu::Battery, &self.status).0,
-                                    40,
+                                    24,
                                     battery_color,
                                     color_with_opacity(theme.accent, p),
                                 ),
                             ]
                             .align_y(Alignment::Center),
                         )
-                        .padding([10, 0])
+                        .padding([2, 0])
                         .class(theme::Container::custom(move |_| container::Style {
                             text_color: Some(battery_color),
                             icon_color: Some(battery_color),
@@ -512,7 +525,6 @@ impl FereseShell {
                         })),
                     );
                     rows = rows.push(level_meter(b.percent, battery_color, p));
-                    rows = rows.push(text(&b.status).size(14));
                     rows = rows.push(
                         text(match b.status.as_str() {
                             "Charging" => "Connected to power",
@@ -582,19 +594,25 @@ impl FereseShell {
                 ..Color::from_rgb8(230, 172, 90)
             })));
         }
-        let panel = container(rows)
-            .width(WIDTH)
-            .padding(12)
-            .class(theme::Container::custom(move |_| container::Style {
-                background: None,
-                text_color: Some(primary),
-                icon_color: Some(primary),
-                border: Border {
-                    radius: theme.material_radius.into(),
+        let content: Element<'_, cosmic::Action<Message>> = if kind == Menu::System {
+            rows.into()
+        } else {
+            control_card(rows.into(), primary, p)
+        };
+        let panel =
+            container(content)
+                .width(kind.width())
+                .padding(12)
+                .class(theme::Container::custom(move |_| container::Style {
+                    background: None,
+                    text_color: Some(primary),
+                    icon_color: Some(primary),
+                    border: Border {
+                        radius: theme.material_radius.into(),
+                        ..Default::default()
+                    },
                     ..Default::default()
-                },
-                ..Default::default()
-            }));
+                }));
         // Keep the outer surface transparent; only inner cards paint a background.
         cosmic::widget::autosize::autosize(
             super::motion::animated(panel.into(), p, menu.regions.clone()),
@@ -602,8 +620,8 @@ impl FereseShell {
         )
         .limits(
             Limits::NONE
-                .min_width(WIDTH)
-                .max_width(WIDTH)
+                .min_width(kind.width())
+                .max_width(kind.width())
                 .max_height(720.0),
         )
         .into()
@@ -618,39 +636,52 @@ fn status_summary<'a>(
     muted: Color,
     accent: Color,
     opacity: f32,
+    toggle: Option<(bool, Action)>,
 ) -> Element<'a, cosmic::Action<Message>> {
-    let badge = container(accented_icon(source, 24, primary, accent))
-        .width(48)
-        .height(48)
+    let enabled = toggle.as_ref().is_some_and(|(enabled, _)| *enabled);
+    let badge_color = if enabled { accent } else { primary };
+    let badge = container(accented_icon(source, 22, primary, accent))
+        .width(32)
+        .height(32)
         .align_x(alignment::Horizontal::Center)
         .align_y(alignment::Vertical::Center)
         .class(theme::Container::custom(move |_| container::Style {
             background: Some(Background::Color(Color {
-                a: 0.06 * opacity,
-                ..primary
+                a: if enabled {
+                    0.22 * opacity
+                } else {
+                    0.06 * opacity
+                },
+                ..badge_color
             })),
             border: Border {
-                radius: 14.0.into(),
+                radius: 9.0.into(),
                 ..Default::default()
             },
             ..Default::default()
         }));
-    container(
-        row![
-            badge,
-            column![
-                text(title).size(18),
-                text(subtitle).size(12).class(theme::Text::Color(muted)),
-            ]
-            .spacing(4)
-            .width(Length::Fill)
+    let badge: Element<'_, cosmic::Action<Message>> = if let Some((_, action)) = toggle {
+        button::custom(badge)
+            .padding(0)
+            .name(if enabled { "Turn off" } else { "Turn on" })
+            .class(button_style(badge_color, false, opacity))
+            .on_press(cosmic::Action::App(Message::Control(action)))
+            .into()
+    } else {
+        badge.into()
+    };
+    let summary = row![
+        badge,
+        column![
+            text(title).size(14),
+            text(subtitle).size(12).class(theme::Text::Color(muted)),
         ]
-        .spacing(12)
-        .align_y(Alignment::Center),
-    )
-    .id("ferese-blur-card")
-    .padding([12, 0])
-    .into()
+        .spacing(4)
+        .width(Length::Fill)
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center);
+    summary.into()
 }
 
 fn level_meter(
@@ -1017,6 +1048,25 @@ fn status_icon(kind: Menu, s: &Snapshot) -> (&'static [u8], bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn smaller_popups_have_content_specific_widths() {
+        assert_eq!(Menu::System.width(), 320.0);
+        assert_eq!(Menu::Network.width(), 280.0);
+        assert_eq!(Menu::Bluetooth.width(), 280.0);
+        assert_eq!(Menu::Battery.width(), 250.0);
+        assert_eq!(Menu::Audio.width(), 290.0);
+        assert_eq!(Menu::Notifications.width(), 290.0);
+    }
+
+    #[test]
+    fn short_device_lists_shrink_and_long_lists_are_bounded() {
+        for count in 0..=4 {
+            assert_eq!(device_list_height(count), None);
+        }
+        for count in [5, 20, 1000] {
+            assert_eq!(device_list_height(count), Some(180.0));
+        }
+    }
     use super::*;
     #[test]
     fn completed_open_stops_requesting_animation_ticks() {
