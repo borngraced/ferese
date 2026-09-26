@@ -159,9 +159,9 @@ The shell provides an edge-to-edge libcosmic menu bar backed
 by the private shell-control connection. Build and preview it nested with:
 
 ```bash
-cargo build -p ferese -p ferese-shell
-target/debug/ferese --backend nested --grant-effects --grant-shell-control -- \
-  target/debug/ferese-shell
+cargo build --release -p ferese -p ferese-shell
+target/release/ferese --backend nested --grant-effects --grant-shell-control -- \
+  target/release/ferese-shell
 ```
 
 The Ferese mark enters overview, where workspace indicators become available.
@@ -170,6 +170,12 @@ right. The 28px bar has square screen edges, 19px icons, and no border or drop
 shadow. Window spacing uses the workspace outer gap; `top_bar_window_gap` under
 `[theme.geometry]` adds optional extra space (default 0). Solid and translucent
 shell surfaces also omit outlines. The dark startup fallback matches the material palette.
+
+The shell decodes wallpaper in parallel with startup and prefers the lightweight
+software renderer, with GPU rendering available as a fallback. Glass effects
+still run on the compositor GPU. Set `ICED_BACKEND=wgpu` to explicitly use GPU
+rendering for shell content. Use release builds when evaluating startup and
+animation performance; debug image processing is considerably slower.
 
 Keyboard and direct-session touchpad settings are applied at startup:
 

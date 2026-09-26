@@ -79,6 +79,13 @@ impl From<ShellTheme> for BarMetrics {
 }
 
 fn main() -> cosmic::iced::Result {
+    // Small shell surfaces do not need a second GPU device and shader setup.
+    // Keep wgpu as a fallback and honor an explicit renderer preference.
+    if std::env::var_os("ICED_BACKEND").is_none() {
+        // SAFETY: this is the process entry point, before any worker or
+        // toolkit threads are started.
+        unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia,wgpu") };
+    }
     let config = config::load();
     // Decode alongside toolkit/GPU initialization, never during a UI draw.
     let wallpaper = config.wallpaper.path.clone().map(|path| {
@@ -227,7 +234,8 @@ impl cosmic::Application for FereseShell {
             Some(Box::new(Self::view_layer)),
         );
 
-        let tasks = [wallpaper_action, bar_action]
+        // Submit the small interactive surface before the full-screen image.
+        let tasks = [bar_action, wallpaper_action]
             .map(cosmic::Action::Surface)
             .map(cosmic::task::message);
 
