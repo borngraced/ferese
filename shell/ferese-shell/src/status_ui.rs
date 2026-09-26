@@ -17,15 +17,9 @@ pub enum Menu {
     System,
 }
 impl Menu {
-    fn title(self) -> &'static str {
-        match self {
-            Self::Network => "Wi-Fi",
-            Self::Bluetooth => "Bluetooth",
-            Self::Audio => "Volume",
-            Self::Battery => "Battery",
-            Self::Notifications => "Notifications",
-            Self::System => "Control Center",
-        }
+    pub(super) fn material_role(self) -> Option<ferese_surface_effects_v1::Role> {
+        // Popovers contain independent cards, with no shared material backing.
+        None
     }
     fn available(self, status: &Snapshot) -> bool {
         match self {
@@ -45,6 +39,7 @@ pub struct OpenMenu {
     opened: Instant,
     pub confirm: Option<Action>,
     pub effects: Option<EffectsBinding>,
+    pub regions: super::motion::Regions,
 }
 impl OpenMenu {
     pub fn progress(&self) -> f32 {
@@ -77,6 +72,7 @@ impl FereseShell {
             opened: Instant::now(),
             confirm: None,
             effects: None,
+            regions: Default::default(),
         });
         super::EFFECT_FRAME_PENDING.store(true, std::sync::atomic::Ordering::Relaxed);
         self.status_error = None;
@@ -150,7 +146,7 @@ impl FereseShell {
     pub fn view_status_bar(&self) -> Element<'_, cosmic::Action<Message>> {
         let theme = self.config.theme.for_bar();
         let metrics = BarMetrics::from(theme);
-        let mut controls = row::with_capacity(6).spacing(3).align_y(Alignment::Center);
+        let mut controls = row::with_capacity(6).spacing(1).align_y(Alignment::Center);
         for kind in [
             Menu::System,
             Menu::Network,
@@ -210,7 +206,7 @@ impl FereseShell {
                 .name(status_label(kind, &self.status))
                 .padding([
                     0.0,
-                    ((metrics.height - f32::from(metrics.icon_size)) * 0.5).max(7.0),
+                    ((metrics.height - f32::from(metrics.icon_size)) * 0.5).max(4.0),
                 ])
                 .height(metrics.height)
                 .class(button_style(foreground, selected, 1.0))
@@ -238,15 +234,7 @@ impl FereseShell {
         let p = menu.progress();
         let primary = color_with_opacity(theme.text_primary, p);
         let muted = color_with_opacity(theme.text_muted, p);
-        // The bar has already established whether this connection supports
-        // Ferese materials. Keep a glass popup's client buffer transparent
-        // from its FIRST frame, not only after its own focus/effects event.
-        // Otherwise the initial opaque fallback can be captured beneath glass
-        // while popup registration and client repaint happen asynchronously.
-        let compositor_material = self.effects.is_some();
         let mut rows = column::with_capacity(12).spacing(8).width(Length::Fill);
-        let mut heading =
-            row![text(menu.kind.title()).size(16).width(Length::Fill)].align_y(Alignment::Center);
         let radio = match menu.kind {
             Menu::Network => self
                 .status
@@ -261,14 +249,13 @@ impl FereseShell {
             _ => None,
         };
         if let Some((enabled, action)) = radio {
-            heading = heading.push(menu_button(
+            rows = rows.push(menu_button(
                 if enabled { "Turn off" } else { "Turn on" },
                 Message::Control(action),
                 primary,
                 p,
             ));
         }
-        rows = rows.push(heading);
         if let Some(action) = &menu.confirm {
             let title = match action {
                 Action::Poweroff => "Power off this computer?",
@@ -471,10 +458,8 @@ impl FereseShell {
             }
             if combined || menu.kind == Menu::Notifications {
                 if let Some(n) = &self.status.notifications {
-                    rows = rows.push(toggle_row(
-                        "Do Not Disturb",
-                        n.dnd,
-                        Action::Dnd(!n.dnd),
+                    rows = rows.push(control_card(
+                        toggle_row("Do Not Disturb", n.dnd, Action::Dnd(!n.dnd), primary, p),
                         primary,
                         p,
                     ));
@@ -581,7 +566,7 @@ impl FereseShell {
                         p,
                     ));
                 }
-                rows = rows.push(actions.wrap());
+                rows = rows.push(control_card(actions.wrap().into(), primary, p));
             }
             if !menu.kind.available(&self.status) {
                 rows = rows.push(
@@ -601,39 +586,18 @@ impl FereseShell {
             .width(WIDTH)
             .padding(12)
             .class(theme::Container::custom(move |_| container::Style {
-                background: if compositor_material {
-                    None
-                } else {
-                    Some(Background::Color(color_with_opacity(
-                        theme.surface_popover,
-                        p,
-                    )))
-                },
+                background: None,
                 text_color: Some(primary),
                 icon_color: Some(primary),
                 border: Border {
                     radius: theme.material_radius.into(),
                     ..Default::default()
                 },
-                // Iced's shadow fills the silhouette behind the quad. With
-                // transparent client content that fill remains visible over
-                // the compositor's glass, creating a second dark rectangle.
-                shadow: if compositor_material {
-                    Shadow::default()
-                } else {
-                    Shadow {
-                        color: color_with_opacity(theme.shadow, p * theme.shadow_opacity.min(0.18)),
-                        offset: Vector::new(0.0, 2.0),
-                        blur_radius: 6.0,
-                    }
-                },
                 ..Default::default()
             }));
-        // Keep the client panel and compositor material on the same surface
-        // bounds. A second outer padding box exposes a glass ring around the
-        // fallback fill and makes the first committed frame visibly jump.
+        // Keep the outer surface transparent; only inner cards paint a background.
         cosmic::widget::autosize::autosize(
-            super::motion::animated(panel.into(), p),
+            super::motion::animated(panel.into(), p, menu.regions.clone()),
             cosmic::iced::advanced::widget::Id::new("ferese-status-menu"),
         )
         .limits(
@@ -684,6 +648,7 @@ fn status_summary<'a>(
         .spacing(12)
         .align_y(Alignment::Center),
     )
+    .id("ferese-blur-card")
     .padding([12, 0])
     .into()
 }
@@ -730,6 +695,7 @@ fn control_card<'a>(
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
     container(content)
+        .id("ferese-blur-card")
         .padding(10)
         .width(Length::Fill)
         .class(theme::Container::custom(move |_| container::Style {
@@ -798,16 +764,21 @@ fn connection_control<'a>(
     // giving it a misleading clickable/disabled-button appearance.
     let Some(action) = action else {
         return container(content)
+            .id("ferese-blur-card")
             .width(Length::FillPortion(1))
             .padding(4)
             .into();
     };
-    button::custom(content)
-        .width(Length::FillPortion(1))
-        .padding(4)
-        .class(button_style(foreground, false, opacity))
-        .on_press(cosmic::Action::App(Message::Control(action)))
-        .into()
+    container(
+        button::custom(content)
+            .width(Length::FillPortion(1))
+            .padding(4)
+            .class(button_style(foreground, false, opacity))
+            .on_press(cosmic::Action::App(Message::Control(action))),
+    )
+    .id("ferese-blur-card")
+    .width(Length::FillPortion(1))
+    .into()
 }
 
 fn menu_button<'a>(
@@ -1056,6 +1027,7 @@ mod tests {
             opened: past,
             confirm: None,
             effects: None,
+            regions: Default::default(),
         };
         assert_eq!(menu.progress(), 1.0);
         assert!(!menu.animating());

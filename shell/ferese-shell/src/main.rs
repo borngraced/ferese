@@ -22,8 +22,7 @@ use cosmic::iced::platform_specific::{
     shell::commands::layer_surface::{Anchor, KeyboardInteractivity, Layer},
 };
 use cosmic::iced::{
-    Background, Border, Color, ContentFit, Event, Length, Limits, Shadow, Subscription, Vector,
-    window,
+    Background, Border, Color, ContentFit, Event, Length, Limits, Subscription, window,
 };
 use cosmic::theme;
 use cosmic::widget::{button, container, icon, image, row};
@@ -218,6 +217,9 @@ impl cosmic::Application for FereseShell {
                 anchor: Anchor::TOP | Anchor::RIGHT | Anchor::BOTTOM | Anchor::LEFT,
                 output: IcedOutput::Active,
                 namespace: "ferese-shell-wallpaper".to_owned(),
+                // Wallpaper covers the full output, including beneath the bar
+                // and its floating margins. Zero would use the remaining workspace.
+                exclusive_zone: -1,
                 size: Some((None, None)),
                 size_limits: Limits::NONE,
                 ..Default::default()
@@ -294,6 +296,14 @@ impl cosmic::Application for FereseShell {
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
+        if let Some(menu) = &self.menu
+            && let Some(effects) = &menu.effects
+        {
+            let regions = menu.regions.lock().unwrap().clone();
+            if let Err(error) = effects.set_regions(&regions) {
+                eprintln!("ferese-shell: could not update card materials: {error}");
+            }
+        }
         match message {
             Message::WallpaperLoaded(result) => {
                 match result {
@@ -312,10 +322,7 @@ impl cosmic::Application for FereseShell {
                             && menu.id == id
                             && menu.effects.is_none()
                         {
-                            match EffectsBinding::attach_role(
-                                &surface,
-                                Some(ferese_surface_effects_v1::Role::Popover),
-                            ) {
+                            match EffectsBinding::attach_role(&surface, menu.kind.material_role()) {
                                 Ok(binding) => menu.effects = Some(binding),
                                 Err(error) => {
                                     eprintln!("ferese-shell: popover material unavailable: {error}")
@@ -467,7 +474,7 @@ impl FereseShell {
                             if menu.effects.is_none() {
                                 match EffectsBinding::attach_role(
                                     &surface,
-                                    Some(ferese_surface_effects_v1::Role::Popover),
+                                    menu.kind.material_role(),
                                 ) {
                                     Ok(binding) => menu.effects = Some(binding),
                                     Err(error) => eprintln!(
@@ -481,7 +488,7 @@ impl FereseShell {
                             if menu.effects.is_none() {
                                 match EffectsBinding::attach_role(
                                     &surface,
-                                    Some(ferese_surface_effects_v1::Role::Popover),
+                                    menu.kind.material_role(),
                                 ) {
                                     Ok(binding) => menu.effects = Some(binding),
                                     Err(error) => eprintln!(
@@ -513,10 +520,7 @@ impl FereseShell {
             ))) if self.menu.as_ref().is_some_and(|menu| menu.id == frame_id) => {
                 if let Some(menu) = &mut self.menu {
                     if menu.effects.is_none() {
-                        match EffectsBinding::attach_role(
-                            &surface,
-                            Some(ferese_surface_effects_v1::Role::Popover),
-                        ) {
+                        match EffectsBinding::attach_role(&surface, menu.kind.material_role()) {
                             Ok(binding) => menu.effects = Some(binding),
                             Err(error) => {
                                 eprintln!("ferese-shell: popover material unavailable: {error}")
@@ -634,10 +638,13 @@ impl FereseShell {
             });
             windows = windows.push(
                 button::custom(
-                    text(label)
-                        .size(bar.text_size)
-                        .wrapping(cosmic::iced::core::text::Wrapping::None)
-                        .class(theme::Text::Color(foreground)),
+                    container(
+                        text(label)
+                            .size(bar.text_size)
+                            .wrapping(cosmic::iced::core::text::Wrapping::None)
+                            .class(theme::Text::Color(foreground)),
+                    )
+                    .center_y(bar.control_height),
                 )
                 .padding([0, 8])
                 .height(bar.control_height)
@@ -664,7 +671,7 @@ impl FereseShell {
         )
         .padding([0, 6]);
         let right = row![self.view_status_bar(), clock]
-            .spacing(10)
+            .spacing(6)
             .align_y(cosmic::iced::Alignment::Center);
         let content = row![
             container(left).width(Length::Fill),
@@ -860,7 +867,23 @@ fn display_app_name(window: &control::WindowSnapshot) -> String {
 }
 
 fn current_time() -> String {
-    Zoned::now().strftime("%a  ·  %H:%M").to_string()
+    format_bar_time(&Zoned::now())
+}
+
+fn format_bar_time(now: &Zoned) -> String {
+    let months = [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sept", "oct", "nov", "dec",
+    ];
+    let hour = now.hour();
+    let hour12 = if hour % 12 == 0 { 12 } else { hour % 12 };
+    format!(
+        "{} {}, {}:{:02} {}",
+        now.day(),
+        months[(now.month() - 1) as usize],
+        hour12,
+        now.minute(),
+        if hour < 12 { "am" } else { "pm" }
+    )
 }
 
 fn compact_window_label(window: &crate::control::WindowSnapshot) -> String {
@@ -963,6 +986,7 @@ struct EffectsBinding {
     _manager: FereseEffectsManagerV1,
     surface: FereseSurfaceEffectsV1,
     _queue: EventQueue<EffectsState>,
+    regions: std::cell::RefCell<Option<Vec<[i32; 5]>>>,
 }
 
 impl EffectsBinding {
@@ -987,7 +1011,7 @@ impl EffectsBinding {
         let connection = Connection::from_backend(backend);
         let (globals, queue) = registry_queue_init::<EffectsState>(&connection)?;
         let qh = queue.handle();
-        let manager = globals.bind::<FereseEffectsManagerV1, _, _>(&qh, 1..=1, ())?;
+        let manager = globals.bind::<FereseEffectsManagerV1, _, _>(&qh, 1..=2, ())?;
         let effects = manager.get_surface_effects(surface, &qh, ());
 
         if let Some(role) = role {
@@ -1002,7 +1026,29 @@ impl EffectsBinding {
             _manager: manager,
             surface: effects,
             _queue: queue,
+            regions: Default::default(),
         })
+    }
+
+    fn set_regions(&self, regions: &[[i32; 5]]) -> Result<(), Box<dyn std::error::Error>> {
+        if self.surface.version() < 2 || self.regions.borrow().as_deref() == Some(regions) {
+            return Ok(());
+        }
+        self.surface.set_regions(
+            regions
+                .iter()
+                .flat_map(|r| r.iter().flat_map(|v| v.to_ne_bytes()))
+                .collect(),
+        );
+        if regions.is_empty() {
+            self.surface.clear_role();
+        } else {
+            self.surface
+                .set_role(ferese_surface_effects_v1::Role::Popover);
+        }
+        self.connection.flush()?;
+        *self.regions.borrow_mut() = Some(regions.to_vec());
+        Ok(())
     }
 
     fn set_visible(&self, visible: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -1037,6 +1083,25 @@ delegate_noop!(EffectsState: ignore FereseSurfaceEffectsV1);
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn clock_uses_lowercase_date_and_twelve_hour_time() {
+        for (stamp, expected) in [
+            (
+                "2026-09-28T21:32:00+01:00[Africa/Lagos]",
+                "28 sept, 9:32 pm",
+            ),
+            (
+                "2026-09-28T00:05:00+01:00[Africa/Lagos]",
+                "28 sept, 12:05 am",
+            ),
+            (
+                "2026-09-28T12:00:00+01:00[Africa/Lagos]",
+                "28 sept, 12:00 pm",
+            ),
+        ] {
+            assert_eq!(super::format_bar_time(&stamp.parse().unwrap()), expected);
+        }
+    }
     use super::*;
     use crate::control::{OutputSnapshot, WindowSnapshot};
 

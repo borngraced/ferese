@@ -31,8 +31,8 @@ impl CompositorHandler for Ferese {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
         on_commit_buffer_handler::<Self>(surface);
-        self.invalidate_material_scene();
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
             while let Some(parent) = get_parent(&root) {
@@ -63,9 +63,7 @@ impl CompositorHandler for Ferese {
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
-        // A removed popup changes the backdrop even without a final buffer
-        // commit. Invalidate expanded sampling regions as well as its bounds.
-        self.invalidate_material_scene();
+        self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
         crate::backends::direct::render_all(self);
         if self.idle_inhibitors.remove(surface).is_some() {
             self.idle_notifier_state

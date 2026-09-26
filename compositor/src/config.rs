@@ -113,12 +113,13 @@ pub struct ThemeSettings {
     pub accent_color: RgbaColor,
     pub shadow_color: RgbaColor,
     pub surface_base_color: RgbaColor,
+    pub panel_opacity: f64,
     pub window_radius: f64,
     pub shadow_offset_y: f64,
     pub shadow_blur: f64,
     pub shadow_opacity: f64,
     pub material_style: MaterialStyle,
-    pub glass: GlassSettings,
+    pub backdrop_blur: f64,
     pub material_radius: f64,
     pub panel_radius: f64,
 }
@@ -126,64 +127,20 @@ pub struct ThemeSettings {
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum MaterialStyle {
-    #[default]
-    Glass,
     Translucent,
-    Solid,
-}
-
-/// Ordered quality tiers; each step retains the preceding reductions.
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Ord, PartialOrd)]
-#[serde(rename_all = "snake_case")]
-pub enum GlassQuality {
     #[default]
-    Full,
-    NoGrain,
-    NoSaturation,
-    ReducedBlur,
-    Translucent,
     Solid,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct GlassSettings {
-    pub tint: RgbaColor,
-    pub blur_scale: f32,
-    pub grain: bool,
-    pub quality: GlassQuality,
-}
-
-impl Default for GlassSettings {
-    fn default() -> Self {
-        Self {
-            tint: RgbaColor([28.0 / 255.0, 32.0 / 255.0, 46.0 / 255.0, 1.0]),
-            blur_scale: 1.0,
-            grain: true,
-            quality: GlassQuality::Full,
-        }
-    }
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct AppearanceConfig {
     corner_radius: Option<f64>,
-    #[serde(default)]
-    reduced_effects: bool,
-    #[serde(default)]
-    glass: GlassConfig,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct GlassConfig {
-    tint_color: Option<String>,
-    blur_scale: Option<f64>,
-    grain: Option<bool>,
-    #[serde(default)]
-    quality: GlassQuality,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct ThemeConfig {
+    #[serde(default)]
+    surface: ThemeSurfaceConfig,
     #[serde(default)]
     colors: ThemeColorsConfig,
     #[serde(default)]
@@ -195,9 +152,35 @@ struct ThemeConfig {
 }
 
 #[derive(Debug, Default, Deserialize)]
+struct ThemeSurfaceConfig {
+    #[serde(default)]
+    bar: ThemeBarConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ThemeBarConfig {
+    opacity: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ThemeMaterialConfig {
     #[serde(default)]
     style: MaterialStyle,
+    #[serde(default = "default_backdrop_blur")]
+    blur_radius: f64,
+}
+
+impl Default for ThemeMaterialConfig {
+    fn default() -> Self {
+        Self {
+            style: MaterialStyle::Solid,
+            blur_radius: default_backdrop_blur(),
+        }
+    }
+}
+
+fn default_backdrop_blur() -> f64 {
+    12.0
 }
 
 #[derive(Debug, Deserialize)]
@@ -861,22 +844,6 @@ impl Config {
         let shadow_opacity =
             unit_theme_value(self.theme.shadow.soft.opacity, "shadow.soft.opacity")?;
 
-        let mut glass = GlassSettings::default();
-        if let Some(tint) = &self.appearance.glass.tint_color {
-            glass.tint = parse_color(tint, "appearance.glass.tint_color")?;
-            // Opacity belongs to the semantic role, never the color token.
-            glass.tint.0[3] = 1.0;
-        }
-        glass.blur_scale = finite_theme_value(
-            self.appearance.glass.blur_scale.unwrap_or(1.0),
-            "appearance.glass.blur_scale",
-        )?
-        .clamp(0.5, 1.5) as f32;
-        glass.grain = self.appearance.glass.grain.unwrap_or(true);
-        glass.quality = self.appearance.glass.quality;
-        if self.appearance.reduced_effects {
-            glass.quality = glass.quality.max(GlassQuality::ReducedBlur);
-        }
         let material_radius = nonnegative_theme_value(
             self.appearance.corner_radius.unwrap_or(14.0),
             "appearance.corner_radius",
@@ -891,12 +858,20 @@ impl Config {
                 &self.theme.colors.surface_base,
                 "colors.surface_base",
             )?,
+            panel_opacity: unit_theme_value(
+                self.theme.surface.bar.opacity.unwrap_or(0.78),
+                "surface.bar.opacity",
+            )?,
             window_radius,
             shadow_offset_y,
             shadow_blur,
             shadow_opacity,
             material_style: self.theme.material.style,
-            glass,
+            backdrop_blur: nonnegative_theme_value(
+                self.theme.material.blur_radius,
+                "material.blur_radius",
+            )?
+            .min(32.0),
             material_radius,
             panel_radius: nonnegative_theme_value(
                 self.theme.geometry.top_bar_radius,
@@ -1666,30 +1641,6 @@ mod tests {
     }
 
     #[test]
-    fn glass_configuration_clamps_cost_and_rejects_nonfinite_values() {
-        for (value, expected) in [(0.1, 0.5), (1.2, 1.2), (100.0, 1.5)] {
-            let config = parse(&format!("[appearance.glass]\nblur_scale = {value}"));
-            assert_eq!(config.theme_settings().unwrap().glass.blur_scale, expected);
-        }
-        for value in ["nan", "inf", "-inf"] {
-            assert!(
-                parse(&format!("[appearance.glass]\nblur_scale = {value}"))
-                    .theme_settings()
-                    .is_err()
-            );
-        }
-        let settings = parse("[appearance]\nreduced_effects = true\ncorner_radius = 17.0\n[appearance.glass]\ntint_color = \"#123456\"\ngrain = false")
-            .theme_settings().unwrap();
-        assert_eq!(settings.glass.quality, GlassQuality::ReducedBlur);
-        assert!(!settings.glass.grain);
-        assert_eq!(settings.material_radius, 17.0);
-        assert_eq!(
-            settings.glass.tint,
-            RgbaColor([18.0 / 255.0, 52.0 / 255.0, 86.0 / 255.0, 1.0])
-        );
-    }
-
-    #[test]
     fn parses_and_validates_theme_window_tokens() {
         let configured = parse(
             "[theme.colors]\nborder = \"#11223344\"\naccent = \"#AABBCC\"\nshadow = \"#01020380\"\n\n[theme.geometry]\nborder_width = 1.5\nfocus_ring_width = 3.0\nwindow_radius = 12.0\n\n[theme.shadow.soft]\noffset_y = -2.0\nblur = 24.0\nopacity = 0.4\n\n[theme.material]\nstyle = \"translucent\"",
@@ -1707,12 +1658,13 @@ mod tests {
                 accent_color: RgbaColor([170.0 / 255.0, 187.0 / 255.0, 0.8, 1.0]),
                 shadow_color: RgbaColor([1.0 / 255.0, 2.0 / 255.0, 3.0 / 255.0, 128.0 / 255.0]),
                 surface_base_color: RgbaColor([17.0 / 255.0, 24.0 / 255.0, 33.0 / 255.0, 1.0,]),
+                panel_opacity: 0.78,
                 window_radius: 12.0,
                 shadow_offset_y: -2.0,
                 shadow_blur: 24.0,
                 shadow_opacity: 0.4,
                 material_style: MaterialStyle::Translucent,
-                glass: GlassSettings::default(),
+                backdrop_blur: 12.0,
                 material_radius: 14.0,
                 panel_radius: 0.0,
             }
@@ -1721,6 +1673,70 @@ mod tests {
         assert!(invalid_radius.theme_settings().is_err());
         assert!(invalid_opacity.theme_settings().is_err());
         assert!(toml::from_str::<Config>("[theme.material]\nstyle = \"mist\"").is_err());
+    }
+
+    #[test]
+    fn materials_default_to_solid_and_reject_removed_style() {
+        assert_eq!(
+            parse("").theme_settings().unwrap().material_style,
+            MaterialStyle::Solid
+        );
+        assert!(toml::from_str::<Config>("[theme.material]\nstyle = \"glass\"").is_err());
+    }
+
+    #[test]
+    fn material_color_comes_from_surface_base() {
+        let theme = parse("[theme.colors]\nsurface_base = \"#000000\"\n[theme.surface.bar]\nbackground = \"#FFFFFF\"")
+            .theme_settings()
+            .unwrap();
+        assert_eq!(theme.surface_base_color, RgbaColor([0.0, 0.0, 0.0, 1.0]));
+    }
+
+    #[test]
+    fn bar_opacity_uses_config_and_rejects_invalid_values() {
+        assert_eq!(parse("").theme_settings().unwrap().panel_opacity, 0.78);
+        for opacity in [0.0, 0.65, 1.0] {
+            assert_eq!(
+                parse(&format!("[theme.surface.bar]\nopacity = {opacity}"))
+                    .theme_settings()
+                    .unwrap()
+                    .panel_opacity,
+                opacity
+            );
+        }
+        for opacity in ["-0.1", "1.1", "nan", "inf"] {
+            assert!(
+                parse(&format!("[theme.surface.bar]\nopacity = {opacity}"))
+                    .theme_settings()
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn backdrop_blur_is_configurable_without_glass_settings() {
+        assert_eq!(parse("").theme_settings().unwrap().backdrop_blur, 12.0);
+        assert_eq!(
+            parse("[theme.material]\nstyle = \"translucent\"\nblur_radius = 100")
+                .theme_settings()
+                .unwrap()
+                .backdrop_blur,
+            32.0
+        );
+        assert_eq!(
+            parse("[theme.material]\nblur_radius = 0")
+                .theme_settings()
+                .unwrap()
+                .backdrop_blur,
+            0.0
+        );
+        for value in ["-1", "nan", "inf"] {
+            assert!(
+                parse(&format!("[theme.material]\nblur_radius = {value}"))
+                    .theme_settings()
+                    .is_err()
+            );
+        }
     }
 
     #[test]

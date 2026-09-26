@@ -8,7 +8,7 @@ use ferese_protocols::effects::v1::client::{
     ferese_surface_effects_v1::{self, FereseSurfaceEffectsV1},
 };
 use wayland_client::{
-    Connection, Dispatch, QueueHandle, delegate_noop,
+    Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
     protocol::{wl_buffer, wl_compositor, wl_registry, wl_shm, wl_shm_pool, wl_surface},
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{
@@ -65,7 +65,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         effects.set_role(role);
         queue.roundtrip(&mut state)?;
         // Exercise each role in an actual presented frame, including changes
-        // to the cached backdrop allocation and shadow bounds.
+        // to the material geometry and shadow bounds.
         std::thread::sleep(Duration::from_millis(50));
         if state.configure_count != initial_configures {
             return Err(format!("semantic role {role:?} changed layer geometry").into());
@@ -73,9 +73,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     if preview {
-        effects.set_role(ferese_surface_effects_v1::Role::Panel);
+        if std::env::args().any(|arg| arg == "--regions") {
+            if effects.version() < 2 {
+                return Err("rounded material regions require effects v2".into());
+            }
+            let regions = [[20_i32, 20, 200, 180, 14], [240, 20, 200, 180, 14]];
+            effects.set_regions(
+                regions
+                    .iter()
+                    .flat_map(|r| r.iter().flat_map(|v| v.to_ne_bytes()))
+                    .collect(),
+            );
+            effects.set_role(ferese_surface_effects_v1::Role::Popover);
+        } else {
+            effects.set_role(ferese_surface_effects_v1::Role::Panel);
+        }
         queue.roundtrip(&mut state)?;
-        println!("PREVIEW glass panel is mapped over the patterned card; press Ctrl+C to stop");
+        println!("PREVIEW material is mapped over the patterned card; press Ctrl+C to stop");
 
         while !state.closed {
             queue.blocking_dispatch(&mut state)?;
@@ -84,7 +98,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    // Keep the final glass role mapped long enough for the compositor to run
+    // Keep the final solid role mapped long enough for the compositor to run
     // at least one presentation. This turns shader and capture failures into
     // probe failures instead of disconnecting before the first rendered frame.
     std::thread::sleep(Duration::from_millis(100));
@@ -112,9 +126,9 @@ struct ProbeState {
     layer_surface: Option<ZwlrLayerSurfaceV1>,
     effects: Option<FereseSurfaceEffectsV1>,
     buffer: Option<wl_buffer::WlBuffer>,
-    preview_backdrop_surface: Option<wl_surface::WlSurface>,
-    preview_backdrop_layer: Option<ZwlrLayerSurfaceV1>,
-    preview_backdrop_buffer: Option<wl_buffer::WlBuffer>,
+    preview_background_surface: Option<wl_surface::WlSurface>,
+    preview_background_layer: Option<ZwlrLayerSurfaceV1>,
+    preview_background_buffer: Option<wl_buffer::WlBuffer>,
     preview: bool,
     configured: bool,
     closed: bool,
@@ -174,25 +188,25 @@ impl ProbeState {
         surface.commit();
 
         if self.preview {
-            let backdrop_surface = compositor.create_surface(qh, ());
-            let backdrop_layer = layer_shell.get_layer_surface(
-                &backdrop_surface,
+            let background_surface = compositor.create_surface(qh, ());
+            let background_layer = layer_shell.get_layer_surface(
+                &background_surface,
                 None,
                 zwlr_layer_shell_v1::Layer::Top,
-                "ferese-effects-preview-backdrop".to_owned(),
+                "ferese-effects-preview-background".to_owned(),
                 qh,
                 (),
             );
-            backdrop_layer.set_anchor(
+            background_layer.set_anchor(
                 zwlr_layer_surface_v1::Anchor::Top | zwlr_layer_surface_v1::Anchor::Right,
             );
-            backdrop_layer.set_margin(12, 12, 0, 0);
-            backdrop_layer.set_size(520, 260);
-            backdrop_layer.set_exclusive_zone(0);
-            backdrop_surface.commit();
+            background_layer.set_margin(12, 12, 0, 0);
+            background_layer.set_size(520, 260);
+            background_layer.set_exclusive_zone(0);
+            background_surface.commit();
 
-            self.preview_backdrop_surface = Some(backdrop_surface);
-            self.preview_backdrop_layer = Some(backdrop_layer);
+            self.preview_background_surface = Some(background_surface);
+            self.preview_background_layer = Some(background_layer);
         }
 
         self.surface = Some(surface);
@@ -237,7 +251,7 @@ fn create_buffer(
     Ok(buffer)
 }
 
-fn create_preview_backdrop_buffer(
+fn create_preview_background_buffer(
     shm: &wl_shm::WlShm,
     qh: &QueueHandle<ProbeState>,
     width: u32,
@@ -304,7 +318,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ProbeState {
                 state.layer_shell = Some(registry.bind(name, version.min(4), qh, ()))
             }
             "ferese_effects_manager_v1" => {
-                state.effects_manager = Some(registry.bind(name, 1, qh, ()))
+                state.effects_manager = Some(registry.bind(name, version.min(2), qh, ()))
             }
             _ => {}
         }
@@ -328,20 +342,20 @@ impl Dispatch<ZwlrLayerSurfaceV1, ()> for ProbeState {
             } => {
                 layer_surface.ack_configure(serial);
 
-                if state.preview_backdrop_layer.as_ref() == Some(layer_surface) {
+                if state.preview_background_layer.as_ref() == Some(layer_surface) {
                     let width = if width == 0 { 520 } else { width };
                     let height = if height == 0 { 260 } else { height };
                     let surface = state
-                        .preview_backdrop_surface
+                        .preview_background_surface
                         .clone()
-                        .expect("preview backdrop surface initialized");
+                        .expect("preview background surface initialized");
                     let shm = state.shm.as_ref().expect("shm initialized");
-                    let buffer = create_preview_backdrop_buffer(shm, qh, width, height)
-                        .expect("create preview backdrop buffer");
+                    let buffer = create_preview_background_buffer(shm, qh, width, height)
+                        .expect("create preview background buffer");
                     surface.attach(Some(&buffer), 0, 0);
                     surface.damage_buffer(0, 0, width as i32, height as i32);
                     surface.commit();
-                    state.preview_backdrop_buffer = Some(buffer);
+                    state.preview_background_buffer = Some(buffer);
                     return;
                 }
 

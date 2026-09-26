@@ -34,8 +34,7 @@ decorations). Leaving fullscreen restores the previous maximized/tiled state.
 
 Set `FERESE_TRACE_PERFORMANCE=1` to emit five-second per-output summaries under
 the `ferese::render` tracing target. Summaries include rendered frames, damaged
-pixels, average and longest render time, DRM missed-deadline totals, blur-active
-frames, blur-region count, and sampled blur pixels.
+pixels, average and longest render time, and DRM missed-deadline totals.
 
 The native-client soak runner and its nested/DRM procedure are documented in
 [docs/native-soak-testing.md](docs/native-soak-testing.md).
@@ -48,7 +47,7 @@ cargo build -p ferese-effects-probe
 cargo run -p ferese -- --grant-effects -- target/debug/ferese-effects-probe
 ```
 
-Add `--preview` to keep a glass popover visible in the nested compositor:
+Add `--preview` to keep a solid popover visible in the nested compositor:
 
 ```bash
 cargo build -p ferese-effects-probe
@@ -57,8 +56,7 @@ cargo run -p ferese -- --backend nested --grant-effects -- \
 ```
 
 Press `Super+Enter` in the Ferese window to open `foot`, then move or update the
-terminal beneath the popover to see backdrop capture, blur, tint, and damage
-invalidation. Stop the preview with `Ctrl+C` in the host terminal.
+terminal beneath the popover to inspect stacking, rounded clipping, and shadows. Stop the preview with `Ctrl+C` in the host terminal.
 
 To verify that the private global is absent from the public Wayland socket:
 
@@ -108,29 +106,25 @@ blur = 18.0
 opacity = 0.20
 
 [theme.material]
-style = "glass" # glass, translucent, or solid
+style = "solid" # solid or translucent
+blur_radius = 12.0 # logical pixels; translucent only, 0 disables blur
 ```
 
-Glass roles use live backdrop sampling, a dark tint, diagonal lighting, inset
-edges, static overlay grain, and role-specific shadows. Configure them with:
+Material roles use the configured surface color and role-specific shadows.
+Solid is the default. Translucent adds backdrop blur behind the same surface
+color, without grain, glossy lighting, saturation boosts, or inset highlights.
+The radius is clamped to 32 logical pixels. A shader/allocation failure falls
+back to a plain translucent fill. Shell popovers report rounded card regions;
+their outer padding and gaps stay transparent. Each surface shares one capture
+across its cards, so cards do not sample already blurred neighboring cards.
+Use `--preview --regions` with the effects probe to inspect two cards over a
+patterned background, including the sharp gap between them.
 
 ```toml
 [appearance]
 corner_radius = 14.0
-reduced_effects = false # true selects reduced_blur or a stricter quality tier
-
-[appearance.glass]
-tint_color = "#1C202E"
-blur_scale = 1.0 # clamped to 0.5–1.5; non-finite values are rejected
-grain = true
-quality = "full"
 ```
 
-Quality tiers are `full`, `no_grain`, `no_saturation`, `reduced_blur`
-(at most 12 logical pixels with fewer samples), `translucent`, and `solid`.
-Each tier retains earlier reductions without reducing tint opacity or changing
-layout. Backdrop shader or texture allocation failure falls back to translucent.
-The legacy `surface.panel_elevated` role uses the panel tint with popover elevation.
 Shell shadows use restrained logical-pixel presets: panel `1/5/4%`, popover
 and menu `2/8/7%`, HUD `1/4/4%`, and notification/modal `3/10/9%`
 (vertical offset / blur / opacity). Private effects capabilities
@@ -173,8 +167,7 @@ shadow. Window spacing uses the workspace outer gap; `top_bar_window_gap` under
 shell surfaces also omit outlines. The dark startup fallback matches the material palette.
 
 The shell decodes wallpaper in parallel with startup and prefers the lightweight
-software renderer, with GPU rendering available as a fallback. Glass effects
-still run on the compositor GPU. Set `ICED_BACKEND=wgpu` to explicitly use GPU
+software renderer, with GPU rendering available as a fallback. Set `ICED_BACKEND=wgpu` to explicitly use GPU
 rendering for shell content. Use release builds when evaluating startup and
 animation performance; debug image processing is considerably slower.
 

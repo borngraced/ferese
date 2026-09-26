@@ -86,7 +86,7 @@ impl Default for ShellTheme {
 }
 
 impl ShellTheme {
-    // The bar has its own foreground tokens, matched to its dark glass surface.
+    // The bar has its own foreground tokens, matched to its surface.
     pub(crate) fn for_bar(mut self) -> Self {
         self.text_primary = self.bar_text_primary;
         self.text_muted = self.bar_text_muted;

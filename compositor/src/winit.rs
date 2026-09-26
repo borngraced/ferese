@@ -80,7 +80,7 @@ render_elements! {
     Memory=MemoryRenderElement,
     Solid=SolidColorRenderElement,
     Border=PixelShaderElement,
-    Backdrop=BackdropRenderElement,
+    Blur=BlurRenderElement,
 }
 
 render_elements! {
@@ -229,13 +229,7 @@ uniform float alpha;
 uniform vec4 tint;
 uniform vec4 visible_rect;
 uniform float material_radius;
-uniform float pixel_scale;
-uniform vec2 local_origin;
-uniform vec4 local_axes;
-uniform vec2 logical_size;
 uniform float paint_mode;
-uniform float glass_edges;
-uniform float edge_bar;
 uniform vec4 shadow_rect;
 uniform vec2 shadow_values;
 varying vec2 v_coords;
@@ -249,29 +243,12 @@ float rounded_distance(vec2 point, vec4 rect) {
 void main() {
     float sdf = rounded_distance(gl_FragCoord.xy, visible_rect);
     float coverage = 1.0 - smoothstep(-0.5, 0.5, sdf);
-    if (paint_mode > 1.5) {
+    if (paint_mode > 0.5) {
         float distance = max(rounded_distance(gl_FragCoord.xy, shadow_rect), 0.0);
         float sigma = max(shadow_values.x * 0.5, 0.5);
         float opacity = exp(-0.5 * distance * distance / (sigma * sigma))
             * shadow_values.y * (1.0 - coverage) * alpha;
         gl_FragColor = vec4(0.0, 0.0, 0.0, opacity);
-    } else if (paint_mode > 0.5) {
-        // Screen-edge bars and non-glass materials have no outline.
-        if (edge_bar > 0.5 || glass_edges < 0.5) {
-            gl_FragColor = vec4(0.0);
-            return;
-        }
-        float border = smoothstep(-pixel_scale - 0.5, -pixel_scale + 0.5, sdf);
-        float hairline = smoothstep(-2.0 * pixel_scale - 0.5, -2.0 * pixel_scale + 0.5, sdf) * (1.0 - border);
-        // Inset only on the logical top, including rotated/flipped outputs.
-        float top = dot(gl_FragCoord.xy - local_origin, local_axes.zw);
-        float top_limit = min(2.0 * pixel_scale, logical_size.y * pixel_scale);
-        float highlight = (1.0 - smoothstep(top_limit - 0.5, top_limit + 0.5, top)) * (1.0 - border);
-        float opacity = 1.0 - (1.0 - 0.14 * border)
-            * (1.0 - glass_edges * 0.04 * hairline)
-            * (1.0 - glass_edges * 0.18 * highlight);
-        opacity *= coverage * alpha;
-        gl_FragColor = vec4(vec3(opacity), opacity);
     } else {
         float opacity = tint.a * coverage * alpha;
         gl_FragColor = vec4(tint.rgb * opacity, opacity);
@@ -279,15 +256,12 @@ void main() {
 }
 "#;
 
-const BACKDROP_SHADER: &str = r#"#version 100
-
+const BLUR_SHADER: &str = r#"#version 100
 //_DEFINES_
-
 #if defined(EXTERNAL)
 #extension GL_OES_EGL_image_external : require
 #endif
-
-precision mediump float;
+precision highp float;
 #if defined(EXTERNAL)
 uniform samplerExternalOES tex;
 #else
@@ -295,161 +269,46 @@ uniform sampler2D tex;
 #endif
 uniform float alpha;
 uniform vec4 visible_rect;
+uniform float material_radius;
 uniform vec2 texture_size;
 uniform float blur_radius;
-uniform float tap_scale;
-uniform float material_radius;
-uniform float saturation;
-uniform float brightness;
 uniform vec4 tint;
-uniform float noise_amount;
-uniform float pixel_scale;
-uniform vec2 local_origin;
-uniform vec4 local_axes;
-uniform vec2 logical_size;
 varying vec2 v_coords;
-
-// Static, surface-local two-octave fractal noise. A small polynomial hash
-// avoids the precision-dependent sine hash and does not animate with time.
-float random(vec2 point) {
-    vec3 p = fract(vec3(point.xyx) * 0.1031);
-    p += dot(p, p.yzx + 33.33);
-    return fract((p.x + p.y) * p.z);
-}
-float noise(vec2 p) {
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(random(i), random(i + vec2(1.0, 0.0)), f.x),
-        mix(random(i + vec2(0.0, 1.0)), random(i + vec2(1.0)), f.x), f.y);
-}
-
-float kernel_weight(float distance) {
-    return exp(-distance * distance / 18.0);
-}
-
 void main() {
-    vec2 point = gl_FragCoord.xy;
-    vec2 visible_max = visible_rect.xy + visible_rect.zw;
-    if (point.x < visible_rect.x || point.y < visible_rect.y
-            || point.x >= visible_max.x || point.y >= visible_max.y) {
-        gl_FragColor = vec4(0.0);
-        return;
-    }
-
+    vec2 half_size = visible_rect.zw * 0.5;
+    vec2 d = abs(gl_FragCoord.xy - visible_rect.xy - half_size) - (half_size - vec2(material_radius));
+    float sdf = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - material_radius;
+    float coverage = alpha * (1.0 - smoothstep(-0.5, 0.5, sdf));
+    if (coverage <= 0.0) { gl_FragColor = vec4(0.0); return; }
+    // Denser Gaussian sampling preserves the same radius and softness without
+    // the visible grid left by widely spaced taps on detailed wallpapers.
     vec2 step_size = vec2(blur_radius / 6.0) / max(texture_size, vec2(1.0));
     vec4 color = vec4(0.0);
-    float weight_sum = 0.0;
-    for (int y = -6; y <= 6; y++) {
-        if (abs(float(y)) * tap_scale > 6.0) { continue; }
-        for (int x = -6; x <= 6; x++) {
-            if (abs(float(x)) * tap_scale > 6.0) { continue; }
-            float weight = kernel_weight(float(x) * tap_scale) * kernel_weight(float(y) * tap_scale);
-            vec2 offset = vec2(float(x), float(y)) * step_size * tap_scale;
-            color += texture2D(tex, v_coords + offset) * weight;
-            weight_sum += weight;
+    float weights = 0.0;
+    for (int y=-6; y<=6; y++) {
+        for (int x=-6; x<=6; x++) {
+            float weight = exp(-float(x*x+y*y) / 18.0);
+            color += texture2D(tex, v_coords + vec2(float(x),float(y))*step_size) * weight;
+            weights += weight;
         }
     }
-    color /= weight_sum;
-
-    float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
-    vec3 adjusted = mix(vec3(luma), color.rgb, saturation) * brightness;
-    adjusted = mix(adjusted, tint.rgb, tint.a);
-    vec2 relative = point - local_origin;
-    vec2 local = vec2(dot(relative, local_axes.xy), dot(relative, local_axes.zw)) / pixel_scale;
-    vec2 size = logical_size;
-    // CSS 155deg: direction (sin(155deg), -cos(155deg)). Project onto
-    // the full gradient line, including the aspect ratio of the surface.
-    vec2 direction = vec2(0.422618, 0.906308);
-    float position = dot(local, direction) / max(dot(size, direction), 1.0);
-    adjusted = mix(adjusted, vec3(1.0), 0.10 * clamp(1.0 - position / 0.40, 0.0, 1.0));
-    float grain = (noise(local * 0.8) + 0.5 * noise(local * 1.6)) / 1.5;
-    vec3 overlay = mix(2.0 * adjusted * grain,
-        1.0 - 2.0 * (1.0 - adjusted) * (1.0 - grain), step(vec3(0.5), adjusted));
-    adjusted = mix(adjusted, overlay, noise_amount);
-    vec2 half_size = visible_rect.zw * 0.5;
-    vec2 distance = abs(point - visible_rect.xy - half_size) - (half_size - vec2(material_radius));
-    float sdf = length(max(distance, 0.0)) + min(max(distance.x, distance.y), 0.0) - material_radius;
-    float coverage = alpha * (1.0 - smoothstep(-0.5, 0.5, sdf));
-    gl_FragColor = vec4(clamp(adjusted, 0.0, 1.0) * coverage, coverage);
+    vec3 background = color.rgb / weights;
+    gl_FragColor = vec4(mix(background, tint.rgb, tint.a) * coverage, coverage);
 }
 "#;
 
 #[derive(Clone, Debug)]
-pub(crate) struct RoundedClipPrograms {
-    texture: GlesTexProgram,
-    border: GlesPixelProgram,
-    shadow: GlesPixelProgram,
-}
-
-#[derive(Debug)]
-pub(crate) struct OverviewScrim {
-    buffer: SolidColorBuffer,
-}
-
-impl OverviewScrim {
-    fn new(size: Size<i32, Logical>) -> Self {
-        Self {
-            buffer: SolidColorBuffer::new(size, [0.02, 0.025, 0.035, 0.62]),
-        }
-    }
-}
+pub(crate) struct BlurProgram(GlesTexProgram);
 
 #[derive(Clone, Debug)]
-pub(crate) struct MaterialProgram(GlesPixelProgram);
-
-#[derive(Clone, Debug)]
-pub(crate) struct BackdropProgram(GlesTexProgram);
-
-#[derive(Clone, Debug, PartialEq)]
-struct MaterialParameters {
-    radius: f32,
-    pixel_scale: f32,
-    local_origin: [f32; 2],
-    local_axes: [f32; 4],
-    logical_size: [f32; 2],
-    glass_edges: f32,
-    edge_bar: f32,
-    shadow_rect: [f32; 4],
-    shadow_values: [f32; 2],
-    shadow_bounds: Rectangle<i32, Logical>,
+struct BlurCapture {
+    texture: GlesTexture,
+    dirty: Arc<AtomicBool>,
     geometry: Rectangle<i32, Logical>,
-    tint: [f32; 4],
-    noise: f32,
-    generation: u64,
-    scene_generation: u64,
-    opaque: bool,
-    blur: f32,
-    tap_scale: f32,
-    saturation: f32,
-    brightness: f32,
-    sample_geometry: Rectangle<i32, Logical>,
-    sample_physical: Rectangle<i32, Physical>,
-    visible_framebuffer: [f32; 4],
-    sample_framebuffer: [f32; 4],
-}
-
-#[derive(Debug)]
-struct CachedMaterial {
-    element: CachedMaterialElement,
-    parameters: MaterialParameters,
-    edge: PixelShaderElement,
-    shadow: PixelShaderElement,
 }
 
 #[derive(Clone, Debug)]
-enum CachedMaterialElement {
-    Tint(PixelShaderElement),
-    Backdrop(BackdropRenderElement),
-}
-
-#[derive(Debug, Default)]
-pub(crate) struct MaterialBuffers {
-    contexts: HashMap<ErasedContextId, CachedMaterial>,
-}
-
-#[derive(Clone, Debug)]
-struct BackdropRenderElement {
+struct BlurRenderElement {
     capture_dirty: Arc<AtomicBool>,
     texture: GlesTexture,
     program: GlesTexProgram,
@@ -460,17 +319,22 @@ struct BackdropRenderElement {
     uniforms: Vec<Uniform<'static>>,
 }
 
-impl BackdropRenderElement {
-    fn new(texture: GlesTexture, program: GlesTexProgram, parameters: &MaterialParameters) -> Self {
+impl BlurRenderElement {
+    fn new(
+        texture: GlesTexture,
+        program: GlesTexProgram,
+        parameters: &MaterialParameters,
+        capture_dirty: Arc<AtomicBool>,
+    ) -> Self {
         Self {
-            capture_dirty: Arc::new(AtomicBool::new(true)),
+            capture_dirty,
             texture,
             program,
             id: Id::new(),
             commit: CommitCounter::default(),
             geometry: parameters.sample_geometry,
             capture_rect: framebuffer_capture_rect(parameters.sample_framebuffer),
-            uniforms: backdrop_uniforms(parameters),
+            uniforms: blur_uniforms(parameters),
         }
     }
 
@@ -478,12 +342,12 @@ impl BackdropRenderElement {
         self.capture_dirty.store(true, Ordering::Relaxed);
         self.geometry = parameters.sample_geometry;
         self.capture_rect = framebuffer_capture_rect(parameters.sample_framebuffer);
-        self.uniforms = backdrop_uniforms(parameters);
+        self.uniforms = blur_uniforms(parameters);
         self.commit.increment();
     }
 }
 
-impl Element for BackdropRenderElement {
+impl Element for BlurRenderElement {
     fn id(&self) -> &Id {
         &self.id
     }
@@ -505,7 +369,7 @@ impl Element for BackdropRenderElement {
         scale: RenderScale<f64>,
         commit: Option<CommitCounter>,
     ) -> DamageSet<i32, Physical> {
-        backdrop_damage(self.geometry(scale).size, self.commit, commit)
+        blur_damage(self.geometry(scale).size, self.commit, commit)
     }
 
     fn opaque_regions(&self, _scale: RenderScale<f64>) -> OpaqueRegions<i32, Physical> {
@@ -523,7 +387,7 @@ impl Element for BackdropRenderElement {
     }
 }
 
-fn backdrop_damage(
+fn blur_damage(
     size: Size<i32, Physical>,
     current: CommitCounter,
     previous: Option<CommitCounter>,
@@ -536,7 +400,7 @@ fn backdrop_damage(
     }
 }
 
-impl RenderElement<GlesRenderer> for BackdropRenderElement {
+impl RenderElement<GlesRenderer> for BlurRenderElement {
     fn draw(
         &self,
         frame: &mut GlesFrame<'_, '_>,
@@ -549,7 +413,7 @@ impl RenderElement<GlesRenderer> for BackdropRenderElement {
         let [x, y, width, height] = self.capture_rect;
         // Buffer-age restoration and unrelated partial damage must reuse the
         // clean captured scene. Recapturing a partly repainted framebuffer
-        // would feed previous glass pixels back into the blur.
+        // would feed previous blurred pixels back into the blur.
         if self.capture_dirty.load(Ordering::Relaxed) {
             frame.with_context(|gl| unsafe {
                 gl.BindTexture(smithay::backend::renderer::gles::ffi::TEXTURE_2D, texture);
@@ -596,6 +460,66 @@ impl RenderElement<GlesRenderer> for BackdropRenderElement {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct RoundedClipPrograms {
+    texture: GlesTexProgram,
+    border: GlesPixelProgram,
+    shadow: GlesPixelProgram,
+}
+
+#[derive(Debug)]
+pub(crate) struct OverviewScrim {
+    buffer: SolidColorBuffer,
+}
+
+impl OverviewScrim {
+    fn new(size: Size<i32, Logical>) -> Self {
+        Self {
+            buffer: SolidColorBuffer::new(size, [0.02, 0.025, 0.035, 0.62]),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MaterialProgram(GlesPixelProgram);
+
+#[derive(Clone, Debug, PartialEq)]
+struct MaterialParameters {
+    blur: f32,
+    scene_generation: u64,
+    sample_geometry: Rectangle<i32, Logical>,
+    sample_physical: Rectangle<i32, Physical>,
+    sample_framebuffer: [f32; 4],
+    radius: f32,
+    shadow_rect: [f32; 4],
+    shadow_values: [f32; 2],
+    shadow_bounds: Rectangle<i32, Logical>,
+    geometry: Rectangle<i32, Logical>,
+    tint: [f32; 4],
+    generation: u64,
+    opaque: bool,
+    visible_framebuffer: [f32; 4],
+}
+
+#[derive(Clone, Debug)]
+enum MaterialElement {
+    Fill(PixelShaderElement),
+    Blur(BlurRenderElement),
+}
+
+#[derive(Debug)]
+struct CachedMaterial {
+    element: MaterialElement,
+    parameters: MaterialParameters,
+    shadow: PixelShaderElement,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct MaterialBuffers {
+    contexts: HashMap<(ErasedContextId, usize), CachedMaterial>,
+    captures: HashMap<ErasedContextId, BlurCapture>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct BorderParameters {
     geometry: Rectangle<i32, Logical>,
@@ -618,10 +542,10 @@ pub(crate) struct WindowBorderBuffers {
 
 #[derive(Clone, Debug, PartialEq)]
 struct ShadowParameters {
+    blur: f32,
     bounds: Rectangle<i32, Logical>,
     shadow_rect: [f32; 4],
     radius: f32,
-    blur: f32,
     opacity: f32,
     color: [f32; 4],
 }
@@ -939,20 +863,10 @@ pub(crate) fn cursorless_window_elements(
 }
 
 pub(crate) fn frame_effect_metrics(
-    elements: &[AnimatedWindowRenderElement],
-    scale: f64,
+    _elements: &[AnimatedWindowRenderElement],
+    _scale: f64,
 ) -> FrameEffectMetrics {
-    elements
-        .iter()
-        .fold(FrameEffectMetrics::default(), |mut metrics, element| {
-            if let AnimatedWindowRenderElement::Backdrop(backdrop) = element {
-                let geometry = backdrop.geometry(scale.into());
-                metrics.blur_regions += 1;
-                metrics.blur_sample_pixels += u64::try_from(geometry.size.w.max(0)).unwrap_or(0)
-                    * u64::try_from(geometry.size.h.max(0)).unwrap_or(0);
-            }
-            metrics
-        })
+    FrameEffectMetrics::default()
 }
 
 fn output_elements(
@@ -1275,6 +1189,7 @@ fn window_shadow_element(
     );
     let bounds = shadow_bounds(geometry, offset_y, blur);
     let parameters = ShadowParameters {
+        blur: (blur * scale) as f32,
         bounds,
         shadow_rect: framebuffer_clip_rect(
             shadow_geometry.to_physical_precise_round(scale),
@@ -1282,7 +1197,6 @@ fn window_shadow_element(
             output.current_transform().invert(),
         ),
         radius: scaled_effect_value(requested_radius, geometry, scale),
-        blur: (blur * scale) as f32,
         opacity: opacity as f32,
         color,
     };
@@ -1604,7 +1518,36 @@ fn append_material_surface(
     } else {
         state.theme_settings.material_radius
     };
-    let material = material_element(state, renderer, output, surface, geometry, radius as f32);
+    let regions = crate::effects::surface_regions(surface);
+    let targets: Vec<_> = match &regions {
+        None => vec![(geometry, radius as f32)],
+        Some(regions) => regions
+            .iter()
+            .filter_map(|r| {
+                Rectangle::new(
+                    (content_origin.x + r[0], content_origin.y + r[1]).into(),
+                    (r[2], r[3]).into(),
+                )
+                .intersection(geometry)
+                .map(|rect| (rect, r[4] as f32))
+            })
+            .collect(),
+    };
+    let materials: Vec<_> = targets
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (rect, radius))| {
+            material_element(
+                state, renderer, output, surface, *rect, *radius, index, geometry,
+            )
+        })
+        .collect();
+    if let Some(buffers) = state.material_buffers.get_mut(surface) {
+        buffers
+            .contexts
+            .retain(|(_, index), _| *index < targets.len());
+    }
+    let material = (!materials.is_empty() && regions.is_none()).then_some(());
     let clip = material.as_ref().and_then(|_| {
         let mode = output.current_mode()?;
         let program = rounded_clip_program(state, renderer)?;
@@ -1618,11 +1561,7 @@ fn append_material_surface(
             scaled_effect_value(radius, geometry, scale),
         ))
     });
-    // Smithay element lists are front to back: edges, content, material, shadow.
-    let material = material.map(|(edge, background, shadow)| {
-        elements.push(edge);
-        (background, shadow)
-    });
+    // Smithay element lists are front to back: content, material, shadow.
     let content = render_elements_from_surface_tree::<
         GlesRenderer,
         WaylandSurfaceRenderElement<GlesRenderer>,
@@ -1651,7 +1590,7 @@ fn append_material_surface(
         let element = RelocateRenderElement::from_element(element, origin, Relocate::Relative);
         CropRenderElement::from_element(element, scale, output_crop).map(Into::into)
     }));
-    if let Some((background, shadow)) = material {
+    for (background, shadow) in materials {
         elements.push(background);
         elements.push(shadow);
     }
@@ -1664,54 +1603,20 @@ fn material_element(
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     geometry: Rectangle<i32, Logical>,
     radius: f32,
-) -> Option<(
-    AnimatedWindowRenderElement,
-    AnimatedWindowRenderElement,
-    AnimatedWindowRenderElement,
-)> {
-    material_element_for_style(
-        state,
-        renderer,
-        output,
-        surface,
-        geometry,
-        radius,
-        state.theme_settings.material_style,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn material_element_for_style(
-    state: &mut Ferese,
-    renderer: &mut GlesRenderer,
-    output: &Output,
-    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-    geometry: Rectangle<i32, Logical>,
-    radius: f32,
-    style: crate::config::MaterialStyle,
-) -> Option<(
-    AnimatedWindowRenderElement,
-    AnimatedWindowRenderElement,
-    AnimatedWindowRenderElement,
-)> {
+    index: usize,
+    capture_geometry: Rectangle<i32, Logical>,
+) -> Option<(AnimatedWindowRenderElement, AnimatedWindowRenderElement)> {
     let (role, generation) = crate::effects::surface_role(surface)?;
-    let material = crate::effects::resolve_material(role, style, state.theme_settings.glass);
+    let mut material = crate::effects::resolve_material(role, state.theme_settings.material_style);
+    if role == crate::effects::SemanticRole::Panel
+        && material.style == crate::config::MaterialStyle::Translucent
+    {
+        material.opacity = state.theme_settings.panel_opacity as f32;
+    }
     let mode = output.current_mode()?;
     let scale = output.current_scale().fractional_scale();
-    let output_logical = smithay::utils::Size::<i32, Logical>::from((
-        (f64::from(mode.size.w) / scale).ceil() as i32,
-        (f64::from(mode.size.h) / scale).ceil() as i32,
-    ));
-    let sample_geometry =
-        expanded_blur_region(geometry, material.blur.ceil() as i32, output_logical);
-    let sample_physical = sample_geometry.to_physical_precise_round(scale);
     let transform = output.current_transform().invert();
-    let [red, green, blue, _] =
-        if state.theme_settings.material_style == crate::config::MaterialStyle::Glass {
-            state.theme_settings.glass.tint.0
-        } else {
-            state.theme_settings.surface_base_color.0
-        };
+    let [red, green, blue, _] = state.theme_settings.surface_base_color.0;
     let radius = radius.min(geometry.size.w.min(geometry.size.h) as f32 * 0.5);
     let [offset_y, shadow_blur, shadow_opacity] = material.shadow;
     let edge_bar =
@@ -1721,24 +1626,30 @@ fn material_element_for_style(
         (geometry.loc.x, geometry.loc.y + offset_y.round() as i32).into(),
         geometry.size,
     );
-    let tint = [red, green, blue, material.opacity];
-    let (local_origin, local_axes) = material_local_coordinates(
-        geometry.loc.to_physical_precise_round(scale),
-        mode.size,
-        transform,
-    );
+    let blur = if material.style == crate::config::MaterialStyle::Translucent {
+        state.theme_settings.backdrop_blur
+    } else {
+        0.0
+    };
+    let output_size = output
+        .current_transform()
+        .transform_size(mode.size)
+        .to_f64()
+        .to_logical(scale)
+        .to_i32_ceil();
+    let sample_geometry = expanded_blur_region(capture_geometry, blur.ceil() as i32, output_size);
+    let sample_physical = sample_geometry.to_physical_precise_round(scale);
     let parameters = MaterialParameters {
-        radius: radius * scale as f32,
-        pixel_scale: scale as f32,
-        local_origin,
-        local_axes,
-        logical_size: [geometry.size.w as f32, geometry.size.h as f32],
-        edge_bar: if edge_bar { 1.0 } else { 0.0 },
-        glass_edges: if material.style == crate::config::MaterialStyle::Glass {
-            1.0
+        blur: (blur * scale) as f32,
+        scene_generation: if blur > 0.0 {
+            state.backdrop_generation
         } else {
-            0.0
+            0
         },
+        sample_geometry,
+        sample_physical,
+        sample_framebuffer: framebuffer_clip_rect(sample_physical, mode.size, transform),
+        radius: radius * scale as f32,
         shadow_rect: framebuffer_clip_rect(
             shadow_geometry.to_physical_precise_round(scale),
             mode.size,
@@ -1747,164 +1658,183 @@ fn material_element_for_style(
         shadow_values: [(shadow_blur * scale) as f32, shadow_opacity as f32],
         shadow_bounds: shadow_bounds(geometry, offset_y, shadow_blur),
         geometry,
-        tint,
-        noise: material.noise,
+        tint: [red, green, blue, material.opacity],
         generation,
-        scene_generation: matches!(material.style, crate::config::MaterialStyle::Glass)
-            .then(|| state.material_scene_generation())
-            .unwrap_or(0),
         opaque: material.opacity == 1.0 && radius == 0.0,
-        blur: material.blur * scale as f32,
-        tap_scale: if state.theme_settings.glass.quality >= crate::config::GlassQuality::ReducedBlur
-        {
-            2.0
-        } else {
-            1.0
-        },
-        saturation: material.saturation,
-        brightness: material.brightness,
-        sample_geometry,
-        sample_physical,
         visible_framebuffer: framebuffer_clip_rect(
             geometry.to_physical_precise_round(scale),
             mode.size,
             transform,
         ),
-        sample_framebuffer: framebuffer_clip_rect(sample_physical, mode.size, transform),
     };
     let context = renderer.context_id().erased();
-    let needs_replacement = state
-        .material_buffers
-        .get(surface)
-        .and_then(|buffers| buffers.contexts.get(&context))
-        .is_none_or(|cached| match (&cached.element, material.style) {
-            (CachedMaterialElement::Backdrop(_), crate::config::MaterialStyle::Glass) => {
-                cached.parameters.sample_physical.size != parameters.sample_physical.size
-            }
-            (
-                CachedMaterialElement::Tint(_),
-                crate::config::MaterialStyle::Translucent | crate::config::MaterialStyle::Solid,
-            ) => false,
-            _ => true,
-        });
-    let mut replacement = needs_replacement
-        .then(|| match material.style {
-            crate::config::MaterialStyle::Glass => {
-                let program = backdrop_program(state, renderer)?;
-                let texture_size = smithay::utils::Size::<i32, Buffer>::from((
-                    sample_physical.size.w,
-                    sample_physical.size.h,
-                ));
-                let texture = Offscreen::<GlesTexture>::create_buffer(
-                    renderer,
-                    Fourcc::Abgr8888,
-                    texture_size,
-                )
-                .ok()?;
-                Some(CachedMaterialElement::Backdrop(BackdropRenderElement::new(
-                    texture,
-                    program.0,
-                    &parameters,
-                )))
-            }
-            crate::config::MaterialStyle::Translucent | crate::config::MaterialStyle::Solid => {
-                let program = material_program(state, renderer)?;
-                Some(CachedMaterialElement::Tint(PixelShaderElement::new(
-                    program.0,
-                    geometry,
-                    parameters
-                        .opaque
-                        .then(|| vec![Rectangle::from_size(geometry.size)]),
-                    1.0,
-                    material_uniforms(&parameters),
-                    RenderElementKind::Unspecified,
-                )))
-            }
-        })
+    let program = material_program(state, renderer)?;
+    let blur_program = (blur > 0.0)
+        .then(|| blur_program(state, renderer))
         .flatten();
-    if needs_replacement
-        && replacement.is_none()
-        && material.style == crate::config::MaterialStyle::Glass
-    {
-        return material_element_for_style(
-            state,
-            renderer,
-            output,
-            surface,
-            geometry,
-            radius,
-            crate::config::MaterialStyle::Translucent,
-        );
-    }
-    let decoration_program = material_program(state, renderer)?;
     let buffers = state.material_buffers.entry(surface.clone()).or_default();
-    if !buffers.contexts.contains_key(&context) {
-        buffers.contexts.insert(
-            context.clone(),
-            CachedMaterial {
-                element: replacement.take()?,
-                parameters: parameters.clone(),
-                edge: PixelShaderElement::new(
-                    decoration_program.0.clone(),
-                    geometry,
-                    None,
-                    1.0,
-                    decoration_uniforms(&parameters, 1.0),
-                    RenderElementKind::Unspecified,
-                ),
-                shadow: PixelShaderElement::new(
-                    decoration_program.0.clone(),
-                    parameters.shadow_bounds,
-                    None,
-                    1.0,
-                    decoration_uniforms(&parameters, 2.0),
-                    RenderElementKind::Unspecified,
-                ),
-            },
-        );
-    }
-
-    let cached = buffers.contexts.get_mut(&context)?;
-    if let Some(replacement) = replacement.take() {
-        cached.element = replacement;
+    let capture = if let Some(blur_program) = blur_program {
+        if buffers.captures.get(&context).is_none_or(|c| {
+            c.geometry != sample_geometry
+                || c.texture.size() != Size::from((sample_physical.size.w, sample_physical.size.h))
+        }) {
+            let texture = Offscreen::<GlesTexture>::create_buffer(
+                renderer,
+                Fourcc::Abgr8888,
+                (sample_physical.size.w, sample_physical.size.h).into(),
+            )
+            .ok();
+            if let Some(texture) = texture {
+                buffers.captures.insert(
+                    context.clone(),
+                    BlurCapture {
+                        texture,
+                        dirty: Arc::new(AtomicBool::new(true)),
+                        geometry: sample_geometry,
+                    },
+                );
+            } else {
+                buffers.captures.remove(&context);
+            }
+        }
+        buffers
+            .captures
+            .get(&context)
+            .cloned()
+            .map(|capture| (capture, blur_program))
+    } else {
+        buffers.captures.remove(&context);
+        None
+    };
+    let make_element = || {
+        if let Some((capture, program)) = &capture {
+            MaterialElement::Blur(BlurRenderElement::new(
+                capture.texture.clone(),
+                program.0.clone(),
+                &parameters,
+                capture.dirty.clone(),
+            ))
+        } else {
+            MaterialElement::Fill(PixelShaderElement::new(
+                program.0.clone(),
+                geometry,
+                parameters
+                    .opaque
+                    .then(|| vec![Rectangle::from_size(geometry.size)]),
+                1.0,
+                material_uniforms(&parameters),
+                RenderElementKind::Unspecified,
+            ))
+        }
+    };
+    let cached = buffers
+        .contexts
+        .entry((context, index))
+        .or_insert_with(|| CachedMaterial {
+            element: make_element(),
+            parameters: parameters.clone(),
+            shadow: PixelShaderElement::new(
+                program.0.clone(),
+                parameters.shadow_bounds,
+                None,
+                1.0,
+                decoration_uniforms(&parameters, 2.0),
+                RenderElementKind::Unspecified,
+            ),
+        });
+    let replace = match &cached.element {
+        MaterialElement::Fill(_) => capture.is_some(),
+        MaterialElement::Blur(element) => capture
+            .as_ref()
+            .is_none_or(|(capture, _)| capture.texture.tex_id() != element.texture.tex_id()),
+    };
+    if replace {
+        cached.element = make_element();
     }
     if cached.parameters != parameters {
-        cached.edge.resize(geometry, None);
-        cached
-            .edge
-            .update_uniforms(decoration_uniforms(&parameters, 1.0));
         cached.shadow.resize(parameters.shadow_bounds, None);
         cached
             .shadow
             .update_uniforms(decoration_uniforms(&parameters, 2.0));
         match &mut cached.element {
-            CachedMaterialElement::Tint(element) => {
-                if cached.parameters.geometry != parameters.geometry
-                    || cached.parameters.opaque != parameters.opaque
-                {
-                    let opaque = parameters
+            MaterialElement::Fill(element) => {
+                element.resize(
+                    geometry,
+                    parameters
                         .opaque
-                        .then(|| vec![Rectangle::from_size(parameters.geometry.size)]);
-                    element.resize(parameters.geometry, opaque);
-                }
+                        .then(|| vec![Rectangle::from_size(geometry.size)]),
+                );
                 element.update_uniforms(material_uniforms(&parameters));
             }
-            CachedMaterialElement::Backdrop(element) => {
-                element.update(&parameters);
-            }
+            MaterialElement::Blur(element) => element.update(&parameters),
         }
         cached.parameters = parameters;
     }
-
     let background = match &cached.element {
-        CachedMaterialElement::Tint(element) => element.clone().into(),
-        CachedMaterialElement::Backdrop(element) => element.clone().into(),
+        MaterialElement::Fill(element) => element.clone().into(),
+        MaterialElement::Blur(element) => element.clone().into(),
     };
-    Some((
-        cached.edge.clone().into(),
-        background,
-        cached.shadow.clone().into(),
-    ))
+    Some((background, cached.shadow.clone().into()))
+}
+
+fn blur_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<BlurProgram> {
+    let context = renderer.context_id().erased();
+    if let Some(program) = state.blur_programs.get(&context) {
+        return Some(program.clone());
+    }
+    let uniforms = [
+        UniformName::new("visible_rect", UniformType::_4f),
+        UniformName::new("material_radius", UniformType::_1f),
+        UniformName::new("texture_size", UniformType::_2f),
+        UniformName::new("blur_radius", UniformType::_1f),
+        UniformName::new("tint", UniformType::_4f),
+    ];
+    match renderer.compile_custom_texture_shader(BLUR_SHADER, &uniforms) {
+        Ok(program) => {
+            let program = BlurProgram(program);
+            state.blur_programs.insert(context, program.clone());
+            Some(program)
+        }
+        Err(error) => {
+            tracing::warn!(%error,"backdrop blur unavailable; using plain translucent fill");
+            None
+        }
+    }
+}
+
+fn blur_uniforms(p: &MaterialParameters) -> Vec<Uniform<'static>> {
+    vec![
+        Uniform::new("visible_rect", p.visible_framebuffer).into_owned(),
+        Uniform::new("material_radius", p.radius).into_owned(),
+        Uniform::new(
+            "texture_size",
+            [
+                p.sample_physical.size.w as f32,
+                p.sample_physical.size.h as f32,
+            ],
+        )
+        .into_owned(),
+        Uniform::new("blur_radius", p.blur).into_owned(),
+        Uniform::new("tint", p.tint).into_owned(),
+    ]
+}
+
+fn framebuffer_capture_rect(rect: [f32; 4]) -> [i32; 4] {
+    rect.map(|v| v.round() as i32)
+}
+fn expanded_blur_region(
+    visible: Rectangle<i32, Logical>,
+    radius: i32,
+    output_size: Size<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let left = (visible.loc.x - radius).max(0);
+    let top = (visible.loc.y - radius).max(0);
+    let right = (visible.loc.x + visible.size.w + radius).min(output_size.w);
+    let bottom = (visible.loc.y + visible.size.h + radius).min(output_size.h);
+    Rectangle::new(
+        (left, top).into(),
+        ((right - left).max(1), (bottom - top).max(1)).into(),
+    )
 }
 
 fn material_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<MaterialProgram> {
@@ -1917,13 +1847,7 @@ fn material_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<M
         UniformName::new("visible_rect", UniformType::_4f),
         UniformName::new("material_radius", UniformType::_1f),
         UniformName::new("tint", UniformType::_4f),
-        UniformName::new("pixel_scale", UniformType::_1f),
-        UniformName::new("local_origin", UniformType::_2f),
-        UniformName::new("local_axes", UniformType::_4f),
-        UniformName::new("logical_size", UniformType::_2f),
         UniformName::new("paint_mode", UniformType::_1f),
-        UniformName::new("glass_edges", UniformType::_1f),
-        UniformName::new("edge_bar", UniformType::_1f),
         UniformName::new("shadow_rect", UniformType::_4f),
         UniformName::new("shadow_values", UniformType::_2f),
     ];
@@ -1940,125 +1864,19 @@ fn material_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<M
     }
 }
 
-fn backdrop_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<BackdropProgram> {
-    let context = renderer.context_id().erased();
-    if let Some(program) = state.backdrop_programs.get(&context) {
-        return Some(program.clone());
-    }
-
-    let uniforms = [
-        UniformName::new("visible_rect", UniformType::_4f),
-        UniformName::new("material_radius", UniformType::_1f),
-        UniformName::new("texture_size", UniformType::_2f),
-        UniformName::new("blur_radius", UniformType::_1f),
-        UniformName::new("tap_scale", UniformType::_1f),
-        UniformName::new("saturation", UniformType::_1f),
-        UniformName::new("brightness", UniformType::_1f),
-        UniformName::new("tint", UniformType::_4f),
-        UniformName::new("noise_amount", UniformType::_1f),
-        UniformName::new("pixel_scale", UniformType::_1f),
-        UniformName::new("local_origin", UniformType::_2f),
-        UniformName::new("local_axes", UniformType::_4f),
-        UniformName::new("logical_size", UniformType::_2f),
-    ];
-    match renderer.compile_custom_texture_shader(BACKDROP_SHADER, &uniforms) {
-        Ok(program) => {
-            let program = BackdropProgram(program);
-            state.backdrop_programs.insert(context, program.clone());
-            Some(program)
-        }
-        Err(error) => {
-            tracing::error!(%error, "failed to compile backdrop material shader");
-            None
-        }
-    }
-}
-
 fn material_uniforms(parameters: &MaterialParameters) -> Vec<Uniform<'static>> {
     decoration_uniforms(parameters, 0.0)
 }
 
 fn decoration_uniforms(parameters: &MaterialParameters, paint_mode: f32) -> Vec<Uniform<'static>> {
     vec![
-        Uniform::new("pixel_scale", parameters.pixel_scale).into_owned(),
-        Uniform::new("local_origin", parameters.local_origin).into_owned(),
-        Uniform::new("local_axes", parameters.local_axes).into_owned(),
-        Uniform::new("logical_size", parameters.logical_size).into_owned(),
         Uniform::new("paint_mode", paint_mode).into_owned(),
-        Uniform::new("glass_edges", parameters.glass_edges).into_owned(),
-        Uniform::new("edge_bar", parameters.edge_bar).into_owned(),
         Uniform::new("shadow_rect", parameters.shadow_rect).into_owned(),
         Uniform::new("shadow_values", parameters.shadow_values).into_owned(),
         Uniform::new("visible_rect", parameters.visible_framebuffer).into_owned(),
         Uniform::new("material_radius", parameters.radius).into_owned(),
         Uniform::new("tint", parameters.tint).into_owned(),
     ]
-}
-
-fn backdrop_uniforms(parameters: &MaterialParameters) -> Vec<Uniform<'static>> {
-    vec![
-        Uniform::new("pixel_scale", parameters.pixel_scale).into_owned(),
-        Uniform::new("local_origin", parameters.local_origin).into_owned(),
-        Uniform::new("local_axes", parameters.local_axes).into_owned(),
-        Uniform::new("logical_size", parameters.logical_size).into_owned(),
-        Uniform::new("material_radius", parameters.radius).into_owned(),
-        Uniform::new("visible_rect", parameters.visible_framebuffer).into_owned(),
-        Uniform::new(
-            "texture_size",
-            [
-                parameters.sample_physical.size.w as f32,
-                parameters.sample_physical.size.h as f32,
-            ],
-        )
-        .into_owned(),
-        Uniform::new("blur_radius", parameters.blur).into_owned(),
-        Uniform::new("tap_scale", parameters.tap_scale).into_owned(),
-        Uniform::new("saturation", parameters.saturation).into_owned(),
-        Uniform::new("brightness", parameters.brightness).into_owned(),
-        Uniform::new("tint", parameters.tint).into_owned(),
-        Uniform::new("noise_amount", parameters.noise).into_owned(),
-    ]
-}
-
-fn material_local_coordinates(
-    origin: Point<i32, Physical>,
-    output_size: Size<i32, Physical>,
-    transform: Transform,
-) -> ([f32; 2], [f32; 4]) {
-    let area = transform.transform_size(output_size);
-    let mapped = transform.transform_point_in(origin, &area);
-    let x = transform.transform_point_in(origin + Point::from((1, 0)), &area) - mapped;
-    let y = transform.transform_point_in(origin + Point::from((0, 1)), &area) - mapped;
-    (
-        [mapped.x as f32, mapped.y as f32],
-        [x.x as f32, x.y as f32, y.x as f32, y.y as f32],
-    )
-}
-
-fn framebuffer_capture_rect(rect: [f32; 4]) -> [i32; 4] {
-    [
-        rect[0].round() as i32,
-        rect[1].round() as i32,
-        rect[2].round() as i32,
-        rect[3].round() as i32,
-    ]
-}
-
-fn expanded_blur_region(
-    visible: Rectangle<i32, Logical>,
-    radius: i32,
-    output_size: smithay::utils::Size<i32, Logical>,
-) -> Rectangle<i32, Logical> {
-    let radius = radius.max(0);
-    let left = (visible.loc.x - radius).max(0);
-    let top = (visible.loc.y - radius).max(0);
-    let right = (visible.loc.x + visible.size.w + radius).min(output_size.w);
-    let bottom = (visible.loc.y + visible.size.h + radius).min(output_size.h);
-
-    Rectangle::new(
-        (left, top).into(),
-        ((right - left).max(1), (bottom - top).max(1)).into(),
-    )
 }
 
 fn cursor_elements(
@@ -2152,13 +1970,12 @@ mod tests {
             element::{Element, Id},
             utils::CommitCounter,
         },
-        utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
+        utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform},
     };
 
     use super::{
-        color_with_alpha, expanded_blur_region, framebuffer_capture_rect, framebuffer_clip_rect,
-        material_local_coordinates, normalized_scale, rounded_visual_rect, scaled_visual_rect,
-        shadow_bounds,
+        color_with_alpha, framebuffer_clip_rect, normalized_scale, rounded_visual_rect,
+        scaled_visual_rect, shadow_bounds,
     };
 
     #[derive(Debug)]
@@ -2205,30 +2022,12 @@ mod tests {
             scale: Scale<f64>,
             commit: Option<CommitCounter>,
         ) -> smithay::backend::renderer::utils::DamageSet<i32, Physical> {
-            super::backdrop_damage(self.geometry(scale).size, self.current_commit(), commit)
-        }
-    }
-
-    #[test]
-    fn backdrop_is_idle_until_scene_changes_then_repaints_full_sampling_region() {
-        for scale in [1.0, 1.25, 1.8, 2.0] {
-            for transform in [Transform::Normal, Transform::Flipped180] {
-                let mut tracker = OutputDamageTracker::new((1600, 1200), scale, transform);
-                let mut backdrop =
-                    DamageElement::new(Rectangle::new((50, 40).into(), (400, 240).into()));
-                tracker.damage_output(0, &[&backdrop]).unwrap();
-                for _ in 0..3 {
-                    assert!(tracker.damage_output(1, &[&backdrop]).unwrap().0.is_none());
-                    backdrop.commit.increment();
-                    let damage = tracker
-                        .damage_output(1, &[&backdrop])
-                        .unwrap()
-                        .0
-                        .cloned()
-                        .unwrap();
-                    let bounds = backdrop.geometry(scale.into());
-                    assert!(damage.iter().any(|rect| rect.contains_rect(bounds)));
-                }
+            if commit == Some(self.current_commit()) {
+                smithay::backend::renderer::utils::DamageSet::default()
+            } else {
+                smithay::backend::renderer::utils::DamageSet::from_slice(&[Rectangle::from_size(
+                    self.geometry(scale).size,
+                )])
             }
         }
     }
@@ -2253,42 +2052,6 @@ mod tests {
             framebuffer_clip_rect(geometry, (100, 80).into(), Transform::Normal),
             [10.0, 5.0, 30.0, 40.0]
         );
-    }
-
-    #[test]
-    fn glass_lighting_coordinates_follow_every_output_transform() {
-        let origin = Point::<i32, Physical>::from((120, 90));
-        let size = Size::<i32, Physical>::from((1000, 800));
-        for transform in [
-            Transform::Normal,
-            Transform::_90,
-            Transform::_180,
-            Transform::_270,
-            Transform::Flipped,
-            Transform::Flipped90,
-            Transform::Flipped180,
-            Transform::Flipped270,
-        ] {
-            let (mapped_origin, axes) = material_local_coordinates(origin, size, transform);
-            for local in [(0, 0), (24, 0), (0, 35), (57, 81)] {
-                let point = transform.transform_point_in(
-                    origin + Point::from(local),
-                    &transform.transform_size(size),
-                );
-                let relative = [
-                    point.x as f32 - mapped_origin[0],
-                    point.y as f32 - mapped_origin[1],
-                ];
-                assert_eq!(
-                    relative[0] * axes[0] + relative[1] * axes[1],
-                    local.0 as f32
-                );
-                assert_eq!(
-                    relative[0] * axes[2] + relative[1] * axes[3],
-                    local.1 as f32
-                );
-            }
-        }
     }
 
     #[test]
@@ -2361,34 +2124,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn blur_sampling_expands_around_the_visible_surface() {
-        let visible = Rectangle::<i32, Logical>::new((100, 80).into(), (400, 300).into());
-
-        assert_eq!(
-            expanded_blur_region(visible, 24, (1_000, 800).into()),
-            Rectangle::new((76, 56).into(), (448, 348).into())
-        );
-    }
-
-    #[test]
-    fn blur_sampling_clips_to_output_edges() {
-        let visible = Rectangle::<i32, Logical>::new((0, 760).into(), (300, 40).into());
-
-        assert_eq!(
-            expanded_blur_region(visible, 24, (1_000, 800).into()),
-            Rectangle::new((0, 736).into(), (324, 64).into())
-        );
-    }
-
-    #[test]
-    fn framebuffer_capture_rounds_fractional_bounds() {
-        assert_eq!(
-            framebuffer_capture_rect([10.4, 20.6, 300.2, 199.8]),
-            [10, 21, 300, 200]
-        );
     }
 
     #[test]

@@ -16,10 +16,7 @@ use smithay::{
 };
 
 use crate::{
-    Ferese,
-    config::{GlassQuality, GlassSettings, MaterialStyle},
-    private_client::ClientCapabilities,
-    state::ClientState,
+    Ferese, config::MaterialStyle, private_client::ClientCapabilities, state::ClientState,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,75 +34,27 @@ pub(crate) enum SemanticRole {
 pub(crate) struct ResolvedMaterial {
     pub style: MaterialStyle,
     pub opacity: f32,
-    pub blur: f32,
-    pub saturation: f32,
-    pub brightness: f32,
-    pub noise: f32,
     pub shadow: [f64; 3],
 }
 
-pub(crate) fn resolve_material(
-    role: SemanticRole,
-    style: MaterialStyle,
-    settings: GlassSettings,
-) -> ResolvedMaterial {
-    // Restrained shell shadows in logical pixels: the full-width bar needs
-    // less elevation than popovers, while dialogs retain a little more depth.
-    let (opacity, blur, saturation, shadow) = match role {
-        SemanticRole::Panel => (0.55, 24.0, 1.35, [1.0, 5.0, 0.04]),
-        SemanticRole::PanelElevated => (0.55, 24.0, 1.35, [2.0, 8.0, 0.07]),
-        SemanticRole::Popover => (0.55, 22.0, 1.35, [2.0, 8.0, 0.07]),
-        SemanticRole::Menu => (0.60, 20.0, 1.30, [2.0, 8.0, 0.07]),
-        SemanticRole::Hud => (0.65, 18.0, 1.25, [1.0, 4.0, 0.04]),
-        SemanticRole::Notification => (0.58, 24.0, 1.35, [3.0, 10.0, 0.09]),
-        SemanticRole::Modal => (0.62, 28.0, 1.40, [3.0, 10.0, 0.09]),
-    };
-    // Preserve the separately defined translucent family when selected
-    // directly. Glass degradation keeps the glass role's contrast floor.
-    let opacity = if style == MaterialStyle::Translucent {
-        match role {
-            SemanticRole::Panel => 0.78,
-            SemanticRole::Hud | SemanticRole::Modal => 0.88,
-            _ => 0.84,
+pub(crate) fn resolve_material(role: SemanticRole, style: MaterialStyle) -> ResolvedMaterial {
+    let shadow = match role {
+        SemanticRole::Panel => [1.0, 5.0, 0.04],
+        SemanticRole::PanelElevated | SemanticRole::Popover | SemanticRole::Menu => {
+            [2.0, 8.0, 0.07]
         }
-    } else {
-        opacity
+        SemanticRole::Hud => [1.0, 4.0, 0.04],
+        SemanticRole::Notification | SemanticRole::Modal => [3.0, 10.0, 0.09],
     };
-    let style = if style == MaterialStyle::Glass {
-        match settings.quality {
-            GlassQuality::Solid => MaterialStyle::Solid,
-            GlassQuality::Translucent => MaterialStyle::Translucent,
-            _ => style,
-        }
-    } else {
-        style
+    let opacity = match (style, role) {
+        (MaterialStyle::Solid, _) => 1.0,
+        (_, SemanticRole::Panel) => 0.78,
+        (_, SemanticRole::Hud | SemanticRole::Modal) => 0.88,
+        _ => 0.84,
     };
-    let glass = style == MaterialStyle::Glass;
     ResolvedMaterial {
         style,
-        opacity: if style == MaterialStyle::Solid {
-            1.0
-        } else {
-            opacity
-        },
-        blur: if !glass {
-            0.0
-        } else if settings.quality >= GlassQuality::ReducedBlur {
-            (blur * settings.blur_scale).min(12.0)
-        } else {
-            blur * settings.blur_scale
-        },
-        saturation: if glass && settings.quality < GlassQuality::NoSaturation {
-            saturation
-        } else {
-            1.0
-        },
-        brightness: 1.0,
-        noise: if glass && settings.grain && settings.quality < GlassQuality::NoGrain {
-            0.05
-        } else {
-            0.0
-        },
+        opacity,
         shadow,
     }
 }
@@ -115,6 +64,7 @@ struct SurfaceEffectsState {
     attached: AtomicBool,
     generation: AtomicU64,
     role: Mutex<Option<SemanticRole>>,
+    regions: Mutex<Option<Vec<[i32; 5]>>>,
 }
 
 impl SurfaceEffectsState {
@@ -123,6 +73,7 @@ impl SurfaceEffectsState {
             attached: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             role: Mutex::new(None),
+            regions: Mutex::new(None),
         }
     }
 
@@ -152,7 +103,39 @@ impl SurfaceEffectsUserData {
 }
 
 pub(crate) fn init_global(display: &DisplayHandle) {
-    display.create_global::<Ferese, FereseEffectsManagerV1, _>(1, ());
+    display.create_global::<Ferese, FereseEffectsManagerV1, _>(2, ());
+}
+
+pub(crate) fn surface_regions(surface: &WlSurface) -> Option<Vec<[i32; 5]>> {
+    with_states(surface, |states| {
+        states
+            .data_map
+            .get::<SurfaceEffectsState>()?
+            .regions
+            .lock()
+            .unwrap()
+            .clone()
+    })
+}
+
+fn decode_regions(bytes: &[u8]) -> Option<Vec<[i32; 5]>> {
+    if bytes.len() % 20 != 0 || bytes.len() > 32 * 20 {
+        return None;
+    }
+    bytes
+        .chunks_exact(20)
+        .map(|tuple| {
+            let values: Vec<_> = tuple
+                .chunks_exact(4)
+                .map(|v| i32::from_ne_bytes(v.try_into().unwrap()))
+                .collect();
+            (values[2] > 0
+                && values[3] > 0
+                && values[4] >= 0
+                && values.iter().all(|v| v.abs_diff(0) <= 32768))
+            .then(|| [values[0], values[1], values[2], values[3], values[4]])
+        })
+        .collect()
 }
 
 // Consumed by the material renderer in the next M7 slice.
@@ -254,19 +237,36 @@ impl Dispatch<FereseSurfaceEffectsV1, SurfaceEffectsUserData> for Ferese {
                     WEnum::Unknown(_) | WEnum::Value(_) => return,
                 };
                 if set_surface_role(&surface, Some(role)) {
-                    state.invalidate_material_scene();
+                    crate::backends::direct::render_all(state);
+                }
+            }
+            ferese_surface_effects_v1::Request::SetRegions { regions } => {
+                let Some(regions) = decode_regions(&regions) else {
+                    return;
+                };
+                let changed = with_states(&surface, |states| {
+                    let Some(effects) = states.data_map.get::<SurfaceEffectsState>() else {
+                        return false;
+                    };
+                    let mut old = effects.regions.lock().unwrap();
+                    if old.as_ref() == Some(&regions) {
+                        return false;
+                    }
+                    *old = Some(regions);
+                    effects.generation.fetch_add(1, Ordering::Release);
+                    true
+                });
+                if changed {
                     crate::backends::direct::render_all(state);
                 }
             }
             ferese_surface_effects_v1::Request::ClearRole => {
                 if set_surface_role(&surface, None) {
-                    state.invalidate_material_scene();
                     crate::backends::direct::render_all(state);
                 }
             }
             ferese_surface_effects_v1::Request::Destroy => {
                 if detach(&surface) {
-                    state.invalidate_material_scene();
                     crate::backends::direct::render_all(state);
                 }
             }
@@ -311,6 +311,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rounded_regions_are_bounded_and_validated() {
+        let region = [12_i32, 8, 120, 48, 11];
+        let bytes: Vec<_> = region.into_iter().flat_map(i32::to_ne_bytes).collect();
+        assert_eq!(decode_regions(&bytes), Some(vec![region]));
+        assert_eq!(decode_regions(&[]), Some(vec![]));
+        assert!(decode_regions(&bytes[..19]).is_none());
+        assert!(decode_regions(&bytes.repeat(33)).is_none());
+        for invalid in [
+            [0_i32, 0, 0, 48, 11],
+            [0, 0, 120, 48, -1],
+            [i32::MIN, 0, 120, 48, 11],
+        ] {
+            assert!(
+                decode_regions(
+                    &invalid
+                        .into_iter()
+                        .flat_map(i32::to_ne_bytes)
+                        .collect::<Vec<_>>()
+                )
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
     fn role_changes_advance_generation_only_when_material_changes() {
         let effects = SurfaceEffectsState::new();
         assert!(effects.set_role(Some(SemanticRole::Panel)));
@@ -324,118 +349,20 @@ mod tests {
     }
 
     #[test]
-    fn styles_preserve_semantics_but_disable_unsupported_effects() {
-        let glass = resolve_material(
-            SemanticRole::Popover,
-            MaterialStyle::Glass,
-            GlassSettings::default(),
-        );
-        let translucent = resolve_material(
-            SemanticRole::Popover,
-            MaterialStyle::Translucent,
-            GlassSettings::default(),
-        );
-        let solid = resolve_material(
-            SemanticRole::Popover,
-            MaterialStyle::Solid,
-            GlassSettings::default(),
-        );
-
-        assert!(glass.blur > 0.0);
-        assert!(glass.noise > 0.0);
-        assert!(glass.opacity <= translucent.opacity);
-        assert_eq!(translucent.blur, 0.0);
-        assert_eq!(translucent.noise, 0.0);
-        assert_eq!(solid.opacity, 1.0);
-        assert_eq!(solid.blur, 0.0);
-    }
-
-    #[test]
-    fn glass_presets_use_role_specific_tints_and_restrained_shadows() {
-        for (role, blur, saturation, opacity, shadow) in [
-            (SemanticRole::Panel, 24.0, 1.35, 0.55, [1.0, 5.0, 0.04]),
-            (SemanticRole::Popover, 22.0, 1.35, 0.55, [2.0, 8.0, 0.07]),
-            (SemanticRole::Menu, 20.0, 1.30, 0.60, [2.0, 8.0, 0.07]),
-            (SemanticRole::Hud, 18.0, 1.25, 0.65, [1.0, 4.0, 0.04]),
-            (
-                SemanticRole::Notification,
-                24.0,
-                1.35,
-                0.58,
-                [3.0, 10.0, 0.09],
-            ),
-            (SemanticRole::Modal, 28.0, 1.40, 0.62, [3.0, 10.0, 0.09]),
-        ] {
-            let material = resolve_material(role, MaterialStyle::Glass, GlassSettings::default());
-            assert_eq!(
-                (
-                    material.blur,
-                    material.saturation,
-                    material.opacity,
-                    material.shadow
-                ),
-                (blur, saturation, opacity, shadow)
-            );
-        }
-    }
-
-    #[test]
-    fn degradation_is_ordered_and_preserves_contrast_and_elevation() {
-        let reference = resolve_material(
-            SemanticRole::Modal,
-            MaterialStyle::Glass,
-            GlassSettings::default(),
-        );
-        for quality in [
-            GlassQuality::Full,
-            GlassQuality::NoGrain,
-            GlassQuality::NoSaturation,
-            GlassQuality::ReducedBlur,
-            GlassQuality::Translucent,
-            GlassQuality::Solid,
-        ] {
-            let material = resolve_material(
-                SemanticRole::Modal,
-                MaterialStyle::Glass,
-                GlassSettings {
-                    quality,
-                    ..GlassSettings::default()
-                },
-            );
-            assert!(material.opacity >= reference.opacity);
-            assert_eq!(material.shadow, reference.shadow);
-            if quality >= GlassQuality::NoGrain {
-                assert_eq!(material.noise, 0.0);
-            }
-            if quality >= GlassQuality::NoSaturation {
-                assert_eq!(material.saturation, 1.0);
-            }
-            if quality >= GlassQuality::ReducedBlur {
-                assert!(material.blur <= 12.0);
-            }
-            if quality >= GlassQuality::Translucent {
-                assert_eq!(material.blur, 0.0);
-            }
-            if quality == GlassQuality::Solid {
-                assert_eq!(material.opacity, 1.0);
-            }
-        }
-    }
-
-    #[test]
-    fn popover_uses_the_same_tint_with_a_smaller_blur_than_panel() {
-        let panel = resolve_material(
+    fn solid_materials_are_opaque_and_keep_role_specific_elevation() {
+        for role in [
             SemanticRole::Panel,
-            MaterialStyle::Glass,
-            GlassSettings::default(),
-        );
-        let popover = resolve_material(
             SemanticRole::Popover,
-            MaterialStyle::Glass,
-            GlassSettings::default(),
-        );
-
-        assert_eq!(popover.opacity, panel.opacity);
-        assert!(popover.blur < panel.blur);
+            SemanticRole::Menu,
+            SemanticRole::Hud,
+            SemanticRole::Notification,
+            SemanticRole::Modal,
+        ] {
+            let solid = resolve_material(role, MaterialStyle::Solid);
+            let translucent = resolve_material(role, MaterialStyle::Translucent);
+            assert_eq!(solid.opacity, 1.0);
+            assert!(translucent.opacity < 1.0);
+            assert_eq!(solid.shadow, translucent.shadow);
+        }
     }
 }

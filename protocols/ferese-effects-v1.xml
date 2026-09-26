@@ -22,7 +22,7 @@
     DEALINGS IN THE SOFTWARE.
   </copyright>
 
-  <interface name="ferese_effects_manager_v1" version="1">
+  <interface name="ferese_effects_manager_v1" version="2">
     <description summary="assign semantic material roles to surfaces">
       This private global is visible only to clients granted the Ferese effects
       capability. Roles describe compositor-owned appearance policy and do not
@@ -48,7 +48,7 @@
     </enum>
   </interface>
 
-  <interface name="ferese_surface_effects_v1" version="1">
+  <interface name="ferese_surface_effects_v1" version="2">
     <description summary="semantic material role for one surface">
       The role affects only compositor rendering. It does not change surface
       geometry, input, focus, stacking, or the surface's Wayland role.
@@ -78,5 +78,15 @@
       <entry name="hud" value="5" summary="heads-up display surface"/>
       <entry name="modal" value="6" summary="modal surface"/>
     </enum>
+
+    <request name="set_regions" since="2">
+      <description summary="restrict material to rounded surface-local rectangles">
+        An array of native-endian signed 32-bit tuples (x, y, width, height,
+        radius), measured in logical pixels. At most 32 rectangles are allowed.
+        An empty array disables material painting without clearing the role.
+        Surfaces which never send this request retain full-surface materials.
+      </description>
+      <arg name="regions" type="array"/>
+    </request>
   </interface>
 </protocol>

@@ -4,12 +4,23 @@ use cosmic::iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, re
 use cosmic::iced::{Event, Length, Rectangle, Size, Transformation, Vector};
 use cosmic::{Element, Theme};
 
-pub fn animated<'a, M: 'a>(content: Element<'a, M>, progress: f32) -> Element<'a, M> {
-    Element::new(Motion { content, progress })
+pub type Regions = std::sync::Arc<std::sync::Mutex<Vec<[i32; 5]>>>;
+
+pub fn animated<'a, M: 'a>(
+    content: Element<'a, M>,
+    progress: f32,
+    regions: Regions,
+) -> Element<'a, M> {
+    Element::new(Motion {
+        content,
+        progress,
+        regions,
+    })
 }
 struct Motion<'a, M> {
     content: Element<'a, M>,
     progress: f32,
+    regions: Regions,
 }
 impl<M> Motion<'_, M> {
     fn translation(&self) -> Vector {
@@ -56,6 +67,35 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
         shell: &mut Shell<'_, M>,
         viewport: &Rectangle,
     ) {
+        let mut collector = CollectRegions(Vec::new());
+        self.content
+            .as_widget_mut()
+            .operate(tree, layout, renderer, &mut collector);
+        if collector.0.is_empty() {
+            // A single-content popover (e.g. battery) has one inner card, not
+            // a full-surface rectangle including the outer transparent padding.
+            if let Some(content) = layout.children().next() {
+                collector.0.push(content.bounds());
+            }
+        }
+        let origin = layout.bounds().position();
+        let translation = self.translation();
+        let regions = collector
+            .0
+            .into_iter()
+            .take(32)
+            .filter(|r| r.width > 0.0 && r.height > 0.0)
+            .map(|r| {
+                [
+                    (r.x - origin.x + translation.x).round() as i32,
+                    (r.y - origin.y + translation.y).round() as i32,
+                    r.width.round() as i32,
+                    r.height.round() as i32,
+                    11,
+                ]
+            })
+            .collect();
+        *self.regions.lock().unwrap() = regions;
         let cursor = self.cursor(cursor);
         self.content.as_widget_mut().update(
             tree, event, layout, cursor, renderer, clipboard, shell, viewport,
@@ -111,5 +151,54 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
         self.content
             .as_widget_mut()
             .operate(tree, layout, renderer, operation);
+    }
+}
+
+struct CollectRegions(Vec<Rectangle>);
+impl widget::Operation for CollectRegions {
+    fn traverse(&mut self, children: &mut dyn FnMut(&mut dyn widget::Operation)) {
+        children(self);
+    }
+    fn container(&mut self, id: Option<&widget::Id>, bounds: Rectangle) {
+        if id == Some(&widget::Id::new("ferese-blur-card")) {
+            let contains = |outer: &Rectangle, inner: &Rectangle| {
+                outer.x <= inner.x
+                    && outer.y <= inner.y
+                    && outer.x + outer.width >= inner.x + inner.width
+                    && outer.y + outer.height >= inner.y + inner.height
+            };
+            // Nested controls belong to their enclosing card's single blur pass.
+            if self.0.iter().any(|outer| contains(outer, &bounds)) {
+                return;
+            }
+            self.0.retain(|inner| !contains(&bounds, inner));
+            self.0.push(bounds);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn material_regions_include_cards_but_not_the_parent_or_gaps() {
+        let mut collector = CollectRegions(Vec::new());
+        let id = widget::Id::new("ferese-blur-card");
+        widget::Operation::container(
+            &mut collector,
+            None,
+            Rectangle::new((0.0, 0.0).into(), (320.0, 200.0).into()),
+        );
+        let first = Rectangle::new((12.0, 12.0).into(), (140.0, 80.0).into());
+        let second = Rectangle::new((160.0, 12.0).into(), (140.0, 80.0).into());
+        widget::Operation::container(&mut collector, Some(&id), first);
+        widget::Operation::container(&mut collector, Some(&id), second);
+        assert_eq!(collector.0, vec![first, second]);
+        widget::Operation::container(
+            &mut collector,
+            Some(&id),
+            Rectangle::new((20.0, 20.0).into(), (40.0, 40.0).into()),
+        );
+        assert_eq!(collector.0, vec![first, second]);
     }
 }

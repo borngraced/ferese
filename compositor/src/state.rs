@@ -125,9 +125,9 @@ pub struct Ferese {
     pub(crate) rounded_clip_programs: HashMap<ErasedContextId, crate::winit::RoundedClipPrograms>,
     pub(crate) overview_scrims: HashMap<OutputId, crate::winit::OverviewScrim>,
     pub(crate) material_programs: HashMap<ErasedContextId, crate::winit::MaterialProgram>,
-    pub(crate) backdrop_programs: HashMap<ErasedContextId, crate::winit::BackdropProgram>,
     pub(crate) material_buffers: HashMap<WlSurface, crate::winit::MaterialBuffers>,
-    material_scene_generation: u64,
+    pub(crate) blur_programs: HashMap<ErasedContextId, crate::winit::BlurProgram>,
+    pub(crate) backdrop_generation: u64,
     closing_windows: HashMap<WindowId, ClosingAnimation>,
     viewport_animations: HashMap<WorkspaceId, AnimatedValue>,
     scrolling_world_x: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
@@ -457,9 +457,9 @@ impl Ferese {
             rounded_clip_programs: HashMap::new(),
             overview_scrims: HashMap::new(),
             material_programs: HashMap::new(),
-            backdrop_programs: HashMap::new(),
             material_buffers: HashMap::new(),
-            material_scene_generation: 0,
+            blur_programs: HashMap::new(),
+            backdrop_generation: 0,
             closing_windows: HashMap::new(),
             viewport_animations: HashMap::new(),
             scrolling_world_x: HashMap::new(),
@@ -930,6 +930,7 @@ impl Ferese {
     }
 
     pub fn relayout(&mut self) {
+        self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
         self.arrange_layers();
         let mut previous_scrolling_world_x = std::mem::take(&mut self.scrolling_world_x);
         let pending_column_width_cycles = std::mem::take(&mut self.pending_column_width_cycles);
@@ -1346,18 +1347,9 @@ impl Ferese {
         self.sync_window_stacking();
 
         if active_animation {
-            self.invalidate_material_scene();
+            self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
         }
-
         active_animation
-    }
-
-    pub(crate) fn invalidate_material_scene(&mut self) {
-        self.material_scene_generation = self.material_scene_generation.wrapping_add(1);
-    }
-
-    pub(crate) fn material_scene_generation(&self) -> u64 {
-        self.material_scene_generation
     }
 
     pub(crate) fn animations_enabled(&self) -> bool {
