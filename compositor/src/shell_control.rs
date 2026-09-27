@@ -160,68 +160,39 @@ impl Dispatch<FereseShellV1, ()> for Ferese {
 
 impl Ferese {
     pub(crate) fn send_shell_snapshots(&mut self) {
-        let resources = std::mem::take(&mut self.shell_resources);
-
-        for weak in resources {
-            if let Ok(shell) = weak.upgrade() {
-                self.send_shell_snapshot(&shell);
-                self.shell_resources.push(shell.downgrade());
+        self.shell_resources
+            .retain(|resource| resource.upgrade().is_ok());
+        if self.shell_resources.is_empty() {
+            self.last_shell_snapshot = None;
+            return;
+        }
+        let snapshot = self.shell_snapshot();
+        if self.last_shell_snapshot.as_ref() == Some(&snapshot) {
+            return;
+        }
+        for resource in &self.shell_resources {
+            if let Ok(shell) = resource.upgrade() {
+                self.shell_snapshot_serial = self.shell_snapshot_serial.wrapping_add(1);
+                snapshot.send(&shell, self.shell_snapshot_serial);
             }
+        }
+        self.last_shell_snapshot = Some(snapshot);
+    }
+
+    fn shell_snapshot(&self) -> ShellSnapshot {
+        ShellSnapshot {
+            outputs: self.output_snapshots(),
+            workspaces: self.workspace_snapshots(),
+            windows: self.managed_window_snapshots(),
         }
     }
 
     fn send_shell_snapshot(&mut self, shell: &FereseShellV1) {
+        // New subscribers always receive a complete snapshot. Do not update the
+        // broadcast cache here: existing subscribers may still need this state.
         self.shell_snapshot_serial = self.shell_snapshot_serial.wrapping_add(1);
-        let serial = self.shell_snapshot_serial;
-        let outputs = self.output_snapshots();
-        let workspaces = self.workspace_snapshots();
-        let snapshots = self.managed_window_snapshots();
-
-        shell.snapshot_begin(serial);
-        for output in outputs {
-            let (output_hi, output_lo) = split_id(output.id.0);
-            let (workspace_hi, workspace_lo) = split_id(output.active_workspace.0);
-
-            shell.output(
-                output_hi,
-                output_lo,
-                output.name,
-                workspace_hi,
-                workspace_lo,
-                u32::from(output.focused),
-            );
-        }
-        for workspace in workspaces {
-            let (workspace_hi, workspace_lo) = split_id(workspace.id.0);
-            let (output_hi, output_lo) = workspace
-                .output
-                .map(|output| split_id(output.0))
-                .unwrap_or_default();
-
-            shell.workspace(
-                workspace_hi,
-                workspace_lo,
-                output_hi,
-                output_lo,
-                workspace.name,
-                u32::from(workspace.active),
-            );
-        }
-        for snapshot in snapshots {
-            let (window_hi, window_lo) = split_id(snapshot.id.0);
-            let (workspace_hi, workspace_lo) = split_id(snapshot.workspace);
-
-            shell.window(
-                window_hi,
-                window_lo,
-                workspace_hi,
-                workspace_lo,
-                snapshot.app_id,
-                snapshot.title,
-                snapshot.state,
-            );
-        }
-        shell.snapshot_end(serial);
+        self.shell_snapshot()
+            .send(shell, self.shell_snapshot_serial);
     }
 
     fn output_snapshots(&self) -> Vec<OutputSnapshot> {
@@ -352,6 +323,64 @@ enum ShellWindowAction {
     Close,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ShellSnapshot {
+    outputs: Vec<OutputSnapshot>,
+    workspaces: Vec<WorkspaceSnapshot>,
+    windows: Vec<ManagedWindowSnapshot>,
+}
+
+impl ShellSnapshot {
+    fn send(&self, shell: &FereseShellV1, serial: u32) {
+        shell.snapshot_begin(serial);
+        for output in &self.outputs {
+            let (output_hi, output_lo) = split_id(output.id.0);
+            let (workspace_hi, workspace_lo) = split_id(output.active_workspace.0);
+
+            shell.output(
+                output_hi,
+                output_lo,
+                output.name.clone(),
+                workspace_hi,
+                workspace_lo,
+                u32::from(output.focused),
+            );
+        }
+        for workspace in &self.workspaces {
+            let (workspace_hi, workspace_lo) = split_id(workspace.id.0);
+            let (output_hi, output_lo) = workspace
+                .output
+                .map(|output| split_id(output.0))
+                .unwrap_or_default();
+
+            shell.workspace(
+                workspace_hi,
+                workspace_lo,
+                output_hi,
+                output_lo,
+                workspace.name.clone(),
+                u32::from(workspace.active),
+            );
+        }
+        for snapshot in &self.windows {
+            let (window_hi, window_lo) = split_id(snapshot.id.0);
+            let (workspace_hi, workspace_lo) = split_id(snapshot.workspace);
+
+            shell.window(
+                window_hi,
+                window_lo,
+                workspace_hi,
+                workspace_lo,
+                snapshot.app_id.clone(),
+                snapshot.title.clone(),
+                snapshot.state,
+            );
+        }
+        shell.snapshot_end(serial);
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct ManagedWindowSnapshot {
     id: WindowId,
     workspace: u64,
@@ -360,6 +389,7 @@ struct ManagedWindowSnapshot {
     state: ferese_shell_v1::WindowState,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 struct OutputSnapshot {
     id: OutputId,
     name: String,
@@ -367,6 +397,7 @@ struct OutputSnapshot {
     focused: bool,
 }
 
+#[derive(Clone, Debug, PartialEq)]
 struct WorkspaceSnapshot {
     id: WorkspaceId,
     output: Option<OutputId>,
@@ -400,6 +431,50 @@ fn send_request_failed(shell: &FereseShellV1, request: ferese_shell_v1::FailedRe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_deduplication_preserves_shell_visible_changes() {
+        let original = ShellSnapshot {
+            outputs: vec![OutputSnapshot {
+                id: OutputId(1),
+                name: "display".into(),
+                active_workspace: WorkspaceId(1),
+                focused: true,
+            }],
+            workspaces: vec![WorkspaceSnapshot {
+                id: WorkspaceId(1),
+                output: Some(OutputId(1)),
+                name: "1".into(),
+                active: true,
+            }],
+            windows: vec![ManagedWindowSnapshot {
+                id: WindowId(1),
+                workspace: 1,
+                app_id: "terminal".into(),
+                title: "shell".into(),
+                state: ferese_shell_v1::WindowState::Focused,
+            }],
+        };
+        assert_eq!(original, original.clone());
+        let changes: &[fn(&mut ShellSnapshot)] = &[
+            |s| s.outputs[0].focused = false,
+            |s| s.outputs[0].active_workspace = WorkspaceId(2),
+            |s| s.outputs.clear(),
+            |s| s.workspaces[0].output = None,
+            |s| s.workspaces[0].active = false,
+            |s| s.workspaces[0].name = "renamed".into(),
+            |s| s.windows[0].workspace = 2,
+            |s| s.windows[0].title = "new title".into(),
+            |s| s.windows[0].app_id = "new app".into(),
+            |s| s.windows[0].state |= ferese_shell_v1::WindowState::Fullscreen,
+            |s| s.windows.clear(),
+        ];
+        for change in changes {
+            let mut updated = original.clone();
+            change(&mut updated);
+            assert_ne!(original, updated);
+        }
+    }
 
     #[test]
     fn config_chunks_are_bounded_and_preserve_unicode() {
