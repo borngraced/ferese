@@ -13,6 +13,7 @@ OUTPUT = ROOT / 'build' / 'site'
 REPO = 'https://github.com/ferese-wm/ferese'
 PAGES = [
     ('index', 'Introduction', ROOT / 'site/content/index.md'),
+    ('why-ferese', 'Why Ferese', ROOT / 'docs/why-ferese.md'),
     ('installation', 'Installation', ROOT / 'docs/installation.md'),
     ('configuration', 'Configuration', ROOT / 'docs/configuration.md'),
     ('desktop-widgets', 'Desktop widgets', ROOT / 'docs/desktop-widgets.md'),

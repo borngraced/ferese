@@ -4,6 +4,8 @@ Ferese is a complete Wayland desktop built around personalization. Its custom sh
 
 This handbook covers installing Ferese, finding your way around, and making the desktop your own.
 
+[Why Ferese](why-ferese.md) explains why the desktop is designed as one integrated system rather than assembled from separately configured tools.
+
 ## Start with your first session
 
 1. Read [Installation](installation.md) for dependencies, building, login-manager or TTY startup, and recovery.
