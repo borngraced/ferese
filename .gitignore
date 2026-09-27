@@ -11,3 +11,8 @@ ChatGPT Image*.png
 /docs/ferese-window-manager-spec.md
 /docs/ferese-theme-ui-spec.md
 /docs/ferese-shell-design.md
+
+# Generated GitHub Pages site
+/build/site/
+/.site-venv/
+__pycache__/

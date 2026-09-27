@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#10151c" />
+    <meta
+      name="description"
+      content="Ferese is a beautiful, fluid Wayland desktop made to feel like yours. Explore the desktop, then get started with the documentation."
+    />
+    <meta
+      property="og:title"
+      content="Ferese — A desktop that feels like yours"
+    />
+    <meta
+      property="og:description"
+      content="A complete Wayland desktop built around personalization."
+    />
+    <meta property="og:type" content="website" />
+    <meta
+      property="og:image"
+      content="https://borngraced.github.io/ferese/assets/ferese-desktop.png"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <title>Ferese — A desktop that feels like yours</title>
+    <link rel="icon" href="assets/ferese.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="site-header">
+      <div class="header-inner">
+        <a class="wordmark" href="./" aria-label="Ferese home"
+          ><svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 3h6v18H3zM11 3h10v6H11zM11 11h7v6h-7z" /></svg
+          >ferese</a
+        >
+        <nav aria-label="Main navigation">
+          <a href="./" aria-current="page">Overview</a
+          ><a href="docs/">Documentation</a
+          ><a href="https://github.com/borngraced/ferese"
+            >GitHub <span aria-hidden="true">↗</span></a
+          >
+        </nav>
+      </div>
+    </header>
+    <main id="main" class="simple-home">
+      <section class="product-intro page-width">
+        <h1>Ferese</h1>
+        <p class="product-tagline">
+          A beautiful, fluid Wayland desktop made to feel like yours.
+        </p>
+        <p class="product-description">
+          A complete Linux desktop with a custom shell, native settings,
+          scrolling and tiling layouts, and live-reloading themes.
+        </p>
+        <div class="product-links">
+          <a class="button" href="docs/installation.html">Install Ferese</a>
+          <a class="button secondary" href="docs/">Documentation</a>
+          <a class="source-link" href="https://github.com/borngraced/ferese"
+            >Source code ↗</a
+          >
+        </div>
+      </section>
+      <figure class="product-screenshot page-width">
+        <a
+          href="assets/ferese-desktop.png"
+          aria-label="View the full-resolution Ferese desktop screenshot"
+        >
+          <img
+            src="assets/ferese-desktop.png"
+            width="2880"
+            height="1800"
+            alt="Ferese Blue desktop with the default wallpaper, Settings, Control Center and clock widget"
+            fetchpriority="high"
+          />
+        </a>
+        <figcaption>
+          Ferese Blue with Settings, Control Center, and the default wallpaper.
+        </figcaption>
+      </figure>
+      <section class="product-features page-width" aria-label="Features">
+        <article>
+          <h2>Flexible layouts</h2>
+          <p>
+            Scrolling columns, tree tiling, floating windows, and a workspace
+            overview. Use keyboard shortcuts or gestures to move around.
+          </p>
+          <a href="docs/configuration.html#layout">Configure layouts →</a>
+        </article>
+        <article>
+          <h2>A native desktop</h2>
+          <p>
+            A menu bar, Control Center, Settings, notifications, and desktop
+            widgets, designed to work together.
+          </p>
+          <a href="docs/">Explore the handbook →</a>
+        </article>
+        <article>
+          <h2>Make it yours</h2>
+          <p>
+            Choose your theme, wallpaper, colors, and motion. Change settings
+            through the app or a KDL config, with live reload.
+          </p>
+          <a href="docs/configuration.html#appearance">Customize Ferese →</a>
+        </article>
+      </section>
+      <section class="product-getting-started page-width">
+        <h2>Getting started</h2>
+        <p>
+          The <a href="docs/installation.html">installation guide</a> covers
+          Fedora with SDDM. You can also
+          <a href="docs/installation.html#preview-and-logs">preview Ferese</a>
+          inside an existing Wayland session before installing.
+        </p>
+        <p>
+          Built in Rust on Smithay. Development happens
+          <a href="https://github.com/borngraced/ferese">on GitHub</a>.
+        </p>
+      </section>
+    </main>
+    <footer class="site-footer page-width">
+      <a class="wordmark" href="./">ferese</a>
+      <p>A beautiful, fluid Wayland desktop.</p>
+      <a href="docs/">Read the handbook <span aria-hidden="true">↗</span></a>
+    </footer>
+  </body>
+</html>

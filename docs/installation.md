@@ -2,14 +2,18 @@
 
 ## Build and install
 
-On Fedora with SDDM, install a Rust toolchain (1.93 or newer), native build
+On Fedora with SDDM, install a Rust toolchain (1.95 or newer), native build
 dependencies, `desktop-file-utils`, D-Bus and `foot`. Wallpaper browsing also
 needs `zenity`; locking needs swaylock or swaylock-effects.
-Screenshots need `grim`, `slurp`, `satty`, and `wl-clipboard`.
+Screenshots need `grim`, `slurp`, `satty`, `wl-clipboard`, and Python 3.
+Print Screen captures the active monitor; Super+Shift+S selects an area.
+Use `ferese-screenshot --all` to capture all monitors in one image.
 
-From the checkout, run as your normal user:
+Clone the repository, then run the installer as your normal user:
 
 ```sh
+git clone https://github.com/borngraced/ferese.git
+cd ferese
 ./scripts/install.sh
 ```
 
@@ -28,6 +32,16 @@ Use `--help` for all options. New configs can be copied from
 `~/.config/ferese/config.kdl`. See [Configuration](configuration.md).
 
 ## Preview and logs
+
+To preview a source build before installing, run these commands from the checkout
+inside an existing Wayland desktop:
+
+```sh
+cargo build --release --locked -p ferese -p ferese-shell -p ferese-settings -p feresectl
+target/release/ferese --backend nested --grant-effects --grant-shell-control -- \
+  target/release/ferese-shell
+```
+
 
 Run `ferese-session --nested` inside an existing Wayland desktop. For a hardware
 session, use the login screen or a spare TTY; never run Ferese as root or start

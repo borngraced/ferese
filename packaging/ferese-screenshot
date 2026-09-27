@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Capture an area or the whole desktop and open it in Satty for annotation.
+# Capture an area, active monitor, or all monitors and edit in Satty.
 set -euo pipefail
 umask 077
 
@@ -15,14 +15,15 @@ mode=area
 case ${1:-} in
     '') ;;
     --full) mode=full; shift ;;
+    --all) mode=all; shift ;;
     --help|-h)
-        echo 'Usage: ferese-screenshot [--full]'
-        echo 'Select an area, or use --full for the whole desktop, then edit in Satty.'
+        echo 'Usage: ferese-screenshot [--full | --all]'
+        echo 'Select an area; --full captures the active monitor; --all captures all monitors.'
         exit 0
         ;;
-    *) fail 'Usage: ferese-screenshot [--full]' ;;
+    *) fail 'Usage: ferese-screenshot [--full | --all]' ;;
 esac
-(($# == 0)) || fail 'Usage: ferese-screenshot [--full]'
+(($# == 0)) || fail 'Usage: ferese-screenshot [--full | --all]'
 
 for tool in grim satty wl-copy flock; do
     command -v "$tool" >/dev/null || fail "Required command not found: $tool"
@@ -38,6 +39,22 @@ if [[ $mode == area ]]; then
     geometry=$(slurp) || exit 0
     [[ -n $geometry ]] || exit 0
     capture_args=(-g "$geometry")
+elif [[ $mode == full ]]; then
+    for tool in feresectl python3; do
+        command -v "$tool" >/dev/null || fail "Required command not found: $tool"
+    done
+    # Resolve the active monitor before Satty can change keyboard focus.
+    # Never fall back to grim's all-monitor capture when IPC is unavailable.
+    output=$(feresectl get-outputs | python3 -c '
+import json, sys
+outputs = [output for output in json.load(sys.stdin) if output.get("enabled")]
+focused = [output for output in outputs if output.get("focused")]
+selected = focused if len(focused) == 1 else outputs if len(outputs) == 1 else []
+if len(selected) != 1 or not selected[0].get("name"):
+    sys.exit(1)
+print(selected[0]["name"])
+') || fail 'Could not determine the active monitor. Use area selection or --all.'
+    capture_args=(-o "$output")
 fi
 pictures=$(xdg-user-dir PICTURES 2>/dev/null) || pictures="$HOME/Pictures"
 directory=${pictures:-$HOME/Pictures}/Screenshots
@@ -48,13 +65,14 @@ trap '[[ -z $input ]] || rm -f -- "$input"; [[ -s $file ]] || rm -f -- "$file"' 
 input=$(mktemp "$XDG_RUNTIME_DIR/ferese-screenshot-XXXXXX.png") || fail 'Could not create the temporary capture.'
 grim "${capture_args[@]}" "$input" || fail 'Could not capture the screen. Log back into Ferese after enabling screen capture.'
 # Enter saves the annotated image and copies it; Escape discards the capture.
-exec 9>&-
+# Keep the parent lock through editing. Close it only in Satty so clipboard
+# helpers cannot inherit the lock and keep later screenshots blocked.
 satty --filename "$input" --output-filename "$file" \
     --fullscreen current-screen \
     --copy-command 'wl-copy --type image/png' \
     --save-after-copy \
     --actions-on-enter save-to-file,save-to-clipboard,exit \
-    --actions-on-escape exit || fail 'Could not open the screenshot in Satty.'
+    --actions-on-escape exit 9>&- || fail 'Could not open the screenshot in Satty.'
 if [[ -s $file ]]; then
     printf '%s\n' "$file"
 fi

@@ -500,7 +500,8 @@ impl cosmic::Application for App {
                         .push(self.label("Ferese", 16.))
                         .width(Length::Fill),
                 )
-                .on_drag(Message::DragWindow),
+                .on_press(Message::DragWindow)
+                .interaction(cosmic::iced::mouse::Interaction::Grab),
             )
             .push(widget::Space::new().height(14))
             .push(
@@ -865,7 +866,11 @@ impl cosmic::Application for App {
             }
         }
 
-        let mut content = column([]).spacing(16).push(heading);
+        let mut content = column([]).spacing(16).push(
+            widget::mouse_area(heading.width(Length::Fill))
+                .on_press(Message::DragWindow)
+                .interaction(cosmic::iced::mouse::Interaction::Grab),
+        );
 
         if let Some(error) = &self.error {
             content = content.push(

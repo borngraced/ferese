@@ -5,6 +5,8 @@ Cards appear beneath the bar on the focused output and follow the selected theme
 Click the notification icon in the bar to open history, toggle Do Not Disturb, or
 clear notifications. Escape or the close button closes the history panel.
 
+## Send a notification
+
 Notifications use the standard `org.freedesktop.Notifications` D-Bus interface.
 Existing apps and `notify-send` work without Ferese-specific commands:
 
@@ -12,12 +14,16 @@ Existing apps and `notify-send` work without Ferese-specific commands:
 notify-send --app-name=Ferese --icon=dialog-information "Hello" "Your desktop notification"
 ```
 
+## Popups and history
+
 Up to three popup cards are visible at once. History keeps the most recent 100
 notifications in memory and clears when the shell exits. Hovering a popup pauses
 its timer. Critical notifications bypass Do Not Disturb and do not expire unless
 the sender supplies a timeout. App action buttons emit the standard action signal;
 a replacement updates the same notification ID. Transient messages are removed
 from history when they close.
+
+## Settings and Do Not Disturb
 
 Settings → Notifications controls popup visibility, the initial Do Not Disturb
 state, and the default timeout. The bar's Do Not Disturb toggle is temporary;
@@ -34,6 +40,8 @@ notifications {
 
 The timeout must be between 1000 and 30000 milliseconds. Hiding popups still
 records notifications in history. Appearance follows the Ferese theme.
+
+## Session integration
 
 Only one notification server can own the D-Bus interface. The Ferese session
 launcher stops the SwayNotificationCenter user service before starting its shell.
