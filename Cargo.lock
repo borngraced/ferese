@@ -1667,6 +1667,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "wayland-client",
+ "zbus",
 ]
 
 [[package]]

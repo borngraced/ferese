@@ -18,3 +18,4 @@ serde.workspace = true
 tempfile.workspace = true
 tokio = { version = "1", features = ["time", "rt"] }
 wayland-client.workspace = true
+zbus = "5.19.0"

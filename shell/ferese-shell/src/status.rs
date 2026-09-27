@@ -114,6 +114,8 @@ impl Service {
         ));
         let polling = shared.clone();
         thread::spawn(move || {
+            let mut system_bus = StatusBus::new(true);
+            let mut session_bus = StatusBus::new(false);
             loop {
                 // A poll overlapping a write is discarded below. Wait for the
                 // write to finish before retrying instead of launching commands
@@ -121,7 +123,7 @@ impl Service {
                 let Some(before) = wait_for_poll(&polling) else {
                     break;
                 };
-                let snapshot = poll();
+                let snapshot = poll(&mut system_bus, &mut session_bus);
                 let state = polling.0.lock().unwrap();
                 if state.3 {
                     break;
@@ -230,17 +232,91 @@ fn run(program: &str, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-fn poll() -> Snapshot {
+// Connections live only on the polling worker. Each method still runs on every
+// poll with a bounded reply timeout; capability values are never cached.
+struct StatusBus {
+    system: bool,
+    connection: Option<zbus::blocking::Connection>,
+}
+
+impl StatusBus {
+    fn new(system: bool) -> Self {
+        Self {
+            system,
+            connection: None,
+        }
+    }
+
+    fn query<T>(
+        &mut self,
+        query: impl FnOnce(&zbus::blocking::Connection) -> zbus::Result<T>,
+    ) -> Option<T> {
+        if self.connection.is_none() {
+            let builder = if self.system {
+                zbus::blocking::connection::Builder::system()
+            } else {
+                zbus::blocking::connection::Builder::session()
+            };
+            self.connection = builder
+                .ok()?
+                .method_timeout(Duration::from_secs(2))
+                .build()
+                .ok();
+        }
+        match query(self.connection.as_ref()?) {
+            Ok(value) => Some(value),
+            Err(_) => {
+                // A disconnected/restarted bus must be rediscovered next poll.
+                self.connection = None;
+                None
+            }
+        }
+    }
+
+    fn can_power(&mut self, method: &str) -> bool {
+        self.query(|connection| {
+            connection
+                .call_method(
+                    Some("org.freedesktop.login1"),
+                    "/org/freedesktop/login1",
+                    Some("org.freedesktop.login1.Manager"),
+                    method,
+                    &(),
+                )?
+                .body()
+                .deserialize::<String>()
+        })
+        .is_some_and(|value| value == "yes" || value == "challenge")
+    }
+
+    fn notification_service_owned(&mut self) -> bool {
+        self.query(|connection| {
+            connection
+                .call_method(
+                    Some("org.freedesktop.DBus"),
+                    "/org/freedesktop/DBus",
+                    Some("org.freedesktop.DBus"),
+                    "NameHasOwner",
+                    &("org.erikreider.swaync",),
+                )?
+                .body()
+                .deserialize::<bool>()
+        })
+        .unwrap_or(false)
+    }
+}
+
+fn poll(system_bus: &mut StatusBus, session_bus: &mut StatusBus) -> Snapshot {
     Snapshot {
         network: network(),
         bluetooth: bluetooth(),
         audio: audio(),
         battery: battery(),
         brightness: brightness(),
-        notifications: notifications(),
-        poweroff: can_power("CanPowerOff"),
-        reboot: can_power("CanReboot"),
-        suspend: can_power("CanSuspend"),
+        notifications: notifications(session_bus),
+        poweroff: system_bus.can_power("CanPowerOff"),
+        reboot: system_bus.can_power("CanReboot"),
+        suspend: system_bus.can_power("CanSuspend"),
     }
 }
 
@@ -393,23 +469,9 @@ fn parse_brightness(value: &str) -> Option<u8> {
         .then(|| (100.0 * current / max).round().clamp(0.0, 100.0) as u8)
 }
 
-fn notifications() -> Option<Notifications> {
+fn notifications(bus: &mut StatusBus) -> Option<Notifications> {
     // Check service ownership first: swaync-client otherwise waits indefinitely.
-    let owner = run(
-        "busctl",
-        &[
-            "--user",
-            "call",
-            "org.freedesktop.DBus",
-            "/org/freedesktop/DBus",
-            "org.freedesktop.DBus",
-            "NameHasOwner",
-            "s",
-            "org.erikreider.swaync",
-        ],
-    )
-    .ok()?;
-    if owner != "b true" {
+    if !bus.notification_service_owned() {
         return None;
     }
     let count = run("swaync-client", &["--count"]).ok()?.parse().ok()?;
@@ -419,21 +481,6 @@ fn notifications() -> Option<Notifications> {
         _ => return None,
     };
     Some(Notifications { count, dnd })
-}
-
-fn can_power(method: &str) -> bool {
-    run(
-        "busctl",
-        &[
-            "--system",
-            "call",
-            "org.freedesktop.login1",
-            "/org/freedesktop/login1",
-            "org.freedesktop.login1.Manager",
-            method,
-        ],
-    )
-    .is_ok_and(|s| s == "s \"yes\"" || s == "s \"challenge\"")
 }
 
 fn execute(action: &Action, settings: Option<&[String]>) -> Result<(), String> {
@@ -501,6 +548,105 @@ fn execute(action: &Action, settings: Option<&[String]>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct MockLogin1(Arc<std::sync::atomic::AtomicU8>);
+
+    #[zbus::interface(name = "org.freedesktop.login1.Manager")]
+    impl MockLogin1 {
+        fn can_power_off(&self) -> zbus::fdo::Result<String> {
+            use std::sync::atomic::Ordering;
+            match self.0.load(Ordering::Relaxed) {
+                0 => Ok("yes".into()),
+                1 => Ok("no".into()),
+                3 => {
+                    thread::sleep(Duration::from_millis(500));
+                    Ok("yes".into())
+                }
+                _ => Err(zbus::fdo::Error::Failed("test failure".into())),
+            }
+        }
+        fn can_reboot(&self) -> String {
+            "challenge".into()
+        }
+        fn can_suspend(&self) -> String {
+            "na".into()
+        }
+    }
+
+    #[test]
+    #[ignore = "requires dbus-daemon; uses a private test bus"]
+    fn native_bus_queries_track_live_changes_and_fail_closed() {
+        use std::io::{BufRead, BufReader};
+        use std::sync::atomic::{AtomicU8, Ordering};
+        struct Daemon(std::process::Child);
+        impl Drop for Daemon {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut daemon = Daemon(
+            Command::new("dbus-daemon")
+                .args(["--session", "--nofork", "--nopidfile", "--print-address=1"])
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let mut address = String::new();
+        BufReader::new(daemon.0.stdout.take().unwrap())
+            .read_line(&mut address)
+            .unwrap();
+        let mode = Arc::new(AtomicU8::new(0));
+        let server = zbus::blocking::connection::Builder::address(address.trim())
+            .unwrap()
+            .name("org.freedesktop.login1")
+            .unwrap()
+            .serve_at("/org/freedesktop/login1", MockLogin1(mode.clone()))
+            .unwrap()
+            .build()
+            .unwrap();
+        let connect = || {
+            zbus::blocking::connection::Builder::address(address.trim())
+                .unwrap()
+                .method_timeout(Duration::from_millis(200))
+                .build()
+                .unwrap()
+        };
+        let mut bus = StatusBus {
+            system: false,
+            connection: Some(connect()),
+        };
+        assert!(bus.can_power("CanPowerOff"));
+        assert!(bus.can_power("CanReboot"));
+        assert!(!bus.can_power("CanSuspend"));
+        mode.store(1, Ordering::Relaxed);
+        assert!(
+            !bus.can_power("CanPowerOff"),
+            "capabilities must not be cached"
+        );
+        assert!(bus.connection.is_some());
+        assert!(!bus.notification_service_owned());
+        server.request_name("org.erikreider.swaync").unwrap();
+        assert!(bus.notification_service_owned());
+        server.release_name("org.erikreider.swaync").unwrap();
+        assert!(!bus.notification_service_owned());
+        mode.store(2, Ordering::Relaxed);
+        assert!(!bus.can_power("CanPowerOff"));
+        assert!(
+            bus.connection.is_none(),
+            "failed connections must be eligible for reconnection"
+        );
+        bus.connection = Some(connect());
+        assert!(!bus.can_power("MissingMethod"));
+        assert!(bus.connection.is_none());
+        bus.connection = Some(connect());
+        mode.store(3, Ordering::Relaxed);
+        assert!(
+            !bus.can_power("CanPowerOff"),
+            "a reply beyond the method deadline must fail closed"
+        );
+        assert!(bus.connection.is_none());
+    }
 
     #[test]
     fn brightness_info_preserves_ratio_rounding_and_rejects_bad_devices() {
