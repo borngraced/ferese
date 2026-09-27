@@ -602,7 +602,10 @@ impl Ferese {
             resize_transactions: HashMap::new(),
             resize_snapshots: HashMap::new(),
             nested_backend: None,
-            wallpaper: crate::wallpaper::WallpaperState::new(config.wallpaper),
+            wallpaper: crate::wallpaper::WallpaperState::with_wakeup(
+                config.wallpaper,
+                Some(event_loop.get_signal()),
+            ),
             maximized_windows: HashSet::new(),
             maximized_column_widths: HashMap::new(),
             window_stack: crate::stacking::WindowStack::default(),

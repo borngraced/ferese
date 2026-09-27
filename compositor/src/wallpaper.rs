@@ -67,15 +67,25 @@ pub(crate) struct WallpaperState {
     pixels: Option<image::RgbaImage>,
     textures: HashMap<ErasedContextId, WallpaperTexture>,
     upload_retries: HashMap<ErasedContextId, Instant>,
+    wakeup: Option<smithay::reexports::calloop::LoopSignal>,
 }
 
 impl WallpaperState {
+    #[cfg(test)]
     pub fn new(config: WallpaperConfig) -> Self {
+        Self::with_wakeup(config, None)
+    }
+
+    pub fn with_wakeup(
+        config: WallpaperConfig,
+        wakeup: Option<smithay::reexports::calloop::LoopSignal>,
+    ) -> Self {
         let retained = config.clone();
         let (sender, receiver) = mpsc::channel();
         let owned = config.path.as_ref().is_some_and(|path| path.is_file());
         if owned {
             let path = config.path.unwrap();
+            let wakeup = wakeup.clone();
             std::thread::spawn(move || {
                 let load = || -> Result<image::RgbaImage, String> {
                     let (width, height) =
@@ -88,6 +98,9 @@ impl WallpaperState {
                         .map_err(|e| e.to_string())
                 };
                 let _ = sender.send(load());
+                if let Some(wakeup) = wakeup {
+                    wakeup.wakeup();
+                }
             });
         }
         Self {
@@ -100,6 +113,7 @@ impl WallpaperState {
             pixels: None,
             textures: HashMap::new(),
             upload_retries: HashMap::new(),
+            wakeup,
         }
     }
 
@@ -126,7 +140,7 @@ impl WallpaperState {
             tracing::warn!("new wallpaper is unavailable; retaining previous image");
             return;
         }
-        let mut replacement = Self::new(config);
+        let mut replacement = Self::with_wakeup(config, self.wakeup.clone());
         self.config = replacement.config;
         self.mode = replacement.mode;
         self.owned = replacement.owned;
@@ -295,6 +309,29 @@ fn image_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoder_wakes_an_idle_event_loop() {
+        use smithay::reexports::calloop::{EventLoop, timer::Timer};
+        let mut event_loop = EventLoop::<WallpaperState>::try_new().unwrap();
+        event_loop
+            .handle()
+            .insert_source(Timer::from_duration(Duration::from_secs(5)), |_, _, _| {
+                panic!("wallpaper decoder failed to wake the idle event loop");
+            })
+            .unwrap();
+        let signal = event_loop.get_signal();
+        let mut state =
+            WallpaperState::with_wakeup(WallpaperConfig::default(), Some(signal.clone()));
+        event_loop
+            .run(None, &mut state, |state| {
+                if state.poll() {
+                    assert!(state.pixels.is_some());
+                    signal.stop();
+                }
+            })
+            .unwrap();
+    }
 
     #[test]
     fn failed_uploads_back_off_per_context_and_reset_for_new_pixels() {

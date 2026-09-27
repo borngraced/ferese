@@ -1068,9 +1068,6 @@ fn output_elements(
         );
         return elements;
     }
-    if state.wallpaper.poll() {
-        state.backdrop_generation = state.backdrop_generation.wrapping_add(1);
-    }
     let Some(output_geometry) = state.space.output_geometry(output) else {
         return Vec::new();
     };

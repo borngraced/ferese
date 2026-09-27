@@ -90,12 +90,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     event_loop.handle().insert_source(
         Timer::from_duration(Duration::from_millis(150)),
         move |_, _, state: &mut Ferese| {
-            // Decoders finish on a worker even when an idle DRM output has no
-            // pending frame. Wake rendering once, never continuously for wallpaper.
-            if state.wallpaper.poll() {
-                state.backdrop_generation = state.backdrop_generation.wrapping_add(1);
-                backends::direct::render_all(state);
-            }
             if let Some(result) = monitor
                 .as_mut()
                 .and_then(|monitor| monitor.poll(std::time::Instant::now()))
@@ -124,9 +118,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
     )?;
     let result = event_loop.run(None, &mut state, |state| {
+        // The decoder wakes the loop after publishing its result, including
+        // when no output has a pending frame.
+        let wallpaper_changed = state.wallpaper.poll();
+        if wallpaper_changed {
+            state.backdrop_generation = state.backdrop_generation.wrapping_add(1);
+        }
         // All input/Wayland callbacks have returned, releasing seat locks.
         // Coalesce cursor changes and redraw here, never inside cursor_image.
-        if std::mem::take(&mut state.cursor_redraw_pending) {
+        if std::mem::take(&mut state.cursor_redraw_pending) || wallpaper_changed {
             backends::direct::render_all(state);
         }
         // Registry/sync/configure replies must not depend on a submitted
