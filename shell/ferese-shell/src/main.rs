@@ -436,7 +436,11 @@ impl cosmic::Application for FereseShell {
                             && menu.id == id
                             && menu.effects.is_none()
                         {
-                            match EffectsBinding::attach_role(&surface, menu.kind.material_role()) {
+                            match EffectsBinding::attach_role(
+                                &surface,
+                                menu.kind.material_role(),
+                                menu.progress(),
+                            ) {
                                 Ok(binding) => menu.effects = Some(binding),
                                 Err(error) => {
                                     eprintln!("ferese-shell: popover material unavailable: {error}")
@@ -1546,6 +1550,7 @@ impl FereseShell {
                                 match EffectsBinding::attach_role(
                                     &surface,
                                     menu.kind.material_role(),
+                                    menu.progress(),
                                 ) {
                                     Ok(binding) => menu.effects = Some(binding),
                                     Err(error) => eprintln!(
@@ -1561,6 +1566,7 @@ impl FereseShell {
                                 match EffectsBinding::attach_role(
                                     &surface,
                                     menu.kind.material_role(),
+                                    menu.progress(),
                                 ) {
                                     Ok(binding) => menu.effects = Some(binding),
                                     Err(error) => eprintln!(
@@ -1593,7 +1599,11 @@ impl FereseShell {
             ))) if self.menu.as_ref().is_some_and(|menu| menu.id == frame_id) => {
                 if let Some(menu) = &mut self.menu {
                     if menu.effects.is_none() {
-                        match EffectsBinding::attach_role(&surface, menu.kind.material_role()) {
+                        match EffectsBinding::attach_role(
+                            &surface,
+                            menu.kind.material_role(),
+                            menu.progress(),
+                        ) {
                             Ok(binding) => menu.effects = Some(binding),
                             Err(error) => {
                                 eprintln!("ferese-shell: popover material unavailable: {error}")
@@ -1657,7 +1667,7 @@ impl FereseShell {
             .align_y(cosmic::iced::Alignment::Center);
 
         workspace_row = workspace_row.push(motion::button(
-            button::custom(overview_control(bar, color(shell_theme.text_primary)))
+            button::custom(overview_control(bar, color(shell_theme.accent)))
                 .height(bar.control_height)
                 .padding([0, 7])
                 .on_press(cosmic::Action::App(Message::ToggleOverview)),
@@ -1715,18 +1725,7 @@ impl FereseShell {
             workspace_buttons = workspace_buttons.push(selector);
         }
         workspace_row = workspace_row.push(container(workspace_buttons).padding([0, 3]).class(
-            theme::Container::custom(move |_| container::Style {
-                background: Some(Background::Color(color_with_opacity(
-                    shell_theme.text_primary,
-                    0.035,
-                ))),
-                border: Border {
-                    color: color_with_opacity(shell_theme.text_muted, 0.12),
-                    width: 1.0,
-                    radius: 7.0.into(),
-                },
-                ..Default::default()
-            }),
+            theme::Container::custom(move |_| bar_group_style(shell_theme)),
         ));
 
         let foreground = color(shell_theme.text_primary);
@@ -1738,13 +1737,25 @@ impl FereseShell {
             ))
             .width(Length::Fill)
             .height(bar.control_height);
+        let (date, time) = self.clock.split_once(", ").unwrap_or(("", &self.clock));
         let clock = container(
-            text(&self.clock)
-                .size(bar.text_size)
-                .wrapping(cosmic::iced::core::text::Wrapping::None)
-                .class(theme::Text::Color(foreground)),
+            row![
+                text(date)
+                    .size(12)
+                    .class(theme::Text::Color(color(shell_theme.text_muted))),
+                text(time)
+                    .size(bar.text_size)
+                    .class(theme::Text::Color(foreground)),
+            ]
+            .spacing(8)
+            .align_y(cosmic::iced::Alignment::Center),
         )
-        .padding([0, 6]);
+        .height(bar.control_height)
+        .align_y(alignment::Vertical::Center)
+        .padding([0, 8])
+        .class(theme::Container::custom(move |_| {
+            bar_group_style(shell_theme)
+        }));
         let right = row![
             self.view_status_bar().map(move |action| match action {
                 cosmic::Action::App(Message::OpenMenu(kind, anchor)) =>
@@ -1753,7 +1764,7 @@ impl FereseShell {
             }),
             clock
         ]
-        .spacing(6)
+        .spacing(8)
         .align_y(cosmic::iced::Alignment::Center);
         let content = row![
             container(left).width(Length::Fill),
@@ -2127,6 +2138,21 @@ fn bar_style(theme: ShellTheme, compositor_material: bool) -> container::Style {
     }
 }
 
+fn bar_group_style(theme: ShellTheme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(color_with_opacity(
+            theme.text_primary,
+            0.035,
+        ))),
+        border: Border {
+            color: color_with_opacity(theme.text_muted, 0.12),
+            width: 1.0,
+            radius: 7.0.into(),
+        },
+        ..Default::default()
+    }
+}
+
 fn color([red, green, blue, alpha]: [u8; 4]) -> Color {
     Color::from_rgba8(red, green, blue, f32::from(alpha) / 255.0)
 }
@@ -2195,12 +2221,14 @@ impl EffectsBinding {
         Self::attach_role(
             surface,
             visible.then_some(ferese_surface_effects_v1::Role::Panel),
+            if visible { 1.0 } else { 0.0 },
         )
     }
 
     fn attach_role(
         surface: &wl_surface::WlSurface,
         role: Option<ferese_surface_effects_v1::Role>,
+        opacity: f32,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let backend = surface
             .backend()
@@ -2212,13 +2240,14 @@ impl EffectsBinding {
         let manager = globals.bind::<FereseEffectsManagerV1, _, _>(&qh, 1..=3, ())?;
         let effects = manager.get_surface_effects(surface, &qh, ());
 
+        let opacity = (opacity.clamp(0.0, 1.0) * 1000.0).round() as u32;
+        if effects.version() >= 3 {
+            effects.set_opacity(opacity);
+        }
         if let Some(role) = role {
             effects.set_role(role);
         } else {
             effects.clear_role();
-            if effects.version() >= 3 {
-                effects.set_opacity(0);
-            }
         }
         connection.flush()?;
 
@@ -2228,7 +2257,7 @@ impl EffectsBinding {
             surface: effects,
             _queue: queue,
             regions: Default::default(),
-            opacity: std::cell::Cell::new(None),
+            opacity: std::cell::Cell::new(Some(opacity)),
         })
     }
 

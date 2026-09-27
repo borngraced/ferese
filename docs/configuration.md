@@ -107,6 +107,8 @@ Changing default width preserves manually resized columns.
 
 Settings → Appearance offers six presets: **Ferese Blue** (default),
 **Monochrome**, **Gruvbox**, **Dracula**, **Ayu Light**, and **Monokai**.
+The two-row gallery previews each palette on a miniature desktop; a checkmark
+identifies the active preset.
 Ferese Blue uses the README logo's `#3D7BE6`. Each preset coordinates surfaces,
 text, menu-bar colors, borders and the focus ring. Ayu Light also switches native
 Settings controls to light styling. Presets preserve wallpaper, typography,

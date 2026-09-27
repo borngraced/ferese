@@ -23,16 +23,25 @@ pub enum Menu {
 impl Menu {
     fn width(self) -> f32 {
         match self {
-            Self::System => 320.0,
-            Self::Network | Self::Bluetooth => 280.0,
-            Self::Battery => 250.0,
-            Self::Audio | Self::Notifications => 290.0,
+            Self::System => 360.0,
+            Self::Battery => 280.0,
+            _ => 300.0,
         }
     }
 
     pub(super) fn material_role(self) -> Option<ferese_surface_effects_v1::Role> {
-        // Popovers contain independent cards, with no shared material backing.
-        None
+        Some(ferese_surface_effects_v1::Role::Popover)
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::System => "Control Center",
+            Self::Network => "Wi-Fi",
+            Self::Bluetooth => "Bluetooth",
+            Self::Audio => "Sound",
+            Self::Battery => "Battery",
+            Self::Notifications => "Notifications",
+        }
     }
 
     fn available(self, status: &Snapshot) -> bool {
@@ -93,6 +102,28 @@ impl FereseShell {
         super::EFFECT_FRAME_PENDING.store(true, std::sync::atomic::Ordering::Relaxed);
         self.status_error = None;
         let parent = self.bar_surface_id;
+        let anchor = if kind == Menu::System {
+            self.outputs
+                .iter()
+                .find(|output| output.bar == parent)
+                .and_then(|output| output.size)
+                .map(|(width, _)| {
+                    let theme = self.config.theme;
+                    Rectangle {
+                        x: (width
+                            - theme.bar_margin_horizontal * 2
+                            - theme.panel_padding.round() as i32
+                            - 1)
+                        .max(0),
+                        y: 0,
+                        width: 1,
+                        height: theme.bar_height.round() as i32,
+                    }
+                })
+                .unwrap_or(anchor)
+        } else {
+            anchor
+        };
         let action = cosmic::surface::action::app_popup::<Self>(
             |_| Default::default(),
             move |_| SctkPopupSettings {
@@ -107,7 +138,7 @@ impl FereseShell {
                     // Numeric protocol values avoid depending on libcosmic's private SCTK reexport.
                     anchor: 2u32.try_into().unwrap(),  // bottom
                     gravity: 6u32.try_into().unwrap(), // bottom-left
-                    offset: (anchor.width / 2, 4),
+                    offset: (anchor.width / 2, 8),
                     size_limits: Limits::NONE
                         .min_width(kind.width())
                         .max_width(kind.width())
@@ -209,8 +240,15 @@ impl FereseShell {
             if !kind.available(&self.status) {
                 continue;
             }
-            let (source, _) = status_icon(kind, &self.status);
-            let foreground = color(theme.text_primary);
+            let (source, enabled) = status_icon(kind, &self.status);
+            let selected = self.menu.as_ref().is_some_and(|m| m.kind == kind);
+            let foreground = color(if selected {
+                theme.accent
+            } else if enabled {
+                theme.text_primary
+            } else {
+                theme.text_muted
+            });
             let mut content = row![accented_icon(
                 source,
                 metrics.icon_size,
@@ -246,12 +284,11 @@ impl FereseShell {
                     }),
                 ));
             }
-            let selected = self.menu.as_ref().is_some_and(|m| m.kind == kind);
             // A fixed button height does not center its child in libcosmic.
             // Keep the visual content centered inside the entire click target.
             let content = container(content)
                 .align_x(alignment::Horizontal::Center)
-                .height(metrics.height)
+                .height(metrics.control_height)
                 .align_y(alignment::Vertical::Center);
             let control = button::custom(content)
                 .name(status_label(kind, &self.status))
@@ -259,7 +296,7 @@ impl FereseShell {
                     0.0,
                     ((metrics.height - f32::from(metrics.icon_size)) * 0.5).max(4.0),
                 ])
-                .height(metrics.height)
+                .height(metrics.control_height)
                 .on_press_with_rectangle(move |offset, bounds| {
                     cosmic::Action::App(Message::OpenMenu(
                         kind,
@@ -273,7 +310,10 @@ impl FereseShell {
                 });
             controls = controls.push(motion::button(control, foreground, selected, 1.0));
         }
-        controls.into()
+        container(controls)
+            .padding([0, 3])
+            .class(theme::Container::custom(move |_| bar_group_style(theme)))
+            .into()
     }
 
     fn view_status_menu(&self) -> Element<'_, cosmic::Action<Message>> {
@@ -281,12 +321,42 @@ impl FereseShell {
             return text("").into();
         };
         let theme = self.config.theme;
-        // The compositor fades the complete surface, not individual caches.
-        let p = 1.0;
+        let p = if menu.effects.is_some() {
+            1.0
+        } else {
+            menu.progress()
+        };
         let kind = menu.kind;
         let primary = color_with_opacity(theme.text_primary, p);
         let muted = color_with_opacity(theme.text_muted, p);
-        let mut rows = column::with_capacity(12).spacing(8).width(Length::Fill);
+        let badge = container(accented_icon(
+            status_icon(kind, &self.status).0,
+            22,
+            primary,
+            color_with_opacity(theme.accent, p),
+        ))
+        .width(36)
+        .height(36)
+        .align_x(alignment::Horizontal::Center)
+        .align_y(alignment::Vertical::Center)
+        .class(theme::Container::custom(move |_| container::Style {
+            background: Some(Background::Color(color_with_opacity(
+                theme.accent,
+                0.12 * p,
+            ))),
+            border: Border {
+                radius: 10.0.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+        let heading = row![badge, text(kind.title()).size(18)]
+            .spacing(10)
+            .align_y(Alignment::Center);
+        let mut rows = column::with_capacity(12)
+            .push(heading)
+            .spacing(12)
+            .width(Length::Fill);
         if let Some(action) = &menu.confirm {
             let title = match action {
                 Action::Poweroff => "Power off this computer?",
@@ -577,7 +647,8 @@ impl FereseShell {
                 }
             }
             if combined {
-                let mut actions = row::with_capacity(4).spacing(4);
+                let mut actions = column::with_capacity(2).spacing(8);
+                let mut power = row::with_capacity(3).spacing(6).width(Length::Fill);
                 if self
                     .config
                     .status
@@ -586,15 +657,15 @@ impl FereseShell {
                     .and_then(|a| a.first())
                     .is_some_and(|p| status::available(p))
                 {
-                    actions = actions.push(menu_button(
-                        "Settings",
+                    actions = actions.push(footer_button(
+                        "Open Settings",
                         Message::Control(Action::Settings),
                         primary,
                         p,
                     ));
                 }
                 if self.status.poweroff {
-                    actions = actions.push(menu_button(
+                    power = power.push(footer_button(
                         "Power off…",
                         Message::ConfirmPower(Action::Poweroff),
                         primary,
@@ -602,7 +673,7 @@ impl FereseShell {
                     ));
                 }
                 if self.status.reboot {
-                    actions = actions.push(menu_button(
+                    power = power.push(footer_button(
                         "Restart…",
                         Message::ConfirmPower(Action::Reboot),
                         primary,
@@ -610,14 +681,17 @@ impl FereseShell {
                     ));
                 }
                 if self.status.suspend {
-                    actions = actions.push(menu_button(
+                    power = power.push(footer_button(
                         "Suspend…",
                         Message::ConfirmPower(Action::Suspend),
                         primary,
                         p,
                     ));
                 }
-                rows = rows.push(control_card(actions.wrap().into(), primary, p));
+                if self.status.poweroff || self.status.reboot || self.status.suspend {
+                    actions = actions.push(power);
+                }
+                rows = rows.push(control_card(actions.into(), primary, p));
             }
             if !menu.kind.available(&self.status) {
                 rows = rows.push(
@@ -633,28 +707,32 @@ impl FereseShell {
                 ..Color::from_rgb8(230, 172, 90)
             })));
         }
-        let content: Element<'_, cosmic::Action<Message>> = if kind == Menu::System {
-            rows.into()
-        } else {
-            control_card(rows.into(), primary, p)
-        };
-        let panel =
-            container(content)
-                .width(kind.width())
-                .padding(12)
-                .class(theme::Container::custom(move |_| container::Style {
-                    background: None,
-                    text_color: Some(primary),
-                    icon_color: Some(primary),
-                    border: Border {
-                        radius: theme.material_radius.into(),
-                        ..Default::default()
-                    },
+        let compositor_material = menu.effects.is_some();
+        let panel = container(rows)
+            .id("ferese-blur-card")
+            .width(kind.width())
+            .padding(16)
+            .class(theme::Container::custom(move |_| container::Style {
+                background: (!compositor_material).then_some(Background::Color(
+                    color_with_opacity(theme.surface_popover, p),
+                )),
+                text_color: Some(primary),
+                icon_color: Some(primary),
+                border: Border {
+                    color: color_with_opacity(theme.text_muted, 0.18 * p),
+                    width: 1.0,
+                    radius: theme.material_radius.into(),
                     ..Default::default()
-                }));
-        // Keep the outer surface transparent; only inner cards paint a background.
+                },
+                ..Default::default()
+            }));
         cosmic::widget::autosize::autosize(
-            super::motion::animated(panel.into(), menu.progress(), menu.regions.clone()),
+            super::motion::animated(
+                panel.into(),
+                menu.progress(),
+                menu.regions.clone(),
+                theme.material_radius,
+            ),
             cosmic::iced::advanced::widget::Id::new("ferese-status-menu"),
         )
         .limits(
@@ -768,7 +846,6 @@ fn control_card<'a>(
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
     container(content)
-        .id("ferese-blur-card")
         .padding(10)
         .width(Length::Fill)
         .class(theme::Container::custom(move |_| container::Style {
@@ -837,7 +914,6 @@ fn connection_control<'a>(
     // giving it a misleading clickable/disabled-button appearance.
     let Some(action) = action else {
         return container(content)
-            .id("ferese-blur-card")
             .width(Length::FillPortion(1))
             .padding(4)
             .into();
@@ -851,7 +927,6 @@ fn connection_control<'a>(
         false,
         opacity,
     ))
-    .id("ferese-blur-card")
     .width(Length::FillPortion(1))
     .into()
 }
@@ -865,6 +940,23 @@ fn menu_button<'a>(
     motion::button(
         button::custom(text(label).size(13))
             .padding([6, 8])
+            .on_press(cosmic::Action::App(message)),
+        foreground,
+        false,
+        opacity,
+    )
+}
+
+fn footer_button<'a>(
+    label: &'a str,
+    message: Message,
+    foreground: Color,
+    opacity: f32,
+) -> Element<'a, cosmic::Action<Message>> {
+    motion::button(
+        button::custom(text(label).size(12))
+            .width(Length::Fill)
+            .padding([8, 6])
             .on_press(cosmic::Action::App(message)),
         foreground,
         false,
@@ -1081,12 +1173,12 @@ fn status_icon(kind: Menu, s: &Snapshot) -> (&'static [u8], bool) {
 mod tests {
     #[test]
     fn smaller_popups_have_content_specific_widths() {
-        assert_eq!(Menu::System.width(), 320.0);
-        assert_eq!(Menu::Network.width(), 280.0);
-        assert_eq!(Menu::Bluetooth.width(), 280.0);
-        assert_eq!(Menu::Battery.width(), 250.0);
-        assert_eq!(Menu::Audio.width(), 290.0);
-        assert_eq!(Menu::Notifications.width(), 290.0);
+        assert_eq!(Menu::System.width(), 360.0);
+        assert_eq!(Menu::Network.width(), 300.0);
+        assert_eq!(Menu::Bluetooth.width(), 300.0);
+        assert_eq!(Menu::Battery.width(), 280.0);
+        assert_eq!(Menu::Audio.width(), 300.0);
+        assert_eq!(Menu::Notifications.width(), 300.0);
     }
 
     #[test]

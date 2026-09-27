@@ -7,10 +7,10 @@ use cosmic::{
     Element,
     iced::{Background, Border, Color, Length, Vector},
     theme,
-    widget::{self, button, container, icon as svg_icon},
+    widget::{button, container, icon as svg_icon},
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub struct Palette {
     pub background: Color,
     pub sidebar: Color,
@@ -376,16 +376,53 @@ pub fn preset_selected(snapshot: &Snapshot, index: usize) -> bool {
     }) && snapshot.number("theme.focus_ring.gradient.angle", 0.) == 0.
 }
 
-pub fn swatches(index: usize) -> Element<'static, Message> {
-    let preset = &PRESETS[index];
-    let mut row = widget::row([]).spacing(3);
-    for value in [preset.base, preset.gradient_end, preset.accent] {
-        row = row.push(
-            container(widget::Space::new().width(12).height(22))
-                .class(surface(color(value, Color::WHITE), 4.)),
-        );
-    }
-    row.into()
+fn preset_preview_handle(preset: &Preset) -> svg_icon::Handle {
+    let base = preset.base;
+    let accent = preset.accent;
+    let end = preset.gradient_end;
+    let text = preset.text;
+    let muted = preset.muted;
+    let surface = color(base, Color::BLACK);
+    let card = hex(mix(surface, surface_shade(surface), 0.055));
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="132" viewBox="0 0 240 132">
+    <defs>
+        <linearGradient id="wall" x2="1" y2="1">
+            <stop stop-color="{accent}" stop-opacity=".24"/>
+            <stop offset="1" stop-color="{end}" stop-opacity=".06"/>
+        </linearGradient>
+    </defs>
+    <rect width="240" height="132" rx="10" fill="{base}"/>
+    <rect width="240" height="132" rx="10" fill="url(#wall)"/>
+    <path d="M0 112Q52 48 120 93T240 67V132H0Z" fill="{accent}" opacity=".09"/>
+    <rect x="8" y="8" width="224" height="12" rx="4" fill="{base}"/>
+    <rect x="14" y="12" width="6" height="4" rx="1" fill="{accent}"/>
+    <path d="M26 14h4m4 0h4m164 0h6m4 0h6" stroke="{muted}" stroke-width="2" stroke-linecap="round"/>
+    <rect x="16" y="34" width="121" height="82" rx="7" fill="{card}"/>
+    <path d="M26 44h102" stroke="{muted}" opacity=".16"/>
+    <rect x="23" y="50" width="25" height="59" rx="3" fill="{base}"/>
+    <rect x="26" y="57" width="19" height="7" rx="2" fill="{accent}" opacity=".6"/>
+    <path d="M29 73h11m-11 9h9m-9 9h12" stroke="{muted}" opacity=".6" stroke-width="2" stroke-linecap="round"/>
+    <path d="M56 59h38m-38 10h63m-63 8h49m-49 8h58" stroke="{text}" opacity=".55" stroke-width="2" stroke-linecap="round"/>
+    <rect x="55" y="94" width="29" height="9" rx="3" fill="{accent}"/>
+    <rect x="145" y="37" width="78" height="70" rx="7" fill="{card}" stroke="{accent}" stroke-width="1.2"/>
+    <circle cx="154" cy="45" r="1.5" fill="{accent}"/>
+    <path d="M161 45h17" stroke="{muted}" stroke-width="2" stroke-linecap="round"/>
+    <path d="M155 58h27m-27 9h56m-56 9h37m-37 9h49m-49 9h30" stroke="{text}" opacity=".55" stroke-width="2" stroke-linecap="round"/>
+</svg>"##,
+    );
+    svg_icon::from_svg_bytes(svg.into_bytes()).symbolic(false)
+}
+
+pub fn preset_preview(index: usize) -> Element<'static, Message> {
+    static HANDLES: std::sync::OnceLock<Vec<svg_icon::Handle>> = std::sync::OnceLock::new();
+    HANDLES.get_or_init(|| PRESETS.iter().map(preset_preview_handle).collect())[index]
+        .clone()
+        .icon()
+        .width(Length::Fill)
+        .height(Length::Fixed(90.))
+        .content_fit(cosmic::iced::ContentFit::Contain)
+        .into()
 }
 
 pub fn preview(snapshot: &Snapshot) -> Element<'static, Message> {

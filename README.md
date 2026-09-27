@@ -73,6 +73,8 @@ Built-in defaults (your configuration can override them):
 The bar shows workspaces 1–9 in a compact numbered strip, including empty ones.
 Click a number to switch using the same behavior as Super+1–9. A filled button marks this monitor's
 active workspace; an outlined button marks one active on another monitor.
+Status controls and the clock use matching compact groups. The control center
+opens as one rounded panel with grouped controls and a Settings shortcut.
 Three-finger swipes up/down navigate workspaces on this monitor; left/right
 navigate windows. Assign swipes to any keyboard-binding action (including
 overview, move, or a launcher command) in **Settings → Shortcuts**.

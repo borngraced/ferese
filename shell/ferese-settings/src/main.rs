@@ -14,14 +14,6 @@ use std::{collections::HashMap, path::PathBuf};
 use store::{Edit, Snapshot, set};
 
 fn main() -> cosmic::iced::Result {
-    // Set before libcosmic creates worker threads. The software backend is
-    // efficient for this mostly-static interface; WGPU remains a fallback.
-    if std::env::var_os("ICED_BACKEND").is_none() {
-        unsafe {
-            std::env::set_var("ICED_BACKEND", "tiny-skia,wgpu");
-        }
-    }
-
     let mut args = std::env::args_os().skip(1);
     let path = match args.next() {
         Some(arg) if arg == "--config" => {
@@ -92,6 +84,7 @@ struct App {
     ranges: HashMap<String, f64>,
     new_command: String,
     font: cosmic::font::Font,
+    native_palette: visuals::Palette,
     thumbnail: Option<widget::image::Handle>,
     thumbnail_path: String,
     thumbnail_loading: bool,
@@ -130,6 +123,7 @@ impl cosmic::Application for App {
         let error = initial.as_ref().err().cloned();
         let current = initial.unwrap_or_else(|_| Snapshot::parse(String::new()).unwrap());
         let font = visuals::configured_font(&current);
+        let native_palette = visuals::Palette::from(&current);
         let mut app = Self {
             note_editors: HashMap::new(),
             core,
@@ -148,6 +142,7 @@ impl cosmic::Application for App {
             ranges: HashMap::new(),
             new_command: String::new(),
             font,
+            native_palette,
             thumbnail: None,
             thumbnail_path: String::new(),
             thumbnail_loading: false,
@@ -241,16 +236,12 @@ impl cosmic::Application for App {
                         self.error = None;
                         self.status = "Updated from your config".into();
 
-                        return Task::batch([
-                            cosmic::command::set_theme(visuals::native_theme(Some(&self.draft))),
-                            self.load_thumbnail(),
-                        ]);
+                        return Task::batch([self.update_theme(), self.load_thumbnail()]);
                     }
                 }
                 Err(error) => self.error = Some(format!("Config reload failed: {error}")),
             },
             Message::Page(page) => {
-                self.sync_notes();
                 self.page = page;
                 self.search.clear();
                 if page == Page::Wallpaper {
@@ -321,10 +312,8 @@ impl cosmic::Application for App {
                         }
                         .into();
 
-                        let theme = visuals::native_theme(Some(&self.draft));
-
                         return Task::batch([
-                            cosmic::command::set_theme(theme),
+                            self.update_theme(),
                             self.flush(),
                             self.load_thumbnail(),
                         ]);
@@ -351,10 +340,7 @@ impl cosmic::Application for App {
                     self.undo = None;
                     self.status = "Reloaded from your config".into();
 
-                    return Task::batch([
-                        cosmic::command::set_theme(visuals::native_theme(Some(&self.draft))),
-                        self.load_thumbnail(),
-                    ]);
+                    return Task::batch([self.update_theme(), self.load_thumbnail()]);
                 }
                 Err(error) => self.error = Some(error),
             },
@@ -591,28 +577,46 @@ impl cosmic::Application for App {
                 );
             }
         } else {
-            if matches!(self.page, Page::Appearance | Page::Bar | Page::Windows) {
+            if matches!(self.page, Page::Bar | Page::Windows) {
                 body = body.push(visuals::preview(&self.draft));
             }
             if self.page == Page::Appearance {
+                body = body.push(
+                    column([])
+                        .spacing(4)
+                        .push(self.label("Theme", 15.))
+                        .push(self.note("Choose a look for your desktop.")),
+                );
                 let mut presets = column([]).spacing(10);
                 for (row_index, choices) in visuals::PRESETS.chunks(3).enumerate() {
                     let mut tiles = row([]).spacing(10);
                     for (column_index, preset) in choices.iter().enumerate() {
                         let index = row_index * 3 + column_index;
+                        let selected = visuals::preset_selected(&self.draft, index);
+                        let indicator: Element<'_, Message> = if selected {
+                            visuals::action_icon("M5 12l4 4L19 6", palette.accent).into()
+                        } else {
+                            widget::Space::new().width(16).height(16).into()
+                        };
                         let tile = button::custom(
                             column([])
-                                .spacing(6)
-                                .push(visuals::swatches(index))
-                                .push(self.label(preset.name, 12.))
-                                .push(self.label(preset.description, 10.)),
+                                .spacing(8)
+                                .push(visuals::preset_preview(index))
+                                .push(
+                                    row([])
+                                        .spacing(6)
+                                        .align_y(Alignment::Center)
+                                        .push(self.label(preset.name, 12.).width(Length::Fill))
+                                        .push(indicator),
+                                )
+                                .push(
+                                    self.label(preset.description, 10.)
+                                        .class(cosmic::theme::Text::Color(palette.muted)),
+                                ),
                         )
                         .width(Length::Fill)
                         .padding(10)
-                        .class(visuals::button_style(
-                            palette,
-                            visuals::preset_selected(&self.draft, index),
-                        ));
+                        .class(visuals::button_style(palette, selected));
                         tiles = tiles.push(if self.saving {
                             tile
                         } else {
@@ -866,7 +870,22 @@ impl cosmic::Application for App {
         }
 
         content = content.push(
-            scrollable(container(body).padding([0, 2]).width(Length::Fill)).height(Length::Fill),
+            scrollable(
+                container(body)
+                    .padding(cosmic::iced::Padding {
+                        top: 0.,
+                        right: 12.,
+                        bottom: 0.,
+                        left: 2.,
+                    })
+                    .width(Length::Fill),
+            )
+            .direction(cosmic::iced::widget::scrollable::Direction::Vertical(
+                cosmic::iced::widget::scrollable::Scrollbar::new()
+                    .width(10)
+                    .scroller_width(3),
+            ))
+            .height(Length::Fill),
         );
         let footer = row([])
             .spacing(4)
@@ -945,6 +964,15 @@ impl cosmic::Application for App {
 }
 
 impl App {
+    fn update_theme(&mut self) -> Task<Message> {
+        let palette = visuals::Palette::from(&self.draft);
+        if palette == self.native_palette {
+            return Task::none();
+        }
+        self.native_palette = palette;
+        cosmic::command::set_theme(visuals::native_theme(Some(&self.draft)))
+    }
+
     fn note_index(&self, id: &str) -> Option<usize> {
         (0..self.draft.records("desktop_widgets.notes")).find(|index| {
             self.draft

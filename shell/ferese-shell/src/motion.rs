@@ -351,11 +351,13 @@ pub fn animated<'a, M: 'a>(
     content: Element<'a, M>,
     progress: f32,
     regions: Regions,
+    radius: f32,
 ) -> Element<'a, M> {
     Element::new(Motion {
         content,
         progress,
         regions,
+        radius,
     })
 }
 
@@ -363,6 +365,7 @@ struct Motion<'a, M> {
     content: Element<'a, M>,
     progress: f32,
     regions: Regions,
+    radius: f32,
 }
 
 impl<M> Motion<'_, M> {
@@ -442,7 +445,7 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
                     (r.y - origin.y + translation.y).round() as i32,
                     r.width.round() as i32,
                     r.height.round() as i32,
-                    11,
+                    self.radius.round().max(0.0) as i32,
                 ]
             })
             .collect();
