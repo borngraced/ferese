@@ -16,8 +16,10 @@ use smithay::{
     utils::{Buffer, Physical, Rectangle, Size},
 };
 use std::{
+    cell::Cell,
     collections::HashMap,
     path::PathBuf,
+    rc::Rc,
     sync::mpsc,
     time::{Duration, Instant},
 };
@@ -68,6 +70,8 @@ pub(crate) struct WallpaperState {
     textures: HashMap<ErasedContextId, WallpaperTexture>,
     upload_retries: HashMap<ErasedContextId, Instant>,
     wakeup: Option<smithay::reexports::calloop::LoopSignal>,
+    retry_timer_pending: Rc<Cell<bool>>,
+    retry_wakeup: Rc<Cell<bool>>,
 }
 
 impl WallpaperState {
@@ -114,6 +118,8 @@ impl WallpaperState {
             textures: HashMap::new(),
             upload_retries: HashMap::new(),
             wakeup,
+            retry_timer_pending: Rc::default(),
+            retry_wakeup: Rc::default(),
         }
     }
 
@@ -161,6 +167,45 @@ impl WallpaperState {
         self.upload_retries
             .get(context)
             .is_none_or(|retry| now >= *retry)
+    }
+
+    pub(crate) fn take_retry_wakeup(&self) -> bool {
+        self.retry_wakeup.replace(false) && !self.upload_retries.is_empty()
+    }
+
+    fn next_retry_deadline(&self, now: Instant) -> Option<Instant> {
+        self.upload_retries.values().copied().min().map(|deadline| {
+            // A suspended/hidden output may not have attempted an upload when
+            // the timer fired. Avoid immediately rescheduling an expired timer.
+            if deadline <= now {
+                now + UPLOAD_RETRY_DELAY
+            } else {
+                deadline
+            }
+        })
+    }
+
+    pub(crate) fn arm_retry_timer<Data: 'static>(
+        &self,
+        handle: &smithay::reexports::calloop::LoopHandle<'static, Data>,
+        now: Instant,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+        if self.retry_timer_pending.get() {
+            return Ok(());
+        }
+        let Some(deadline) = self.next_retry_deadline(now) else {
+            return Ok(());
+        };
+        let pending = self.retry_timer_pending.clone();
+        let wakeup = self.retry_wakeup.clone();
+        handle.insert_source(Timer::from_deadline(deadline), move |_, _, _| {
+            pending.set(false);
+            wakeup.set(true);
+            TimeoutAction::Drop
+        })?;
+        self.retry_timer_pending.set(true);
+        Ok(())
     }
 
     pub fn poll(&mut self) -> bool {
@@ -309,6 +354,47 @@ fn image_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_upload_retry_wakes_idle_loop_and_does_not_spin_when_output_is_inactive() {
+        use smithay::backend::renderer::ContextId;
+        use smithay::reexports::calloop::EventLoop;
+        let mut event_loop = EventLoop::<()>::try_new().unwrap();
+        let mut state = WallpaperState::new(WallpaperConfig {
+            path: None,
+            mode: WallpaperMode::Fill,
+        });
+        let context = ContextId::<GlesTexture>::new().erased();
+        let now = Instant::now();
+        state
+            .upload_retries
+            .insert(context.clone(), now + Duration::from_millis(10));
+        state.arm_retry_timer(&event_loop.handle(), now).unwrap();
+        state.arm_retry_timer(&event_loop.handle(), now).unwrap();
+        assert!(state.retry_timer_pending.get());
+        assert!(!state.take_retry_wakeup());
+        event_loop
+            .dispatch(Some(Duration::from_secs(1)), &mut ())
+            .unwrap();
+        assert!(!state.retry_timer_pending.get());
+        assert!(
+            state.take_retry_wakeup(),
+            "retry must request redraw without input or client activity"
+        );
+        assert!(!state.take_retry_wakeup());
+        let after = Instant::now();
+        assert_eq!(
+            state.next_retry_deadline(after),
+            Some(after + UPLOAD_RETRY_DELAY)
+        );
+        state.forget_context(&context);
+        assert_eq!(state.next_retry_deadline(after), None);
+        state.retry_wakeup.set(true);
+        assert!(
+            !state.take_retry_wakeup(),
+            "cleared failures must not trigger stale redraws"
+        );
+    }
 
     #[test]
     fn decoder_wakes_an_idle_event_loop() {

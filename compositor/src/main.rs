@@ -135,8 +135,16 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         // All input/Wayland callbacks have returned, releasing seat locks.
         // Coalesce cursor changes and redraw here, never inside cursor_image.
-        if std::mem::take(&mut state.cursor_redraw_pending) || wallpaper_changed {
+        let wallpaper_retry = state.wallpaper.take_retry_wakeup();
+        if std::mem::take(&mut state.cursor_redraw_pending) || wallpaper_changed || wallpaper_retry
+        {
             backends::direct::render_all(state);
+        }
+        if let Err(error) = state
+            .wallpaper
+            .arm_retry_timer(&reload_handle, std::time::Instant::now())
+        {
+            warn!(%error, "could not schedule wallpaper upload retry");
         }
         // Registry/sync/configure replies must not depend on a submitted
         // frame: at startup clients need these before they can draw anything.
