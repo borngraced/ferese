@@ -1013,8 +1013,9 @@ kbd {
   padding-block: 48px 34px;
 }
 .product-tagline {
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 400;
+  letter-spacing: normal;
   line-height: 1.5;
 }
 .product-description {
@@ -1106,7 +1107,7 @@ kbd {
     padding-block: 35px 27px;
   }
   .product-tagline {
-    font-size: 19px;
+    font-size: 17px;
   }
   .product-description {
     font-size: 14px;
