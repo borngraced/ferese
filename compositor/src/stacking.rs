@@ -1,4 +1,5 @@
 use ferese_layout::WindowId;
+use std::collections::HashMap;
 
 pub(crate) fn layer_priority(floating: bool, zooming: bool, fullscreen: bool) -> u8 {
     if fullscreen {
@@ -16,17 +17,24 @@ pub(crate) fn layer_priority(floating: bool, zooming: bool, fullscreen: bool) ->
 #[derive(Default)]
 pub(crate) struct WindowStack {
     order: Vec<WindowId>,
+    ranks: HashMap<WindowId, usize>,
 }
 
 impl WindowStack {
     pub fn insert(&mut self, id: WindowId) {
-        if !self.order.contains(&id) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.ranks.entry(id) {
+            entry.insert(self.order.len());
             self.order.push(id);
         }
     }
 
     pub fn remove(&mut self, id: WindowId) {
-        self.order.retain(|candidate| *candidate != id);
+        if let Some(rank) = self.ranks.remove(&id) {
+            self.order.remove(rank);
+            for (rank, candidate) in self.order.iter().enumerate().skip(rank) {
+                self.ranks.insert(*candidate, rank);
+            }
+        }
     }
 
     pub fn raise(&mut self, id: WindowId) {
@@ -35,16 +43,50 @@ impl WindowStack {
     }
 
     pub fn rank(&self, id: WindowId) -> usize {
-        self.order
-            .iter()
-            .position(|candidate| *candidate == id)
-            .unwrap_or(usize::MAX)
+        self.ranks.get(&id).copied().unwrap_or(usize::MAX)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_ranks_match_reference_order_after_mixed_operations() {
+        let mut stack = WindowStack::default();
+        let mut reference = Vec::new();
+        let mut random = 42_u64;
+        for _ in 0..2000 {
+            random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let id = WindowId((random >> 32) % 32);
+            match random % 3 {
+                0 => {
+                    stack.insert(id);
+                    if !reference.contains(&id) {
+                        reference.push(id);
+                    }
+                }
+                1 => {
+                    stack.remove(id);
+                    reference.retain(|candidate| *candidate != id);
+                }
+                _ => {
+                    stack.raise(id);
+                    reference.retain(|candidate| *candidate != id);
+                    reference.push(id);
+                }
+            }
+            for id in (0..33).map(WindowId) {
+                assert_eq!(
+                    stack.rank(id),
+                    reference
+                        .iter()
+                        .position(|candidate| *candidate == id)
+                        .unwrap_or(usize::MAX)
+                );
+            }
+        }
+    }
 
     #[test]
     fn floating_windows_stay_above_tiled_and_maximized_windows() {

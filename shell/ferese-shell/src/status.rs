@@ -90,6 +90,16 @@ pub struct Service {
     pub generation: u64,
 }
 
+type PollState = (Mutex<(u64, bool, Option<String>, bool)>, Condvar);
+
+fn wait_for_poll(shared: &PollState) -> Option<u64> {
+    let state = shared
+        .1
+        .wait_while(shared.0.lock().unwrap(), |state| state.1 && !state.3)
+        .unwrap();
+    (!state.3).then_some(state.0)
+}
+
 impl Service {
     pub fn start(settings: Option<Vec<String>>) -> Self {
         let live_settings = Arc::new(Mutex::new(settings));
@@ -105,12 +115,11 @@ impl Service {
         let polling = shared.clone();
         thread::spawn(move || {
             loop {
-                let before = {
-                    let state = polling.0.lock().unwrap();
-                    if state.3 {
-                        break;
-                    }
-                    state.0
+                // A poll overlapping a write is discarded below. Wait for the
+                // write to finish before retrying instead of launching commands
+                // repeatedly while a slow control operation is still running.
+                let Some(before) = wait_for_poll(&polling) else {
+                    break;
                 };
                 let snapshot = poll();
                 let state = polling.0.lock().unwrap();
@@ -476,6 +485,48 @@ fn execute(action: &Action, settings: Option<&[String]>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polling_waits_for_a_write_and_uses_the_completed_generation() {
+        let shared = Arc::new((Mutex::new((7, true, None, false)), Condvar::new()));
+        let worker_state = shared.clone();
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            sender.send(wait_for_poll(&worker_state)).unwrap();
+        });
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_millis(30)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        {
+            let mut state = shared.0.lock().unwrap();
+            state.0 = 8;
+            state.1 = false;
+            shared.1.notify_one();
+        }
+        assert_eq!(
+            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Some(8)
+        );
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn shutdown_unblocks_polling_even_during_a_write() {
+        let shared = Arc::new((Mutex::new((7, true, None, false)), Condvar::new()));
+        let worker_state = shared.clone();
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            sender.send(wait_for_poll(&worker_state)).unwrap();
+        });
+        {
+            let mut state = shared.0.lock().unwrap();
+            state.3 = true;
+            shared.1.notify_one();
+        }
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(2)).unwrap(), None);
+        worker.join().unwrap();
+    }
     #[test]
     fn audio_parser_handles_mute_and_rejects_invalid_values() {
         assert_eq!(parse_audio("Volume: 0.42 [MUTED]"), Some((42, true)));

@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 use smithay::utils::{Physical, Rectangle};
 
@@ -16,7 +19,7 @@ pub(crate) struct RenderMetrics {
     damaged_pixels: u64,
     total_render_time: Duration,
     longest_render_time: Duration,
-    frame_times: Vec<Duration>,
+    frame_times: VecDeque<Duration>,
 }
 
 impl RenderMetrics {
@@ -37,7 +40,7 @@ impl RenderMetrics {
             damaged_pixels: 0,
             total_render_time: Duration::ZERO,
             longest_render_time: Duration::ZERO,
-            frame_times: Vec::new(),
+            frame_times: VecDeque::new(),
         }
     }
 
@@ -57,9 +60,9 @@ impl RenderMetrics {
         self.total_render_time += render_time;
         self.longest_render_time = self.longest_render_time.max(render_time);
         if self.frame_times.len() == 512 {
-            self.frame_times.remove(0);
+            self.frame_times.pop_front();
         }
-        self.frame_times.push(render_time);
+        self.frame_times.push_back(render_time);
 
         let now = Instant::now();
         let elapsed = now.saturating_duration_since(self.interval_started);
@@ -72,7 +75,7 @@ impl RenderMetrics {
             .as_micros()
             .checked_div(u128::from(self.rendered_frames))
             .unwrap_or(0);
-        self.frame_times.sort_unstable();
+        self.frame_times.make_contiguous().sort_unstable();
         let percentile = |percent: usize| {
             let index = (self.frame_times.len() * percent)
                 .div_ceil(100)
@@ -158,5 +161,28 @@ mod tests {
             metrics.record_frame(Duration::from_millis(1), &[], 0, FrameEffectMetrics);
         }
         assert_eq!(metrics.frame_times.len(), 512);
+    }
+
+    #[test]
+    fn profiling_retains_the_most_recent_samples_in_order() {
+        let mut metrics = RenderMetrics::new("test", true, Instant::now());
+        for micros in 0..600 {
+            metrics.record_frame(Duration::from_micros(micros), &[], 0, FrameEffectMetrics);
+        }
+        assert_eq!(
+            metrics.frame_times.front(),
+            Some(&Duration::from_micros(88))
+        );
+        assert_eq!(
+            metrics.frame_times.back(),
+            Some(&Duration::from_micros(599))
+        );
+        assert!(
+            metrics
+                .frame_times
+                .iter()
+                .copied()
+                .eq((88..600).map(Duration::from_micros))
+        );
     }
 }

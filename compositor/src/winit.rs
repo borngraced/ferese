@@ -1428,6 +1428,13 @@ fn overview_strip_elements(
     let cards = state.overview_workspace_cards(output);
     let mut elements = Vec::new();
     let programs = rounded_clip_program(state, renderer);
+    // Resolve IDs once per strip, rather than scanning all managed windows
+    // separately for every miniature. Own the handles so rendering can mutate state.
+    let windows_by_id: std::collections::HashMap<_, _> = state
+        .window_ids
+        .iter()
+        .map(|(window, id)| (*id, window.clone()))
+        .collect();
     for card in cards {
         // Front-to-back: outline and live miniatures above each card, all above
         // the strip. Nothing is painted behind the main overview window grid.
@@ -1451,14 +1458,10 @@ fn overview_strip_elements(
         }
         if let Some(programs) = &programs {
             for (id, rect) in &card.windows {
-                if let Some(window) = state
-                    .window_ids
-                    .iter()
-                    .find_map(|(window, candidate)| (*candidate == *id).then(|| window.clone()))
-                {
+                if let Some(window) = windows_by_id.get(id) {
                     elements.extend(rounded_window_elements(
                         renderer,
-                        &window,
+                        window,
                         rounded_visual_rect(*rect, output_geometry.loc),
                         physical_rect(*rect, output_geometry.loc, scale),
                         scale,
