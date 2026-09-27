@@ -67,6 +67,7 @@ enum Message {
     WallpaperPicked(Result<Option<String>, String>),
     NewCommand(String),
     AddCommand,
+    AddSwipe(&'static str),
     Remove(String, usize),
     Thumbnail(String, Result<widget::image::Handle, String>),
 }
@@ -432,6 +433,22 @@ impl cosmic::Application for App {
                     }
                 }
             }
+            Message::AddSwipe(keys) if !self.saving => {
+                let (action, argument) = match keys {
+                    "Swipe3Up" => ("workspace-next", None),
+                    "Swipe3Down" => ("workspace-previous", None),
+                    "Swipe3Left" => ("focus", Some("right")),
+                    _ => ("focus", Some("left")),
+                };
+                let mut fields = vec![
+                    ("keys".into(), keys.into()),
+                    ("action".into(), action.into()),
+                ];
+                if let Some(argument) = argument {
+                    fields.push(("argument".into(), argument.into()));
+                }
+                return self.change(Edit::Add("bindings".into(), fields));
+            }
             Message::Remove(table, index) if !self.saving => {
                 self.inputs.clear();
                 let task = self.change(Edit::Remove(table, index));
@@ -705,7 +722,27 @@ impl cosmic::Application for App {
                     );
                 }
                 Page::Shortcuts => {
-                    body = body.push(self.note("Custom shortcuts from your config. Built-in shortcuts remain available unless overridden. Edit a field, then press Enter or move focus to save."));
+                    body = body.push(self.note("Keyboard and swipe bindings share the same actions. Use Swipe3Up, Swipe3Down, Swipe3Left, or Swipe3Right as a shortcut (also supports 4 or 5 fingers). Actions include toggle-overview, spawn, focus, move, workspace-next, workspace-previous, and none. Leave Argument empty for actions such as toggle-overview or none."));
+                    let mut gestures = row([]).spacing(6);
+                    for (keys, label) in [
+                        ("Swipe3Up", "Customize swipe up"),
+                        ("Swipe3Down", "Customize swipe down"),
+                        ("Swipe3Left", "Customize swipe left"),
+                        ("Swipe3Right", "Customize swipe right"),
+                    ] {
+                        let exists = (0..self.draft.records("bindings")).any(|index| {
+                            self.draft
+                                .string(&format!("bindings.{index}.keys"), "")
+                                .eq_ignore_ascii_case(keys)
+                        });
+                        if !exists {
+                            gestures =
+                                gestures.push(button::standard(label).on_press_maybe(
+                                    (!self.saving).then_some(Message::AddSwipe(keys)),
+                                ));
+                        }
+                    }
+                    body = body.push(gestures);
                     for index in 0..self.draft.records("bindings") {
                         let prefix = format!("bindings.{index}");
                         let group = column([])
@@ -713,13 +750,13 @@ impl cosmic::Application for App {
                             .push(self.field(schema::text(
                                 format!("{prefix}.keys"),
                                 "Shortcut",
-                                "For example: Super+Return",
+                                "For example: Super+Return or Swipe3Up",
                                 "",
                             )))
                             .push(self.field(schema::text(
                                 format!("{prefix}.action"),
                                 "Action",
-                                "Ferese command, such as spawn or focus.",
+                                "Action such as toggle-overview, spawn, focus, move, or none.",
                                 "",
                             )))
                             .push(self.field(schema::text(

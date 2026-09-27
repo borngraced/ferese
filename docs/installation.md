@@ -5,7 +5,7 @@
 On Fedora with SDDM, install a Rust toolchain (1.93 or newer), native build
 dependencies, `desktop-file-utils`, D-Bus and `foot`. Wallpaper browsing also
 needs `zenity`; locking needs swaylock or swaylock-effects.
-Area screenshots need `grim`, `slurp`, and `wl-clipboard`.
+Screenshots need `grim`, `slurp`, `satty`, and `wl-clipboard`.
 
 From the checkout, run as your normal user:
 

@@ -167,6 +167,7 @@ pub struct Ferese {
     pub(crate) cursor_theme: xcursor::CursorTheme,
     pub(crate) named_cursors: HashMap<CursorIcon, crate::cursor::NamedCursor>,
     pub intercepted_keys: HashSet<smithay::input::keyboard::Keycode>,
+    pub(crate) swipe: crate::gestures::Swipe,
     pub idle_inhibitors: HashMap<WlSurface, usize>,
     pub active_shortcuts_inhibitor: Option<KeyboardShortcutsInhibitor>,
     pub direct_backend: Option<crate::backends::direct::DirectBackendState>,
@@ -640,6 +641,7 @@ impl Ferese {
             cursor_theme,
             named_cursors,
             intercepted_keys: HashSet::new(),
+            swipe: crate::gestures::Swipe::default(),
             idle_inhibitors: HashMap::new(),
             active_shortcuts_inhibitor: None,
             direct_backend: None,
@@ -682,6 +684,11 @@ impl Ferese {
             xdg_shell_state,
             xdg_toplevel_icon_manager,
         };
+        // Keep the numbered shortcuts and bar selectors available from startup,
+        // including empty workspaces that have not been assigned to an output.
+        for index in 1..=9 {
+            state.workspaces.ensure_numeric(index)?;
+        }
         state._ipc_socket = Some(crate::ipc::init(event_loop)?);
         Ok(state)
     }
@@ -2364,25 +2371,19 @@ impl Ferese {
 
         let output = self
             .output_workspaces
-            .output_for_workspace(workspace)
-            .or_else(|| self.output_workspaces.focused_output());
+            .focused_output()
+            .or_else(|| self.output_workspaces.output_for_workspace(workspace));
         let Some(output) = output else {
             return false;
         };
 
-        if self
-            .output_workspaces
-            .output_for_workspace(workspace)
-            .is_none()
-            && self
-                .output_workspaces
-                .assign_workspace(output, workspace)
-                .is_err()
-        {
-            return false;
-        }
+        let owner = match self.output_workspaces.switch_workspace(output, workspace) {
+            Ok(ferese_core::WorkspaceSwitch::Activated(output))
+            | Ok(ferese_core::WorkspaceSwitch::FocusedExisting(output)) => output,
+            Err(_) => return false,
+        };
 
-        self.activate_output_workspace(output, workspace);
+        self.activate_output_workspace(owner, workspace);
         self.relayout();
         self.restore_keyboard_focus();
         true

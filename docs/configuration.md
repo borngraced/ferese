@@ -134,9 +134,46 @@ angle = 135.0
 | `repeat_rate` | integer > 0 | `25` | Repeats per second |
 | `repeat_delay_ms` | integer ≥ 0 | `600` | Delay before repeat |
 
-`[input.touchpad]` has three boolean keys, all defaulting to `true`: `tap`,
+The touchpad device keys are booleans, all defaulting to `true`: `tap`,
 `natural_scroll` and `disable_while_typing`. These apply to DRM devices; nested
 previews use the host's physical input settings.
+
+Three-finger swipes navigate on release: up goes to the next workspace on the
+current monitor, down to the previous; left focuses the window to the right,
+and right focuses the window to the left. Workspace swipes skip workspaces owned
+by other monitors and stop at the first/last workspace. Cancelled, short and
+diagonal swipes do nothing. Navigation pauses while locked, during
+window grabs, or when an application inhibits shortcuts.
+
+Assign swipes in **Settings → Shortcuts** using the same actions and arguments as
+keyboard bindings. Choose a "Customize swipe" button to add an override. The
+gesture keys are `Swipe3Up`, `Swipe3Down`, `Swipe3Left`, and `Swipe3Right`; 4 or 5
+fingers are also supported. Changes reload live:
+
+```toml
+[[bindings]]
+keys = "Swipe3Up"
+action = "toggle-overview"
+
+[[bindings]]
+keys = "Swipe3Left"
+action = "move"
+argument = "left"
+
+[[bindings]]
+keys = "Swipe3Down"
+disabled = true
+```
+
+`spawn` uses a named entry from `[commands]`, just like keyboard shortcuts. To
+disable a direction in Settings, set its action to `none` and leave Argument
+empty. In TOML, `disabled = true` removes the default binding. Swipes do not use
+keyboard modifiers or physical key matching. The trigger is automatically
+recognized from its name. Gesture navigation uses native touchpad events in a
+hardware session.
+
+Adjust recognition distance in **Settings → Keyboard & mouse**, or with
+`swipe_threshold = 80` under `[input.touchpad]` (integer 16–1000 logical pixels).
 
 ## Commands and bindings
 
@@ -145,7 +182,7 @@ previews use the host's physical input settings.
 
 | `[[bindings]]` key | Type / values | Default |
 | --- | --- | --- |
-| `keys` | chord string, e.g. `"Super+Enter"` | required |
+| `keys` | chord or gesture, e.g. `"Super+Enter"`, `"Swipe3Up"` | required |
 | `match` | `"keysym"`, `"physical"` | `"keysym"` |
 | `action` | action name below | required unless disabled |
 | `argument` | string | required only for actions listed below |
@@ -161,6 +198,8 @@ invalid. A disabled binding must omit `action` and `argument`.
 | `spawn` | Name in `[commands]` |
 | `focus`, `move`, `resize` | `"left"`, `"right"`, `"up"`, `"down"` |
 | `workspace`, `move-to-workspace` | Workspace number string, 1–255 |
+| `workspace-next`, `workspace-previous` | None; next/previous workspace on this monitor |
+| `none` | None; ignore this trigger |
 | `close`, `exit`, `toggle-maximized`, `toggle-fullscreen`, `toggle-layout`, `cycle-column-width`, `center-column`, `consume`, `expel`, `toggle-floating`, `toggle-overview` | None |
 
 ```toml
@@ -178,13 +217,19 @@ Super+Shift+H/J/K/L move; Super+Ctrl+H/J/K/L resize; Super+1–9 workspace;
 Super+Shift+1–9 move to workspace; Super+R width cycle; Super+C center;
 Super+[/] consume/expel; Super+F maximize; Super+Shift+F fullscreen;
 Super+M layout; Super+Shift+Space floating; Super+Tab overview;
-Super+Shift+S area screenshot; Super+Shift+E immediate logout.
+Super+Shift+S area screenshot; Print Screen whole-screen screenshot;
+Super+Shift+E immediate logout.
 
 The screenshot shortcut runs `ferese-screenshot`: drag to select an area, or
-press Escape to cancel. Captures are saved under your Pictures directory in
-`Screenshots` and copied to the clipboard as PNG images. It requires `grim`,
-`slurp`, and `wl-copy` (from `wl-clipboard`). Override the `screenshot` command
+press Escape to cancel. Captures open in Satty for annotation. Press Enter to
+save the edited PNG under your Pictures directory in `Screenshots` and copy it
+to the clipboard; Escape discards the capture. It requires `grim`, `slurp`,
+`satty`, and `wl-copy` (from `wl-clipboard`). Override the `screenshot` command
 to use another screenshot tool.
+Print Screen runs `ferese-screenshot --full` and captures all enabled outputs
+without a selector. Fn+PrtSc works when the keyboard emits the Print Screen key;
+Fn is handled by the keyboard firmware. Override `screenshot-full` to customize
+this command. Both modes open Satty with the same save and copy workflow.
 
 ## Window rules
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Select an area, save it in Pictures/Screenshots, and copy it to the clipboard.
+# Capture an area or the whole desktop and open it in Satty for annotation.
 set -euo pipefail
 umask 077
 
@@ -11,26 +11,50 @@ fail() {
     exit 1
 }
 
-for tool in slurp grim wl-copy flock; do
+mode=area
+case ${1:-} in
+    '') ;;
+    --full) mode=full; shift ;;
+    --help|-h)
+        echo 'Usage: ferese-screenshot [--full]'
+        echo 'Select an area, or use --full for the whole desktop, then edit in Satty.'
+        exit 0
+        ;;
+    *) fail 'Usage: ferese-screenshot [--full]' ;;
+esac
+(($# == 0)) || fail 'Usage: ferese-screenshot [--full]'
+
+for tool in grim satty wl-copy flock; do
     command -v "$tool" >/dev/null || fail "Required command not found: $tool"
 done
 : "${XDG_RUNTIME_DIR:?A Wayland login session is required}"
 exec 9>"$XDG_RUNTIME_DIR/ferese-screenshot.lock"
 flock -n 9 || exit 0
 
-# Escape cancels without creating a file or changing the clipboard.
-geometry=$(slurp) || exit 0
-[[ -n $geometry ]] || exit 0
+capture_args=()
+if [[ $mode == area ]]; then
+    command -v slurp >/dev/null || fail 'Required command not found: slurp'
+    # Escape cancels without creating a file or changing the clipboard.
+    geometry=$(slurp) || exit 0
+    [[ -n $geometry ]] || exit 0
+    capture_args=(-g "$geometry")
+fi
 pictures=$(xdg-user-dir PICTURES 2>/dev/null) || pictures="$HOME/Pictures"
 directory=${pictures:-$HOME/Pictures}/Screenshots
 mkdir -p -- "$directory" || fail 'Could not create the screenshot directory.'
 file=$(mktemp "$directory/Screenshot-$(date +%Y-%m-%d_%H-%M-%S)-XXXXXX.png") || fail 'Could not create the screenshot file.'
-trap 'rm -f -- "$file"' EXIT
-grim -g "$geometry" "$file" || fail 'Could not capture the screen. Log back into Ferese after enabling screen capture.'
-trap - EXIT
-# Do not pass the selector lock to wl-copy's background clipboard process.
-wl-copy --type image/png <"$file" 9>&- || fail "Saved to $file, but could not copy to the clipboard."
-if command -v notify-send >/dev/null; then
-    notify-send --app-name=Ferese 'Screenshot saved and copied' "$file" || true
+input=''
+trap '[[ -z $input ]] || rm -f -- "$input"; [[ -s $file ]] || rm -f -- "$file"' EXIT
+input=$(mktemp "$XDG_RUNTIME_DIR/ferese-screenshot-XXXXXX.png") || fail 'Could not create the temporary capture.'
+grim "${capture_args[@]}" "$input" || fail 'Could not capture the screen. Log back into Ferese after enabling screen capture.'
+# Enter saves the annotated image and copies it; Escape discards the capture.
+# Do not pass the selector lock to Satty or its clipboard subprocess.
+satty --filename "$input" --output-filename "$file" \
+    --fullscreen current-screen \
+    --copy-command 'wl-copy --type image/png' \
+    --save-after-copy \
+    --actions-on-enter save-to-file,save-to-clipboard,exit \
+    --actions-on-escape exit 9>&- || fail 'Could not open the screenshot in Satty.'
+if [[ -s $file ]]; then
+    printf '%s\n' "$file"
 fi
-printf '%s\n' "$file"

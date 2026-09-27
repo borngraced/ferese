@@ -3,10 +3,14 @@
 [commands]
 terminal = ["foot"]
 screenshot = ["ferese-screenshot"]
+screenshot-full = ["ferese-screenshot", "--full"]
 
 [input]
 xkb_layout = "us"
 focus_follows_mouse = false
+
+[input.touchpad]
+swipe_threshold = 80
 
 [layout]
 smart_gaps = false
@@ -38,3 +42,10 @@ margin_y = 80
 time_size = 72.0
 date_size = 18.0
 opacity = 0.9
+
+# Swipe bindings use the same actions and arguments as keyboard bindings.
+# Defaults: up/down switch workspaces; left/right focus windows.
+# Example override:
+# [[bindings]]
+# keys = "Swipe3Up"
+# action = "toggle-overview"

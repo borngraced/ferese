@@ -857,6 +857,17 @@ pub fn fields(page: Page) -> Vec<Field> {
                 "Avoid accidental pointer movement.",
                 true,
             ),
+            range(
+                "input.touchpad.swipe_threshold",
+                "Swipe distance",
+                "Distance needed to navigate. Larger values reduce accidental swipes.",
+                80.0,
+                16.0,
+                1000.0,
+                8.0,
+                " px",
+                true,
+            ),
         ],
         Page::Shortcuts | Page::Startup | Page::Displays => vec![],
     }

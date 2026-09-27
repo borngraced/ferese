@@ -440,6 +440,10 @@ pub struct Binding {
 enum BindingTrigger {
     Keysym(u32),
     Physical(Keycode),
+    Swipe {
+        fingers: u32,
+        direction: crate::gestures::SwipeDirection,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
@@ -452,6 +456,7 @@ struct BindingModifiers {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum BindingAction {
+    None,
     Spawn(Vec<String>),
     Close,
     Exit,
@@ -459,6 +464,7 @@ pub enum BindingAction {
     Move(ferese_layout::Direction),
     Resize(ferese_layout::Direction),
     SwitchWorkspace(u8),
+    SwitchRelativeWorkspace(bool),
     MoveToWorkspace(u8),
     ToggleFullscreen,
     ToggleMaximized,
@@ -491,7 +497,20 @@ impl Binding {
             && match self.trigger {
                 BindingTrigger::Keysym(expected) => keysyms.contains(&expected),
                 BindingTrigger::Physical(expected) => expected == keycode,
+                BindingTrigger::Swipe { .. } => false,
             }
+    }
+
+    pub(crate) fn swipe_fingers(&self, count: u32) -> bool {
+        matches!(self.trigger, BindingTrigger::Swipe { fingers, .. } if fingers == count)
+    }
+
+    pub(crate) fn matches_swipe(
+        &self,
+        count: u32,
+        target: crate::gestures::SwipeDirection,
+    ) -> bool {
+        matches!(self.trigger, BindingTrigger::Swipe { fingers, direction } if fingers == count && direction == target)
     }
 }
 
@@ -501,6 +520,7 @@ enum BindingMatch {
     #[default]
     Keysym,
     Physical,
+    Swipe,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -530,6 +550,11 @@ pub struct TouchpadSettings {
     pub tap: bool,
     pub natural_scroll: bool,
     pub disable_while_typing: bool,
+    pub swipe_threshold: u16,
+}
+
+fn default_swipe_threshold() -> u16 {
+    80
 }
 
 #[derive(Debug, Deserialize)]
@@ -572,6 +597,8 @@ struct TouchpadConfig {
     natural_scroll: bool,
     #[serde(default = "enabled_by_default")]
     disable_while_typing: bool,
+    #[serde(default = "default_swipe_threshold")]
+    swipe_threshold: u16,
 }
 
 impl Default for TouchpadConfig {
@@ -580,6 +607,7 @@ impl Default for TouchpadConfig {
             tap: true,
             natural_scroll: true,
             disable_while_typing: true,
+            swipe_threshold: default_swipe_threshold(),
         }
     }
 }
@@ -879,6 +907,12 @@ impl Config {
             });
         }
 
+        if !(16..=1000).contains(&self.input.touchpad.swipe_threshold) {
+            return Err(ConfigError::InvalidInputValue {
+                field: "touchpad.swipe_threshold",
+                value: self.input.touchpad.swipe_threshold.to_string(),
+            });
+        }
         Ok(InputSettings {
             focus_follows_mouse: self.input.focus_follows_mouse,
             xkb_layout: self.input.xkb_layout.clone(),
@@ -890,6 +924,7 @@ impl Config {
                 tap: self.input.touchpad.tap,
                 natural_scroll: self.input.touchpad.natural_scroll,
                 disable_while_typing: self.input.touchpad.disable_while_typing,
+                swipe_threshold: self.input.touchpad.swipe_threshold,
             },
         })
     }
@@ -900,6 +935,10 @@ impl Config {
             (
                 "screenshot".to_owned(),
                 vec!["ferese-screenshot".to_owned()],
+            ),
+            (
+                "screenshot-full".to_owned(),
+                vec!["ferese-screenshot".to_owned(), "--full".to_owned()],
             ),
         ]);
         commands.extend(self.commands.clone());
@@ -1184,6 +1223,15 @@ fn parse_binding(
     let trigger = match identity.match_mode {
         BindingMatch::Keysym => BindingTrigger::Keysym(identity.key),
         BindingMatch::Physical => BindingTrigger::Physical(Keycode::new(identity.key)),
+        BindingMatch::Swipe => BindingTrigger::Swipe {
+            fingers: identity.key / 4,
+            direction: [
+                crate::gestures::SwipeDirection::Up,
+                crate::gestures::SwipeDirection::Down,
+                crate::gestures::SwipeDirection::Left,
+                crate::gestures::SwipeDirection::Right,
+            ][(identity.key % 4) as usize],
+        },
     };
 
     Ok(Binding {
@@ -1198,6 +1246,20 @@ fn binding_identity(
     keymap: &xkb::Keymap,
 ) -> Result<BindingIdentity, ConfigError> {
     let (modifiers, key) = parse_chord(&configured.keys)?;
+    if let Some((fingers, direction)) = parse_swipe(&key) {
+        if configured.match_mode == BindingMatch::Physical
+            || modifiers != BindingModifiers::default()
+        {
+            return Err(ConfigError::InvalidBinding(
+                "swipes cannot use keyboard modifiers or physical key matching".into(),
+            ));
+        }
+        return Ok(BindingIdentity {
+            modifiers,
+            match_mode: BindingMatch::Swipe,
+            key: fingers * 4 + direction as u32,
+        });
+    }
     let key = match configured.match_mode {
         BindingMatch::Keysym => parse_keysym(&key)?,
         BindingMatch::Physical => keymap
@@ -1209,6 +1271,11 @@ fn binding_identity(
                     configured.keys
                 ))
             })?,
+        BindingMatch::Swipe => {
+            return Err(ConfigError::InvalidBinding(
+                "gesture keys must use Swipe3Left/Right/Up/Down (3–5 fingers)".into(),
+            ));
+        }
     };
 
     Ok(BindingIdentity {
@@ -1222,6 +1289,9 @@ fn binding_identity_for_runtime(binding: &Binding) -> BindingIdentity {
     let (match_mode, key) = match binding.trigger {
         BindingTrigger::Keysym(key) => (BindingMatch::Keysym, key),
         BindingTrigger::Physical(key) => (BindingMatch::Physical, key.raw()),
+        BindingTrigger::Swipe { fingers, direction } => {
+            (BindingMatch::Swipe, fingers * 4 + direction as u32)
+        }
     };
 
     BindingIdentity {
@@ -1269,6 +1339,24 @@ fn parse_chord(chord: &str) -> Result<(BindingModifiers, String), ConfigError> {
     Ok((modifiers, key))
 }
 
+fn parse_swipe(key: &str) -> Option<(u32, crate::gestures::SwipeDirection)> {
+    use crate::gestures::SwipeDirection;
+    let lower = key.to_ascii_lowercase();
+    let rest = lower.strip_prefix("swipe")?;
+    let fingers = rest.get(..1)?.parse::<u32>().ok()?;
+    if !(3..=5).contains(&fingers) {
+        return None;
+    }
+    let direction = match rest.get(1..)? {
+        "up" => SwipeDirection::Up,
+        "down" => SwipeDirection::Down,
+        "left" => SwipeDirection::Left,
+        "right" => SwipeDirection::Right,
+        _ => return None,
+    };
+    Some((fingers, direction))
+}
+
 fn parse_keysym(name: &str) -> Result<u32, ConfigError> {
     let normalized = match name {
         "Enter" | "enter" => "Return".to_owned(),
@@ -1312,6 +1400,16 @@ fn parse_action(
     };
 
     match action {
+        "none" => {
+            no_argument()?;
+            Ok(BindingAction::None)
+        }
+        "workspace-next" | "workspace-previous" => {
+            no_argument()?;
+            Ok(BindingAction::SwitchRelativeWorkspace(
+                action == "workspace-next",
+            ))
+        }
         "spawn" => {
             let command = required_argument()?;
             let argv = commands.get(command).ok_or_else(|| {
@@ -1405,6 +1503,11 @@ fn default_bindings() -> Vec<BindingConfig> {
     let mut bindings = vec![
         binding("Super+Enter", "spawn", Some("terminal")),
         binding("Super+Shift+S", "spawn", Some("screenshot")),
+        binding("Print", "spawn", Some("screenshot-full")),
+        binding("Swipe3Up", "workspace-next", None),
+        binding("Swipe3Down", "workspace-previous", None),
+        binding("Swipe3Left", "focus", Some("right")),
+        binding("Swipe3Right", "focus", Some("left")),
         binding("Super+Q", "close", None),
         binding("Super+F", "toggle-maximized", None),
         binding("Super+Shift+F", "toggle-fullscreen", None),
@@ -2054,6 +2157,7 @@ mod tests {
                     tap: false,
                     natural_scroll: false,
                     disable_while_typing: true,
+                    swipe_threshold: 80,
                 },
             }
         );
@@ -2071,12 +2175,64 @@ mod tests {
     }
 
     #[test]
+    fn swipe_bindings_can_override_actions_disable_defaults_and_set_distance() {
+        use crate::gestures::SwipeDirection;
+        let config = parse(
+            "[input.touchpad]\nswipe_threshold = 120\n[[bindings]]\nkeys = 'Swipe3Up'\naction = 'toggle-overview'\n[[bindings]]\nkeys = 'Swipe3Left'\naction = 'move'\nargument = 'left'\n[[bindings]]\nkeys = 'Swipe3Down'\ndisabled = true",
+        );
+        let input = config.input_settings().unwrap();
+        assert_eq!(input.touchpad.swipe_threshold, 120);
+        let bindings = config.bindings(&input).unwrap();
+        assert!(
+            bindings
+                .iter()
+                .any(|binding| binding.matches_swipe(3, SwipeDirection::Up)
+                    && binding.action == BindingAction::ToggleOverview)
+        );
+        assert!(
+            bindings
+                .iter()
+                .any(|binding| binding.matches_swipe(3, SwipeDirection::Left)
+                    && binding.action == BindingAction::Move(ferese_layout::Direction::Left))
+        );
+        assert!(
+            !bindings
+                .iter()
+                .any(|binding| binding.matches_swipe(3, SwipeDirection::Down))
+        );
+        for threshold in [0, 15, 1001] {
+            assert!(
+                parse(&format!("[input.touchpad]\nswipe_threshold = {threshold}"))
+                    .input_settings()
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn gesture_bindings_validate_fingers_directions_and_actions() {
+        for keys in ["Swipe2Up", "Swipe3Diagonal", "Super+Swipe3Up"] {
+            let config = parse(&format!(
+                "[[bindings]]\nkeys = '{keys}'\naction = 'toggle-overview'"
+            ));
+            assert!(config.bindings(&config.input_settings().unwrap()).is_err());
+        }
+        let config = parse("[[bindings]]\nkeys = 'Swipe4Up'\naction = 'toggle-overview'");
+        let bindings = config.bindings(&config.input_settings().unwrap()).unwrap();
+        assert!(
+            bindings
+                .iter()
+                .any(|binding| binding.matches_swipe(4, crate::gestures::SwipeDirection::Up))
+        );
+    }
+
+    #[test]
     fn supplies_complete_v0_bindings_and_terminal_command() {
         let config = parse("");
         let input = config.input_settings().unwrap();
         let bindings = config.bindings(&input).unwrap();
 
-        assert_eq!(bindings.len(), 43);
+        assert_eq!(bindings.len(), 48);
         for (shift, action) in [
             (false, BindingAction::ToggleMaximized),
             (true, BindingAction::ToggleFullscreen),
@@ -2103,6 +2259,15 @@ mod tests {
                 && binding.action == BindingAction::Spawn(vec!["ferese-screenshot".to_owned()])
         }));
         assert!(bindings.iter().any(|binding| {
+            binding.trigger == BindingTrigger::Keysym(keysyms::KEY_Print)
+                && binding.modifiers == BindingModifiers::default()
+                && binding.action
+                    == BindingAction::Spawn(vec![
+                        "ferese-screenshot".to_owned(),
+                        "--full".to_owned(),
+                    ])
+        }));
+        assert!(bindings.iter().any(|binding| {
             binding.modifiers.logo
                 && binding.trigger == BindingTrigger::Keysym(keysyms::KEY_Tab)
                 && binding.action == BindingAction::ToggleOverview
@@ -2118,7 +2283,7 @@ mod tests {
 
         let input = replaced.input_settings().unwrap();
         let bindings = replaced.bindings(&input).unwrap();
-        assert_eq!(bindings.len(), 43);
+        assert_eq!(bindings.len(), 48);
         assert!(bindings.iter().any(|binding| {
             binding.action
                 == BindingAction::Spawn(vec![
@@ -2130,7 +2295,7 @@ mod tests {
 
         let input = unbound.input_settings().unwrap();
         let bindings = unbound.bindings(&input).unwrap();
-        assert_eq!(bindings.len(), 42);
+        assert_eq!(bindings.len(), 47);
         assert!(
             !bindings
                 .iter()

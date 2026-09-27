@@ -1649,7 +1649,6 @@ impl FereseShell {
         }
 
         let focused_output = self.output_for_bar(id);
-        let focused_output_id = focused_output.map(|output| output.id);
         let shell_theme = self.config.theme.for_bar();
         let bar = BarMetrics::from(shell_theme);
         let mut workspace_row = row::with_capacity(self.snapshot.workspaces.len() + 1)
@@ -1665,23 +1664,33 @@ impl FereseShell {
             self.overview_active,
             1.0,
         ));
-        for workspace in self
-            .snapshot
-            .workspaces
-            .iter()
-            .filter(|workspace| workspace_on_bar(workspace.output, focused_output_id))
-        {
+        let mut workspace_buttons = row::with_capacity(self.snapshot.workspaces.len())
+            .spacing(1)
+            .align_y(cosmic::iced::Alignment::Center);
+        for workspace in &self.snapshot.workspaces {
+            let active = workspace_active_on_bar(workspace.id, focused_output);
+            let owner = workspace
+                .output
+                .and_then(|id| self.snapshot.outputs.iter().find(|output| output.id == id));
             let occupied = self
                 .snapshot
                 .windows
                 .iter()
                 .any(|window| window.workspace == workspace.id);
-            let indicator = workspace_indicator(workspace.active, occupied, bar, shell_theme);
+            let indicator = workspace_indicator(
+                &workspace.name,
+                active,
+                workspace.active && !active,
+                occupied,
+                bar,
+                shell_theme,
+            );
             let workspace_button = button::custom(indicator)
                 .name(format!(
-                    "Workspace {}{}",
+                    "Workspace {}{}{}",
                     workspace.name,
-                    if workspace.active { ", active" } else { "" }
+                    if active { ", active" } else { "" },
+                    owner.map_or(String::new(), |output| format!(", on {}", output.name))
                 ))
                 .height(bar.control_height)
                 .padding(0)
@@ -1691,7 +1700,7 @@ impl FereseShell {
 
             let selector = motion::button(
                 workspace_button,
-                color(if workspace.active {
+                color(if active {
                     shell_theme.accent
                 } else {
                     shell_theme.text_primary
@@ -1702,8 +1711,22 @@ impl FereseShell {
             // Iced tooltips are overlays inside this bar-height layer surface;
             // viewport clamping puts them back over the selector. Keep the
             // accessible button name, without an overlay stealing its target.
-            workspace_row = workspace_row.push(selector);
+            workspace_buttons = workspace_buttons.push(selector);
         }
+        workspace_row = workspace_row.push(container(workspace_buttons).padding([0, 3]).class(
+            theme::Container::custom(move |_| container::Style {
+                background: Some(Background::Color(color_with_opacity(
+                    shell_theme.text_primary,
+                    0.035,
+                ))),
+                border: Border {
+                    color: color_with_opacity(shell_theme.text_muted, 0.12),
+                    width: 1.0,
+                    radius: 7.0.into(),
+                },
+                ..Default::default()
+            }),
+        ));
 
         let foreground = color(shell_theme.text_primary);
         let left = cosmic::iced::widget::scrollable(workspace_row)
@@ -1865,49 +1888,63 @@ fn output_bar_hidden(snapshot: &ShellSnapshot, output: Option<u64>) -> bool {
 }
 
 fn workspace_indicator(
+    name: &str,
     active: bool,
+    active_elsewhere: bool,
     occupied: bool,
     bar: BarMetrics,
     shell_theme: ShellTheme,
 ) -> Element<'static, cosmic::Action<Message>> {
-    let marker = container(text(""))
-        .width(if active { 18.0 } else { 6.0 })
-        .height(6)
-        .class(theme::Container::custom(move |_| {
-            workspace_selector_style(active, occupied, shell_theme)
-        }));
-    container(marker)
-        .width(28)
-        .height(bar.control_height)
-        .align_x(alignment::Horizontal::Center)
-        .align_y(alignment::Vertical::Center)
-        .into()
+    let foreground = if active {
+        shell_theme.accent
+    } else if occupied {
+        shell_theme.text_primary
+    } else {
+        shell_theme.text_muted
+    };
+    container(
+        text(name.to_owned())
+            .size(12)
+            .class(theme::Text::Color(color(foreground))),
+    )
+    .width(24)
+    .height(bar.control_height)
+    .align_x(alignment::Horizontal::Center)
+    .align_y(alignment::Vertical::Center)
+    .class(theme::Container::custom(move |_| {
+        workspace_selector_style(active, active_elsewhere, occupied, shell_theme)
+    }))
+    .into()
 }
 
-fn workspace_on_bar(workspace_output: Option<u64>, bar_output: Option<u64>) -> bool {
-    matches!((workspace_output, bar_output), (Some(workspace), Some(bar)) if workspace == bar)
+fn workspace_active_on_bar(workspace: u64, output: Option<&control::OutputSnapshot>) -> bool {
+    output.is_some_and(|output| output.active_workspace == workspace)
 }
 
 fn workspace_selector_style(
     active: bool,
+    active_elsewhere: bool,
     occupied: bool,
     shell_theme: ShellTheme,
 ) -> container::Style {
     container::Style {
         background: if active {
-            Some(Background::Color(color(shell_theme.accent)))
+            Some(Background::Color(color_with_opacity(
+                shell_theme.accent,
+                0.16,
+            )))
         } else if occupied {
             Some(Background::Color(color_with_opacity(
                 shell_theme.text_primary,
-                0.78,
+                0.04,
             )))
         } else {
             None
         },
         border: Border {
-            color: color_with_opacity(shell_theme.text_muted, 0.55),
-            width: if !active && !occupied { 1.0 } else { 0.0 },
-            radius: 3.0.into(),
+            color: color_with_opacity(shell_theme.accent, 0.55),
+            width: if active_elsewhere { 1.0 } else { 0.0 },
+            radius: 6.0.into(),
         },
         ..Default::default()
     }
@@ -2434,25 +2471,33 @@ mod tests {
     #[test]
     fn workspace_selector_has_distinct_active_paint() {
         let theme = ShellTheme::default();
-        let active = workspace_selector_style(true, false, theme);
-        let occupied = workspace_selector_style(false, true, theme);
-        let inactive = workspace_selector_style(false, false, theme);
+        let active = workspace_selector_style(true, false, false, theme);
+        let occupied = workspace_selector_style(false, false, true, theme);
+        let inactive = workspace_selector_style(false, false, false, theme);
+        let remote = workspace_selector_style(false, true, false, theme);
         assert!(active.background.is_some());
         assert_eq!(
             active.background,
-            Some(Background::Color(color(theme.accent)))
+            Some(Background::Color(color_with_opacity(theme.accent, 0.16)))
         );
         assert!(occupied.background.is_some());
         assert!(inactive.background.is_none());
-        assert_eq!(inactive.border.width, 1.0);
+        assert_eq!(inactive.border.width, 0.0);
+        assert_eq!(remote.border.width, 1.0);
+        assert!(remote.background.is_none());
     }
 
     #[test]
-    fn workspace_selector_is_output_local() {
-        assert!(workspace_on_bar(Some(1), Some(1)));
-        assert!(!workspace_on_bar(Some(2), Some(1)));
-        assert!(!workspace_on_bar(None, Some(1)));
-        assert!(!workspace_on_bar(None, None));
+    fn workspace_highlight_tracks_the_bars_output() {
+        let output = control::OutputSnapshot {
+            id: 1,
+            name: "eDP-1".into(),
+            active_workspace: 2,
+            focused: false,
+        };
+        assert!(workspace_active_on_bar(2, Some(&output)));
+        assert!(!workspace_active_on_bar(1, Some(&output)));
+        assert!(!workspace_active_on_bar(2, None));
     }
 
     #[test]

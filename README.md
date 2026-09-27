@@ -20,11 +20,12 @@ and native Settings app.
 
 - Scrolling columns, tree tiling and floating windows
 - Workspace overview
+- Configurable three-finger workspace and window navigation
 - Configurable animations
 - Built-in bar and control center
 - Native Settings app
 - Desktop widgets
-- Area screenshots saved to disk and copied to the clipboard
+- Area and full-screen screenshots with Satty annotation
 - Themes, blur and gradient borders
 - Multi-monitor support and fractional scaling
 - Live configuration reload
@@ -51,7 +52,7 @@ Requirements (Fedora package names):
 - Default terminal: `foot` (or configure another terminal).
 - Optional: `zenity` for wallpaper browsing, `swayidle` for idle actions,
   and `swaylock` or `swaylock-effects` for locking.
-- Screenshots: `grim`, `slurp`, and `wl-clipboard`.
+- Screenshots: `grim`, `slurp`, `satty`, and `wl-clipboard`.
 
 For a login-screen session alongside your existing desktop:
 
@@ -69,6 +70,13 @@ session logs and rollback.
 
 Built-in defaults (your configuration can override them):
 
+The bar shows workspaces 1–9 in a compact numbered strip, including empty ones.
+Click a number to switch using the same behavior as Super+1–9. A filled button marks this monitor's
+active workspace; an outlined button marks one active on another monitor.
+Three-finger swipes up/down navigate workspaces on this monitor; left/right
+navigate windows. Assign swipes to any keyboard-binding action (including
+overview, move, or a launcher command) in **Settings → Shortcuts**.
+
 | Shortcut | Action |
 | --- | --- |
 | Super + Enter | Open a terminal |
@@ -80,10 +88,13 @@ Built-in defaults (your configuration can override them):
 | Super + Tab | Open workspace and window overview |
 | Super + M | Switch scrolling / tree layout |
 | Super + Shift + S | Select a screenshot area |
+| Print Screen / Fn + PrtSc | Capture the whole screen |
 | Super + Shift + E | Log out immediately—save your work first |
 
-In an installed session, screenshots are saved to `Pictures/Screenshots` and
-copied to the clipboard. Press Escape to cancel the selection.
+Both screenshot shortcuts open Satty for annotation. Press Enter in Satty to
+save to `Pictures/Screenshots` and copy the edited image to the clipboard;
+Escape discards it. Escape also cancels an area selection.
+Run `ferese-screenshot --full` to capture the whole screen from a terminal.
 When focus follows the mouse is enabled, hovering changes keyboard focus without
 raising the window; clicking raises it within its layer.
 

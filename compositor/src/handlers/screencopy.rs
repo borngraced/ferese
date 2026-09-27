@@ -1,10 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use smithay::{
-    backend::{
-        allocator::Fourcc,
-        renderer::{ExportMem, TextureMapping},
-    },
+    backend::{allocator::Fourcc, renderer::ExportMem},
     output::Output,
     reexports::{
         wayland_protocols_wlr::screencopy::v1::server::{
@@ -355,8 +352,8 @@ where
             return false;
         }
 
-        // Preserve the renderer's row order and report it through the protocol
-        // instead of making another full-frame copy on the compositor thread.
+        // Smithay's output projection already accounts for OpenGL's Y axis.
+        // These rows are in output-buffer order, including its output transform.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 source.as_ptr(),
@@ -377,12 +374,11 @@ where
             .frame
             .damage(0, 0, expected.w as u32, expected.h as u32);
     }
-    let flags = if mapping.flipped() {
-        zwlr_screencopy_frame_v1::Flags::YInvert
-    } else {
-        zwlr_screencopy_frame_v1::Flags::empty()
-    };
-    capture.frame.flags(flags);
+    // TextureMapping::flipped describes importing the mapping as a texture;
+    // using it here would make clients flip the already-correct output rows.
+    capture
+        .frame
+        .flags(zwlr_screencopy_frame_v1::Flags::empty());
 
     let seconds = timestamp.as_secs();
     capture.frame.ready(
