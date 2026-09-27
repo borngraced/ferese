@@ -58,6 +58,8 @@ enum Message {
     Undo,
     Preset(usize),
     PickWallpaper,
+    PreviewLock,
+    LockPreviewStarted(Result<(), String>),
     AddNote,
     NoteAction(String, widget::text_editor::Action),
     SaveNote(String, u64),
@@ -248,6 +250,35 @@ impl cosmic::Application for App {
                 }
                 Err(error) => self.error = Some(format!("Config reload failed: {error}")),
             },
+            Message::PreviewLock => {
+                let path = self.path.clone();
+                return Task::perform(
+                    async move {
+                        let binary = std::env::current_exe()
+                            .ok()
+                            .and_then(|p| p.parent().map(|p| p.join("ferese-lock")))
+                            .filter(|p| p.is_file())
+                            .unwrap_or_else(|| "ferese-lock".into());
+                        std::process::Command::new(binary)
+                            .arg("--preview")
+                            .arg("--config")
+                            .arg(path)
+                            .spawn()
+                            .map(|mut child| {
+                                std::thread::spawn(move || {
+                                    let _ = child.wait();
+                                });
+                            })
+                            .map_err(|error| format!("Could not open the lock preview: {error}"))
+                    },
+                    |result| cosmic::Action::App(Message::LockPreviewStarted(result)),
+                );
+            }
+            Message::LockPreviewStarted(result) => {
+                if let Err(error) = result {
+                    self.error = Some(error);
+                }
+            }
             Message::Page(page) => {
                 self.page = page;
                 self.search.clear();
@@ -671,6 +702,13 @@ impl cosmic::Application for App {
             }
 
             match self.page {
+                Page::LockScreen => {
+                    body = body.push(self.note("Uses your wallpaper, shell colors, font and corner radius from Appearance. Changes apply when the locker or preview opens."));
+                    body = body.push(
+                        button::standard("Preview lock screen").on_press(Message::PreviewLock),
+                    );
+                    body = body.push(self.note("The preview is an ordinary window and does not lock your session. Automatic locking is configured separately in Login items."));
+                }
                 Page::Desktop => {
                     let can_change_list =
                         !self.saving && !self.note_editors.values().any(|e| e.dirty);

@@ -366,10 +366,16 @@ autostart {
 }
 ```
 
-`ferese-lock` uses swaylock/swaylock-effects and optional
-`~/.config/ferese/swaylock.conf`. Test unlock in a nested preview before enabling
-automatic locking. A crashed locker leaves the session locked; recovery requires
-ending the session from another TTY.
+`ferese-lock` is the native PAM-authenticated locker. It follows your wallpaper,
+colors, font and shell corner radius. Its command returns successfully only after
+the compositor confirms the lock; the UI keeps running until authentication
+succeeds. `--foreground` keeps the command attached to its UI process.
+
+Use `ferese-lock --preview` for an ordinary window that never locks or checks a
+password. See [Native locker](locking.md) for setup and verification. Test real
+unlock in a nested compositor before enabling automatic locking. A crashed
+locker leaves the session locked; recovery requires ending that session from
+another TTY.
 
 ## Optional session protocols
 

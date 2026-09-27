@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-config=${XDG_CONFIG_HOME:-$HOME/.config}/ferese/swaylock.conf
-if [[ -f $config ]]; then
-    exec swaylock --config "$config" --daemonize
-fi
-exec swaylock --color 0f1014 --daemonize

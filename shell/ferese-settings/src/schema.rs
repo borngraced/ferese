@@ -5,6 +5,7 @@ pub enum Page {
     Desktop,
     Bar,
     Notifications,
+    LockScreen,
     Windows,
     Motion,
     Keyboard,
@@ -14,12 +15,13 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Appearance,
         Self::Wallpaper,
         Self::Desktop,
         Self::Bar,
         Self::Notifications,
+        Self::LockScreen,
         Self::Windows,
         Self::Motion,
         Self::Keyboard,
@@ -35,6 +37,7 @@ impl Page {
             Self::Desktop => "Desktop widgets",
             Self::Bar => "Menu bar",
             Self::Notifications => "Notifications",
+            Self::LockScreen => "Lock screen",
             Self::Windows => "Windows",
             Self::Motion => "Motion",
             Self::Keyboard => "Keyboard & mouse",
@@ -51,6 +54,7 @@ impl Page {
             Self::Desktop => "A clock that feels at home on your wallpaper.",
             Self::Bar => "Everything you need, within reach.",
             Self::Notifications => "Stay informed on your terms.",
+            Self::LockScreen => "Your desktop, safely put away.",
             Self::Windows => "Make room for the way you work.",
             Self::Motion => "Find your rhythm.",
             Self::Keyboard => "Fine-tune the everyday details.",
@@ -69,6 +73,7 @@ impl Page {
             Self::Desktop => "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0 M12 7v5l3 2",
             Self::Bar => "M3 5h18v14H3z M3 9h18 M6 7h.01 M18 7h.01",
             Self::Notifications => "M6 8a6 6 0 0 1 12 0v6l2 3H4l2-3z M10 21h4",
+            Self::LockScreen => "M7 10V7a5 5 0 0 1 10 0v3 M5 10h14v11H5z M12 14v3",
             Self::Windows => "M3 4h12v12H3z M8 9h13v12H8z",
             Self::Motion => "M3 8h9a3 3 0 1 0-3-3 M3 12h15a3 3 0 1 1-3 3 M3 16h5",
             Self::Keyboard => {
@@ -544,6 +549,49 @@ pub fn note_fields(index: usize) -> Vec<Field> {
 
 pub fn fields(page: Page) -> Vec<Field> {
     match page {
+        Page::LockScreen => vec![
+            toggle(
+                "lock_screen.show_clock",
+                "Show clock",
+                "Display the time above the sign-in card.",
+                true,
+            ),
+            toggle(
+                "lock_screen.show_date",
+                "Show date",
+                "Display the weekday and date.",
+                true,
+            ),
+            choice(
+                "lock_screen.clock_format",
+                "Clock format",
+                "Use a 12-hour or 24-hour clock.",
+                "24h",
+                &[("24h", "24-hour"), ("12h", "12-hour")],
+            ),
+            range(
+                "lock_screen.background_blur",
+                "Wallpaper softness",
+                "Blur the lock screen wallpaper. Zero keeps the original image sharp.",
+                18.0,
+                0.0,
+                40.0,
+                1.0,
+                "",
+                false,
+            ),
+            range(
+                "lock_screen.background_dim",
+                "Wallpaper dimming",
+                "Darken the wallpaper behind the clock and sign-in card.",
+                0.48,
+                0.0,
+                0.9,
+                0.02,
+                "",
+                false,
+            ),
+        ],
         Page::Appearance => vec![
             range(
                 "theme.geometry.shell_radius",

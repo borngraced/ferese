@@ -39,12 +39,24 @@ if [[ -e $session_entry ]]; then
         echo "Different session entry exists: $session_entry" >&2; exit 1;
     }
 fi
-for name in ferese ferese-shell ferese-settings feresectl; do
+for name in ferese ferese-shell ferese-settings feresectl ferese-lock; do
     [[ -x $repo_dir/target/release/$name ]] || { echo "Missing release binary: $name" >&2; exit 1; }
 done
 for name in ferese.png ferese.svg; do
     [[ -f $repo_dir/assets/wallpapers/$name ]] || { echo "Missing wallpaper asset: $name" >&2; exit 1; }
 done
+# Preserve administrator-supplied policies. New installs use the distro's
+# authentication and account stacks, never a permissive fallback.
+pam_policy=generic
+if [[ -f /etc/pam.d/system-auth ]]; then
+    pam_policy=fedora
+elif [[ -f /etc/pam.d/common-auth && -f /etc/pam.d/common-account ]]; then
+    pam_policy=debian
+elif [[ ! -f /etc/pam.d/login && ! -f /etc/pam.d/ferese-lock ]]; then
+    echo 'No supported PAM stack found; install /etc/pam.d/ferese-lock first.' >&2
+    exit 1
+fi
+
 desktop-file-validate "$repo_dir/packaging/ferese.desktop"
 desktop-file-validate "$repo_dir/packaging/dev.ferese.Settings.desktop"
 
@@ -52,11 +64,10 @@ install -d -m 0755 -- "$release_dir" /usr/local/bin /usr/share/wayland-sessions
 if [[ -e $session_entry ]]; then
     install -m 0644 -- "$session_entry" "$release_dir/session.previous.desktop"
 fi
-for name in ferese ferese-shell ferese-settings feresectl; do
+for name in ferese ferese-shell ferese-settings feresectl ferese-lock; do
     install -m 0755 -- "$repo_dir/target/release/$name" "$release_dir/$name"
 done
 install -m 0755 -- "$repo_dir/packaging/ferese-session" "$release_dir/ferese-session"
-install -m 0755 -- "$repo_dir/packaging/ferese-lock" "$release_dir/ferese-lock"
 install -m 0755 -- "$repo_dir/packaging/ferese-screenshot" "$release_dir/ferese-screenshot"
 install -m 0644 -- "$repo_dir/packaging/config.kdl" "$release_dir/config.example.kdl"
 install -D -m 0644 -- "$repo_dir/assets/fonts/Comfortaa-LICENSE.txt" "$release_dir/licenses/Comfortaa-LICENSE.txt"
@@ -64,6 +75,10 @@ install -D -m 0644 -- "$repo_dir/assets/fonts/Cantarell-LICENSE.txt" "$release_d
 install -d -m 0755 -- "$release_dir/wallpapers"
 install -m 0644 -- "$repo_dir/assets/wallpapers/ferese.png" "$release_dir/wallpapers/ferese.png"
 install -m 0644 -- "$repo_dir/assets/wallpapers/ferese.svg" "$release_dir/wallpapers/ferese.svg"
+
+if [[ ! -e /etc/pam.d/ferese-lock ]]; then
+    install -D -m 0644 -- "$repo_dir/packaging/pam.d/ferese-lock.$pam_policy" /etc/pam.d/ferese-lock
+fi
 
 if [[ -L $install_root/current ]]; then
     ln -sfn -- "$(readlink -- "$install_root/current")" "$install_root/previous"
@@ -78,4 +93,4 @@ install -D -m 0644 -- "$repo_dir/packaging/dev.ferese.Settings.desktop" /usr/loc
 install -D -m 0644 -- "$repo_dir/packaging/icons/ferese.svg" /usr/local/share/icons/hicolor/scalable/apps/dev.ferese.Settings.svg
 install -D -m 0644 -- "$repo_dir/packaging/icons/ferese.svg" /usr/local/share/icons/hicolor/scalable/apps/ferese.svg
 if command -v update-desktop-database >/dev/null; then update-desktop-database /usr/local/share/applications || true; fi
-echo "Installed Ferese $release_id. Select Ferese in SDDM."
+echo "Installed Ferese $release_id. Select Ferese at your login screen, or run /usr/local/bin/ferese-session from a local TTY."

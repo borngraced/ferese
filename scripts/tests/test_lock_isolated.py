@@ -1,0 +1,61 @@
+"""Opt-in lock protocol smoke test. Opens a temporary nested compositor.
+Run: FERESE_TEST_LOCK=1 python3 scripts/tests/test_lock_isolated.py
+Requires release binaries, bwrap and grim. Host PAM is never modified.
+"""
+import os
+import unittest
+from pathlib import Path
+
+@unittest.skipUnless(os.environ.get("FERESE_TEST_LOCK") == "1", "visible nested lock test is opt-in")
+class NativeLockTest(unittest.TestCase):
+    def test_confirmation_capture_and_crash(self):
+        import os, pathlib, signal, subprocess, tempfile, time
+        os.chdir(Path(__file__).resolve().parents[2])
+        root=pathlib.Path(tempfile.mkdtemp(prefix='ferese-lock-test-'))
+        runtime=root/'runtime';runtime.mkdir(mode=0o700)
+        config=root/'config'/'ferese';config.mkdir(parents=True)
+        (config/'config.kdl').write_text('')
+        pam=root/'pam';pam.mkdir()
+        # Deny-only policy confined to a mount namespace; never changes host PAM.
+        (pam/'ferese-lock').write_text('auth required pam_deny.so\naccount required pam_deny.so\n')
+        host_display=os.environ.get('WAYLAND_DISPLAY','wayland-1')
+        if not host_display.startswith('/'):host_display=str(pathlib.Path(os.environ['XDG_RUNTIME_DIR'])/host_display)
+        env=dict(os.environ,XDG_RUNTIME_DIR=str(runtime),XDG_CONFIG_HOME=str(root/'config'),WAYLAND_DISPLAY=host_display,FERESE_ENABLE_SCREENCOPY='1')
+        log=(root/'compositor.log').open('w')
+        compositor=subprocess.Popen(['target/release/ferese','--backend','nested'],env=env,stdout=log,stderr=subprocess.STDOUT)
+        locker=None
+        locker_log=(root/'locker.log').open('w')
+        try:
+            for _ in range(100):
+                if compositor.poll() is not None:raise RuntimeError('Nested compositor exited')
+                sockets=[p for p in runtime.glob('wayland-*') if not p.name.endswith('.lock')]
+                if sockets:break
+                time.sleep(.1)
+            childenv=dict(env,WAYLAND_DISPLAY=str(sockets[0]),FERESE_LOCK_READY='1')
+            time.sleep(.6)
+            subprocess.run(['grim',str(root/'unlocked.png')],env=childenv,check=True,timeout=10,capture_output=True)
+            locker=subprocess.Popen(['bwrap','--bind','/','/','--dev-bind','/dev','/dev','--ro-bind',str(pam),'/etc/pam.d','--unshare-user','--','target/release/ferese-lock'],env=childenv,stdout=subprocess.DEVNULL,stderr=locker_log,start_new_session=True)
+            assert locker.wait(timeout=20) == 0, (root/'locker.log').read_text()
+            print('Native locker received compositor confirmation',flush=True)
+            result=subprocess.run(['grim',str(root/'locked.png')],env=childenv,timeout=10,capture_output=True)
+            assert result.returncode != 0, 'Capture unexpectedly succeeded during lock'
+            print('Screencopy denied while native locker is running',flush=True)
+            os.killpg(locker.pid, signal.SIGKILL)
+            time.sleep(.3)
+            result=subprocess.run(['grim',str(root/'after-crash.png')],env=childenv,timeout=10,capture_output=True)
+            assert result.returncode != 0, 'Capture unexpectedly succeeded after locker crash'
+            print('Screencopy remains denied after locker crash',flush=True)
+        finally:
+            if locker is not None:
+                try: os.killpg(locker.pid, signal.SIGKILL)
+                except ProcessLookupError: pass
+                locker.wait()
+            compositor.terminate()
+            try:compositor.wait(timeout=5)
+            except subprocess.TimeoutExpired:compositor.kill();compositor.wait()
+            log.close()
+            locker_log.close()
+            print(root,flush=True)
+
+if __name__ == "__main__":
+    unittest.main()

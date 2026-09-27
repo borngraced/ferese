@@ -10,6 +10,7 @@ members = [
     "crates/ferese-protocols",
     "shell/ferese-shell",
     "shell/ferese-settings",
+    "shell/ferese-lock",
 ]
 resolver = "3"
 
