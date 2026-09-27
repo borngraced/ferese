@@ -1,44 +1,63 @@
 <p align="center">
-  <img src="packaging/icons/ferese.svg" width="88" height="88" alt="Ferese logo">
+  <img src="docs/images/ferese-lockup.svg" width="300" alt="Ferese">
 </p>
 
-<h1 align="center">Ferese</h1>
-
-<p align="center">Just another Wayland window manager with sensible defaults.</p>
+<p align="center"><strong>A beautiful, fluid Wayland desktop made to feel like yours.</strong></p>
 
 <p align="center">
   <a href="docs/installation.md">Install</a> ·
   <a href="docs/configuration.md">Configure</a> ·
-  <a href="#try-it">Try it</a> ·
-  <a href="docs/desktop-widgets.md">Widgets</a>
+  <a href="docs/desktop-widgets.md">Widgets</a> ·
+  <a href="docs/notifications.md">Notifications</a>
 </p>
 
-Ferese is built in Rust on Smithay, with its own menu bar, control center
-and native Settings app.
+Ferese is a complete Wayland desktop built around personalization. Its custom
+shell, native settings, live-reloading themes and wallpapers, desktop widgets,
+fluid animations, and scrolling and tiling layouts work together as one
+cohesive experience—beautiful by default and unmistakably yours.
 
 ![Ferese desktop with a stacked clock widget, compact workspace bar, and control center](docs/images/ferese-desktop.png)
 
+## One cohesive desktop
+
+- **Flexible layouts:** scrolling columns, tree tiling, floating windows and a
+  workspace overview.
+- **A native shell:** menu bar, control center, settings, notifications and
+  desktop widgets designed to belong together.
+- **Personal by design:** themes, wallpapers, accent colors, blur, borders and
+  motion that update without restarting your session.
+- **Ready for real setups:** gestures, multi-monitor support, fractional
+  scaling, screenshots, background services and session locking.
+
+## Make it yours
+
+Use the native Settings app for everyday customization, or edit
+`~/.config/ferese/config.kdl` when you want complete control. Ferese reloads
+changes as you make them and keeps the last working configuration if an edit is
+invalid.
+
 ![Ferese Settings showing the Monochrome theme and appearance presets](docs/images/ferese-monochrome.png)
 
-## Features
+Choose a preset or build your own look. Window behavior, gestures, shortcuts,
+rules, displays, widgets and login items are configurable too. Start with the
+[configuration guide](docs/configuration.md) or the
+[example config](packaging/config.kdl).
 
-- Scrolling columns, tree tiling and floating windows
-- Workspace overview
-- Configurable three-finger workspace and window navigation
-- Configurable animations
-- Built-in bar and control center
-- Native Settings app
-- Desktop widgets
-- Area and full-screen screenshots with Satty annotation
-- [Native themed notifications and history](docs/notifications.md)
-- Themes, blur and gradient borders
-- Multi-monitor support and fractional scaling
-- Live configuration reload
-- Background services and session locking
+## Install
 
-## Try it
+The current installation guide covers Fedora with SDDM. After installing the
+[prerequisites](docs/installation.md), run:
 
-Preview Ferese inside your current Wayland desktop:
+```sh
+./scripts/install.sh
+```
+
+Log out, select **Ferese** at the login screen, and sign in. The installer keeps
+your configuration and the previous release for rollback. See
+[installation and recovery](docs/installation.md) for the full setup and safety
+notes.
+
+To preview Ferese inside your current Wayland desktop instead:
 
 ```sh
 cargo build --release --locked -p ferese -p ferese-shell -p ferese-settings -p feresectl
@@ -46,78 +65,28 @@ target/release/ferese --backend nested --grant-effects --grant-shell-control -- 
   target/release/ferese-shell
 ```
 
-Requirements (Fedora package names):
-
-- Rust 1.93+ and Cargo.
-- Build tools: `gcc`, `gcc-c++`, `cmake`, `make`, `pkgconf-pkg-config`.
-- Wayland and input: `wayland-devel`, `libxkbcommon-devel`, `libinput-devel`.
-- Graphics: `libdrm-devel`, `mesa-libgbm-devel`, `mesa-libEGL-devel`.
-- Session and fonts: `systemd-devel`, `libseat-devel`, `fontconfig-devel`.
-- Installation: `desktop-file-utils`, `dbus`.
-- Default terminal: `foot` (or configure another terminal).
-- Optional: `zenity` for wallpaper browsing, `swayidle` for idle actions,
-  and `swaylock` or `swaylock-effects` for locking.
-- Screenshots: `grim`, `slurp`, `satty`, and `wl-clipboard`.
-
-For a login-screen session alongside your existing desktop:
-
-```sh
-./scripts/install.sh
-```
-
-The installer preserves your configuration and keeps previous releases for
-rollback. Log out and select **Ferese** at the login screen. An upgrade does
-not replace the running compositor: log out and back in to activate it.
-See [installation and recovery](docs/installation.md) for prerequisites,
-session logs and rollback.
-
 ## Get around
 
-Built-in defaults (your configuration can override them):
-
-A single-display session starts with workspace 1 in a compact numbered strip.
-More workspaces are created when you use Super+1–9 or swipe forward past the last
-workspace. Click a number to switch. A filled button marks this monitor's
-active workspace; an outlined button marks one active on another monitor.
-Status controls and the clock use matching compact groups. The control center
-opens as one rounded panel with grouped controls and a Settings shortcut.
-Three-finger swipes up/down navigate workspaces on this monitor; left/right
-navigate windows. Assign swipes to any keyboard-binding action (including
-overview, move, or a launcher command) in **Settings → Shortcuts**.
+These are the built-in defaults; every shortcut and gesture can be changed.
 
 | Shortcut | Action |
 | --- | --- |
 | Super + Enter | Open a terminal |
 | Super + H / J / K / L | Focus a window |
 | Super + R | Cycle column width |
-| Super + C | Center the focused column |
-| Super + F | Maximize, keeping the bar and decorations |
-| Super + Shift + F | True fullscreen |
 | Super + Tab | Open workspace and window overview |
 | Super + M | Switch scrolling / tree layout |
 | Super + Shift + S | Select a screenshot area |
-| Print Screen / Fn + PrtSc | Capture the whole screen |
-| Super + Shift + E | Log out immediately—save your work first |
 
-Both screenshot shortcuts open Satty for annotation. Press Enter in Satty to
-save to `Pictures/Screenshots` and copy the edited image to the clipboard;
-Escape discards it. Escape also cancels an area selection.
-Run `ferese-screenshot --full` to capture the whole screen from a terminal.
-When focus follows the mouse is enabled, hovering changes keyboard focus without
-raising the window; clicking raises it within its layer.
+Three-finger swipes move between workspaces and windows. Open **Control Center →
+Settings → Shortcuts** to change them or assign gestures to other actions.
 
-## Make it yours
+## Documentation
 
-Open **Control Center → Settings**, or run `ferese-settings`. Appearance includes
-six presets: Ferese Blue, Monochrome, Gruvbox, Dracula, Ayu Light, and Monokai.
-The custom Ferese wallpaper is bundled as the default. Choose another image in
-Settings → Wallpaper, or keep your existing wallpaper configuration.
-Advanced options live in `~/.config/ferese/config.kdl` (or under
-`$XDG_CONFIG_HOME`). Changes reload automatically. The complete
-[configuration reference](docs/configuration.md) covers every supported option;
-the [example config](packaging/config.kdl) is a starting point. KDL uses compact nested sections
-and bindings such as `binding "Swipe3Up" "toggle-overview"`. See the
-[configuration guide](docs/configuration.md#kdl-syntax).
+- [Installation and recovery](docs/installation.md)
+- [Configuration reference](docs/configuration.md)
+- [Desktop widgets](docs/desktop-widgets.md)
+- [Notifications](docs/notifications.md)
 
 ## Development
 
@@ -126,8 +95,6 @@ cargo test --workspace --locked
 cargo fmt --all --check
 ```
 
-Use release builds when evaluating animation and startup performance.
-`RUST_LOG=ferese=debug` enables detailed logs;
-`FERESE_TRACE_PERFORMANCE=1` enables per-output performance summaries.
-Test hardware behavior on your own setup, especially suspend/resume and locking.
-Keep a working desktop session available while testing changes.
+Ferese is built in Rust on Smithay. Use release builds when evaluating motion
+and startup performance, and keep another desktop session available while
+testing hardware behavior.
