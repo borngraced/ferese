@@ -1376,7 +1376,16 @@ impl Ferese {
                             };
                             rect
                         }
-                        Some(WindowPlacement::Floating { rect }) => rect,
+                        Some(WindowPlacement::Floating { rect }) => {
+                            let constrained = constrained_floating_rect(
+                                rect,
+                                constraints.get(id).copied().unwrap_or_default(),
+                            );
+                            if constrained != rect {
+                                let _ = self.workspaces.set_floating_rect(*id, constrained);
+                            }
+                            constrained
+                        }
                         None => continue,
                     }
                 };
@@ -1989,6 +1998,55 @@ impl Ferese {
                 self.window_geometry
                     .insert(id, WindowGeometry::new(rect, Some(size)));
                 self.resize_transactions.remove(&id);
+                self.relayout();
+            }
+        }
+        // A normal floating client may choose a different size (minimum sizes,
+        // terminal cell grids, or a dialog changing its contents). Its committed
+        // window geometry is authoritative once the latest configure is committed.
+        // Never let an old buffer undo a newer resize or a fullscreen transition.
+        let settled_configure = window.toplevel().is_some_and(|toplevel| {
+            with_states(toplevel.wl_surface(), |states| {
+                states
+                    .data_map
+                    .get::<XdgToplevelSurfaceData>()
+                    .is_some_and(|data| {
+                        let Ok(data) = data.lock() else { return false };
+                        floating_commit_is_current(
+                            data.pending_configures().is_empty(),
+                            data.current_serial,
+                            data.configure_serial,
+                            data.current.states.contains(xdg_toplevel::State::Resizing),
+                        )
+                    })
+            })
+        });
+        let fullscreen = self
+            .workspaces
+            .workspace_for_window(id)
+            .and_then(|workspace| self.workspaces.workspace(workspace))
+            .is_some_and(|workspace| workspace.fullscreen == Some(id));
+        if settled_configure
+            && !fullscreen
+            && !self.maximized_windows.contains(&id)
+            && self
+                .window_geometry
+                .get(&id)
+                .is_some_and(|geometry| !geometry.is_zooming())
+            && let Some(WindowPlacement::Floating { rect }) = self.workspaces.placement(id)
+            && ClientSize::from_rect(rect) != size
+        {
+            let rect = Rect::new(
+                rect.x,
+                rect.y,
+                f64::from(size.width),
+                f64::from(size.height),
+            );
+            if self.workspaces.set_floating_rect(id, rect).is_ok() {
+                self.window_geometry
+                    .insert(id, WindowGeometry::new(rect, Some(size)));
+                self.resize_transactions.remove(&id);
+                self.resize_snapshots.remove(&id);
                 self.relayout();
             }
         }
@@ -2707,6 +2765,38 @@ fn centered_floating_rect(bounds: Rect) -> Rect {
     )
 }
 
+fn floating_commit_is_current(
+    no_pending_configures: bool,
+    committed: Option<smithay::utils::Serial>,
+    acknowledged: Option<smithay::utils::Serial>,
+    resizing: bool,
+) -> bool {
+    no_pending_configures && committed.is_some() && committed == acknowledged && !resizing
+}
+
+fn constrained_floating_rect(rect: Rect, constraints: SizeConstraints) -> Rect {
+    let min_width = constraints.min_width.max(1.0);
+    let min_height = constraints.min_height.max(1.0);
+    Rect::new(
+        rect.x,
+        rect.y,
+        rect.width.clamp(
+            min_width,
+            constraints
+                .max_width
+                .unwrap_or(f64::INFINITY)
+                .max(min_width),
+        ),
+        rect.height.clamp(
+            min_height,
+            constraints
+                .max_height
+                .unwrap_or(f64::INFINITY)
+                .max(min_height),
+        ),
+    )
+}
+
 fn natural_floating_rect(bounds: Rect, size: ClientSize) -> Rect {
     let width = f64::from(size.width).clamp(1.0, bounds.width.max(1.0));
     let height = f64::from(size.height).clamp(1.0, bounds.height.max(1.0));
@@ -2786,6 +2876,44 @@ impl ClientData for ClientState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn floating_sizes_respect_client_limits_without_moving_the_window() {
+        let rect = Rect::new(40., 60., 300., 200.);
+        let constraints = SizeConstraints {
+            min_width: 640.,
+            min_height: 480.,
+            max_width: Some(900.),
+            max_height: Some(700.),
+        };
+        assert_eq!(
+            constrained_floating_rect(rect, constraints),
+            Rect::new(40., 60., 640., 480.)
+        );
+        assert_eq!(
+            constrained_floating_rect(Rect::new(40., 60., 1000., 800.), constraints),
+            Rect::new(40., 60., 900., 700.)
+        );
+        assert_eq!(
+            constrained_floating_rect(rect, SizeConstraints::default()),
+            rect
+        );
+    }
+
+    #[test]
+    fn floating_commits_cannot_undo_pending_or_interactive_resizes() {
+        let serial = Some(12.into());
+        assert!(floating_commit_is_current(true, serial, serial, false));
+        assert!(!floating_commit_is_current(false, serial, serial, false));
+        assert!(!floating_commit_is_current(
+            true,
+            Some(11.into()),
+            serial,
+            false
+        ));
+        assert!(!floating_commit_is_current(true, serial, serial, true));
+        assert!(!floating_commit_is_current(true, None, None, false));
+    }
+
     #[test]
     fn display_reposition_moves_floats_with_their_output_and_clamps_after_shrinking() {
         let old = ferese_layout::Rect::new(0., 0., 1920., 1080.);
