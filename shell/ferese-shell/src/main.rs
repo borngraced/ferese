@@ -2,6 +2,8 @@ mod config;
 mod control;
 mod motion;
 mod note_store;
+mod notification_ui;
+mod notifications;
 mod status;
 mod status_ui;
 
@@ -199,6 +201,8 @@ struct FereseShell {
     clock: String,
     desktop_clock: (String, String),
     outputs: Vec<OutputSurfaces>,
+    notifications: notifications::Center,
+    notification_surface: Option<notification_ui::NotificationSurface>,
     status_service: status::Service,
     status: status::Snapshot,
     status_error: Option<String>,
@@ -260,6 +264,14 @@ enum Message {
     ActivateWorkspace(u64),
     ToggleOverview,
     StatusUpdated(status::Update),
+    NotificationEvent(notifications::Event),
+    NotificationTick,
+    DismissNotification(u32),
+    RemoveNotification(u32),
+    InvokeNotification(u32, String),
+    HoverNotification(u32, bool),
+    ToggleNotificationHistory,
+    ClearNotifications,
     AnimateMenu,
     OpenMenu(status_ui::Menu, cosmic::iced::Rectangle<i32>),
     OpenMenuOn(window::Id, status_ui::Menu, cosmic::iced::Rectangle<i32>),
@@ -293,6 +305,8 @@ impl cosmic::Application for FereseShell {
         let app = Self {
             core,
             bar_surface_id,
+            notifications: notifications::Center::new(config.notifications.clone()),
+            notification_surface: None,
             status_service: status::Service::start(config.status.settings_command.clone()),
             status: status::Snapshot::default(),
             status_error: None,
@@ -332,6 +346,21 @@ impl cosmic::Application for FereseShell {
 
     fn subscription(&self) -> Subscription<Self::Message> {
         Subscription::batch([
+            self.notifications
+                .subscription()
+                .map(Message::NotificationEvent),
+            if self.notifications.has_toasts() {
+                cosmic::iced::time::every(Duration::from_millis(
+                    if self.notifications.animating() {
+                        16
+                    } else {
+                        250
+                    },
+                ))
+                .map(|_| Message::NotificationTick)
+            } else {
+                Subscription::none()
+            },
             event::listen_with(|event, _status, id| match &event {
                 Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(..))) => {
                     EFFECT_FRAME_PENDING
@@ -498,18 +527,74 @@ impl cosmic::Application for FereseShell {
                     self.status = update.snapshot;
                     self.status_error = update.error;
                 }
-                Task::none()
+                self.notifications.tick();
+                if self.notifications.ready {
+                    self.status.notifications = Some(status::Notifications {
+                        count: self.notifications.unread(),
+                        dnd: self.notifications.dnd,
+                    });
+                }
+                self.sync_notification_surface()
+            }
+            Message::NotificationEvent(event) => {
+                self.notifications.handle_event(event);
+                if self.notifications.ready {
+                    self.status.notifications = Some(status::Notifications {
+                        count: self.notifications.unread(),
+                        dnd: self.notifications.dnd,
+                    });
+                }
+                self.sync_notification_surface()
+            }
+            Message::NotificationTick => {
+                self.notifications.tick();
+                self.sync_notification_surface()
+            }
+            Message::DismissNotification(id) => {
+                self.notifications.close(id, 2);
+                self.sync_notification_surface()
+            }
+            Message::RemoveNotification(id) => {
+                self.notifications.dismiss(id);
+                self.sync_notification_surface()
+            }
+            Message::InvokeNotification(id, action) => {
+                self.notifications.invoke(id, action);
+                self.sync_notification_surface()
+            }
+            Message::HoverNotification(id, hovered) => {
+                self.notifications.hover(id, hovered);
+                self.sync_notification_surface()
+            }
+            Message::ToggleNotificationHistory => {
+                self.notifications.toggle_history();
+                self.sync_notification_surface()
+            }
+            Message::ClearNotifications => {
+                self.notifications.clear();
+                self.sync_notification_surface()
             }
             Message::AnimateMenu => self.animate_menu(),
             Message::OpenMenu(kind, anchor) => self.open_menu(kind, anchor),
             Message::OpenMenuOn(id, kind, anchor) => {
+                if kind == status_ui::Menu::Notifications && self.notifications.ready {
+                    self.notifications.toggle_history();
+                    return Task::batch([self.destroy_menu(), self.sync_notification_surface()]);
+                }
+                let hide_history = if self.notifications.history_open {
+                    self.notifications.history_open = false;
+                    self.sync_notification_surface()
+                } else {
+                    Task::none()
+                };
                 if self.bar_surface_id != id {
                     let destroy = self.destroy_menu();
                     self.bar_surface_id = id;
                     let open = self.open_menu(kind, anchor);
-                    Task::batch([destroy, open])
+                    Task::batch([hide_history, destroy, open])
                 } else {
-                    self.open_menu(kind, anchor)
+                    let open = self.open_menu(kind, anchor);
+                    Task::batch([hide_history, open])
                 }
             }
             Message::ConfirmPower(action) => {
@@ -525,6 +610,26 @@ impl cosmic::Application for FereseShell {
                 Task::none()
             }
             Message::Control(action) => {
+                if self.notifications.ready {
+                    match action {
+                        status::Action::Dnd(value) => {
+                            self.notifications.dnd = value;
+                            self.status.notifications = Some(status::Notifications {
+                                count: self.notifications.unread(),
+                                dnd: value,
+                            });
+                            return Task::none();
+                        }
+                        status::Action::Notifications => {
+                            self.notifications.toggle_history();
+                            return Task::batch([
+                                self.close_menu(),
+                                self.sync_notification_surface(),
+                            ]);
+                        }
+                        _ => {}
+                    }
+                }
                 self.status_error = self.status_service.send(action.clone()).err();
                 if self.status_error.is_none() {
                     self.optimistic_status(&action);
@@ -675,6 +780,7 @@ impl FereseShell {
             || old.bar_margin_top != theme.bar_margin_top
             || old.bar_margin_horizontal != theme.bar_margin_horizontal
             || old.bar_window_gap != theme.bar_window_gap;
+        self.notifications.configure(config.notifications.clone());
         self.config = config;
         self.desktop_clock = self
             .config
@@ -1622,6 +1728,10 @@ impl FereseShell {
             }
             if self.note_editor.is_some() {
                 return self.finish_note_edit();
+            }
+            if self.notifications.history_open {
+                self.notifications.history_open = false;
+                return self.sync_notification_surface();
             }
         }
         match event {

@@ -1,4 +1,5 @@
 pub mod desktop;
+pub mod notifications;
 mod output;
 mod workspace;
 

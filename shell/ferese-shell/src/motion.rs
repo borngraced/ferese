@@ -49,6 +49,14 @@ pub(crate) fn configure(settings: Settings) {
         .unwrap() = settings;
 }
 
+pub(crate) fn notification_duration() -> std::time::Duration {
+    SETTINGS
+        .get_or_init(|| std::sync::RwLock::new(Settings::default()))
+        .read()
+        .unwrap()
+        .duration(180.0)
+}
+
 pub(crate) struct PopupMotion {
     start: f32,
     target: f32,

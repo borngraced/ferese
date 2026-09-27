@@ -7,6 +7,7 @@ const DEFAULT_BACKGROUND: [u8; 3] = [11, 15, 20];
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ShellConfig {
+    pub(crate) notifications: ferese_core::notifications::NotificationConfig,
     pub(crate) desktop_widgets: ferese_core::desktop::DesktopWidgets,
     pub(crate) animations: crate::motion::Settings,
     pub(crate) font_family: Option<String>,
@@ -126,6 +127,8 @@ pub(crate) enum WallpaperMode {
 
 #[derive(Debug, Default, Deserialize)]
 struct FereseConfig {
+    #[serde(default)]
+    notifications: ferese_core::notifications::NotificationConfig,
     #[serde(default)]
     desktop_widgets: ferese_core::desktop::DesktopWidgets,
     #[serde(default)]
@@ -319,6 +322,10 @@ pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, ferese_config::E
     match ferese_config::from_str::<FereseConfig>(source) {
         Ok(config) => {
             config
+                .notifications
+                .validate()
+                .map_err(ferese_config::Error::from)?;
+            config
                 .desktop_widgets
                 .validate()
                 .map_err(ferese_config::Error::from)?;
@@ -327,6 +334,7 @@ pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, ferese_config::E
                 nonnegative_or(config.appearance.corner_radius.unwrap_or(14.0), 14.0);
 
             Ok(ShellConfig {
+                notifications: config.notifications,
                 desktop_widgets: config.desktop_widgets,
                 animations: config.animations,
                 font_family: config.theme.typography.font_family,
