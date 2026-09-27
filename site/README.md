@@ -28,7 +28,7 @@ site sources or Markdown guides, then refresh the browser.
 
 Select **Settings → Pages → Source → GitHub Actions**. The Pages workflow
 publishes site and documentation changes pushed to `main`, or can run manually.
-Expected URL: https://borngraced.github.io/ferese/.
+Expected URL: https://ferese-wm.github.io/ferese/.
 
 Local links are relative, including documentation search, so publishing under
 the `/ferese/` project path works. Screenshots are copied from `docs/images`

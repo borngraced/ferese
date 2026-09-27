@@ -10,13 +10,14 @@ from markdown_it import MarkdownIt
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT = ROOT / 'build' / 'site'
-REPO = 'https://github.com/borngraced/ferese'
+REPO = 'https://github.com/ferese-wm/ferese'
 PAGES = [
     ('index', 'Introduction', ROOT / 'site/content/index.md'),
     ('installation', 'Installation', ROOT / 'docs/installation.md'),
     ('configuration', 'Configuration', ROOT / 'docs/configuration.md'),
     ('desktop-widgets', 'Desktop widgets', ROOT / 'docs/desktop-widgets.md'),
     ('notifications', 'Notifications', ROOT / 'docs/notifications.md'),
+    ('locking', 'Native locker', ROOT / 'docs/locking.md'),
 ]
 md = MarkdownIt('commonmark', {'html': False}).enable('table')
 OUTPUT.mkdir(parents=True, exist_ok=True)

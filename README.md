@@ -45,22 +45,26 @@ rules, displays, widgets and login items are configurable too. Start with the
 
 ## Install
 
-The current installation guide covers Fedora with SDDM. After installing the
-[prerequisites](docs/installation.md), run:
+Install Ferese on Linux with any Wayland-capable login manager, a command-based
+greeter, or a local TTY. Start with the [installation guide](docs/installation.md)
+for system dependencies and Rust 1.95 or newer, then build as your normal user:
 
 ```sh
+git clone https://github.com/ferese-wm/ferese.git
+cd ferese
 ./scripts/install.sh
 ```
 
-Log out, select **Ferese** at the login screen, and sign in. The installer keeps
-your configuration and the previous release for rollback. See
-[installation and recovery](docs/installation.md) for the full setup and safety
-notes.
+Log out and select **Ferese** at your login screen. For greeters that take a
+session command, use `/usr/local/bin/ferese-session`. The installer preserves
+your configuration and other sessions, and retains the previous release for
+rollback. The guide covers [all startup methods](docs/installation.md#start-a-session),
+optional tools, updates, and recovery.
 
 To preview Ferese inside your current Wayland desktop instead:
 
 ```sh
-cargo build --release --locked -p ferese -p ferese-shell -p ferese-settings -p feresectl
+cargo build --release --locked -p ferese -p ferese-shell -p ferese-settings -p feresectl -p ferese-lock
 target/release/ferese --backend nested --grant-effects --grant-shell-control -- \
   target/release/ferese-shell
 ```
@@ -87,6 +91,7 @@ Settings → Shortcuts** to change them or assign gestures to other actions.
 - [Configuration reference](docs/configuration.md)
 - [Desktop widgets](docs/desktop-widgets.md)
 - [Notifications](docs/notifications.md)
+- [Native locker](docs/locking.md)
 
 ## Development
 

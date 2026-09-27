@@ -6,7 +6,7 @@ This handbook covers installing Ferese, finding your way around, and making the 
 
 ## Start with your first session
 
-1. Read [Installation](installation.md) for the supported setup, building, and recovery.
+1. Read [Installation](installation.md) for dependencies, building, login-manager or TTY startup, and recovery.
 2. Open **Control Center â†’ Settings** to choose a theme and configure your desktop.
 3. Explore the [configuration reference](configuration.md) for layouts, shortcuts, window rules, and displays.
 
@@ -30,6 +30,8 @@ Three-finger swipes move between workspaces and windows. Open **Control Center â
 ## Make it feel like yours
 
 Use **Settings** for everyday customization. Choose an appearance preset, change the wallpaper, adjust shell and window corners, or add a clock and sticky notes through [Desktop widgets](desktop-widgets.md).
+
+[Native locker](locking.md) covers lock-screen appearance, authentication, and idle locking.
 
 [Notifications](notifications.md) explains popup cards, history, Do Not Disturb, and app actions.
 
@@ -56,4 +58,4 @@ cargo test --workspace --locked
 cargo fmt --all --check
 ```
 
-The [source repository](https://github.com/borngraced/ferese) is the place to explore implementation details and report issues. When reporting a problem, include how to reproduce it, whether you used the nested or DRM backend, and relevant logs.
+The [source repository](https://github.com/ferese-wm/ferese) is the place to explore implementation details and report issues. When reporting a problem, include how to reproduce it, whether you used the nested or DRM backend, and relevant logs.
