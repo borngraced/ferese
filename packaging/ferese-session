@@ -34,6 +34,10 @@ if [[ $backend == drm ]]; then
     unset DISPLAY WAYLAND_DISPLAY
 fi
 
+if [[ $backend == drm ]] && command -v systemctl >/dev/null; then
+    systemctl --user stop swaync.service 2>/dev/null || true
+fi
+
 command=("$release_dir/ferese" --backend "$backend" --grant-effects
     --grant-shell-control -- "$release_dir/ferese-shell")
 if [[ -z ${DBUS_SESSION_BUS_ADDRESS:-} ]]; then

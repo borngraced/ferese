@@ -43,3 +43,9 @@ desktop-widgets {
         opacity 0.9
     }
 }
+
+notifications {
+    show-popups #true
+    do-not-disturb #false
+    timeout-ms 6000
+}

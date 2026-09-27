@@ -507,6 +507,17 @@ impl Ferese {
             .map(|workspace| workspace.id)
         {
             self.activate_managed_workspace(workspace);
+        } else if next {
+            let next_number = self
+                .workspaces
+                .iter()
+                .filter_map(|workspace| workspace.name.parse::<u32>().ok())
+                .max()
+                .unwrap_or(1)
+                .checked_add(1);
+            if let Some(number) = next_number {
+                self.switch_workspace(number);
+            }
         }
     }
 

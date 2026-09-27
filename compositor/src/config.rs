@@ -16,6 +16,8 @@ use crate::window_rules::{self, WindowRule, WindowRuleConfig};
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
     #[serde(default)]
+    notifications: ferese_core::notifications::NotificationConfig,
+    #[serde(default)]
     desktop_widgets: ferese_core::desktop::DesktopWidgets,
     #[serde(default)]
     pub(crate) autostart: Vec<DaemonConfig>,
@@ -271,6 +273,9 @@ impl Config {
     }
 
     pub(crate) fn runtime_config(&self) -> Result<crate::RuntimeConfig, ConfigError> {
+        self.notifications
+            .validate()
+            .map_err(ConfigError::InvalidBinding)?;
         self.desktop_widgets
             .validate()
             .map_err(ConfigError::InvalidBinding)?;

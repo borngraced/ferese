@@ -379,3 +379,11 @@ The installed session launcher enables screencopy for screenshots unless
 `FERESE_ENABLE_SCREENCOPY=0` is explicitly set in its environment.
 Text input is available by default; Ctrl+Alt+Escape releases an active shortcut
 inhibitor. Use `feresectl --help` for runtime control commands.
+
+## Notifications
+
+Settings → Notifications controls popups, Do Not Disturb, and the default timeout. See [Notifications](notifications.md) for KDL options and app behavior.
+
+A single-output session starts with workspace 1. Numbered workspace shortcuts create
+workspaces on demand; switching forward past the last workspace also creates the
+next one. Additional displays receive their own workspace.

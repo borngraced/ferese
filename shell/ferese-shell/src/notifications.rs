@@ -284,6 +284,7 @@ pub struct Center {
     pub dnd: bool,
     pub history_open: bool,
     pub hovered: Option<u32>,
+    pub expanded_apps: HashSet<String>,
     pub entries: VecDeque<Notice>,
     toasts: VecDeque<Toast>,
     last_tick: Instant,
@@ -298,6 +299,7 @@ impl Center {
             config,
             history_open: false,
             hovered: None,
+            expanded_apps: HashSet::new(),
             entries: VecDeque::new(),
             toasts: VecDeque::new(),
             last_tick: Instant::now(),
@@ -361,6 +363,39 @@ impl Center {
             }
         }
         groups
+    }
+
+    pub fn history_groups(&self) -> Vec<Vec<&Notice>> {
+        let mut groups: Vec<Vec<&Notice>> = Vec::new();
+        for notice in self.entries.iter().rev() {
+            if let Some(group) = groups.iter_mut().find(|group| group[0].app == notice.app) {
+                group.push(notice);
+            } else {
+                groups.push(vec![notice]);
+            }
+        }
+        groups
+    }
+
+    pub fn toggle_group(&mut self, app: String) {
+        if !self.expanded_apps.remove(&app) {
+            self.expanded_apps.insert(app);
+        }
+        self.hovered = None;
+    }
+
+    pub fn dismiss_group(&mut self, app: &str) {
+        let ids: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|notice| notice.app == app)
+            .map(|notice| notice.id)
+            .collect();
+        for id in ids {
+            self.dismiss(id);
+        }
+        self.expanded_apps.remove(app);
+        self.hovered = None;
     }
 
     pub fn hover(&mut self, id: u32, hovered: bool) {
@@ -445,6 +480,8 @@ impl Center {
         }
         self.entries.clear();
         self.toasts.clear();
+        self.expanded_apps.clear();
+        self.hovered = None;
     }
 
     fn receive(&mut self, mut notice: Notice) {
@@ -583,6 +620,7 @@ mod tests {
             dnd: false,
             history_open: false,
             hovered: None,
+            expanded_apps: HashSet::new(),
             entries: VecDeque::new(),
             toasts: VecDeque::new(),
             last_tick: Instant::now(),
@@ -607,6 +645,42 @@ mod tests {
             unread: true,
             received_at: Instant::now(),
         }
+    }
+
+    #[test]
+    fn history_groups_expand_and_clear_without_removing_other_apps() {
+        let (mut center, commands) = fixture();
+        center.receive(notice(1));
+        let mut other = notice(2);
+        other.app = "Other".into();
+        center.receive(other);
+        center.receive(notice(3));
+        let groups = center.history_groups();
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.iter().map(|n| n.id).collect::<Vec<_>>())
+                .collect::<Vec<_>>(),
+            [vec![3, 1], vec![2]]
+        );
+        center.toggle_group("Test".into());
+        assert!(center.expanded_apps.contains("Test"));
+        center.toggle_group("Test".into());
+        assert!(!center.expanded_apps.contains("Test"));
+        center.dismiss_group("Test");
+        assert_eq!(center.entries.iter().map(|n| n.id).collect::<Vec<_>>(), [2]);
+        assert_eq!(center.toasts.iter().map(|n| n.id).collect::<Vec<_>>(), [2]);
+        let closed: Vec<_> = commands
+            .try_iter()
+            .map(|command| match command {
+                Command::Close(id, _, 2) => id,
+                _ => panic!("unexpected action"),
+            })
+            .collect();
+        assert_eq!(closed, [1, 3]);
+        center.toggle_group("Other".into());
+        center.clear();
+        assert!(center.entries.is_empty() && center.expanded_apps.is_empty());
     }
 
     #[test]

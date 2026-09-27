@@ -690,11 +690,6 @@ impl Ferese {
             xdg_shell_state,
             xdg_toplevel_icon_manager,
         };
-        // Keep the numbered shortcuts and bar selectors available from startup,
-        // including empty workspaces that have not been assigned to an output.
-        for index in 1..=9 {
-            state.workspaces.ensure_numeric(index)?;
-        }
         state._ipc_socket = Some(crate::ipc::init(event_loop)?);
         Ok(state)
     }

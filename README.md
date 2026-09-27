@@ -26,6 +26,7 @@ and native Settings app.
 - Native Settings app
 - Desktop widgets
 - Area and full-screen screenshots with Satty annotation
+- [Native themed notifications and history](docs/notifications.md)
 - Themes, blur and gradient borders
 - Multi-monitor support and fractional scaling
 - Live configuration reload

@@ -272,6 +272,8 @@ enum Message {
     HoverNotification(u32, bool),
     ToggleNotificationHistory,
     ClearNotifications,
+    ToggleNotificationGroup(String),
+    RemoveNotificationGroup(String),
     AnimateMenu,
     OpenMenu(status_ui::Menu, cosmic::iced::Rectangle<i32>),
     OpenMenuOn(window::Id, status_ui::Menu, cosmic::iced::Rectangle<i32>),
@@ -398,6 +400,10 @@ impl cosmic::Application for FereseShell {
                 .menu
                 .as_ref()
                 .is_some_and(|menu| menu.animating() || menu.motion.closing())
+                || self
+                    .notification_surface
+                    .as_ref()
+                    .is_some_and(|surface| surface.animating())
             {
                 cosmic::iced::time::every(Duration::from_millis(16)).map(|_| Message::AnimateMenu)
             } else {
@@ -499,6 +505,17 @@ impl cosmic::Application for FereseShell {
                         self.attach_effects(id, &surface)
                     }
                     Ok((_connection, surface)) => {
+                        if let Some(entry) = &mut self.notification_surface
+                            && entry.id == id
+                            && entry.effects.is_none()
+                        {
+                            match EffectsBinding::attach_role(&surface, None, entry.progress()) {
+                                Ok(binding) => entry.effects = Some(binding),
+                                Err(error) => eprintln!(
+                                    "ferese-shell: notification effects unavailable: {error}"
+                                ),
+                            }
+                        }
                         if let Some(menu) = &mut self.menu
                             && menu.id == id
                             && menu.effects.is_none()
@@ -566,24 +583,29 @@ impl cosmic::Application for FereseShell {
                 self.notifications.hover(id, hovered);
                 self.sync_notification_surface()
             }
-            Message::ToggleNotificationHistory => {
-                self.notifications.toggle_history();
+            Message::ToggleNotificationHistory => self.toggle_notification_history(),
+            Message::ToggleNotificationGroup(app) => {
+                self.notifications.toggle_group(app);
+                self.sync_notification_surface()
+            }
+            Message::RemoveNotificationGroup(app) => {
+                self.notifications.dismiss_group(&app);
                 self.sync_notification_surface()
             }
             Message::ClearNotifications => {
                 self.notifications.clear();
                 self.sync_notification_surface()
             }
-            Message::AnimateMenu => self.animate_menu(),
+            Message::AnimateMenu => {
+                Task::batch([self.animate_menu(), self.animate_notification_history()])
+            }
             Message::OpenMenu(kind, anchor) => self.open_menu(kind, anchor),
             Message::OpenMenuOn(id, kind, anchor) => {
                 if kind == status_ui::Menu::Notifications && self.notifications.ready {
-                    self.notifications.toggle_history();
-                    return Task::batch([self.destroy_menu(), self.sync_notification_surface()]);
+                    return Task::batch([self.destroy_menu(), self.toggle_notification_history()]);
                 }
                 let hide_history = if self.notifications.history_open {
-                    self.notifications.history_open = false;
-                    self.sync_notification_surface()
+                    self.close_notification_history()
                 } else {
                     Task::none()
                 };
@@ -621,10 +643,9 @@ impl cosmic::Application for FereseShell {
                             return Task::none();
                         }
                         status::Action::Notifications => {
-                            self.notifications.toggle_history();
                             return Task::batch([
                                 self.close_menu(),
-                                self.sync_notification_surface(),
+                                self.toggle_notification_history(),
                             ]);
                         }
                         _ => {}
@@ -755,6 +776,14 @@ impl FereseShell {
             && let Some(menu) = &mut self.menu
         {
             menu.motion.update_settings(config.animations);
+        }
+        if self.config.animations != config.animations
+            && let Some(motion) = self
+                .notification_surface
+                .as_mut()
+                .and_then(|surface| surface.motion.as_mut())
+        {
+            motion.update_settings(config.animations);
         }
         self.status_service
             .update_settings(config.status.settings_command.clone());
@@ -1730,8 +1759,7 @@ impl FereseShell {
                 return self.finish_note_edit();
             }
             if self.notifications.history_open {
-                self.notifications.history_open = false;
-                return self.sync_notification_surface();
+                return self.close_notification_history();
             }
         }
         match event {
@@ -1741,8 +1769,20 @@ impl FereseShell {
             ))) => self.output_event(event, output),
             Event::Window(window::Event::Opened { .. })
                 if self.outputs.iter().any(|entry| entry.bar == id)
-                    || self.menu.as_ref().is_some_and(|menu| menu.id == id) =>
+                    || self.menu.as_ref().is_some_and(|menu| menu.id == id)
+                    || self
+                        .notification_surface
+                        .as_ref()
+                        .is_some_and(|surface| surface.id == id) =>
             {
+                if let Some(surface) = &mut self.notification_surface
+                    && surface.id == id
+                {
+                    surface.ready = true;
+                    if let Some(motion) = &mut surface.motion {
+                        motion.begin(Instant::now());
+                    }
+                }
                 // Iced emits the first xdg_popup configure as Window::Opened,
                 // not Popup::Configured. This is the popup's ready signal.
                 if let Some(menu) = &mut self.menu
@@ -1849,6 +1889,30 @@ impl FereseShell {
                 frame_id,
             ))) if self.outputs.iter().any(|entry| entry.bar == frame_id) => {
                 self.attach_effects(frame_id, &surface);
+                Task::none()
+            }
+            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Layer(
+                _,
+                surface,
+                layer_id,
+            ))) if self
+                .notification_surface
+                .as_ref()
+                .is_some_and(|entry| entry.id == layer_id) =>
+            {
+                let entry = self.notification_surface.as_mut().unwrap();
+                entry.ready = true;
+                if let Some(motion) = &mut entry.motion {
+                    motion.begin(Instant::now());
+                }
+                if entry.effects.is_none() {
+                    match EffectsBinding::attach_role(&surface, None, entry.progress()) {
+                        Ok(binding) => entry.effects = Some(binding),
+                        Err(error) => {
+                            eprintln!("ferese-shell: notification effects unavailable: {error}")
+                        }
+                    }
+                }
                 Task::none()
             }
             Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Layer(

@@ -4,6 +4,7 @@ pub enum Page {
     Wallpaper,
     Desktop,
     Bar,
+    Notifications,
     Windows,
     Motion,
     Keyboard,
@@ -13,11 +14,12 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::Appearance,
         Self::Wallpaper,
         Self::Desktop,
         Self::Bar,
+        Self::Notifications,
         Self::Windows,
         Self::Motion,
         Self::Keyboard,
@@ -32,6 +34,7 @@ impl Page {
             Self::Wallpaper => "Wallpaper",
             Self::Desktop => "Desktop widgets",
             Self::Bar => "Menu bar",
+            Self::Notifications => "Notifications",
             Self::Windows => "Windows",
             Self::Motion => "Motion",
             Self::Keyboard => "Keyboard & mouse",
@@ -47,6 +50,7 @@ impl Page {
             Self::Wallpaper => "Set the scene for your workspace.",
             Self::Desktop => "A clock that feels at home on your wallpaper.",
             Self::Bar => "Everything you need, within reach.",
+            Self::Notifications => "Stay informed on your terms.",
             Self::Windows => "Make room for the way you work.",
             Self::Motion => "Find your rhythm.",
             Self::Keyboard => "Fine-tune the everyday details.",
@@ -64,6 +68,7 @@ impl Page {
             Self::Wallpaper => "M4 4h16v16H4z M4 16l5-5 4 4 3-3 4 4 M15 8h.01",
             Self::Desktop => "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0 M12 7v5l3 2",
             Self::Bar => "M3 5h18v14H3z M3 9h18 M6 7h.01 M18 7h.01",
+            Self::Notifications => "M6 8a6 6 0 0 1 12 0v6l2 3H4l2-3z M10 21h4",
             Self::Windows => "M3 4h12v12H3z M8 9h13v12H8z",
             Self::Motion => "M3 8h9a3 3 0 1 0-3-3 M3 12h15a3 3 0 1 1-3 3 M3 16h5",
             Self::Keyboard => {
@@ -626,6 +631,31 @@ pub fn fields(page: Page) -> Vec<Field> {
             ),
         ],
         Page::Desktop => clock_fields(),
+        Page::Notifications => vec![
+            toggle(
+                "notifications.show_popups",
+                "Show popup notifications",
+                "Keep notifications in history when popups are hidden.",
+                true,
+            ),
+            toggle(
+                "notifications.do_not_disturb",
+                "Do Not Disturb",
+                "Silence normal popups; critical notifications can still appear.",
+                false,
+            ),
+            range(
+                "notifications.timeout_ms",
+                "Popup timeout",
+                "Default duration; apps can request another timeout. Pauses while hovered.",
+                6000.0,
+                1000.0,
+                30000.0,
+                1000.0,
+                " ms",
+                true,
+            ),
+        ],
         Page::Bar => vec![
             range(
                 "theme.geometry.top_bar_height",
