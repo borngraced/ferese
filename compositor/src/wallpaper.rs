@@ -15,7 +15,14 @@ use smithay::{
     output::Output,
     utils::{Buffer, Physical, Rectangle, Size},
 };
-use std::{collections::HashMap, path::PathBuf, sync::mpsc};
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::mpsc,
+    time::{Duration, Instant},
+};
+
+const UPLOAD_RETRY_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct WallpaperConfig {
@@ -59,6 +66,7 @@ pub(crate) struct WallpaperState {
     receiver: Option<mpsc::Receiver<Result<image::RgbaImage, String>>>,
     pixels: Option<image::RgbaImage>,
     textures: HashMap<ErasedContextId, WallpaperTexture>,
+    upload_retries: HashMap<ErasedContextId, Instant>,
 }
 
 impl WallpaperState {
@@ -91,6 +99,7 @@ impl WallpaperState {
             receiver: owned.then_some(receiver),
             pixels: None,
             textures: HashMap::new(),
+            upload_retries: HashMap::new(),
         }
     }
 
@@ -125,11 +134,19 @@ impl WallpaperState {
         if self.config.path.is_none() {
             self.pixels = None;
             self.textures.clear();
+            self.upload_retries.clear();
         }
     }
 
     pub fn forget_context(&mut self, context: &ErasedContextId) {
         self.textures.remove(context);
+        self.upload_retries.remove(context);
+    }
+
+    fn upload_ready(&self, context: &ErasedContextId, now: Instant) -> bool {
+        self.upload_retries
+            .get(context)
+            .is_none_or(|retry| now >= *retry)
     }
 
     pub fn poll(&mut self) -> bool {
@@ -157,6 +174,7 @@ impl WallpaperState {
                         );
                         self.pixels = Some(pixels);
                         self.textures.clear();
+                        self.upload_retries.clear();
                         self.commit.increment();
                     }
                     Err(error) => {
@@ -181,9 +199,13 @@ impl WallpaperState {
         let pixels = self.pixels.as_ref()?;
         let context = renderer.context_id().erased();
         if !self.textures.contains_key(&context) {
+            if !self.upload_ready(&context, Instant::now()) {
+                return None;
+            }
             let size = Size::from((pixels.width() as i32, pixels.height() as i32));
             match renderer.import_memory(pixels.as_raw(), Fourcc::Abgr8888, size, false) {
                 Ok(texture) => {
+                    self.upload_retries.remove(&context);
                     tracing::debug!(
                         bytes = pixels.as_raw().len(),
                         "uploaded shared wallpaper texture"
@@ -197,6 +219,10 @@ impl WallpaperState {
                     );
                 }
                 Err(error) => {
+                    // Avoid retrying a large failed allocation every frame, but
+                    // allow recovery from temporary GPU memory pressure.
+                    self.upload_retries
+                        .insert(context, Instant::now() + UPLOAD_RETRY_DELAY);
                     tracing::debug!(%error, "wallpaper texture import failed");
                     return None;
                 }
@@ -269,6 +295,35 @@ fn image_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_uploads_back_off_per_context_and_reset_for_new_pixels() {
+        use smithay::backend::renderer::ContextId;
+        let context = ContextId::<GlesTexture>::new().erased();
+        let other = ContextId::<GlesTexture>::new().erased();
+        let mut state = WallpaperState::new(WallpaperConfig {
+            path: None,
+            mode: WallpaperMode::Fill,
+        });
+        let now = Instant::now();
+        state
+            .upload_retries
+            .insert(context.clone(), now + UPLOAD_RETRY_DELAY);
+        assert!(!state.upload_ready(&context, now));
+        assert!(state.upload_ready(&other, now));
+        assert!(state.upload_ready(&context, now + UPLOAD_RETRY_DELAY));
+        state.forget_context(&context);
+        assert!(state.upload_ready(&context, now));
+
+        state
+            .upload_retries
+            .insert(context.clone(), now + UPLOAD_RETRY_DELAY);
+        let (sender, receiver) = mpsc::channel();
+        state.receiver = Some(receiver);
+        sender.send(Ok(image::RgbaImage::new(2, 2))).unwrap();
+        assert!(state.poll());
+        assert!(state.upload_ready(&context, now));
+    }
     #[test]
     fn live_reload_coalesces_decoders_and_mode_changes_invalidate_damage() {
         let mut state = WallpaperState::new(WallpaperConfig::default());
