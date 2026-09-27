@@ -154,76 +154,44 @@ pub(super) struct NotificationSurface {
     pub id: window::Id,
     output: wl_output::WlOutput,
     height: u32,
-    pub motion: Option<motion::PopupMotion>,
     pub effects: Option<EffectsBinding>,
-    pub ready: bool,
-    regions: motion::Regions,
-}
-
-impl NotificationSurface {
-    pub fn animating(&self) -> bool {
-        self.motion
-            .as_ref()
-            .is_some_and(|motion| motion.animating() || motion.closing())
-    }
-
-    pub fn progress(&self) -> f32 {
-        self.motion
-            .as_ref()
-            .map_or(1.0, motion::PopupMotion::progress)
-    }
+    pub regions: motion::Regions,
 }
 
 impl FereseShell {
     pub(super) fn toggle_notification_history(&mut self) -> Task<Message> {
         if self.notifications.history_open {
-            if let Some(motion) = self
-                .notification_surface
-                .as_mut()
-                .and_then(|surface| surface.motion.as_mut())
-            {
-                if motion.closing() {
-                    motion.retarget(1.0, Instant::now());
-                    return self.sync_notification_surface();
-                }
-            }
-            return self.close_notification_history();
+            return self.close_menu();
         }
-        self.notifications.toggle_history();
-        self.sync_notification_surface()
+        // Cards can open history too. Anchor those requests to the active bar;
+        // bell clicks pass their exact anchor through the normal menu path.
+        if let Some(output) = self.outputs.iter().find(|entry| {
+            self.snapshot
+                .outputs
+                .iter()
+                .any(|output| output.focused && Some(output.name.as_str()) == entry.name.as_deref())
+        }) {
+            self.bar_surface_id = output.bar;
+        }
+        let width = self
+            .outputs
+            .iter()
+            .find(|entry| entry.bar == self.bar_surface_id)
+            .and_then(|entry| entry.size)
+            .map_or(POPUP_WIDTH as i32, |size| size.0);
+        self.open_menu(
+            status_ui::Menu::Notifications,
+            cosmic::iced::Rectangle {
+                x: (width - 48).max(0),
+                y: 0,
+                width: 24,
+                height: self.config.theme.bar_height.round() as i32,
+            },
+        )
     }
 
     pub(super) fn close_notification_history(&mut self) -> Task<Message> {
-        if let Some(motion) = self
-            .notification_surface
-            .as_mut()
-            .and_then(|surface| surface.motion.as_mut())
-        {
-            if !motion.closing() {
-                motion.retarget(0.0, Instant::now());
-            }
-            return self.animate_notification_history();
-        }
-        self.notifications.history_open = false;
-        self.sync_notification_surface()
-    }
-
-    pub(super) fn animate_notification_history(&mut self) -> Task<Message> {
-        if let Some(surface) = &mut self.notification_surface {
-            if surface
-                .motion
-                .as_ref()
-                .is_some_and(|motion| motion.closing() && !motion.animating())
-            {
-                self.notifications.history_open = false;
-                self.notifications.hovered = None;
-                surface.motion = None;
-            }
-            if let Some(effects) = &surface.effects {
-                let _ = effects.set_opacity(surface.progress());
-            }
-        }
-        self.sync_notification_surface()
+        self.close_menu()
     }
 
     pub(super) fn sync_notification_surface(&mut self) -> Task<Message> {
@@ -234,7 +202,7 @@ impl FereseShell {
             });
         }
         let count = self.notifications.popup_groups().len();
-        let wanted = self.notifications.ready && (self.notifications.history_open || count > 0);
+        let wanted = self.notifications.ready && !self.notifications.history_open && count > 0;
         let selected = self
             .outputs
             .iter()
@@ -260,19 +228,16 @@ impl FereseShell {
         let Some(output) = selected else {
             return Task::batch(tasks);
         };
-        let desired_height = if self.notifications.history_open {
-            history_height(&self.notifications)
-        } else {
-            self.notifications
-                .popup_groups()
-                .iter()
-                .map(|(notice, _, count)| {
-                    popup_height(notice, *count) + if *count > 1 { 12 } else { 0 }
-                })
-                .sum::<u32>()
-                + count.saturating_sub(1) as u32 * 8
-                + 8
-        };
+        let desired_height = self
+            .notifications
+            .popup_groups()
+            .iter()
+            .map(|(notice, _, count)| {
+                popup_height(notice, *count) + if *count > 1 { 12 } else { 0 }
+            })
+            .sum::<u32>()
+            + count.saturating_sub(1) as u32 * 8
+            + 8;
         let output_height = self
             .outputs
             .iter()
@@ -292,9 +257,7 @@ impl FereseShell {
                 id,
                 output: output.clone(),
                 height,
-                motion: None,
                 effects: None,
-                ready: false,
                 regions: Default::default(),
             });
             let top = self.config.theme.bar_height + self.config.theme.bar_margin_top as f32 + 12.0;
@@ -321,19 +284,6 @@ impl FereseShell {
             );
             tasks.push(cosmic::task::message(cosmic::Action::Surface(action)));
         }
-        if self.notifications.history_open {
-            let surface = self.notification_surface.as_mut().unwrap();
-            if surface.motion.is_none() {
-                let mut motion = motion::PopupMotion::new(self.config.animations);
-                if surface.ready {
-                    motion.begin(Instant::now());
-                }
-                surface.motion = Some(motion);
-            }
-            if let Some(effects) = &surface.effects {
-                let _ = effects.set_opacity(surface.progress());
-            }
-        }
         Task::batch(tasks)
     }
 
@@ -353,7 +303,16 @@ impl FereseShell {
         let foreground = tint(palette.text_primary);
         let muted = tint(palette.text_muted);
         let accent = tint(palette.accent);
-        let base = tint(palette.surface_base);
+        let base = tint(if history {
+            palette.surface_base
+        } else {
+            palette.surface_popover
+        });
+        let compositor_material = !history
+            && self
+                .notification_surface
+                .as_ref()
+                .is_some_and(|surface| surface.effects.is_some());
         let divider = tint(palette.border);
         let well = blend(base, foreground, 0.07);
         let id = notice.id;
@@ -543,11 +502,25 @@ impl FereseShell {
             }
         }
         let card = container(face)
+            .id(if history {
+                "ferese-history-card"
+            } else {
+                "ferese-blur-card"
+            })
             .width(Length::Fill)
             .clip(true)
             .class(theme::Container::custom(move |_| container::Style {
-                background: Some(Background::Color(base)),
+                background: if history {
+                    Some(Background::Color(Color {
+                        a: 0.045 * opacity,
+                        ..foreground
+                    }))
+                } else {
+                    (!compositor_material).then_some(Background::Color(base))
+                },
                 border: Border {
+                    color: color_with_opacity(palette.text_muted, 0.18 * opacity),
+                    width: if history { 0.0 } else { 1.0 },
                     radius: palette.material_radius.into(),
                     ..Default::default()
                 },
@@ -555,34 +528,32 @@ impl FereseShell {
             }));
         let card: Element<'_, cosmic::Action<Message>> = card.into();
         let card: Element<'_, cosmic::Action<Message>> = if count > 1 {
-            let height = popup_height(notice, count) as f32;
-            let back = move |inset: f32, offset: f32| {
+            // With translucent materials, complete backing rectangles show
+            // through the face and multiply its tint. Paint only the exposed
+            // bottom edges, after the card's measured height.
+            let back = move |inset: f32| {
                 container(
                     container(
                         cosmic::iced::widget::Space::new()
                             .width(Length::Fill)
-                            .height(height),
+                            .height(6),
                     )
-                    .class(theme::Container::custom(move |_| {
-                        container::Style {
-                            background: Some(Background::Color(blend(base, foreground, 0.025))),
-                            border: Border {
-                                radius: palette.material_radius.into(),
-                                ..Default::default()
-                            },
+                    .width(Length::Fill)
+                    .class(theme::Container::custom(move |_| container::Style {
+                        background: Some(Background::Color(Color {
+                            a: 0.045 * opacity,
+                            ..foreground
+                        })),
+                        border: Border {
+                            radius: [0.0, 0.0, motion::radius(6.0), motion::radius(6.0)].into(),
                             ..Default::default()
-                        }
+                        },
+                        ..Default::default()
                     })),
                 )
-                .padding(cosmic::iced::Padding {
-                    top: offset,
-                    left: inset,
-                    right: inset,
-                    bottom: 0.0,
-                })
+                .padding([0.0, inset])
             };
-            cosmic::iced::widget::stack([back(12.0, 12.0).into(), back(6.0, 6.0).into(), card])
-                .into()
+            column([card, back(6.0).into(), back(12.0).into()]).into()
         } else {
             card
         };
@@ -604,11 +575,11 @@ impl FereseShell {
         area.into()
     }
 
-    fn view_notifications(&self) -> Element<'_, cosmic::Action<Message>> {
+    pub(super) fn view_notifications(&self) -> Element<'_, cosmic::Action<Message>> {
         if self.notifications.history_open {
             let palette = self.config.theme;
-            let surface = self.notification_surface.as_ref();
-            let progress = surface.map_or(1.0, NotificationSurface::progress);
+            let surface = self.menu.as_ref();
+            let progress = surface.map_or(1.0, status_ui::OpenMenu::progress);
             let opacity = if surface
                 .and_then(|surface| surface.effects.as_ref())
                 .is_some_and(|effects| effects.surface.version() >= 3)
@@ -622,7 +593,7 @@ impl FereseShell {
             let muted = color(palette.text_muted);
             let accent = color(palette.accent);
             let base = color(palette.surface_base);
-            let panel = blend(base, primary, 0.035);
+            let compositor_material = surface.is_some_and(|menu| menu.effects.is_some());
             let well = blend(base, primary, 0.07);
             let mut bold = *SHELL_FONT.get().unwrap().read().unwrap();
             bold.weight = cosmic::iced::font::Weight::Bold;
@@ -845,13 +816,15 @@ impl FereseShell {
                 );
             }
             let panel = container(content)
-                .padding(14)
-                .height(Length::Fill)
+                .id("ferese-blur-card")
+                .padding(16)
+                .height(history_height(&self.notifications) as f32)
                 .width(Length::Fill)
                 .class(theme::Container::custom(move |_| container::Style {
-                    background: Some(Background::Color(panel)),
+                    background: (!compositor_material)
+                        .then_some(Background::Color(color(palette.surface_popover))),
                     border: Border {
-                        color: color(palette.border),
+                        color: color_with_opacity(palette.text_muted, 0.18 * opacity),
                         width: 1.0,
                         radius: palette.material_radius.into(),
                     },
@@ -871,13 +844,21 @@ impl FereseShell {
             for (notice, opacity, count) in self.notifications.popup_groups() {
                 cards = cards.push(self.notification_card(notice, opacity, false, count));
             }
-            container(
-                scrollable(cards)
-                    .direction(Direction::Vertical(Scrollbar::hidden()))
-                    .height(Length::Fill),
+            motion::animated(
+                container(
+                    scrollable(cards)
+                        .direction(Direction::Vertical(Scrollbar::hidden()))
+                        .height(Length::Fill),
+                )
+                .padding(4)
+                .into(),
+                1.0,
+                self.notification_surface
+                    .as_ref()
+                    .map(|surface| surface.regions.clone())
+                    .unwrap_or_default(),
+                self.config.theme.material_radius,
             )
-            .padding(4)
-            .into()
         }
     }
 }

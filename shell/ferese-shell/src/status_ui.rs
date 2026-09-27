@@ -25,6 +25,7 @@ impl Menu {
         match self {
             Self::System => 360.0,
             Self::Battery => 280.0,
+            Self::Notifications => 368.0,
             _ => 300.0,
         }
     }
@@ -90,6 +91,10 @@ impl FereseShell {
         if !kind.available(&self.status) {
             return destroy;
         }
+        if kind == Menu::Notifications && self.notifications.ready {
+            self.notifications.toggle_history();
+        }
+        let notifications = self.sync_notification_surface();
         let id = window::Id::unique();
         self.menu = Some(OpenMenu {
             id,
@@ -149,16 +154,25 @@ impl FereseShell {
             },
             Some(Box::new(Self::view_status_menu)),
         );
-        destroy.chain(cosmic::task::message(cosmic::Action::Surface(action)))
+        Task::batch([destroy, notifications])
+            .chain(cosmic::task::message(cosmic::Action::Surface(action)))
     }
 
     pub fn destroy_menu(&mut self) -> Task<Message> {
         super::EFFECT_FRAME_PENDING.store(false, std::sync::atomic::Ordering::Relaxed);
-        self.menu.take().map_or_else(Task::none, |menu| {
+        let Some(menu) = self.menu.take() else {
+            return Task::none();
+        };
+        if menu.kind == Menu::Notifications {
+            self.notifications.history_open = false;
+            self.notifications.hovered = None;
+        }
+        Task::batch([
             cosmic::task::message(cosmic::Action::Surface(
                 cosmic::surface::action::destroy_popup(menu.id),
-            ))
-        })
+            )),
+            self.sync_notification_surface(),
+        ])
     }
 
     pub fn close_menu(&mut self) -> Task<Message> {
@@ -320,6 +334,19 @@ impl FereseShell {
         let Some(menu) = &self.menu else {
             return text("").into();
         };
+        if menu.kind == Menu::Notifications && self.notifications.ready {
+            return cosmic::widget::autosize::autosize(
+                self.view_notifications(),
+                cosmic::iced::advanced::widget::Id::new("ferese-notification-center"),
+            )
+            .limits(
+                Limits::NONE
+                    .min_width(menu.kind.width())
+                    .max_width(menu.kind.width())
+                    .max_height(720.0),
+            )
+            .into();
+        }
         let theme = self.config.theme;
         let p = if menu.effects.is_some() {
             1.0
@@ -1182,7 +1209,7 @@ mod tests {
         assert_eq!(Menu::Bluetooth.width(), 300.0);
         assert_eq!(Menu::Battery.width(), 280.0);
         assert_eq!(Menu::Audio.width(), 300.0);
-        assert_eq!(Menu::Notifications.width(), 300.0);
+        assert_eq!(Menu::Notifications.width(), 368.0);
     }
 
     #[test]

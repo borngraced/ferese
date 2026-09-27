@@ -3,7 +3,10 @@
 Ferese Shell provides themed notification cards and an in-session history panel.
 Cards appear beneath the bar on the focused output and follow the selected theme.
 Click the notification icon in the bar to open history, toggle Do Not Disturb, or
-clear notifications. Escape or the close button closes the history panel.
+clear notifications. Escape, clicking outside, or the close button closes the history panel.
+The center uses the same anchored popup and animation as the other bar menus.
+Both the center and popup cards follow the shell material: translucent mode uses
+the compositor’s blur and tint, while solid mode stays opaque.
 
 ## Send a notification
 

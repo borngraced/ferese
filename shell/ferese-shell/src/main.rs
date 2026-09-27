@@ -400,10 +400,6 @@ impl cosmic::Application for FereseShell {
                 .menu
                 .as_ref()
                 .is_some_and(|menu| menu.animating() || menu.motion.closing())
-                || self
-                    .notification_surface
-                    .as_ref()
-                    .is_some_and(|surface| surface.animating())
             {
                 cosmic::iced::time::every(Duration::from_millis(16)).map(|_| Message::AnimateMenu)
             } else {
@@ -422,6 +418,14 @@ impl cosmic::Application for FereseShell {
             let regions = menu.regions.lock().unwrap().clone();
             if let Err(error) = effects.set_regions(&regions) {
                 eprintln!("ferese-shell: could not update card materials: {error}");
+            }
+        }
+        if let Some(surface) = &self.notification_surface
+            && let Some(effects) = &surface.effects
+        {
+            let regions = surface.regions.lock().unwrap().clone();
+            if let Err(error) = effects.set_regions(&regions) {
+                eprintln!("ferese-shell: could not update notification materials: {error}");
             }
         }
         match message {
@@ -509,7 +513,7 @@ impl cosmic::Application for FereseShell {
                             && entry.id == id
                             && entry.effects.is_none()
                         {
-                            match EffectsBinding::attach_role(&surface, None, entry.progress()) {
+                            match EffectsBinding::attach_role(&surface, None, 1.0) {
                                 Ok(binding) => entry.effects = Some(binding),
                                 Err(error) => eprintln!(
                                     "ferese-shell: notification effects unavailable: {error}"
@@ -596,27 +600,17 @@ impl cosmic::Application for FereseShell {
                 self.notifications.clear();
                 self.sync_notification_surface()
             }
-            Message::AnimateMenu => {
-                Task::batch([self.animate_menu(), self.animate_notification_history()])
-            }
+            Message::AnimateMenu => self.animate_menu(),
             Message::OpenMenu(kind, anchor) => self.open_menu(kind, anchor),
             Message::OpenMenuOn(id, kind, anchor) => {
-                if kind == status_ui::Menu::Notifications && self.notifications.ready {
-                    return Task::batch([self.destroy_menu(), self.toggle_notification_history()]);
-                }
-                let hide_history = if self.notifications.history_open {
-                    self.close_notification_history()
-                } else {
-                    Task::none()
-                };
                 if self.bar_surface_id != id {
                     let destroy = self.destroy_menu();
                     self.bar_surface_id = id;
                     let open = self.open_menu(kind, anchor);
-                    Task::batch([hide_history, destroy, open])
+                    Task::batch([destroy, open])
                 } else {
                     let open = self.open_menu(kind, anchor);
-                    Task::batch([hide_history, open])
+                    open
                 }
             }
             Message::ConfirmPower(action) => {
@@ -776,14 +770,6 @@ impl FereseShell {
             && let Some(menu) = &mut self.menu
         {
             menu.motion.update_settings(config.animations);
-        }
-        if self.config.animations != config.animations
-            && let Some(motion) = self
-                .notification_surface
-                .as_mut()
-                .and_then(|surface| surface.motion.as_mut())
-        {
-            motion.update_settings(config.animations);
         }
         self.status_service
             .update_settings(config.status.settings_command.clone());
@@ -1786,14 +1772,6 @@ impl FereseShell {
                         .as_ref()
                         .is_some_and(|surface| surface.id == id) =>
             {
-                if let Some(surface) = &mut self.notification_surface
-                    && surface.id == id
-                {
-                    surface.ready = true;
-                    if let Some(motion) = &mut surface.motion {
-                        motion.begin(Instant::now());
-                    }
-                }
                 // Iced emits the first xdg_popup configure as Window::Opened,
                 // not Popup::Configured. This is the popup's ready signal.
                 if let Some(menu) = &mut self.menu
@@ -1821,9 +1799,13 @@ impl FereseShell {
                 {
                     match event {
                         wayland::PopupEvent::Done => {
+                            if menu.kind == status_ui::Menu::Notifications {
+                                self.notifications.history_open = false;
+                                self.notifications.hovered = None;
+                            }
                             self.menu = None;
                             EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
-                            return Task::none();
+                            return self.sync_notification_surface();
                         }
                         wayland::PopupEvent::Focused => {
                             if menu.effects.is_none() {
@@ -1912,12 +1894,8 @@ impl FereseShell {
                 .is_some_and(|entry| entry.id == layer_id) =>
             {
                 let entry = self.notification_surface.as_mut().unwrap();
-                entry.ready = true;
-                if let Some(motion) = &mut entry.motion {
-                    motion.begin(Instant::now());
-                }
                 if entry.effects.is_none() {
-                    match EffectsBinding::attach_role(&surface, None, entry.progress()) {
+                    match EffectsBinding::attach_role(&surface, None, 1.0) {
                         Ok(binding) => entry.effects = Some(binding),
                         Err(error) => {
                             eprintln!("ferese-shell: notification effects unavailable: {error}")
