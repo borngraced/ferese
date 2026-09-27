@@ -730,9 +730,9 @@ pub fn fields(page: Page) -> Vec<Field> {
             range(
                 "theme.surface.bar.opacity",
                 "Opacity",
-                "Lower values reveal more of the background.",
+                "Background opacity for translucent bars, with or without blur. Text and icons stay opaque.",
                 0.78,
-                0.2,
+                0.0,
                 1.0,
                 0.01,
                 "",

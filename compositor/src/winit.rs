@@ -372,13 +372,14 @@ uniform float material_radius;
 uniform vec2 texture_size;
 uniform float blur_radius;
 uniform float presentation_alpha;
+uniform float background_opacity;
 uniform vec4 tint;
 varying vec2 v_coords;
 void main() {
     vec2 half_size = visible_rect.zw * 0.5;
     vec2 d = abs(gl_FragCoord.xy - visible_rect.xy - half_size) - (half_size - vec2(material_radius));
     float sdf = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - material_radius;
-    float coverage = alpha * presentation_alpha * (1.0 - smoothstep(-0.5, 0.5, sdf));
+    float coverage = alpha * presentation_alpha * background_opacity * (1.0 - smoothstep(-0.5, 0.5, sdf));
     if (coverage <= 0.0) { gl_FragColor = vec4(0.0); return; }
     // Denser Gaussian sampling preserves the same radius and softness without
     // the visible grid left by widely spaced taps on detailed wallpapers.
@@ -578,6 +579,7 @@ pub(crate) struct MaterialProgram(GlesPixelProgram);
 #[derive(Clone, Debug, PartialEq)]
 struct MaterialParameters {
     presentation_alpha: f32,
+    background_opacity: f32,
     blur: f32,
     scene_generation: u64,
     sample_geometry: Rectangle<i32, Logical>,
@@ -2328,11 +2330,16 @@ fn material_element(
         (geometry.loc.x, geometry.loc.y + offset_y.round() as i32).into(),
         geometry.size,
     );
-    let blur = if material.style == crate::config::MaterialStyle::Translucent {
-        state.theme_settings.backdrop_blur
+    let background_opacity = if role == crate::effects::SemanticRole::Panel {
+        material.opacity
     } else {
-        0.0
+        1.0
     };
+    let blur = material_blur_radius(
+        material.style,
+        material.opacity,
+        state.theme_settings.backdrop_blur,
+    );
     let output_size = output
         .current_transform()
         .transform_size(mode.size)
@@ -2343,6 +2350,7 @@ fn material_element(
     let sample_physical = sample_geometry.to_physical_precise_round(scale);
     let parameters = MaterialParameters {
         presentation_alpha,
+        background_opacity,
         blur: (blur * scale) as f32,
         scene_generation: if blur > 0.0 {
             state.backdrop_generation
@@ -2485,6 +2493,14 @@ fn material_element(
     Some((background, cached.shadow.clone().into()))
 }
 
+fn material_blur_radius(style: crate::config::MaterialStyle, opacity: f32, radius: f64) -> f64 {
+    if style == crate::config::MaterialStyle::Translucent && opacity > 0.0 && opacity < 1.0 {
+        radius
+    } else {
+        0.0
+    }
+}
+
 fn blur_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<BlurProgram> {
     let context = renderer.context_id().erased();
     if let Some(program) = state.blur_programs.get(&context) {
@@ -2496,6 +2512,7 @@ fn blur_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<BlurP
         UniformName::new("texture_size", UniformType::_2f),
         UniformName::new("blur_radius", UniformType::_1f),
         UniformName::new("presentation_alpha", UniformType::_1f),
+        UniformName::new("background_opacity", UniformType::_1f),
         UniformName::new("tint", UniformType::_4f),
     ];
     match renderer.compile_custom_texture_shader(BLUR_SHADER, &uniforms) {
@@ -2525,6 +2542,7 @@ fn blur_uniforms(p: &MaterialParameters) -> Vec<Uniform<'static>> {
         .into_owned(),
         Uniform::new("blur_radius", p.blur).into_owned(),
         Uniform::new("presentation_alpha", p.presentation_alpha).into_owned(),
+        Uniform::new("background_opacity", p.background_opacity).into_owned(),
         Uniform::new("tint", p.tint).into_owned(),
     ]
 }
@@ -2973,6 +2991,27 @@ mod tests {
             .cloned()
             .unwrap();
         assert!(removal_damage.iter().any(|rect| rect.contains((300, 180))));
+    }
+
+    #[test]
+    fn fully_transparent_and_opaque_materials_skip_blur() {
+        use crate::config::MaterialStyle;
+        assert_eq!(
+            super::material_blur_radius(MaterialStyle::Translucent, 0.0, 18.0),
+            0.0
+        );
+        assert_eq!(
+            super::material_blur_radius(MaterialStyle::Translucent, 1.0, 18.0),
+            0.0
+        );
+        assert_eq!(
+            super::material_blur_radius(MaterialStyle::Translucent, 0.79, 18.0),
+            18.0
+        );
+        assert_eq!(
+            super::material_blur_radius(MaterialStyle::Solid, 0.79, 18.0),
+            0.0
+        );
     }
 
     #[test]

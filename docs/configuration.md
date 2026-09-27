@@ -162,7 +162,7 @@ these six visually distinct.
 | Section / key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `theme.surface.bar.background` | color | `"#1C202EF2"` | Shell fallback background; compositor materials use `surface_base` |
-| `theme.surface.bar.opacity` | number 0–1 | omitted | Material opacity defaults to `0.78`; fallback retains background alpha |
+| `theme.surface.bar.opacity` | number 0–1 | omitted | Translucent bar background opacity, including blur; defaults to `0.78`. Text/icons stay opaque; 0 and 1 skip blur. Fallback retains background alpha |
 | `theme.surface.bar.text_primary` | color | `"#F0F3FA"` | Bar text/icons |
 | `theme.surface.bar.text_muted` | color | `"#AAB4C7"` | Inactive bar foreground |
 | `theme.surface.popover.opacity` | number 0–1 | `0.96` | Shell popover fill alpha |
