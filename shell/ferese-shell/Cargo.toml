@@ -16,6 +16,6 @@ libcosmic = { workspace = true, features = ["wgpu", "a11y"] }
 iced_accessibility = { git = "https://github.com/pop-os/libcosmic", rev = "03d7dcb832bc6d15bc1bb07327a1aa426b2d5bc0" }
 serde.workspace = true
 tempfile.workspace = true
-tokio = { version = "1", features = ["time", "rt"] }
+tokio = { version = "1", features = ["time", "rt", "sync"] }
 wayland-client.workspace = true
 zbus = "5.19.0"

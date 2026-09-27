@@ -5,7 +5,7 @@ use std::{
     process::{Command, Stdio},
     sync::{
         Arc, Condvar, Mutex,
-        mpsc::{self, Receiver, SyncSender},
+        mpsc::{self, SyncSender},
     },
     thread,
     time::Duration,
@@ -77,6 +77,7 @@ impl Action {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Update {
     pub snapshot: Snapshot,
     pub generation: u64,
@@ -86,8 +87,33 @@ pub struct Update {
 pub struct Service {
     settings: Arc<Mutex<Option<Vec<String>>>>,
     tx: SyncSender<(u64, Action)>,
-    rx: Receiver<Update>,
+    updates: Updates,
     pub generation: u64,
+}
+
+// The receiver stays with the service so a subscription can start after the
+// first poll. A watch channel retains the newest result without blocking workers.
+#[derive(Clone)]
+struct Updates(Arc<tokio::sync::watch::Receiver<Option<Update>>>);
+
+impl std::hash::Hash for Updates {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::ptr::hash(Arc::as_ptr(&self.0), state);
+    }
+}
+
+impl Updates {
+    fn stream(&self) -> impl cosmic::iced::futures::Stream<Item = Update> + use<> {
+        cosmic::iced::futures::stream::unfold(self.0.as_ref().clone(), |mut receiver| async move {
+            loop {
+                receiver.changed().await.ok()?;
+                let update = receiver.borrow_and_update().clone();
+                if let Some(update) = update {
+                    return Some((update, receiver));
+                }
+            }
+        })
+    }
 }
 
 type PollState = (Mutex<(u64, bool, Option<String>, bool)>, Condvar);
@@ -105,7 +131,7 @@ impl Service {
         let live_settings = Arc::new(Mutex::new(settings));
         let settings = live_settings.clone();
         let (tx, commands) = mpsc::sync_channel::<(u64, Action)>(64);
-        let (updates, rx) = mpsc::sync_channel(1);
+        let (updates, rx) = tokio::sync::watch::channel(None);
         // Polling and writes have separate workers: a missing D-Bus service must
         // never hold up volume/brightness changes. Publish only coherent polls.
         let shared = Arc::new((
@@ -129,11 +155,11 @@ impl Service {
                     break;
                 }
                 if state.0 == before && !state.1 {
-                    let _ = updates.try_send(Update {
+                    updates.send_replace(Some(Update {
                         snapshot,
                         generation: state.0,
                         error: state.2.clone(),
-                    });
+                    }));
                     let _ = polling.1.wait_timeout(state, Duration::from_secs(2));
                 }
             }
@@ -169,7 +195,7 @@ impl Service {
         Self {
             settings: live_settings,
             tx,
-            rx,
+            updates: Updates(Arc::new(rx)),
             generation: 0,
         }
     }
@@ -187,8 +213,8 @@ impl Service {
         *self.settings.lock().unwrap() = settings;
     }
 
-    pub fn poll(&self) -> Option<Update> {
-        self.rx.try_iter().last()
+    pub fn subscription(&self) -> cosmic::iced::Subscription<Update> {
+        cosmic::iced::Subscription::run_with(self.updates.clone(), Updates::stream)
     }
 }
 
@@ -664,6 +690,69 @@ mod tests {
         ] {
             assert_eq!(parse_brightness(value), None, "{value}");
         }
+    }
+
+    #[test]
+    fn status_stream_retains_latest_result_wakes_and_closes() {
+        use cosmic::iced::futures::{
+            Stream,
+            task::{ArcWake, waker},
+        };
+        use std::{
+            sync::atomic::{AtomicUsize, Ordering},
+            task::{Context, Poll},
+        };
+
+        #[derive(Default)]
+        struct WakeCount(AtomicUsize);
+        impl ArcWake for WakeCount {
+            fn wake_by_ref(arc_self: &Arc<Self>) {
+                arc_self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let result = |generation| {
+            Some(Update {
+                snapshot: Snapshot {
+                    brightness: Some(42),
+                    ..Snapshot::default()
+                },
+                generation,
+                error: Some("service unavailable".into()),
+            })
+        };
+        let (sender, receiver) = tokio::sync::watch::channel(None);
+        let updates = Updates(Arc::new(receiver));
+        // Results produced before the UI subscribes remain available; a slow
+        // consumer gets the newest generation instead of a stale queued result.
+        sender.send_replace(result(1));
+        sender.send_replace(result(2));
+        let mut stream = Box::pin(updates.stream());
+        let wakes = Arc::new(WakeCount::default());
+        let waker = waker(wakes.clone());
+        let mut context = Context::from_waker(&waker);
+        let Poll::Ready(Some(update)) = stream.as_mut().poll_next(&mut context) else {
+            panic!("startup result missing");
+        };
+        assert_eq!(update.generation, 2);
+        assert_eq!(update.snapshot.brightness, Some(42));
+        assert_eq!(update.error.as_deref(), Some("service unavailable"));
+        assert!(stream.as_mut().poll_next(&mut context).is_pending());
+        let before = wakes.0.load(Ordering::Relaxed);
+        thread::spawn(move || {
+            sender.send_replace(result(3));
+            // Closing still delivers the last unseen update before ending.
+        })
+        .join()
+        .unwrap();
+        assert!(wakes.0.load(Ordering::Relaxed) > before);
+        let Poll::Ready(Some(update)) = stream.as_mut().poll_next(&mut context) else {
+            panic!("worker result missing");
+        };
+        assert_eq!(update.generation, 3);
+        assert!(matches!(
+            stream.as_mut().poll_next(&mut context),
+            Poll::Ready(None)
+        ));
     }
 
     #[test]

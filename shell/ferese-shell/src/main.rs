@@ -259,7 +259,7 @@ enum Message {
     Tick,
     ActivateWorkspace(u64),
     ToggleOverview,
-    StatusTick,
+    StatusUpdated(status::Update),
     AnimateMenu,
     OpenMenu(status_ui::Menu, cosmic::iced::Rectangle<i32>),
     OpenMenuOn(window::Id, status_ui::Menu, cosmic::iced::Rectangle<i32>),
@@ -348,7 +348,9 @@ impl cosmic::Application for FereseShell {
                 _ => None,
             }),
             cosmic::iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick),
-            cosmic::iced::time::every(Duration::from_millis(250)).map(|_| Message::StatusTick),
+            self.status_service
+                .subscription()
+                .map(Message::StatusUpdated),
             if self.config.desktop_widgets.clock.enabled
                 || self
                     .config
@@ -491,10 +493,8 @@ impl cosmic::Application for FereseShell {
                 }
                 Task::none()
             }
-            Message::StatusTick => {
-                if let Some(update) = self.status_service.poll()
-                    && update.generation >= self.status_service.generation
-                {
+            Message::StatusUpdated(update) => {
+                if update.generation >= self.status_service.generation {
                     self.status = update.snapshot;
                     self.status_error = update.error;
                 }
