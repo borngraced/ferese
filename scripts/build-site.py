@@ -23,6 +23,7 @@ OUTPUT.mkdir(parents=True, exist_ok=True)
 for name in ('index.html', 'styles.css', 'app.js'):
     shutil.copy2(ROOT / 'site' / name, OUTPUT / name)
 (OUTPUT / 'assets').mkdir(exist_ok=True)
+shutil.copytree(ROOT / 'site/assets', OUTPUT / 'assets', dirs_exist_ok=True)
 for name in ('ferese-desktop.png', 'ferese-monochrome.png'):
     shutil.copy2(ROOT / 'docs/images' / name, OUTPUT / 'assets' / name)
 shutil.copy2(ROOT / 'packaging/icons/ferese.svg', OUTPUT / 'assets/ferese.svg')

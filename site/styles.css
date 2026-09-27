@@ -1,3 +1,11 @@
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("assets/fonts/JetBrainsMono-Regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
   --paper: #10151c;
   --white: #18212c;
@@ -7,8 +15,8 @@
   --blue: #91b8ff;
   --soft: #1c2838;
   --mono:
-    ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  --sans: Inter, "Helvetica Neue", Arial, sans-serif;
+    "JetBrains Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+  --sans: var(--mono);
   color-scheme: dark;
 }
 * {
