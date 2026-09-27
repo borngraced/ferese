@@ -365,15 +365,31 @@ fn battery() -> Option<Battery> {
 }
 
 fn brightness() -> Option<u8> {
-    let max = run("brightnessctl", &["--class=backlight", "max"])
-        .ok()?
-        .parse::<f64>()
-        .ok()?;
-    let current = run("brightnessctl", &["--class=backlight", "get"])
-        .ok()?
-        .parse::<f64>()
-        .ok()?;
-    (max > 0.0 && current.is_finite())
+    parse_brightness(
+        &run(
+            "brightnessctl",
+            &["--class=backlight", "--machine-readable", "info"],
+        )
+        .ok()?,
+    )
+}
+
+fn parse_brightness(value: &str) -> Option<u8> {
+    // device,class,current,percentage,max. Compute the ratio ourselves to
+    // preserve the previous rounding rather than using the CLI's percentage.
+    let mut fields = value.trim().split(',');
+    let _device = fields.next()?;
+    if fields.next()? != "backlight" {
+        return None;
+    }
+    let current = fields.next()?.parse::<f64>().ok()?;
+    let _percentage = fields.next()?;
+    let max = fields.next()?.parse::<f64>().ok()?;
+    (fields.next().is_none()
+        && max.is_finite()
+        && max > 0.0
+        && current.is_finite()
+        && current >= 0.0)
         .then(|| (100.0 * current / max).round().clamp(0.0, 100.0) as u8)
 }
 
@@ -485,6 +501,24 @@ fn execute(action: &Action, settings: Option<&[String]>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn brightness_info_preserves_ratio_rounding_and_rejects_bad_devices() {
+        assert_eq!(parse_brightness("intel,backlight,72,18%,400"), Some(18));
+        assert_eq!(parse_brightness("panel,backlight,2,66%,3\n"), Some(67));
+        assert_eq!(parse_brightness("panel,backlight,0,0%,400"), Some(0));
+        for value in [
+            "",
+            "panel,leds,1,1%,100",
+            "panel,backlight,1,0%,0",
+            "panel,backlight,NaN,0%,100",
+            "panel,backlight,1,0%,inf",
+            "panel,backlight,-1,0%,100",
+            "panel,backlight,1,0%,100,extra",
+        ] {
+            assert_eq!(parse_brightness(value), None, "{value}");
+        }
+    }
 
     #[test]
     fn polling_waits_for_a_write_and_uses_the_completed_generation() {
