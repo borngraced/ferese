@@ -76,7 +76,7 @@ impl Default for ShellTheme {
             bar_margin_top: 0,
             bar_window_gap: 0,
             bar_margin_horizontal: 0,
-            bar_radius: 0.0,
+            bar_radius: 14.0,
             material_radius: 14.0,
             panel_padding: 12.0,
             control_gap: 12.0,
@@ -253,8 +253,10 @@ struct ThemeGeometryConfig {
     top_bar_window_gap: i32,
     #[serde(default = "default_bar_margin_horizontal")]
     top_bar_margin_horizontal: i32,
-    #[serde(default = "default_bar_radius")]
-    top_bar_radius: f32,
+    #[serde(default)]
+    shell_radius: Option<f32>,
+    #[serde(default)]
+    top_bar_radius: Option<f32>,
     #[serde(default = "default_panel_padding")]
     panel_padding: f32,
     #[serde(default = "default_control_gap")]
@@ -268,7 +270,8 @@ impl Default for ThemeGeometryConfig {
             top_bar_margin_top: default_bar_margin_top(),
             top_bar_window_gap: default_bar_window_gap(),
             top_bar_margin_horizontal: default_bar_margin_horizontal(),
-            top_bar_radius: default_bar_radius(),
+            shell_radius: None,
+            top_bar_radius: None,
             panel_padding: default_panel_padding(),
             control_gap: default_control_gap(),
         }
@@ -330,8 +333,17 @@ pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, ferese_config::E
                 .validate()
                 .map_err(ferese_config::Error::from)?;
             let mut theme = shell_theme(&config.theme);
-            theme.material_radius =
-                nonnegative_or(config.appearance.corner_radius.unwrap_or(14.0), 14.0);
+            theme.material_radius = nonnegative_or(
+                config
+                    .theme
+                    .geometry
+                    .shell_radius
+                    .or(config.appearance.corner_radius)
+                    .or(config.theme.geometry.top_bar_radius)
+                    .unwrap_or(14.0),
+                14.0,
+            );
+            theme.bar_radius = theme.material_radius;
 
             Ok(ShellConfig {
                 notifications: config.notifications,
@@ -388,7 +400,14 @@ fn shell_theme(theme: &ThemeConfig) -> ShellTheme {
         bar_margin_top: theme.geometry.top_bar_margin_top.max(0),
         bar_window_gap: theme.geometry.top_bar_window_gap.max(0),
         bar_margin_horizontal: theme.geometry.top_bar_margin_horizontal.max(0),
-        bar_radius: nonnegative_or(theme.geometry.top_bar_radius, defaults.bar_radius),
+        bar_radius: nonnegative_or(
+            theme
+                .geometry
+                .shell_radius
+                .or(theme.geometry.top_bar_radius)
+                .unwrap_or(14.0),
+            defaults.bar_radius,
+        ),
         panel_padding: nonnegative_or(theme.geometry.panel_padding, defaults.panel_padding),
         control_gap: nonnegative_or(theme.geometry.control_gap, defaults.control_gap),
         shadow_offset_y: finite_or(theme.shadow.soft.offset_y, defaults.shadow_offset_y),
@@ -474,10 +493,6 @@ const fn default_bar_margin_top() -> i32 {
 
 const fn default_bar_margin_horizontal() -> i32 {
     0
-}
-
-const fn default_bar_radius() -> f32 {
-    0.0
 }
 
 const fn default_panel_padding() -> f32 {
@@ -573,6 +588,21 @@ theme {
     }
 
     #[test]
+    fn shell_radius_unifies_surfaces_and_preserves_legacy_fallbacks() {
+        for radius in [0.0, 18.0] {
+            let config = parse_source(&format!("appearance {{\n corner-radius 9\n}}\ntheme {{\n geometry {{\n shell-radius {radius}\n top-bar-radius 5\n window-radius 23\n }}\n}}")).unwrap();
+            assert_eq!(config.theme.material_radius, radius);
+            assert_eq!(config.theme.bar_radius, radius);
+        }
+        let legacy = parse_source("theme {\n geometry {\n top-bar-radius 7\n }\n}").unwrap();
+        assert_eq!(legacy.theme.material_radius, 7.0);
+        assert_eq!(legacy.theme.bar_radius, 7.0);
+        let legacy = parse_source("appearance {\n corner-radius 6\n}").unwrap();
+        assert_eq!(legacy.theme.material_radius, 6.0);
+        assert_eq!(legacy.theme.bar_radius, 6.0);
+    }
+
+    #[test]
     fn defaults_to_the_ferese_visual_profile() {
         let config: FereseConfig = ferese_config::from_str("").unwrap();
 
@@ -586,7 +616,7 @@ theme {
         assert_eq!(theme.bar_margin_top, 0);
         assert_eq!(theme.bar_height, 28.0);
         assert_eq!(theme.bar_margin_horizontal, 0);
-        assert_eq!(theme.bar_radius, 0.0);
+        assert_eq!(theme.bar_radius, 14.0);
         assert_eq!(theme.bar_background, ShellTheme::default().bar_background);
         assert_eq!(theme.for_bar().text_primary, theme.bar_text_primary);
         assert_ne!(theme.for_bar().text_primary, theme.text_primary);

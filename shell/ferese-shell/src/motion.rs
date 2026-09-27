@@ -42,7 +42,16 @@ impl Settings {
     }
 }
 static SETTINGS: std::sync::OnceLock<std::sync::RwLock<Settings>> = std::sync::OnceLock::new();
-pub(crate) fn configure(settings: Settings) {
+static SHELL_RADIUS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(14.0_f32.to_bits());
+
+/// All shell shapes share one radius, capped to fit smaller controls.
+pub(crate) fn radius(limit: f32) -> f32 {
+    f32::from_bits(SHELL_RADIUS.load(std::sync::atomic::Ordering::Relaxed)).min(limit)
+}
+
+pub(crate) fn configure(settings: Settings, radius: f32) {
+    SHELL_RADIUS.store(radius.to_bits(), std::sync::atomic::Ordering::Relaxed);
     *SETTINGS
         .get_or_init(|| std::sync::RwLock::new(Settings::default()))
         .write()
@@ -138,7 +147,7 @@ pub(crate) fn button<'a, M: Clone + 'a>(
     let paint = move |progress: f32, pressed: bool| cosmic::widget::button::Style {
         text_color: Some(foreground),
         icon_color: Some(foreground),
-        border_radius: 6.0.into(),
+        border_radius: radius(14.0).into(),
         background: Some(cosmic::iced::Background::Color(cosmic::iced::Color {
             a: if pressed {
                 0.20 * opacity

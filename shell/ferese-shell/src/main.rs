@@ -154,7 +154,7 @@ fn main() -> cosmic::iced::Result {
             "../../../assets/fonts/Cantarell-ExtraBold.otf"
         )));
     let mut config = config::load();
-    motion::configure(config.animations);
+    motion::configure(config.animations, config.theme.material_radius);
     let compositor_wallpaper = std::env::var_os("FERESE_COMPOSITOR_WALLPAPER").is_some();
     if compositor_wallpaper {
         // The compositor owns one GPU image, shared across output renderers;
@@ -771,7 +771,7 @@ impl FereseShell {
                 .write()
                 .unwrap() = configured_font(config.font_family.as_deref());
         }
-        motion::configure(config.animations);
+        motion::configure(config.animations, config.theme.material_radius);
         if self.config.animations != config.animations
             && let Some(menu) = &mut self.menu
         {
@@ -1365,15 +1365,20 @@ impl FereseShell {
                 .note_editor
                 .as_ref()
                 .is_some_and(|editor| editor.id == id);
-            body = body.push(row([]).push(header).push(
-                button::text(if editing { "Done" } else { "Edit" }).on_press(cosmic::Action::App(
-                    if editing {
-                        Message::FinishNoteEdit
-                    } else {
-                        Message::BeginNoteEdit(id.to_owned())
-                    },
+            body = body.push(
+                row([]).push(header).push(motion::button(
+                    button::custom(text(if editing { "Done" } else { "Edit" }))
+                        .padding([4, 8])
+                        .on_press(cosmic::Action::App(if editing {
+                            Message::FinishNoteEdit
+                        } else {
+                            Message::BeginNoteEdit(id.to_owned())
+                        })),
+                    foreground,
+                    false,
+                    1.0,
                 )),
-            ));
+            );
         } else if !note.title.is_empty() {
             body = body.push(
                 cosmic::widget::text(note.title.clone())
@@ -1393,6 +1398,12 @@ impl FereseShell {
             let id = id.to_owned();
             body = body.push(
                 cosmic::widget::TextEditor::new(&editor.content)
+                    .style(|theme, status| {
+                        use cosmic::iced::widget::text_editor::Catalog;
+                        let mut style = theme.style(&<cosmic::Theme as Catalog>::default(), status);
+                        style.border.radius = motion::radius(f32::MAX).into();
+                        style
+                    })
                     .height(Length::Fill)
                     .font(font)
                     .size(note.text_size)
@@ -1417,7 +1428,7 @@ impl FereseShell {
                     .class(theme::Text::Color(foreground)),
             );
         }
-        let radius = note.radius;
+        let radius = self.config.theme.material_radius;
         container(body)
             .padding(note.padding)
             .width(Length::Fill)
@@ -1646,7 +1657,7 @@ impl FereseShell {
                 tint.a *= clock.opacity;
                 Background::Color(tint)
             });
-        let radius = clock.radius;
+        let radius = self.config.theme.material_radius;
         container(labels)
             .padding(clock.padding)
             .width(Length::Fill)
@@ -2249,7 +2260,7 @@ fn workspace_selector_style(
         border: Border {
             color: color_with_opacity(shell_theme.accent, 0.55),
             width: if active_elsewhere { 1.0 } else { 0.0 },
-            radius: 6.0.into(),
+            radius: shell_theme.material_radius.min(14.0).into(),
         },
         ..Default::default()
     }
@@ -2440,7 +2451,7 @@ fn bar_group_style(theme: ShellTheme) -> container::Style {
         border: Border {
             color: color_with_opacity(theme.text_muted, 0.12),
             width: 1.0,
-            radius: 7.0.into(),
+            radius: theme.material_radius.min(16.0).into(),
         },
         ..Default::default()
     }

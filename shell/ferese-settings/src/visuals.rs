@@ -438,7 +438,7 @@ pub fn preview(snapshot: &Snapshot) -> Element<'static, Message> {
     let bar_y = snapshot.number("theme.geometry.top_bar_margin_top", 0.) * 0.5 + 12.;
     let bar_margin = snapshot.number("theme.geometry.top_bar_margin_horizontal", 0.) * 0.5 + 14.;
     let bar_height = snapshot.number("theme.geometry.top_bar_height", 30.) * 0.65;
-    let bar_radius = snapshot.number("theme.geometry.top_bar_radius", 0.) * 0.65;
+    let bar_radius = snapshot.number("theme.geometry.shell_radius", 14.) * 0.65;
     let opacity = snapshot.number("theme.surface.bar.opacity", 0.78);
     let right = 340. + gap / 2.;
     let left_width = 288. - gap / 2.;

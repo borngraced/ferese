@@ -98,7 +98,7 @@ fn card_button<'a>(
         text_color: Some(foreground),
         icon_color: Some(foreground),
         background: (active || round).then_some(Background::Color(hover)),
-        border_radius: (if round { 9.0 } else { 0.0 }).into(),
+        border_radius: (if round { motion::radius(11.0) } else { 0.0 }).into(),
         ..Default::default()
     };
     button::custom(content)
@@ -141,7 +141,7 @@ fn icon_control<'a>(
     .class(theme::Container::custom(move |_| container::Style {
         background: Some(Background::Color(background)),
         border: Border {
-            radius: 6.0.into(),
+            radius: motion::radius(12.0).into(),
             ..Default::default()
         },
         text_color: Some(foreground),
@@ -380,7 +380,7 @@ impl FereseShell {
                 .class(theme::Container::custom(move |_| container::Style {
                     background: Some(Background::Color(well)),
                     border: Border {
-                        radius: 8.0.into(),
+                        radius: motion::radius(15.0).into(),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -397,7 +397,7 @@ impl FereseShell {
             .class(theme::Container::custom(move |_| container::Style {
                 background: Some(Background::Color(accent)),
                 border: Border {
-                    radius: 8.0.into(),
+                    radius: motion::radius(8.0).into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -747,7 +747,7 @@ impl FereseShell {
                         .class(theme::Container::custom(move |_| container::Style {
                             background: Some(Background::Color(well)),
                             border: Border {
-                                radius: 28.0.into(),
+                                radius: motion::radius(28.0).into(),
                                 ..Default::default()
                             },
                             ..Default::default()

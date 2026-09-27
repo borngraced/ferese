@@ -376,17 +376,6 @@ fn clock_fields() -> Vec<Field> {
             " px",
             false,
         ),
-        range(
-            "desktop_widgets.clock.radius",
-            "Background radius",
-            "Used only when a background is set.",
-            16.0,
-            0.0,
-            128.0,
-            1.0,
-            " px",
-            false,
-        ),
         choice(
             "desktop_widgets.clock.alignment",
             "Text alignment",
@@ -541,17 +530,6 @@ pub fn note_fields(index: usize) -> Vec<Field> {
             " px",
             false,
         ),
-        range(
-            format!("{prefix}.radius"),
-            "Corner radius",
-            "Logical pixels; centered axes ignore margins.",
-            16.0,
-            0.0,
-            128.0,
-            1.0,
-            " px",
-            false,
-        ),
         Field::new(
             format!("{prefix}.alignment"),
             "Text alignment",
@@ -567,6 +545,17 @@ pub fn note_fields(index: usize) -> Vec<Field> {
 pub fn fields(page: Page) -> Vec<Field> {
     match page {
         Page::Appearance => vec![
+            range(
+                "theme.geometry.shell_radius",
+                "Shell corner radius",
+                "Rounds the bar, menus, notifications, desktop widgets and hover backgrounds. Window corners are separate.",
+                14.0,
+                0.0,
+                32.0,
+                1.0,
+                " px",
+                false,
+            ),
             text(
                 "theme.colors.accent",
                 "Accent color",
@@ -689,17 +678,6 @@ pub fn fields(page: Page) -> Vec<Field> {
                 1.0,
                 " px",
                 true,
-            ),
-            range(
-                "theme.geometry.top_bar_radius",
-                "Corner radius",
-                "The shape of the floating bar.",
-                0.0,
-                0.0,
-                24.0,
-                1.0,
-                " px",
-                false,
             ),
             range(
                 "theme.surface.bar.opacity",

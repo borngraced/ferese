@@ -1109,10 +1109,20 @@ impl App {
                 column([])
                     .spacing(6)
                     .push(
-                        widget::dropdown(families, selected, move |index| {
-                            let family = if index == 0 { "" } else { &families[index] };
-                            Message::SelectFont(selection_path.clone(), family.to_owned())
-                        })
+                        cosmic::iced::widget::pick_list(
+                            families,
+                            selected.map(|index| families[index].clone()),
+                            move |family: String| {
+                                let value = if family == "Default font" {
+                                    String::new()
+                                } else {
+                                    family
+                                };
+                                Message::SelectFont(selection_path.clone(), value)
+                            },
+                        )
+                        .font(self.font)
+                        .text_size(12)
                         .width(225),
                     )
                     .push(

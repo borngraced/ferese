@@ -126,7 +126,7 @@ these six visually distinct.
 
 | Section / key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `appearance.corner_radius` | number ≥ 0 | `14` | Shell material/card radius |
+| `appearance.corner_radius` | number ≥ 0 | unset | Legacy fallback for shell radius |
 | `appearance.inactive_dim.enabled` | boolean | `false` | Dim unfocused windows |
 | `appearance.inactive_dim.amount` | number 0–1 | `0.15` | Darkening strength |
 | `appearance.inactive_dim.duration_ms` | number ≥ 0 | `150` | Dimming and focus-ring transition; 0 snaps |
@@ -149,12 +149,13 @@ these six visually distinct.
 | --- | --- | --- | --- |
 | `border_width` | number ≥ 0 | `1` | Window border thickness |
 | `focus_ring_width` | number ≥ 0 | `2` | Focused border thickness |
-| `window_radius` | number ≥ 0 | `14` | Managed-window corners |
+| `window_radius` | number ≥ 0 | `14` | Managed-window corners, independent of the shell |
+| `shell_radius` | number ≥ 0 | `14` | All shell surfaces, cards, widgets and interaction backgrounds; 0 makes them square |
 | `top_bar_height` | number > 0 | `28` | Menu-bar height |
 | `top_bar_margin_top` | integer ≥ 0 | `0` | Space above bar |
 | `top_bar_window_gap` | integer ≥ 0 | `0` | Clearance below bar |
 | `top_bar_margin_horizontal` | integer ≥ 0 | `0` | Bar side margins |
-| `top_bar_radius` | number ≥ 0 | `0` | Bar corners |
+| `top_bar_radius` | number ≥ 0 | unset | Legacy fallback for shell radius |
 | `panel_padding` | number ≥ 0 | `12` | Bar inner padding |
 | `control_gap` | number ≥ 0 | `12` | Right-side control spacing |
 
@@ -387,3 +388,10 @@ Settings → Notifications controls popups, Do Not Disturb, and the default time
 A single-output session starts with workspace 1. Numbered workspace shortcuts create
 workspaces on demand; switching forward past the last workspace also creates the
 next one. Additional displays receive their own workspace.
+
+Shell rounding is controlled in Settings → Appearance → Shell corner radius.
+Small controls cap the radius to fit their size. Window rounding remains under
+Settings → Windows. `theme.geometry.shell_radius` takes precedence over the old
+`appearance.corner_radius` and then `theme.geometry.top_bar_radius` keys; when
+none are set, the shell uses 14 px. Legacy clock/note radius fields no longer
+override shell rounding.

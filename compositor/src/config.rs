@@ -421,7 +421,9 @@ struct ThemeGeometryConfig {
     #[serde(default = "default_window_radius")]
     window_radius: f64,
     #[serde(default)]
-    top_bar_radius: f64,
+    top_bar_radius: Option<f64>,
+    #[serde(default)]
+    shell_radius: Option<f64>,
 }
 
 impl Default for ThemeGeometryConfig {
@@ -430,7 +432,8 @@ impl Default for ThemeGeometryConfig {
             border_width: default_border_width(),
             focus_ring_width: default_focus_ring_width(),
             window_radius: default_window_radius(),
-            top_bar_radius: 0.0,
+            top_bar_radius: None,
+            shell_radius: None,
         }
     }
 }
@@ -1072,8 +1075,13 @@ impl Config {
             unit_theme_value(self.theme.shadow.soft.opacity, "shadow.soft.opacity")?;
 
         let material_radius = nonnegative_theme_value(
-            self.appearance.corner_radius.unwrap_or(14.0),
-            "appearance.corner_radius",
+            self.theme
+                .geometry
+                .shell_radius
+                .or(self.appearance.corner_radius)
+                .or(self.theme.geometry.top_bar_radius)
+                .unwrap_or(14.0),
+            "geometry.shell_radius",
         )?;
         Ok(ThemeSettings {
             border_width,
@@ -1113,10 +1121,7 @@ impl Config {
             )?
             .min(32.0),
             material_radius,
-            panel_radius: nonnegative_theme_value(
-                self.theme.geometry.top_bar_radius,
-                "geometry.top_bar_radius",
-            )?,
+            panel_radius: material_radius,
         })
     }
 
@@ -1989,6 +1994,24 @@ mod tests {
     }
 
     #[test]
+    fn shell_radius_is_independent_of_windows_and_overrides_legacy_keys() {
+        for radius in [0.0, 18.0] {
+            let config = parse(&format!(
+                "appearance {{\n corner-radius 9\n}}\ntheme {{\n geometry {{\n shell-radius {radius}\n top-bar-radius 5\n window-radius 23\n }}\n}}"
+            ));
+            let theme = config.theme_settings().unwrap();
+            assert_eq!(theme.material_radius, radius);
+            assert_eq!(theme.panel_radius, radius);
+            assert_eq!(theme.window_radius, 23.0);
+        }
+        assert!(
+            parse("theme {\n geometry {\n shell-radius -1\n }\n}")
+                .theme_settings()
+                .is_err()
+        );
+    }
+
+    #[test]
     fn parses_and_validates_theme_window_tokens() {
         let configured = parse(
             "theme {\n    colors {\n        border \"#11223344\"\n        accent \"#AABBCC\"\n        shadow \"#01020380\"\n    }\n    geometry {\n        border-width 1.5\n        focus-ring-width 3.0\n        window-radius 12.0\n    }\n    shadow {\n        soft {\n            offset-y -2.0\n            blur 24.0\n            opacity 0.4\n        }\n    }\n    material {\n        style \"translucent\"\n    }\n}\n",
@@ -2024,7 +2047,7 @@ mod tests {
                 material_style: MaterialStyle::Translucent,
                 backdrop_blur: 12.0,
                 material_radius: 14.0,
-                panel_radius: 0.0,
+                panel_radius: 14.0,
             }
         );
         assert!(invalid_color.theme_settings().is_err());

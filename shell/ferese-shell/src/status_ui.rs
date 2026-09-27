@@ -277,7 +277,7 @@ impl FereseShell {
                     theme::Container::custom(move |_| container::Style {
                         background: Some(Background::Color(foreground)),
                         border: Border {
-                            radius: 2.0.into(),
+                            radius: motion::radius(2.0).into(),
                             ..Default::default()
                         },
                         ..Default::default()
@@ -345,7 +345,7 @@ impl FereseShell {
                 0.12 * p,
             ))),
             border: Border {
-                radius: 10.0.into(),
+                radius: motion::radius(20.0).into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -772,7 +772,7 @@ fn status_summary<'a>(
                 ..badge_color
             })),
             border: Border {
-                radius: 9.0.into(),
+                radius: motion::radius(16.0).into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -823,7 +823,7 @@ fn level_meter(
                     }
                 })),
                 border: Border {
-                    radius: 2.5.into(),
+                    radius: motion::radius(2.5).into(),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -854,7 +854,7 @@ fn control_card<'a>(
                 ..foreground
             })),
             border: Border {
-                radius: 11.0.into(),
+                radius: motion::radius(22.0).into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -890,7 +890,7 @@ fn connection_control<'a>(
                 opacity,
             )),
             border: Border {
-                radius: 10.0.into(),
+                radius: motion::radius(20.0).into(),
                 ..Default::default()
             },
             ..Default::default()
@@ -1006,12 +1006,16 @@ fn slider_row(
                 ),
                 width: 4.0,
                 border: Border {
-                    radius: 2.0.into(),
+                    radius: motion::radius(2.0).into(),
                     ..Default::default()
                 },
             },
             handle: Handle {
-                shape: HandleShape::Circle { radius: 5.0 },
+                shape: HandleShape::Rectangle {
+                    width: 10,
+                    height: 10,
+                    border_radius: motion::radius(5.0).into(),
+                },
                 background: foreground.into(),
                 border_width: 0.0,
                 border_color: Color::TRANSPARENT,
