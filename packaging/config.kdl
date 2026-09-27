@@ -20,10 +20,10 @@ layout {
 theme {
     surface {
         bar {
-            background "#1C202E"
+            background "#111821"
             opacity 0.95
-            text-primary "#F0F3FA"
-            text-muted "#AAB4C7"
+            text-primary "#F4F7FB"
+            text-muted "#8793A2"
         }
     }
 }

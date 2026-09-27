@@ -100,7 +100,10 @@ raising the window; clicking raises it within its layer.
 
 ## Make it yours
 
-Open **Control Center → Settings**, or run `ferese-settings`.
+Open **Control Center → Settings**, or run `ferese-settings`. Appearance includes
+six presets: Ferese Blue, Monochrome, Gruvbox, Dracula, Ayu Light, and Monokai.
+The custom Ferese wallpaper is bundled as the default. Choose another image in
+Settings → Wallpaper, or keep your existing wallpaper configuration.
 Advanced options live in `~/.config/ferese/config.kdl` (or under
 `$XDG_CONFIG_HOME`). Changes reload automatically. The complete
 [configuration reference](docs/configuration.md) covers every supported option;

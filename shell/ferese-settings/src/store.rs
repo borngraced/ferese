@@ -414,7 +414,7 @@ window-rule app-id="mine" floating=#true
                 }
             }
         }
-        for preset in 0..3 {
+        for preset in 0..crate::visuals::PRESETS.len() {
             let mut snapshot = Snapshot::parse(String::new()).unwrap();
             for edit in crate::visuals::preset(preset) {
                 snapshot.edit(&edit).unwrap();

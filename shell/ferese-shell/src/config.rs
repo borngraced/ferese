@@ -67,8 +67,8 @@ impl Default for ShellTheme {
             surface_base: [17, 24, 33, 255],
             surface_popover: [17, 24, 33, 245],
             text_primary: [244, 247, 251, 255],
-            text_muted: [127, 138, 152, 255],
-            accent: [91, 140, 255, 255],
+            text_muted: [135, 147, 162, 255],
+            accent: [61, 123, 230, 255],
             border: [255, 255, 255, 24],
             shadow: [0, 0, 0, 85],
             bar_height: 28.0,
@@ -95,11 +95,25 @@ impl ShellTheme {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub(crate) struct WallpaperConfig {
+    #[serde(default = "default_wallpaper_path")]
     pub(crate) path: Option<PathBuf>,
     #[serde(default)]
     pub(crate) mode: WallpaperMode,
+}
+
+fn default_wallpaper_path() -> Option<PathBuf> {
+    Some(PathBuf::from(ferese_config::default_wallpaper()))
+}
+
+impl Default for WallpaperConfig {
+    fn default() -> Self {
+        Self {
+            path: default_wallpaper_path(),
+            mode: WallpaperMode::default(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
@@ -423,11 +437,11 @@ fn default_text_primary() -> String {
 }
 
 fn default_text_muted() -> String {
-    "#7F8A98".to_owned()
+    "#8793A2".to_owned()
 }
 
 fn default_accent() -> String {
-    "#5B8CFF".to_owned()
+    "#3D7BE6".to_owned()
 }
 
 fn default_border() -> String {
@@ -555,7 +569,10 @@ theme {
         let config: FereseConfig = ferese_config::from_str("").unwrap();
 
         assert_eq!(config.theme.typography.font_family, None);
-        assert_eq!(config.theme.background.path, None);
+        assert_eq!(
+            config.theme.background.path,
+            Some(PathBuf::from(ferese_config::default_wallpaper()))
+        );
         assert_eq!(config.theme.background.mode, WallpaperMode::Fill);
         let theme = shell_theme(&config.theme);
         assert_eq!(theme.bar_margin_top, 0);

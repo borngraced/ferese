@@ -17,11 +17,25 @@ use smithay::{
 };
 use std::{collections::HashMap, path::PathBuf, sync::mpsc};
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 pub(crate) struct WallpaperConfig {
+    #[serde(default = "default_wallpaper_path")]
     pub path: Option<PathBuf>,
     #[serde(default)]
     pub mode: WallpaperMode,
+}
+
+fn default_wallpaper_path() -> Option<PathBuf> {
+    Some(PathBuf::from(ferese_config::default_wallpaper()))
+}
+
+impl Default for WallpaperConfig {
+    fn default() -> Self {
+        Self {
+            path: default_wallpaper_path(),
+            mode: WallpaperMode::default(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
@@ -261,7 +275,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         state.receiver = Some(receiver);
         state.reload(WallpaperConfig {
-            path: None,
+            path: state.config.path.clone(),
             mode: WallpaperMode::Fit,
         });
         assert!(state.receiver.is_some());
@@ -284,7 +298,7 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         state.receiver = Some(receiver);
         state.reload(WallpaperConfig {
-            path: None,
+            path: state.config.path.clone(),
             mode: WallpaperMode::Fit,
         });
         state.reload(WallpaperConfig::default());
@@ -314,7 +328,18 @@ mod tests {
 
     #[test]
     fn missing_wallpaper_preserves_external_shell_fallback() {
-        let state = WallpaperState::new(WallpaperConfig::default());
+        let state = WallpaperState::new(WallpaperConfig {
+            path: None,
+            mode: WallpaperMode::default(),
+        });
         assert!(!state.owns_background());
+    }
+
+    #[test]
+    fn default_wallpaper_is_bundled_and_decodable() {
+        let config: WallpaperConfig = ferese_config::from_str("").unwrap();
+        let path = config.path.unwrap();
+        assert_eq!(image::image_dimensions(&path).unwrap(), (1920, 1080));
+        assert!(WallpaperState::new(WallpaperConfig::default()).owns_background());
     }
 }

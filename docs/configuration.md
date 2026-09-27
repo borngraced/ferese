@@ -105,6 +105,23 @@ Changing default width preserves manually resized columns.
 
 ## Appearance
 
+Settings → Appearance offers six presets: **Ferese Blue** (default),
+**Monochrome**, **Gruvbox**, **Dracula**, **Ayu Light**, and **Monokai**.
+Ferese Blue uses the README logo's `#3D7BE6`. Each preset coordinates surfaces,
+text, menu-bar colors, borders and the focus ring. Ayu Light also switches native
+Settings controls to light styling. Presets preserve wallpaper, typography,
+geometry and opacity settings; colors remain individually editable.
+
+The community palettes are desktop adaptations with text shades adjusted for
+readability. Sources: [Gruvbox](https://github.com/morhetz/gruvbox),
+[Dracula](https://github.com/dracula/visual-studio-code),
+[Ayu](https://github.com/ayu-theme/ayu-colors), and
+[classic Monokai](https://github.com/microsoft/vscode/blob/main/extensions/theme-monokai/themes/monokai-color-theme.json).
+Marketplace install counts informed the shortlist; they are not a measurement
+of desktop users. Monochrome and Gruvbox replace similar blue palettes to keep
+these six visually distinct.
+
+
 | Section / key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `appearance.corner_radius` | number ≥ 0 | `14` | Shell material/card radius |
@@ -112,7 +129,7 @@ Changing default width preserves manually resized columns.
 | `appearance.inactive_dim.amount` | number 0–1 | `0.15` | Darkening strength |
 | `appearance.inactive_dim.duration_ms` | number ≥ 0 | `150` | Dimming and focus-ring transition; 0 snaps |
 | `theme.typography.font_family` | string | system sans-serif | Shell, Settings and overview font |
-| `theme.background.path` | string | omitted | Wallpaper image path |
+| `theme.background.path` | string | bundled Ferese wallpaper | Wallpaper image path; an existing selection overrides the default |
 | `theme.background.mode` | `"fill"`, `"fit"` | `"fill"` | Crop or letterbox |
 | `theme.material.style` | `"solid"`, `"translucent"` | `"solid"` | Shell background material |
 | `theme.material.blur_radius` | number ≥ 0 | `12` | Translucent backdrop blur, capped at 32; 0 disables |
@@ -121,8 +138,8 @@ Changing default width preserves manually resized columns.
 | --- | --- | --- |
 | `surface_base` | `"#111821"` | Material/card base color |
 | `text_primary` | `"#F4F7FB"` | Main text |
-| `text_muted` | `"#7F8A98"` | Secondary text |
-| `accent` | `"#5B8CFF"` | Active controls and solid focus ring |
+| `text_muted` | `"#8793A2"` | Secondary text |
+| `accent` | `"#3D7BE6"` | Active controls and solid focus ring |
 | `border` | `"#FFFFFF18"` | Unfocused window border |
 | `shadow` | `"#00000055"` | Window shadow color |
 

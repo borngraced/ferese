@@ -558,7 +558,7 @@ pub fn fields(page: Page) -> Vec<Field> {
                 "theme.colors.accent",
                 "Accent color",
                 "Focus rings and selected controls. Use a hex color.",
-                "#5B8CFF",
+                "#3D7BE6",
             ),
             text(
                 "theme.colors.surface_base",
@@ -607,7 +607,7 @@ pub fn fields(page: Page) -> Vec<Field> {
                 "theme.background.path",
                 "Image location",
                 "Choose an image above, or enter its full path.",
-                "",
+                ferese_config::default_wallpaper(),
             ),
             choice(
                 "theme.background.mode",

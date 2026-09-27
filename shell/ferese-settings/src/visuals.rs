@@ -42,24 +42,47 @@ impl Palette {
             Color::from_rgb8(15, 16, 20),
         );
         Self {
-            background: mix(base, Color::WHITE, 0.025),
+            background: mix(base, surface_shade(base), 0.025),
             sidebar: base,
-            card: mix(base, Color::WHITE, 0.055),
+            card: mix(base, surface_shade(base), 0.055),
             accent: color(
-                &snapshot.string("theme.colors.accent", "#5B8CFF"),
-                Color::from_rgb8(229, 200, 144),
+                &snapshot.string("theme.colors.accent", "#3D7BE6"),
+                Color::from_rgb8(61, 123, 230),
             ),
             text: color(
-                &snapshot.string("theme.colors.text_primary", "#e2e0e6"),
+                &snapshot.string("theme.colors.text_primary", "#F4F7FB"),
                 Color::WHITE,
             ),
             muted: color(
-                &snapshot.string("theme.colors.text_muted", "#96959f"),
+                &snapshot.string("theme.colors.text_muted", "#8793A2"),
                 Color::from_rgb8(150, 149, 159),
             ),
             error: mix(base, Color::from_rgb8(210, 80, 80), 0.2),
         }
     }
+}
+
+fn luminance(color: Color) -> f32 {
+    let channel = |value: f32| {
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
+}
+
+fn surface_shade(base: Color) -> Color {
+    if luminance(base) > 0.5 {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    }
+}
+
+fn cosmic_color(color: Color) -> cosmic::theme::CosmicColor {
+    cosmic::theme::CosmicColor::new(color.r, color.g, color.b, 1.)
 }
 
 fn mix(a: Color, b: Color, t: f32) -> Color {
@@ -126,17 +149,21 @@ fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button 
         background: Some(Background::Color(if selected {
             mix(p.sidebar, p.accent, if hover { 0.24 } else { 0.17 })
         } else if hover {
-            mix(p.card, Color::WHITE, 0.06)
+            mix(p.card, surface_shade(p.sidebar), 0.06)
         } else if navigation {
             p.sidebar
         } else {
             p.card
         })),
-        text_color: Some(if selected { p.accent } else { p.text }),
+        text_color: Some(p.text),
         icon_color: None,
         border_radius: 9.into(),
-        border_width: 0.,
-        border_color: Color::TRANSPARENT,
+        border_width: if selected { 1. } else { 0. },
+        border_color: if selected {
+            p.accent
+        } else {
+            Color::TRANSPARENT
+        },
         outline_width: 0.,
         outline_color: Color::TRANSPARENT,
         overlay: None,
@@ -152,14 +179,21 @@ fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button 
 }
 
 pub fn native_theme(snapshot: Option<&Snapshot>) -> cosmic::Theme {
-    let mut theme = cosmic::theme::COSMIC_DARK.clone();
-    if let Some(snapshot) = snapshot {
-        let p = Palette::from(snapshot);
-        let accent = cosmic::theme::CosmicColor::new(p.accent.r, p.accent.g, p.accent.b, 1.);
-        theme.accent.base = accent;
-        theme.accent_button.base = accent;
-        theme.text_button.on = accent;
-    }
+    let Some(snapshot) = snapshot else {
+        return cosmic::Theme::custom(std::sync::Arc::new(cosmic::theme::COSMIC_DARK.clone()));
+    };
+    let palette = Palette::from(snapshot);
+    let builder = if luminance(palette.sidebar) > 0.5 {
+        cosmic::cosmic_theme::ThemeBuilder::light()
+    } else {
+        cosmic::cosmic_theme::ThemeBuilder::dark()
+    };
+    let theme = builder
+        .bg_color(cosmic_color(palette.background))
+        .primary_container_bg(cosmic_color(palette.card))
+        .text_tint(cosmic_color(palette.text).color)
+        .accent(cosmic_color(palette.accent).color)
+        .build();
     cosmic::Theme::custom(std::sync::Arc::new(theme))
 }
 
@@ -181,7 +215,18 @@ pub fn configured_font(snapshot: &Snapshot) -> cosmic::font::Font {
 }
 
 pub fn icon(page: Page, tint: Color) -> svg_icon::Icon {
-    svg_icon::from_svg_bytes(format!(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="{}" fill="none" stroke="{}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##, page.icon(),hex(tint)).into_bytes()).symbolic(false).icon().size(19)
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+    <path d="{}" fill="none" stroke="{}" stroke-width="1.6"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>"##,
+        page.icon(),
+        hex(tint),
+    );
+    svg_icon::from_svg_bytes(svg.into_bytes())
+        .symbolic(false)
+        .icon()
+        .size(19)
 }
 
 pub fn brand_icon() -> svg_icon::Icon {
@@ -192,51 +237,149 @@ pub fn brand_icon() -> svg_icon::Icon {
 }
 
 pub fn action_icon(path: &str, tint: Color) -> svg_icon::Icon {
-    svg_icon::from_svg_bytes(format!(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="{path}" fill="none" stroke="{}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##, hex(tint)).into_bytes())
+    let svg = format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+    <path d="{path}" fill="none" stroke="{}" stroke-width="1.6"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>"##,
+        hex(tint),
+    );
+    svg_icon::from_svg_bytes(svg.into_bytes())
         .symbolic(false)
         .icon()
         .size(16)
 }
-const PRESETS: [(&str, &str, &str, &str, &str); 3] = [
-    ("#e5c890", "#0f1014", "#c9c7cd", "#9998a8", "#795e40"),
-    ("#e5e5e5", "#101012", "#ededf0", "#97979f", "#696973"),
-    ("#cba6f7", "#1e1e2e", "#cdd6f4", "#a6adc8", "#89b4fa"),
+
+pub struct Preset {
+    pub name: &'static str,
+    pub description: &'static str,
+    accent: &'static str,
+    base: &'static str,
+    text: &'static str,
+    muted: &'static str,
+    border: &'static str,
+    gradient_end: &'static str,
+}
+
+pub const PRESETS: [Preset; 6] = [
+    Preset {
+        name: "Ferese Blue",
+        description: "Default · logo blue",
+        accent: "#3D7BE6",
+        base: "#111821",
+        text: "#F4F7FB",
+        muted: "#8793A2",
+        border: "#FFFFFF18",
+        gradient_end: "#3D7BE6",
+    },
+    Preset {
+        name: "Monochrome",
+        description: "Dark · grayscale",
+        accent: "#E5E5E5",
+        base: "#101012",
+        text: "#EDEDF0",
+        muted: "#97979F",
+        border: "#FFFFFF18",
+        gradient_end: "#696973",
+    },
+    Preset {
+        name: "Gruvbox",
+        description: "Dark · warm orange",
+        accent: "#FE8019",
+        base: "#282828",
+        text: "#EBDBB2",
+        muted: "#BDAE93",
+        border: "#504945",
+        gradient_end: "#FABD2F",
+    },
+    Preset {
+        name: "Dracula",
+        description: "Dark · purple",
+        accent: "#BD93F9",
+        base: "#282A36",
+        text: "#F8F8F2",
+        muted: "#A4ADCD",
+        border: "#44475A",
+        gradient_end: "#FF79C6",
+    },
+    Preset {
+        name: "Ayu Light",
+        description: "Light · paper",
+        accent: "#8F5300",
+        base: "#F8F9FA",
+        text: "#5C6166",
+        muted: "#596574",
+        border: "#C8CDD3",
+        gradient_end: "#996000",
+    },
+    Preset {
+        name: "Monokai",
+        description: "Dark · warm green",
+        accent: "#A6E22E",
+        base: "#272822",
+        text: "#F8F8F2",
+        muted: "#B2B29F",
+        border: "#414339",
+        gradient_end: "#E6DB74",
+    },
 ];
+
 pub fn preset(index: usize) -> Vec<Edit> {
-    let (accent, base, text, muted, end) = PRESETS[index.min(2)];
+    let Some(preset) = PRESETS.get(index) else {
+        return Vec::new();
+    };
     vec![
-        set("theme.colors.accent", accent),
-        set("theme.colors.surface_base", base),
-        set("theme.colors.text_primary", text),
-        set("theme.colors.text_muted", muted),
-        set("theme.surface.bar.background", base),
-        set("theme.surface.bar.text_primary", text),
-        set("theme.surface.bar.text_muted", muted),
-        set("theme.focus_ring.gradient.from", accent),
-        set("theme.focus_ring.gradient.to", end),
+        set("theme.colors.accent", preset.accent),
+        set("theme.colors.surface_base", preset.base),
+        set("theme.colors.text_primary", preset.text),
+        set("theme.colors.text_muted", preset.muted),
+        set("theme.colors.border", preset.border),
+        set("theme.colors.shadow", "#00000055"),
+        set("theme.surface.bar.background", preset.base),
+        set("theme.surface.bar.text_primary", preset.text),
+        set("theme.surface.bar.text_muted", preset.muted),
+        set("theme.focus_ring.gradient.from", preset.accent),
+        set("theme.focus_ring.gradient.to", preset.gradient_end),
+        set("theme.focus_ring.gradient.angle", 0.0),
     ]
 }
 
 pub fn preset_selected(snapshot: &Snapshot, index: usize) -> bool {
-    let (accent, base, text, muted, _) = PRESETS[index];
+    let Some(preset) = PRESETS.get(index) else {
+        return false;
+    };
     [
-        ("accent", accent),
-        ("surface_base", base),
-        ("text_primary", text),
-        ("text_muted", muted),
+        ("theme.colors.accent", preset.accent, "#3D7BE6"),
+        ("theme.colors.surface_base", preset.base, "#111821"),
+        ("theme.colors.text_primary", preset.text, "#F4F7FB"),
+        ("theme.colors.text_muted", preset.muted, "#8793A2"),
+        ("theme.colors.border", preset.border, "#FFFFFF18"),
+        ("theme.colors.shadow", "#00000055", "#00000055"),
+        ("theme.surface.bar.background", preset.base, "#1C202EF2"),
+        ("theme.surface.bar.text_primary", preset.text, "#F0F3FA"),
+        ("theme.surface.bar.text_muted", preset.muted, "#AAB4C7"),
+        ("theme.focus_ring.gradient.from", preset.accent, "#3D7BE6"),
+        (
+            "theme.focus_ring.gradient.to",
+            preset.gradient_end,
+            "#3D7BE6",
+        ),
     ]
     .into_iter()
-    .all(|(key, value)| {
+    .all(|(path, expected, fallback)| {
+        if index == 0 && snapshot.item(path).is_none() {
+            return true;
+        }
         snapshot
-            .string(&format!("theme.colors.{key}"), "")
-            .eq_ignore_ascii_case(value)
-    })
+            .string(path, fallback)
+            .eq_ignore_ascii_case(expected)
+    }) && snapshot.number("theme.focus_ring.gradient.angle", 0.) == 0.
 }
 
 pub fn swatches(index: usize) -> Element<'static, Message> {
-    let (accent, base, _, _, end) = PRESETS[index];
+    let preset = &PRESETS[index];
     let mut row = widget::row([]).spacing(3);
-    for value in [base, end, accent] {
+    for value in [preset.base, preset.gradient_end, preset.accent] {
         row = row.push(
             container(widget::Space::new().width(12).height(22))
                 .class(surface(color(value, Color::WHITE), 4.)),
@@ -244,8 +387,7 @@ pub fn swatches(index: usize) -> Element<'static, Message> {
     }
     row.into()
 }
-// A deliberately stylized preview, built as vector geometry at the actual
-// output scale. No full-resolution wallpaper buffers or screenshot polling.
+
 pub fn preview(snapshot: &Snapshot) -> Element<'static, Message> {
     let p = Palette::from(snapshot);
     let base = hex(p.sidebar);
@@ -290,4 +432,83 @@ pub fn preview(snapshot: &Snapshot) -> Element<'static, Message> {
         .height(Length::Fixed(132.))
         .content_fit(cosmic::iced::ContentFit::Contain)
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn configured_preset(index: usize) -> Snapshot {
+        let mut snapshot = Snapshot::parse(String::new()).unwrap();
+        for edit in preset(index) {
+            snapshot.edit(&edit).unwrap();
+        }
+        snapshot
+    }
+
+    fn contrast(a: Color, b: Color) -> f32 {
+        let a = luminance(a);
+        let b = luminance(b);
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    #[test]
+    fn presets_are_distinct_and_readable_on_settings_surfaces() {
+        for (index, preset) in PRESETS.iter().enumerate() {
+            let snapshot = configured_preset(index);
+            let palette = Palette::from(&snapshot);
+            for background in [palette.background, palette.sidebar, palette.card] {
+                assert!(
+                    contrast(palette.text, background) >= 4.5,
+                    "{} text",
+                    preset.name
+                );
+                assert!(
+                    contrast(palette.muted, background) >= 4.5,
+                    "{} muted text",
+                    preset.name
+                );
+            }
+            for other in PRESETS.iter().skip(index + 1) {
+                assert_ne!(preset.accent, other.accent);
+                assert_ne!(preset.base, other.base);
+            }
+        }
+    }
+
+    #[test]
+    fn selection_tracks_all_preset_colors_and_gradient_changes() {
+        for index in 0..PRESETS.len() {
+            let mut snapshot = configured_preset(index);
+            assert!(preset_selected(&snapshot, index));
+            snapshot
+                .edit(&set("theme.surface.bar.text_primary", "#123456"))
+                .unwrap();
+            assert!(!preset_selected(&snapshot, index));
+            let mut snapshot = configured_preset(index);
+            snapshot
+                .edit(&set("theme.focus_ring.gradient.to", "#123456"))
+                .unwrap();
+            assert!(!preset_selected(&snapshot, index));
+        }
+        assert!(preset_selected(&Snapshot::parse(String::new()).unwrap(), 0));
+        assert!(preset(usize::MAX).is_empty());
+        assert!(!preset_selected(
+            &Snapshot::parse(String::new()).unwrap(),
+            usize::MAX
+        ));
+    }
+
+    #[test]
+    fn default_uses_logo_blue_and_native_controls_follow_lightness() {
+        let logo = include_str!("../../../packaging/icons/ferese.svg").to_ascii_uppercase();
+        assert!(logo.contains(PRESETS[0].accent));
+        for index in 0..PRESETS.len() {
+            let snapshot = configured_preset(index);
+            assert_eq!(
+                native_theme(Some(&snapshot)).cosmic().is_dark,
+                PRESETS[index].name != "Ayu Light"
+            );
+        }
+    }
 }

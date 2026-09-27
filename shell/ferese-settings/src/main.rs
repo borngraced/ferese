@@ -416,7 +416,11 @@ impl cosmic::Application for App {
             Message::WallpaperPicked(Err(error)) => self.error = Some(error),
             Message::Thumbnail(path, result) => {
                 self.thumbnail_loading = false;
-                if path == self.current.string("theme.background.path", "") {
+                if path
+                    == self
+                        .current
+                        .string("theme.background.path", ferese_config::default_wallpaper())
+                {
                     self.thumbnail_path = path;
                     match result {
                         Ok(handle) => {
@@ -591,27 +595,31 @@ impl cosmic::Application for App {
                 body = body.push(visuals::preview(&self.draft));
             }
             if self.page == Page::Appearance {
-                let mut presets = row([]).spacing(10);
-                for (index, title) in ["Amberwood", "Monochrome", "Catppuccin"]
-                    .into_iter()
-                    .enumerate()
-                {
-                    presets = presets.push(
-                        button::custom(
-                            row([])
-                                .spacing(10)
-                                .align_y(Alignment::Center)
+                let mut presets = column([]).spacing(10);
+                for (row_index, choices) in visuals::PRESETS.chunks(3).enumerate() {
+                    let mut tiles = row([]).spacing(10);
+                    for (column_index, preset) in choices.iter().enumerate() {
+                        let index = row_index * 3 + column_index;
+                        let tile = button::custom(
+                            column([])
+                                .spacing(6)
                                 .push(visuals::swatches(index))
-                                .push(self.label(title, 12.)),
+                                .push(self.label(preset.name, 12.))
+                                .push(self.label(preset.description, 10.)),
                         )
                         .width(Length::Fill)
                         .padding(10)
                         .class(visuals::button_style(
                             palette,
                             visuals::preset_selected(&self.draft, index),
-                        ))
-                        .on_press(Message::Preset(index)),
-                    );
+                        ));
+                        tiles = tiles.push(if self.saving {
+                            tile
+                        } else {
+                            tile.on_press(Message::Preset(index))
+                        });
+                    }
+                    presets = presets.push(tiles);
                 }
                 body = body.push(presets);
             }
@@ -970,7 +978,9 @@ impl App {
     }
 
     fn load_thumbnail(&mut self) -> Task<Message> {
-        let path = self.current.string("theme.background.path", "");
+        let path = self
+            .current
+            .string("theme.background.path", ferese_config::default_wallpaper());
         if self.page != Page::Wallpaper || self.thumbnail_loading || path == self.thumbnail_path {
             return Task::none();
         }

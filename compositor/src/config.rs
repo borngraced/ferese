@@ -1674,7 +1674,7 @@ fn default_surface_base_color() -> String {
 }
 
 fn default_accent_color() -> String {
-    "#5B8CFF".to_owned()
+    "#3D7BE6".to_owned()
 }
 
 fn default_shadow_color() -> String {

@@ -27,6 +27,23 @@ pub fn config_path() -> Option<PathBuf> {
         .map(|p| p.join("ferese/config.kdl"))
 }
 
+pub fn default_wallpaper() -> &'static str {
+    static PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let path = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|dir| dir.join("wallpapers/ferese.png")))
+            .filter(|path| path.is_file())
+            .unwrap_or_else(|| {
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/wallpapers/ferese.png")
+            });
+        path.canonicalize()
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
 fn field(name: &str, parent: &str) -> String {
     if parent == "commands" {
         return name.to_owned();

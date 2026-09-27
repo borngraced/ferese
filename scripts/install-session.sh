@@ -42,6 +42,9 @@ fi
 for name in ferese ferese-shell ferese-settings feresectl; do
     [[ -x $repo_dir/target/release/$name ]] || { echo "Missing release binary: $name" >&2; exit 1; }
 done
+for name in ferese.png ferese.svg; do
+    [[ -f $repo_dir/assets/wallpapers/$name ]] || { echo "Missing wallpaper asset: $name" >&2; exit 1; }
+done
 desktop-file-validate "$repo_dir/packaging/ferese.desktop"
 desktop-file-validate "$repo_dir/packaging/dev.ferese.Settings.desktop"
 
@@ -56,6 +59,9 @@ install -m 0755 -- "$repo_dir/packaging/ferese-session" "$release_dir/ferese-ses
 install -m 0755 -- "$repo_dir/packaging/ferese-lock" "$release_dir/ferese-lock"
 install -m 0755 -- "$repo_dir/packaging/ferese-screenshot" "$release_dir/ferese-screenshot"
 install -m 0644 -- "$repo_dir/packaging/config.kdl" "$release_dir/config.example.kdl"
+install -d -m 0755 -- "$release_dir/wallpapers"
+install -m 0644 -- "$repo_dir/assets/wallpapers/ferese.png" "$release_dir/wallpapers/ferese.png"
+install -m 0644 -- "$repo_dir/assets/wallpapers/ferese.svg" "$release_dir/wallpapers/ferese.svg"
 
 if [[ -L $install_root/current ]]; then
     ln -sfn -- "$(readlink -- "$install_root/current")" "$install_root/previous"
