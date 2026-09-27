@@ -1,4 +1,6 @@
 //! Bounded, off-UI-thread adapters. A missing service is `None`, never a fake state.
+mod network;
+
 use std::{
     env, fs,
     path::Path,
@@ -334,7 +336,7 @@ impl StatusBus {
 
 fn poll(system_bus: &mut StatusBus, session_bus: &mut StatusBus) -> Snapshot {
     Snapshot {
-        network: network(),
+        network: system_bus.query(network::read).flatten(),
         bluetooth: bluetooth(),
         audio: audio(),
         battery: battery(),
@@ -344,46 +346,6 @@ fn poll(system_bus: &mut StatusBus, session_bus: &mut StatusBus) -> Snapshot {
         reboot: system_bus.can_power("CanReboot"),
         suspend: system_bus.can_power("CanSuspend"),
     }
-}
-
-fn network() -> Option<Network> {
-    // No Wi-Fi device means no Wi-Fi control (wired connectivity isn't called Wi-Fi).
-    let devices = run("nmcli", &["-t", "-f", "TYPE", "device", "status"]).ok()?;
-    if !devices.lines().any(|line| line == "wifi") {
-        return None;
-    }
-    let enabled = run("nmcli", &["radio", "wifi"]).ok()? == "enabled";
-    let mut connection = None;
-    let mut signal = 0;
-    if enabled {
-        let rows = run(
-            "nmcli",
-            &[
-                "-t",
-                "-f",
-                "IN-USE,SIGNAL,SSID",
-                "device",
-                "wifi",
-                "list",
-                "--rescan",
-                "no",
-            ],
-        )
-        .ok()?;
-        for line in rows.lines() {
-            if let Some((strength, ssid)) = line.strip_prefix("*:").and_then(|s| s.split_once(':'))
-            {
-                signal = strength.parse::<u8>().ok()?.min(100);
-                connection = Some(ssid.replace("\\:", ":").replace("\\\\", "\\"));
-                break;
-            }
-        }
-    }
-    Some(Network {
-        enabled,
-        connection,
-        signal,
-    })
 }
 
 fn bluetooth() -> Option<Bluetooth> {
@@ -574,6 +536,42 @@ fn execute(action: &Action, settings: Option<&[String]>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    pub(super) struct TestBus {
+        daemon: std::process::Child,
+        pub(super) address: String,
+    }
+    impl TestBus {
+        pub(super) fn new() -> Self {
+            use std::io::{BufRead, BufReader};
+            let mut daemon = Command::new("dbus-daemon")
+                .args(["--session", "--nofork", "--nopidfile", "--print-address=1"])
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+            let mut address = String::new();
+            BufReader::new(daemon.stdout.take().unwrap())
+                .read_line(&mut address)
+                .unwrap();
+            Self {
+                daemon,
+                address: address.trim().to_owned(),
+            }
+        }
+        pub(super) fn connect(&self) -> zbus::blocking::Connection {
+            zbus::blocking::connection::Builder::address(self.address.as_str())
+                .unwrap()
+                .method_timeout(Duration::from_millis(200))
+                .build()
+                .unwrap()
+        }
+    }
+    impl Drop for TestBus {
+        fn drop(&mut self) {
+            let _ = self.daemon.kill();
+            let _ = self.daemon.wait();
+        }
+    }
 
     struct MockLogin1(Arc<std::sync::atomic::AtomicU8>);
 
