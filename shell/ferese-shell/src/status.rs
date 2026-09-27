@@ -1,5 +1,6 @@
 //! Bounded, off-UI-thread adapters. A missing service is `None`, never a fake state.
 mod bluetooth;
+mod dbus_cache;
 mod network;
 
 use std::{
@@ -145,6 +146,8 @@ impl Service {
         thread::spawn(move || {
             let mut system_bus = StatusBus::new(true);
             let mut session_bus = StatusBus::new(false);
+            let mut network = dbus_cache::Cache::new("org.freedesktop.NetworkManager");
+            let mut bluetooth = dbus_cache::Cache::new("org.bluez");
             loop {
                 // A poll overlapping a write is discarded below. Wait for the
                 // write to finish before retrying instead of launching commands
@@ -152,7 +155,9 @@ impl Service {
                 let Some(before) = wait_for_poll(&polling) else {
                     break;
                 };
-                let snapshot = poll(&mut system_bus, &mut session_bus);
+                let mut snapshot = poll(&mut system_bus, &mut session_bus);
+                snapshot.network = network.read(before, network::read);
+                snapshot.bluetooth = bluetooth.read(before, bluetooth::read);
                 let state = polling.0.lock().unwrap();
                 if state.3 {
                     break;
@@ -337,8 +342,8 @@ impl StatusBus {
 
 fn poll(system_bus: &mut StatusBus, session_bus: &mut StatusBus) -> Snapshot {
     Snapshot {
-        network: system_bus.query(network::read).flatten(),
-        bluetooth: system_bus.query(bluetooth::read).flatten(),
+        network: None,
+        bluetooth: None,
         audio: audio(),
         battery: battery(),
         brightness: brightness(),
@@ -540,7 +545,7 @@ mod tests {
         pub(super) fn connect(&self) -> zbus::blocking::Connection {
             zbus::blocking::connection::Builder::address(self.address.as_str())
                 .unwrap()
-                .method_timeout(Duration::from_millis(200))
+                .method_timeout(Duration::from_secs(2))
                 .build()
                 .unwrap()
         }

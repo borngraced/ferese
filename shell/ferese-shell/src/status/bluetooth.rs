@@ -13,15 +13,47 @@ pub(super) fn read(connection: &Connection) -> zbus::Result<Option<Bluetooth>> {
         )?
         .body()
         .deserialize()?;
-    Ok(snapshot(&objects))
+    let adapters = objects
+        .iter()
+        .filter_map(|(path, interfaces)| {
+            interfaces
+                .get("org.bluez.Adapter1")
+                .map(|properties| (path, properties))
+        })
+        .collect::<Vec<_>>();
+    // BlueZ has no default-controller property. With several controllers, use
+    // bluetoothctl's own selection so the displayed toggle and CLI action
+    // address the same controller. The signal cache avoids idle CLI polling.
+    let selected = if adapters.len() > 1 {
+        let Some(info) = super::run("bluetoothctl", &["show"]).ok() else {
+            return Ok(None);
+        };
+        let Some(address) = info.lines().find_map(|line| {
+            line.strip_prefix("Controller ")
+                .and_then(|line| line.split_whitespace().next())
+        }) else {
+            return Ok(None);
+        };
+        let Some((path, _)) = adapters.iter().find(|(_, properties)| {
+            properties
+                .get("Address")
+                .and_then(|value| <&str>::try_from(value).ok())
+                == Some(address)
+        }) else {
+            return Ok(None);
+        };
+        Some(path.as_str())
+    } else {
+        None
+    };
+    Ok(snapshot(&objects, selected))
 }
 
-fn snapshot(objects: &ManagedObjects) -> Option<Bluetooth> {
-    // bluetoothctl's fresh process uses its first controller. Prefer hci0 and
-    // keep the selection stable when the object-manager dictionary is reordered.
+fn snapshot(objects: &ManagedObjects, selected: Option<&str>) -> Option<Bluetooth> {
     let (adapter, properties) = objects
         .iter()
         .filter_map(|(path, interfaces)| interfaces.get("org.bluez.Adapter1").map(|p| (path, p)))
+        .filter(|(path, _)| selected.is_none_or(|selected| selected == path.as_str()))
         .min_by(|(a, _), (b, _)| a.as_str().cmp(b.as_str()))?;
     let enabled = bool::try_from(properties.get("Powered")?).ok()?;
     let mut devices = Vec::new();
@@ -105,7 +137,8 @@ mod tests {
     #[test]
     fn selects_one_adapter_and_only_its_connected_devices() {
         let mut objects = graph();
-        let value = snapshot(&objects).unwrap();
+        assert!(!snapshot(&objects, Some("/org/bluez/hci1")).unwrap().enabled);
+        let value = snapshot(&objects, Some("/org/bluez/hci0")).unwrap();
         assert!(value.enabled);
         assert_eq!(value.devices, ["Headphones"]);
         let adapter = objects
@@ -114,11 +147,11 @@ mod tests {
             .get_mut("org.bluez.Adapter1")
             .unwrap();
         adapter.insert("Powered".into(), false.into());
-        let value = snapshot(&objects).unwrap();
+        let value = snapshot(&objects, None).unwrap();
         assert!(!value.enabled && value.devices.is_empty());
         adapter_removed(&mut objects);
-        assert!(!snapshot(&objects).unwrap().enabled);
-        assert!(snapshot(&ManagedObjects::new()).is_none());
+        assert!(!snapshot(&objects, None).unwrap().enabled);
+        assert!(snapshot(&ManagedObjects::new(), None).is_none());
     }
     fn adapter_removed(objects: &mut ManagedObjects) {
         objects.retain(|path, _| !path.as_str().starts_with("/org/bluez/hci0"));
@@ -131,13 +164,15 @@ mod tests {
                 adapter.remove("Powered");
             }
         }
-        assert!(snapshot(&objects).is_none());
+        assert!(snapshot(&objects, None).is_none());
     }
     struct Manager;
     #[zbus::interface(name = "org.freedesktop.DBus.ObjectManager")]
     impl Manager {
         fn get_managed_objects(&self) -> ManagedObjects {
-            graph()
+            let mut objects = graph();
+            objects.retain(|path, _| !path.as_str().starts_with("/org/bluez/hci1"));
+            objects
         }
     }
     #[test]
