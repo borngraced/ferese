@@ -78,30 +78,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     state.config_source = initial_source.filter(|source| source.len() <= 60 * 1024);
     overview::init_font_loader(&mut event_loop, &mut state)?;
     backends::init(launch.backend, &mut event_loop, &mut state)?;
-    let mut monitor =
-        config::config_path().and_then(|path| match reload::ConfigMonitor::new(path) {
+    let mut monitor = config::config_path().and_then(
+        |path| match reload::ConfigMonitor::with_wakeup(path, Some(event_loop.get_signal())) {
             Ok(monitor) => Some(monitor),
             Err(error) => {
                 warn!(%error, "automatic config watching unavailable; use feresectl reload-config");
                 None
             }
-        });
-    use calloop::timer::{TimeoutAction, Timer};
-    event_loop.handle().insert_source(
-        Timer::from_duration(Duration::from_millis(150)),
-        move |_, _, state: &mut Ferese| {
-            if let Some(result) = monitor
-                .as_mut()
-                .and_then(|monitor| monitor.poll(std::time::Instant::now()))
-            {
-                if let Err(error) = result.and_then(|source| state.reload_config_source(source)) {
-                    warn!(%error, "config reload rejected; retaining last working config");
-                }
-            }
-            TimeoutAction::ToDuration(Duration::from_millis(150))
         },
-    )?;
-
+    );
+    use calloop::timer::{TimeoutAction, Timer};
     info!(socket = ?state.socket_name, backend = ?launch.backend, "Ferese is accepting Wayland clients");
     let mut child = spawn_client(&mut state, launch.client, launch.client_capabilities);
     let runner = std::rc::Rc::new(std::cell::RefCell::new(daemon::Runner::new(
@@ -117,7 +103,30 @@ fn main() -> Result<(), Box<dyn Error>> {
             TimeoutAction::ToDuration(Duration::from_secs(1))
         },
     )?;
+    let reload_timer_pending = std::rc::Rc::new(std::cell::Cell::new(false));
+    let reload_handle = event_loop.handle();
     let result = event_loop.run(None, &mut state, |state| {
+        if let Some(monitor) = &mut monitor {
+            if let Some(result) = monitor.poll(std::time::Instant::now()) {
+                if let Err(error) = result.and_then(|source| state.reload_config_source(source)) {
+                    warn!(%error, "config reload rejected; retaining last working config");
+                }
+            }
+            // At most one timer exists. Edits arriving during debounce move the
+            // deadline; the old timer wakes once and is replaced if necessary.
+            if !reload_timer_pending.get()
+                && let Some(deadline) = monitor.next_deadline()
+            {
+                let pending = reload_timer_pending.clone();
+                match reload_handle.insert_source(Timer::from_deadline(deadline), move |_, _, _| {
+                    pending.set(false);
+                    TimeoutAction::Drop
+                }) {
+                    Ok(_) => reload_timer_pending.set(true),
+                    Err(error) => warn!(%error, "could not schedule config debounce"),
+                }
+            }
+        }
         // The decoder wakes the loop after publishing its result, including
         // when no output has a pending frame.
         let wallpaper_changed = state.wallpaper.poll();

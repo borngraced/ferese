@@ -1,4 +1,4 @@
-//! Filesystem events only: idle timer ticks never read/stat the config.
+//! Filesystem events wake the loop; only pending edits need a debounce timer.
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::{
     io::Read,
@@ -28,9 +28,18 @@ pub(crate) struct ConfigMonitor {
 }
 
 impl ConfigMonitor {
+    #[cfg(test)]
     pub(crate) fn new(path: PathBuf) -> notify::Result<Self> {
+        Self::with_wakeup(path, None)
+    }
+
+    pub(crate) fn with_wakeup(
+        path: PathBuf,
+        wakeup: Option<smithay::reexports::calloop::LoopSignal>,
+    ) -> notify::Result<Self> {
         let (sender, events) = mpsc::sync_channel(1);
         let target = path.clone();
+        let event_wakeup = wakeup.clone();
         let mut watcher =
             notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
                 if let Ok(event) = event
@@ -41,6 +50,9 @@ impl ConfigMonitor {
                         .any(|p| p == &target || target.starts_with(p))
                 {
                     let _ = sender.try_send(());
+                    if let Some(wakeup) = &event_wakeup {
+                        wakeup.wakeup();
+                    }
                 }
             })?;
         // Watch the directory, not the inode: atomic editor saves replace it.
@@ -57,6 +69,11 @@ impl ConfigMonitor {
             },
         )?;
         let initial_dirty = path.is_file().then(Instant::now);
+        if initial_dirty.is_some()
+            && let Some(wakeup) = wakeup
+        {
+            wakeup.wakeup();
+        }
         Ok(Self {
             _watcher: watcher,
             events,
@@ -64,6 +81,10 @@ impl ConfigMonitor {
             dirty: initial_dirty,
             observed: None,
         })
+    }
+
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        self.dirty.map(|since| since + Duration::from_millis(120))
     }
 
     pub(crate) fn poll(&mut self, now: Instant) -> Option<Result<String, String>> {
@@ -221,6 +242,10 @@ mod tests {
         let mut monitor = ConfigMonitor::new(path).unwrap();
         let now = Instant::now();
         monitor.dirty = Some(now);
+        assert_eq!(
+            monitor.next_deadline(),
+            Some(now + Duration::from_millis(120))
+        );
         assert!(monitor.poll(now + Duration::from_millis(119)).is_none());
         assert!(
             monitor
@@ -228,5 +253,6 @@ mod tests {
                 .unwrap()
                 .is_ok()
         );
+        assert_eq!(monitor.next_deadline(), None);
     }
 }
