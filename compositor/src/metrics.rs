@@ -16,6 +16,8 @@ pub(crate) struct RenderMetrics {
     output: String,
     interval_started: Instant,
     rendered_frames: u64,
+    no_damage_frames: u64,
+    no_damage_render_time: Duration,
     damaged_pixels: u64,
     total_render_time: Duration,
     longest_render_time: Duration,
@@ -37,6 +39,8 @@ impl RenderMetrics {
             output: output.into(),
             interval_started: now,
             rendered_frames: 0,
+            no_damage_frames: 0,
+            no_damage_render_time: Duration::ZERO,
             damaged_pixels: 0,
             total_render_time: Duration::ZERO,
             longest_render_time: Duration::ZERO,
@@ -64,6 +68,19 @@ impl RenderMetrics {
         }
         self.frame_times.push_back(render_time);
 
+        self.report_if_due(missed_deadlines);
+    }
+
+    pub(crate) fn record_no_damage(&mut self, render_time: Duration, missed_deadlines: u64) {
+        if !self.enabled {
+            return;
+        }
+        self.no_damage_frames += 1;
+        self.no_damage_render_time += render_time;
+        self.report_if_due(missed_deadlines);
+    }
+
+    fn report_if_due(&mut self, missed_deadlines: u64) {
         let now = Instant::now();
         let elapsed = now.saturating_duration_since(self.interval_started);
         if elapsed < REPORT_INTERVAL {
@@ -91,6 +108,8 @@ impl RenderMetrics {
             output = %self.output,
             interval_ms = elapsed.as_millis(),
             frames = self.rendered_frames,
+            no_damage_frames = self.no_damage_frames,
+            no_damage_render_us = self.no_damage_render_time.as_micros(),
             damaged_pixels = self.damaged_pixels,
             average_render_us,
             longest_render_us = self.longest_render_time.as_micros(),
@@ -102,6 +121,8 @@ impl RenderMetrics {
 
         self.interval_started = now;
         self.rendered_frames = 0;
+        self.no_damage_frames = 0;
+        self.no_damage_render_time = Duration::ZERO;
         self.damaged_pixels = 0;
         self.total_render_time = Duration::ZERO;
         self.longest_render_time = Duration::ZERO;
@@ -121,6 +142,7 @@ mod tests {
     #[test]
     fn disabled_metrics_do_not_accumulate() {
         let mut metrics = RenderMetrics::new("test", false, Instant::now());
+        metrics.record_no_damage(Duration::from_millis(1), 0);
 
         metrics.record_frame(
             Duration::from_millis(2),
@@ -131,6 +153,26 @@ mod tests {
 
         assert_eq!(metrics.rendered_frames, 0);
         assert_eq!(metrics.damaged_pixels, 0);
+        assert_eq!(metrics.no_damage_frames, 0);
+        assert_eq!(metrics.no_damage_render_time, Duration::ZERO);
+    }
+
+    #[test]
+    fn no_damage_attempts_are_separate_from_presented_frame_statistics() {
+        let mut metrics = RenderMetrics::new("test", true, Instant::now());
+        metrics.record_no_damage(Duration::from_millis(2), 0);
+        metrics.record_no_damage(Duration::from_millis(3), 0);
+        assert_eq!(metrics.no_damage_frames, 2);
+        assert_eq!(metrics.no_damage_render_time, Duration::from_millis(5));
+        assert_eq!(metrics.rendered_frames, 0);
+        assert!(metrics.frame_times.is_empty());
+
+        // An entirely idle interval must report and reset without waiting for
+        // a damaged frame or dividing by a zero presented-frame count.
+        metrics.interval_started = Instant::now() - REPORT_INTERVAL;
+        metrics.record_no_damage(Duration::from_millis(1), 0);
+        assert_eq!(metrics.no_damage_frames, 0);
+        assert_eq!(metrics.no_damage_render_time, Duration::ZERO);
     }
 
     #[test]

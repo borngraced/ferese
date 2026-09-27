@@ -901,6 +901,8 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     let (damage, effects) = match rendered {
                         Ok((Some(damage), effects)) => (damage, effects),
                         Ok((None, _)) => {
+                            render_metrics
+                                .record_no_damage(render_started.elapsed(), missed_deadlines);
                             // A callback means permission to draw the next client
                             // frame, not proof of a new compositor presentation.
                             // No-damage frames must still unblock layer clients.

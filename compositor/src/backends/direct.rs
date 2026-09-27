@@ -675,6 +675,9 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
                 .finish()?;
         }
         let Some(damage) = result.damage.cloned() else {
+            output
+                .render_metrics
+                .record_no_damage(render_started.elapsed(), missed_deadlines);
             return Ok(false);
         };
 
