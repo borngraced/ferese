@@ -110,6 +110,37 @@ impl OutputWorkspaceMap {
         self.assignments.get(&workspace).copied()
     }
 
+    pub fn forget_workspace(&mut self, workspace: WorkspaceId) -> bool {
+        if self
+            .outputs
+            .values()
+            .any(|output| output.active == workspace)
+        {
+            return false;
+        }
+        if let Some(owner) = self.assignments.remove(&workspace)
+            && let Some(output) = self.outputs.get_mut(&owner)
+        {
+            output.workspaces.remove(&workspace);
+        }
+        self.revisions.remove(&workspace);
+        self.evacuations.retain(|_, record| {
+            record
+                .workspaces
+                .retain(|entry| entry.workspace != workspace);
+            if record.active == workspace {
+                if let Some(entry) = record.workspaces.first() {
+                    record.active = entry.workspace;
+                } else {
+                    return false;
+                }
+            }
+            true
+        });
+        debug_assert!(self.validate());
+        true
+    }
+
     pub fn connected_outputs(&self) -> impl Iterator<Item = OutputId> + '_ {
         self.outputs.keys().copied()
     }
@@ -379,6 +410,27 @@ impl OutputWorkspaceMap {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn forgetting_an_inactive_workspace_prevents_hotplug_resurrection() {
+        let mut outputs = super::OutputWorkspaceMap::default();
+        let display = super::OutputId(1);
+        let geometry = super::OutputGeometry::new(0, 0, 1920, 1080);
+        let first = super::WorkspaceId(1);
+        let second = super::WorkspaceId(2);
+        outputs.connect(display, geometry, first).unwrap();
+        assert!(!outputs.forget_workspace(first));
+        outputs.switch_workspace(display, second).unwrap();
+        assert!(outputs.forget_workspace(first));
+        assert_eq!(outputs.output_for_workspace(first), None);
+        outputs.disconnect(display).unwrap();
+        outputs
+            .connect(display, geometry, super::WorkspaceId(3))
+            .unwrap();
+        assert_eq!(outputs.active_workspace(display), Some(second));
+        assert_eq!(outputs.output_for_workspace(first), None);
+        assert!(outputs.validate());
+    }
+
     #[test]
     fn changing_output_geometry_preserves_workspace_ownership_and_focus() {
         let mut outputs = super::OutputWorkspaceMap::default();

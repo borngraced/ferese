@@ -507,7 +507,11 @@ impl Ferese {
             .map(|workspace| workspace.id)
         {
             self.activate_managed_workspace(workspace);
-        } else if next {
+        } else if next
+            && self.workspaces.workspace(current).is_some_and(|workspace| {
+                workspace.layout.window_ids().next().is_some() || !workspace.floating.is_empty()
+            })
+        {
             let next_number = self
                 .workspaces
                 .iter()

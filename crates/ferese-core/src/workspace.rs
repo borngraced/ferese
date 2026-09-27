@@ -523,6 +523,38 @@ impl WorkspaceSet {
         self.workspaces.values()
     }
 
+    pub fn prune_empty(&mut self, protected: &HashSet<WorkspaceId>) -> Vec<WorkspaceId> {
+        let mut empty = self
+            .workspaces
+            .values()
+            .filter(|workspace| {
+                workspace.layout.window_ids().next().is_none() && workspace.floating.is_empty()
+            })
+            .map(|workspace| workspace.id)
+            .collect::<Vec<_>>();
+        empty.sort_by_key(|id| id.0);
+        let visible_empty = empty
+            .iter()
+            .any(|id| *id == self.active || protected.contains(id));
+        let spare = if visible_empty {
+            None
+        } else {
+            empty.first().copied()
+        };
+        let mut removed = Vec::new();
+        for id in empty {
+            if id == self.active || protected.contains(&id) || Some(id) == spare {
+                continue;
+            }
+            if let Some(workspace) = self.workspaces.remove(&id) {
+                self.names.remove(&workspace.name);
+                removed.push(id);
+            }
+        }
+        debug_assert!(self.validate().is_ok());
+        removed
+    }
+
     pub fn workspace_for_window(&self, window: WindowId) -> Option<WorkspaceId> {
         self.window_workspaces.get(&window).copied()
     }
@@ -1068,6 +1100,52 @@ fn finite_or_zero(value: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pruning_keeps_windows_and_one_empty_workspace() {
+        let mut set = super::WorkspaceSet::default();
+        let first = set.active_id();
+        set.insert_window(super::WindowId(1), super::Axis::Horizontal, 0.5)
+            .unwrap();
+        let floating = set.ensure_numeric(2).unwrap();
+        set.insert_floating_window(
+            super::WindowId(2),
+            floating,
+            super::Rect::new(0., 0., 100., 100.),
+            false,
+        )
+        .unwrap();
+        let spare = set.ensure_numeric(3).unwrap();
+        let excess = set.ensure_numeric(4).unwrap();
+        assert_eq!(
+            set.prune_empty(&std::collections::HashSet::new()),
+            vec![excess]
+        );
+        assert!(set.workspace(first).is_some());
+        assert!(set.workspace(floating).is_some());
+        assert!(set.workspace(spare).is_some());
+        set.activate(spare).unwrap();
+        set.remove_window(super::WindowId(1)).unwrap();
+        assert_eq!(
+            set.prune_empty(&std::collections::HashSet::new()),
+            vec![first]
+        );
+        assert!(set.validate().is_ok());
+        assert_ne!(set.ensure_numeric(1).unwrap(), first);
+    }
+
+    #[test]
+    fn pruning_never_removes_another_displays_active_workspace() {
+        let mut set = super::WorkspaceSet::default();
+        let first = set.active_id();
+        let second = set.ensure_numeric(2).unwrap();
+        let third = set.ensure_numeric(3).unwrap();
+        assert_eq!(
+            set.prune_empty(&std::collections::HashSet::from([first, second])),
+            vec![third]
+        );
+        assert!(set.workspace(second).is_some());
+    }
+
     #[test]
     fn live_policy_updates_existing_layouts_and_default_widths_not_custom_widths() {
         let mut workspaces = WorkspaceSet::default();

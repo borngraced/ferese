@@ -1263,6 +1263,15 @@ impl Ferese {
     }
 
     pub fn relayout(&mut self) {
+        let protected = self
+            .output_workspaces
+            .connected_outputs()
+            .filter_map(|output| self.output_workspaces.active_workspace(output))
+            .collect::<HashSet<_>>();
+        for workspace in self.workspaces.prune_empty(&protected) {
+            self.output_workspaces.forget_workspace(workspace);
+            self.viewport_animations.remove(&workspace);
+        }
         if self.session_lock.active {
             self.configure_lock_surfaces();
         }

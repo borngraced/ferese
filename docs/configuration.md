@@ -393,7 +393,10 @@ Settings → Notifications controls popups, Do Not Disturb, and the default time
 
 A single-output session starts with workspace 1. Numbered workspace shortcuts create
 workspaces on demand; switching forward past the last workspace also creates the
-next one. Additional displays receive their own workspace.
+next one when the current workspace contains windows. Empty workspaces are
+cleaned up automatically, keeping at most one empty workspace in addition to
+any empty workspace currently shown on another display. Additional displays
+receive their own workspace.
 
 Shell rounding is controlled in Settings → Appearance → Shell corner radius.
 Small controls cap the radius to fit their size. Window rounding remains under
