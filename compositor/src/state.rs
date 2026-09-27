@@ -322,6 +322,7 @@ impl Ferese {
         crate::backends::direct::render_all(self);
         Ok(())
     }
+
     pub fn register_output(&mut self, output: &Output, identity: String) {
         let Some(geometry) = self.space.output_geometry(output) else {
             tracing::error!(output = %output.name(), "cannot register an unmapped output");

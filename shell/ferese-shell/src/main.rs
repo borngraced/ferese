@@ -689,6 +689,7 @@ impl FereseShell {
         }
         Task::batch(tasks)
     }
+
     fn output_event(
         &mut self,
         event: wayland::OutputEvent,
@@ -2264,6 +2265,7 @@ impl EffectsBinding {
         self.connection.flush()?;
         Ok(())
     }
+
     fn set_opacity(&self, opacity: f32) -> Result<(), Box<dyn std::error::Error>> {
         let opacity = (opacity.clamp(0.0, 1.0) * 1000.0).round() as u32;
         if self.surface.version() >= 3 && self.opacity.get() != Some(opacity) {
@@ -2349,6 +2351,7 @@ mod tests {
             Point::new(200., 100.)
         );
     }
+
     #[test]
     fn note_drag_origin_and_bounds_use_logical_output_coordinates() {
         use cosmic::iced::Point;
@@ -2371,6 +2374,7 @@ mod tests {
             Point::ORIGIN
         );
     }
+
     #[test]
     fn desktop_clock_anchor_margins_match_only_anchored_edges() {
         use ferese_core::desktop::{Anchor as Position, Clock};
@@ -2396,6 +2400,7 @@ mod tests {
             (0, 0, 0, 0)
         );
     }
+
     #[test]
     fn clock_uses_lowercase_date_and_twelve_hour_time() {
         for (stamp, expected) in [

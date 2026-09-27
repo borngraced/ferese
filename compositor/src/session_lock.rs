@@ -118,6 +118,7 @@ impl SessionLockHandler for Ferese {
     fn lock_state(&mut self) -> &mut SessionLockManagerState {
         &mut self.session_lock_state
     }
+
     fn lock(&mut self, confirmation: SessionLocker) {
         if self.session_lock.active {
             return;
@@ -153,12 +154,14 @@ impl SessionLockHandler for Ferese {
         self.intercepted_keys.clear();
         crate::backends::direct::render_all(self);
     }
+
     fn unlock(&mut self) {
         self.session_lock = Lock::default();
         self.restore_keyboard_focus();
         crate::backends::direct::render_all(self);
         tracing::info!("session unlocked by lock owner");
     }
+
     fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {
         if let Some(output) = Output::from_resource(&output) {
             if let Some(geometry) = self.space.output_geometry(&output) {

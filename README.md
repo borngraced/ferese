@@ -101,10 +101,12 @@ raising the window; clicking raises it within its layer.
 ## Make it yours
 
 Open **Control Center → Settings**, or run `ferese-settings`.
-Advanced options live in `~/.config/ferese/config.toml` (or under
+Advanced options live in `~/.config/ferese/config.kdl` (or under
 `$XDG_CONFIG_HOME`). Changes reload automatically. The complete
 [configuration reference](docs/configuration.md) covers every supported option;
-the [example config](packaging/config.toml) is a starting point.
+the [example config](packaging/config.kdl) is a starting point. KDL uses compact nested sections
+and bindings such as `binding "Swipe3Up" "toggle-overview"`. See the
+[configuration guide](docs/configuration.md#kdl-syntax).
 
 ## Development
 

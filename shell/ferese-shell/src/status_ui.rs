@@ -19,6 +19,7 @@ pub enum Menu {
     Notifications,
     System,
 }
+
 impl Menu {
     fn width(self) -> f32 {
         match self {
@@ -28,10 +29,12 @@ impl Menu {
             Self::Audio | Self::Notifications => 290.0,
         }
     }
+
     pub(super) fn material_role(self) -> Option<ferese_surface_effects_v1::Role> {
         // Popovers contain independent cards, with no shared material backing.
         None
     }
+
     fn available(self, status: &Snapshot) -> bool {
         match self {
             Self::Network => status.network.is_some(),
@@ -52,10 +55,12 @@ pub struct OpenMenu {
     pub effects: Option<EffectsBinding>,
     pub regions: super::motion::Regions,
 }
+
 impl OpenMenu {
     pub fn progress(&self) -> f32 {
         self.motion.progress()
     }
+
     pub fn animating(&self) -> bool {
         self.motion.animating()
     }
@@ -115,6 +120,7 @@ impl FereseShell {
         );
         destroy.chain(cosmic::task::message(cosmic::Action::Surface(action)))
     }
+
     pub fn destroy_menu(&mut self) -> Task<Message> {
         super::EFFECT_FRAME_PENDING.store(false, std::sync::atomic::Ordering::Relaxed);
         self.menu.take().map_or_else(Task::none, |menu| {
@@ -123,6 +129,7 @@ impl FereseShell {
             ))
         })
     }
+
     pub fn close_menu(&mut self) -> Task<Message> {
         let Some(menu) = &mut self.menu else {
             return Task::none();
@@ -142,6 +149,7 @@ impl FereseShell {
         }
         self.destroy_menu()
     }
+
     pub fn animate_menu(&mut self) -> Task<Message> {
         if let Some(menu) = &self.menu {
             if let Some(effects) = &menu.effects {
@@ -153,6 +161,7 @@ impl FereseShell {
         }
         Task::none()
     }
+
     pub fn optimistic_status(&mut self, action: &Action) {
         match action {
             Action::Volume(v) => {
@@ -184,6 +193,7 @@ impl FereseShell {
             _ => {}
         }
     }
+
     pub fn view_status_bar(&self) -> Element<'_, cosmic::Action<Message>> {
         let theme = self.config.theme.for_bar();
         let metrics = BarMetrics::from(theme);
@@ -861,6 +871,7 @@ fn menu_button<'a>(
         opacity,
     )
 }
+
 fn toggle_row<'a>(
     label: &'a str,
     on: bool,
@@ -987,6 +998,7 @@ fn audio_icon(volume: u8, muted: bool) -> &'static [u8] {
         include_bytes!("../assets/icons/status/volume-high.svg")
     }
 }
+
 fn status_icon(kind: Menu, s: &Snapshot) -> (&'static [u8], bool) {
     match kind {
         Menu::Network => {
@@ -1111,6 +1123,7 @@ mod tests {
         assert!(!Menu::Notifications.available(&s));
         assert!(Menu::System.available(&s));
     }
+
     #[test]
     fn icons_follow_real_states() {
         let mut s = Snapshot::default();

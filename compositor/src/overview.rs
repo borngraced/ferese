@@ -111,6 +111,7 @@ impl OverviewState {
             self.labels.clear();
         }
     }
+
     pub(crate) fn with_font_family(font_family: String) -> Self {
         Self {
             font_family,
@@ -199,6 +200,7 @@ impl OverviewState {
         self.labels.insert(key, label.clone());
         Some(label)
     }
+
     pub(crate) fn is_active(&self) -> bool {
         self.active
     }
@@ -367,6 +369,7 @@ impl Ferese {
         let name = self.workspaces.workspace(workspace)?.name.clone();
         self.overview.label(&name, scale)
     }
+
     pub(crate) fn set_overview_active(&mut self, active: bool) {
         if self.overview.is_active() == active {
             return;

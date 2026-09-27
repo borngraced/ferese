@@ -20,17 +20,21 @@ pub struct Palette {
     pub muted: Color,
     pub error: Color,
 }
+
 pub fn color(value: &str, fallback: Color) -> Color {
     let Some(value) = value.strip_prefix('#') else {
         return fallback;
     };
+
     if value.len() != 6 {
         return fallback;
     }
+
     u32::from_str_radix(value, 16)
         .map(|rgb| Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8))
         .unwrap_or(fallback)
 }
+
 impl Palette {
     pub fn from(snapshot: &Snapshot) -> Self {
         let base = color(
@@ -57,6 +61,7 @@ impl Palette {
         }
     }
 }
+
 fn mix(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgb(
         a.r + (b.r - a.r) * t,
@@ -64,6 +69,7 @@ fn mix(a: Color, b: Color, t: f32) -> Color {
         a.b + (b.b - a.b) * t,
     )
 }
+
 fn hex(c: Color) -> String {
     format!(
         "#{:02x}{:02x}{:02x}",
@@ -72,6 +78,7 @@ fn hex(c: Color) -> String {
         (c.b * 255.) as u8
     )
 }
+
 pub fn surface(background: Color, radius: f32) -> theme::Container<'static> {
     theme::Container::custom(move |_| container::Style {
         background: Some(Background::Color(background)),
@@ -82,12 +89,15 @@ pub fn surface(background: Color, radius: f32) -> theme::Container<'static> {
         ..Default::default()
     })
 }
+
 pub fn button_style(p: Palette, selected: bool) -> theme::Button {
     styled_button(p, selected, false)
 }
+
 pub fn navigation_style(p: Palette, selected: bool) -> theme::Button {
     styled_button(p, selected, true)
 }
+
 pub fn input_style(p: Palette) -> theme::TextInput {
     let appearance = move |focused: bool, hovered: bool| cosmic::widget::text_input::Appearance {
         background: mix(p.sidebar, p.card, if hovered { 0.65 } else { 0.4 }).into(),
@@ -110,6 +120,7 @@ pub fn input_style(p: Palette) -> theme::TextInput {
         disabled: Box::new(move |_| appearance(false, false)),
     }
 }
+
 fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button {
     let style = move |hover: bool| button::Style {
         background: Some(Background::Color(if selected {
@@ -131,6 +142,7 @@ fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button 
         overlay: None,
         shadow_offset: Vector::ZERO,
     };
+
     theme::Button::Custom {
         active: Box::new(move |_, _| style(false)),
         hovered: Box::new(move |_, _| style(true)),
@@ -138,6 +150,7 @@ fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button 
         disabled: Box::new(move |_| style(false)),
     }
 }
+
 pub fn native_theme(snapshot: Option<&Snapshot>) -> cosmic::Theme {
     let mut theme = cosmic::theme::COSMIC_DARK.clone();
     if let Some(snapshot) = snapshot {
@@ -149,6 +162,7 @@ pub fn native_theme(snapshot: Option<&Snapshot>) -> cosmic::Theme {
     }
     cosmic::Theme::custom(std::sync::Arc::new(theme))
 }
+
 pub fn configured_font(snapshot: &Snapshot) -> cosmic::font::Font {
     static FONTS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, cosmic::font::Font>>,
@@ -165,15 +179,18 @@ pub fn configured_font(snapshot: &Snapshot) -> cosmic::font::Font {
     fonts.insert(family, font);
     font
 }
+
 pub fn icon(page: Page, tint: Color) -> svg_icon::Icon {
     svg_icon::from_svg_bytes(format!(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="{}" fill="none" stroke="{}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##, page.icon(),hex(tint)).into_bytes()).symbolic(false).icon().size(19)
 }
+
 pub fn brand_icon() -> svg_icon::Icon {
     svg_icon::from_svg_bytes(include_bytes!("../../../packaging/icons/ferese.svg").as_slice())
         .symbolic(false)
         .icon()
         .size(32)
 }
+
 pub fn action_icon(path: &str, tint: Color) -> svg_icon::Icon {
     svg_icon::from_svg_bytes(format!(r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="{path}" fill="none" stroke="{}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##, hex(tint)).into_bytes())
         .symbolic(false)
@@ -199,6 +216,7 @@ pub fn preset(index: usize) -> Vec<Edit> {
         set("theme.focus_ring.gradient.to", end),
     ]
 }
+
 pub fn preset_selected(snapshot: &Snapshot, index: usize) -> bool {
     let (accent, base, text, muted, _) = PRESETS[index];
     [
@@ -214,6 +232,7 @@ pub fn preset_selected(snapshot: &Snapshot, index: usize) -> bool {
             .eq_ignore_ascii_case(value)
     })
 }
+
 pub fn swatches(index: usize) -> Element<'static, Message> {
     let (accent, base, _, _, end) = PRESETS[index];
     let mut row = widget::row([]).spacing(3);

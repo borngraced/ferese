@@ -23,6 +23,7 @@ pub(crate) struct WallpaperConfig {
     #[serde(default)]
     pub mode: WallpaperMode,
 }
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum WallpaperMode {
@@ -78,10 +79,12 @@ impl WallpaperState {
             textures: HashMap::new(),
         }
     }
+
     #[cfg(test)]
     pub fn owns_background(&self) -> bool {
         self.owned
     }
+
     pub fn reload(&mut self, config: WallpaperConfig) {
         if self.receiver.is_some() {
             self.pending = (self.config != config).then_some(config);
@@ -110,9 +113,11 @@ impl WallpaperState {
             self.textures.clear();
         }
     }
+
     pub fn forget_context(&mut self, context: &ErasedContextId) {
         self.textures.remove(context);
     }
+
     pub fn poll(&mut self) -> bool {
         let Some(receiver) = &self.receiver else {
             return false;
@@ -153,6 +158,7 @@ impl WallpaperState {
             Err(mpsc::TryRecvError::Empty) => false,
         }
     }
+
     pub fn element(
         &mut self,
         renderer: &mut GlesRenderer,
@@ -270,6 +276,7 @@ mod tests {
         state.reload(state.config.clone());
         assert_eq!(state.commit, before);
     }
+
     #[test]
     fn reverting_a_pending_reload_keeps_latest_request_and_failed_decode_keeps_pixels() {
         let mut state = WallpaperState::new(WallpaperConfig::default());
@@ -287,6 +294,7 @@ mod tests {
         assert!(state.pixels.is_some());
         assert_eq!(state.mode, WallpaperMode::Fill);
     }
+
     #[test]
     fn fill_crops_and_fit_letterboxes_without_reallocating_image() {
         let (geometry, source) = image_geometry(
@@ -303,6 +311,7 @@ mod tests {
         assert_eq!(geometry.loc, (0, 50).into());
         assert_eq!(source.size, (3840.0, 2160.0).into());
     }
+
     #[test]
     fn missing_wallpaper_preserves_external_shell_fallback() {
         let state = WallpaperState::new(WallpaperConfig::default());

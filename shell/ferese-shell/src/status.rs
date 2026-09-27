@@ -23,28 +23,33 @@ pub struct Snapshot {
     pub reboot: bool,
     pub suspend: bool,
 }
+
 #[derive(Clone, Debug)]
 pub struct Network {
     pub enabled: bool,
     pub connection: Option<String>,
     pub signal: u8,
 }
+
 #[derive(Clone, Debug)]
 pub struct Bluetooth {
     pub enabled: bool,
     pub devices: Vec<String>,
 }
+
 #[derive(Clone, Debug)]
 pub struct Audio {
     pub volume: u8,
     pub muted: bool,
     pub output: String,
 }
+
 #[derive(Clone, Debug)]
 pub struct Battery {
     pub percent: u8,
     pub status: String,
 }
+
 #[derive(Clone, Debug)]
 pub struct Notifications {
     pub count: u32,
@@ -65,22 +70,26 @@ pub enum Action {
     Reboot,
     Suspend,
 }
+
 impl Action {
     fn key(&self) -> std::mem::Discriminant<Self> {
         std::mem::discriminant(self)
     }
 }
+
 pub struct Update {
     pub snapshot: Snapshot,
     pub generation: u64,
     pub error: Option<String>,
 }
+
 pub struct Service {
     settings: Arc<Mutex<Option<Vec<String>>>>,
     tx: SyncSender<(u64, Action)>,
     rx: Receiver<Update>,
     pub generation: u64,
 }
+
 impl Service {
     pub fn start(settings: Option<Vec<String>>) -> Self {
         let live_settings = Arc::new(Mutex::new(settings));
@@ -153,6 +162,7 @@ impl Service {
             generation: 0,
         }
     }
+
     pub fn send(&mut self, action: Action) -> Result<(), String> {
         let generation = self.generation + 1;
         self.tx
@@ -161,9 +171,11 @@ impl Service {
         self.generation = generation;
         Ok(())
     }
+
     pub fn update_settings(&self, settings: Option<Vec<String>>) {
         *self.settings.lock().unwrap() = settings;
     }
+
     pub fn poll(&self) -> Option<Update> {
         self.rx.try_iter().last()
     }
@@ -222,6 +234,7 @@ fn poll() -> Snapshot {
         suspend: can_power("CanSuspend"),
     }
 }
+
 fn network() -> Option<Network> {
     // No Wi-Fi device means no Wi-Fi control (wired connectivity isn't called Wi-Fi).
     let devices = run("nmcli", &["-t", "-f", "TYPE", "device", "status"]).ok()?;
@@ -261,6 +274,7 @@ fn network() -> Option<Network> {
         signal,
     })
 }
+
 fn bluetooth() -> Option<Bluetooth> {
     let info = run("bluetoothctl", &["show"]).ok()?;
     let enabled = info
@@ -282,6 +296,7 @@ fn bluetooth() -> Option<Bluetooth> {
     };
     Some(Bluetooth { enabled, devices })
 }
+
 pub fn parse_audio(value: &str) -> Option<(u8, bool)> {
     let volume = value
         .strip_prefix("Volume: ")?
@@ -297,6 +312,7 @@ pub fn parse_audio(value: &str) -> Option<(u8, bool)> {
         value.contains("[MUTED]"),
     ))
 }
+
 fn audio() -> Option<Audio> {
     let (volume, muted) =
         parse_audio(&run("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]).ok()?)?;
@@ -312,11 +328,13 @@ fn audio() -> Option<Audio> {
         output,
     })
 }
+
 fn read(path: &Path, name: &str) -> Option<String> {
     fs::read_to_string(path.join(name))
         .ok()
         .map(|s| s.trim().to_owned())
 }
+
 fn battery() -> Option<Battery> {
     let entries = fs::read_dir("/sys/class/power_supply").ok()?;
     // Prefer a system battery, not a mouse/headset battery.
@@ -336,6 +354,7 @@ fn battery() -> Option<Battery> {
         })
     })
 }
+
 fn brightness() -> Option<u8> {
     let max = run("brightnessctl", &["--class=backlight", "max"])
         .ok()?
@@ -348,6 +367,7 @@ fn brightness() -> Option<u8> {
     (max > 0.0 && current.is_finite())
         .then(|| (100.0 * current / max).round().clamp(0.0, 100.0) as u8)
 }
+
 fn notifications() -> Option<Notifications> {
     // Check service ownership first: swaync-client otherwise waits indefinitely.
     let owner = run(
@@ -375,6 +395,7 @@ fn notifications() -> Option<Notifications> {
     };
     Some(Notifications { count, dnd })
 }
+
 fn can_power(method: &str) -> bool {
     run(
         "busctl",
@@ -389,6 +410,7 @@ fn can_power(method: &str) -> bool {
     )
     .is_ok_and(|s| s == "s \"yes\"" || s == "s \"challenge\"")
 }
+
 fn execute(action: &Action, settings: Option<&[String]>) -> Result<(), String> {
     match action {
         Action::Wifi(on) => run("nmcli", &["radio", "wifi", if *on { "on" } else { "off" }]),
@@ -462,6 +484,7 @@ mod tests {
             assert_eq!(parse_audio(value), None);
         }
     }
+
     #[test]
     fn default_snapshot_does_not_invent_services() {
         let s = Snapshot::default();

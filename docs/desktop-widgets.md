@@ -11,32 +11,31 @@ Lock-screen rendering remains separate and does not expose the desktop clock.
 
 Enable it in Settings → Desktop widgets or in your Ferese config:
 
-```toml
-[desktop_widgets.clock]
-enabled = true
-outputs = []                  # every output; or ["DP-2"] using your own connector
-anchor = "top_left"
-margin_x = 64                 # distance from anchored left/right edge
-margin_y = 80                 # distance from anchored top/bottom edge
-width = 440
-height = 160
-font_family = ""              # empty/omitted follows your desktop font
-bold = false
-time_size = 72.0
-date_size = 18.0
-time_format = "%-I:%M %p"     # 12-hour; "%H:%M" for 24-hour, "%H:%M:%S" for seconds
-date_format = "%A, %-d %B"
-time_zone = ""                # system zone; or e.g. "Africa/Lagos", "UTC"
-show_date = true
-lowercase = true
-color = ""                    # theme primary text; or "#ffffff", "#ffffffcc"
-date_color = ""               # theme muted text
-opacity = 0.9                 # multiplies text and optional background alpha
-alignment = "center"          # left, center, right
-gap = 4.0
-padding = 12.0
-background = ""               # transparent; or e.g. "#10101080" for a solid tint
-radius = 16.0                 # optional background corner radius
+```kdl
+desktop-widgets {
+    clock enabled=#true anchor="top_left" margin-x=64 margin-y=80 {
+        outputs                         // every output; or outputs "DP-2"
+        width 440
+        height 160
+        font-family ""                  // inherit the desktop font
+        bold #false
+        time-size 72.0
+        date-size 18.0
+        time-format "%-I:%M %p"          // use "%H:%M" for 24-hour time
+        date-format "%A, %-d %B"
+        time-zone ""                    // system zone; or "Africa/Lagos"
+        show-date #true
+        lowercase #true
+        color ""                        // theme primary text
+        date-color ""                   // theme muted text
+        opacity 0.9
+        alignment "center"              // left, center, right
+        gap 4.0
+        padding 12.0
+        background ""                   // transparent; or "#10101080"
+        radius 16.0
+    }
+}
 ```
 
 Positions: `top_left`, `top_center`, `top_right`, `center_left`, `center`,
@@ -55,7 +54,7 @@ configuration. Theme changes apply to colors/fonts that have no explicit overrid
 Formatting uses [Jiff's strftime-compatible formats](https://docs.rs/jiff/latest/jiff/fmt/strtime/index.html).
 Seconds update on the shell's existing timer. Without seconds, unchanged labels
 produce no additional clock buffer damage; there is no widget animation loop.
-Widget placement can be changed by dragging or through Settings and TOML.
+Widget placement can be changed by dragging or through Settings and KDL.
 Sticky notes also support editing directly on the desktop.
 
 ## Clock limits
@@ -87,21 +86,14 @@ on release; dragging changes the anchor to `top_left` and saves pixel margins.
 Title, size and style are also editable in Settings. Notes persist in the config.
 These are plain-text notes, not Markdown or HTML.
 
-```toml
-[[desktop_widgets.notes]]
-id = "today"
-title = "Today"
-text = """
-Review the pull request
-Take a break
-"""
-anchor = "top_right"
-margin_x = 48
-margin_y = 80
+```kdl
+desktop-widgets {
+    note id="today" title="Today" text="Review the pull request\nTake a break\n" anchor="top_right" margin-x=48 margin-y=80
+}
 ```
 
-Repeat the table for additional notes; IDs must be unique. Cards stay behind windows
-and take keyboard focus only when clicked. Set `interactive = false` for a fully
+Repeat the `note` node for additional notes; IDs must be unique. Cards stay behind windows
+and take keyboard focus only when clicked. Set `interactive #false` for a fully
 click-through card. Long text wraps; increase height if needed. Notes have no idle
 animation loop. Clock and notes share a compact drag preview moved by the
 compositor, not an output-sized canvas. It is released when dragging ends.

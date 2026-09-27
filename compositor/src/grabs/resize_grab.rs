@@ -194,6 +194,7 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
     ) {
         handle.gesture_swipe_begin(data, event);
     }
+
     fn gesture_swipe_update(
         &mut self,
         data: &mut Ferese,
@@ -202,6 +203,7 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
     ) {
         handle.gesture_swipe_update(data, event);
     }
+
     fn gesture_swipe_end(
         &mut self,
         data: &mut Ferese,
@@ -210,6 +212,7 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
     ) {
         handle.gesture_swipe_end(data, event);
     }
+
     fn gesture_pinch_begin(
         &mut self,
         data: &mut Ferese,
@@ -218,6 +221,7 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
     ) {
         handle.gesture_pinch_begin(data, event);
     }
+
     fn gesture_pinch_update(
         &mut self,
         data: &mut Ferese,
@@ -226,6 +230,7 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
     ) {
         handle.gesture_pinch_update(data, event);
     }
+
     fn gesture_pinch_end(
         &mut self,
         data: &mut Ferese,
@@ -234,6 +239,7 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
     ) {
         handle.gesture_pinch_end(data, event);
     }
+
     fn gesture_hold_begin(
         &mut self,
         data: &mut Ferese,
@@ -242,6 +248,7 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
     ) {
         handle.gesture_hold_begin(data, event);
     }
+
     fn gesture_hold_end(
         &mut self,
         data: &mut Ferese,

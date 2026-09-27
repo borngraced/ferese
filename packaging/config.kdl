@@ -1,0 +1,44 @@
+commands {
+    terminal "foot"
+    screenshot "ferese-screenshot"
+    screenshot-full "ferese-screenshot" "--full"
+}
+
+input {
+    xkb-layout "us"
+    focus-follows-mouse #false
+
+    touchpad {
+        swipe-threshold 80
+    }
+}
+
+layout {
+    smart-gaps #false
+}
+
+theme {
+    surface {
+        bar {
+            background "#1C202E"
+            opacity 0.95
+            text-primary "#F0F3FA"
+            text-muted "#AAB4C7"
+        }
+    }
+}
+
+window-rule app-id="dev.ferese.Settings" floating=#true
+window-rule title="Choose a wallpaper" floating=#true
+
+desktop-widgets {
+    clock {
+        enabled #false
+        anchor "top_left"
+        margin-x 64
+        margin-y 80
+        time-size 72.0
+        date-size 18.0
+        opacity 0.9
+    }
+}

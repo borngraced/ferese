@@ -97,6 +97,7 @@ impl StickyNote {
             && self.width == other.width
             && self.height == other.height
     }
+
     pub fn validate(&self) -> Result<(), String> {
         let invalid = |field: &str| {
             Err(format!(
@@ -347,12 +348,14 @@ mod tests {
             ..note.clone()
         }));
     }
+
     #[test]
     fn defaults_are_safe_and_opt_in() {
         let clock = Clock::default();
         clock.validate().unwrap();
         assert!(!clock.on_output(Some("HDMI-A-1")));
     }
+
     #[test]
     fn output_filters_do_not_guess_monitor_names() {
         let clock = Clock {
@@ -364,6 +367,7 @@ mod tests {
         assert!(!clock.on_output(Some("eDP-1")));
         assert!(!clock.on_output(None));
     }
+
     #[test]
     fn rejects_bad_sizes_colors_formats_and_zones() {
         for clock in [
@@ -391,6 +395,7 @@ mod tests {
             assert!(clock.validate().is_err());
         }
     }
+
     #[test]
     fn formats_timezone_and_lowercase() {
         let now: jiff::Zoned = "2026-09-26T21:05:00+00:00[UTC]".parse().unwrap();

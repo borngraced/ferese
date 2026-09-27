@@ -93,15 +93,19 @@ impl Element for PhysicalShaderElement {
     fn id(&self) -> &Id {
         self.inner.id()
     }
+
     fn current_commit(&self) -> CommitCounter {
         self.inner.current_commit()
     }
+
     fn src(&self) -> Rectangle<f64, Buffer> {
         self.inner.src()
     }
+
     fn geometry(&self, _: Scale<f64>) -> Rectangle<i32, Physical> {
         self.geometry
     }
+
     fn damage_since(
         &self,
         _: Scale<f64>,
@@ -114,6 +118,7 @@ impl Element for PhysicalShaderElement {
         }
     }
 }
+
 impl RenderElement<GlesRenderer> for PhysicalShaderElement {
     fn draw(
         &self,
@@ -140,25 +145,32 @@ pub(crate) struct NativeTextureElement {
     pub program: Option<GlesTexProgram>,
     pub uniforms: Vec<Uniform<'static>>,
 }
+
 impl Element for NativeTextureElement {
     fn id(&self) -> &Id {
         &self.id
     }
+
     fn current_commit(&self) -> CommitCounter {
         self.commit
     }
+
     fn src(&self) -> Rectangle<f64, Buffer> {
         self.source
     }
+
     fn geometry(&self, _: Scale<f64>) -> Rectangle<i32, Physical> {
         self.geometry
     }
+
     fn alpha(&self) -> f32 {
         self.alpha
     }
+
     fn kind(&self) -> Kind {
         Kind::Unspecified
     }
+
     fn damage_since(
         &self,
         _: Scale<f64>,
@@ -171,6 +183,7 @@ impl Element for NativeTextureElement {
         }
     }
 }
+
 impl RenderElement<GlesRenderer> for NativeTextureElement {
     fn draw(
         &self,
@@ -231,6 +244,7 @@ mod tests {
         let growing_target = ferese_layout::Rect::new(0.0, 0.0, 1000.0, 600.0);
         assert!(!resize_needs_old_frame(visual, growing_target, 1000, 600));
     }
+
     #[test]
     fn fresh_snapshot_and_retarget_wait_do_not_skip_the_handoff() {
         let mut elapsed = Duration::ZERO;
@@ -262,6 +276,7 @@ mod tests {
             1.0
         ));
     }
+
     #[test]
     fn mixed_refresh_outputs_do_not_double_the_animation_clock() {
         let start = Instant::now();
@@ -274,6 +289,7 @@ mod tests {
         assert_eq!(frame_delta(&mut last, start), Duration::ZERO);
         assert_eq!(last, start + Duration::from_millis(32));
     }
+
     #[test]
     fn fractional_motion_does_not_quantize_to_logical_pixels() {
         let rect = ferese_layout::Rect::new(0.3, 0.3, 100.2, 80.2);
@@ -283,6 +299,7 @@ mod tests {
             (180, 144).into()
         );
     }
+
     #[test]
     fn adjacent_frames_share_edges_at_all_output_scales() {
         for scale in [1.0, 1.25, 1.5, 1.8, 2.0] {
@@ -299,6 +316,7 @@ mod tests {
             assert_eq!(left.loc.x + left.size.w, right.loc.x);
         }
     }
+
     #[test]
     fn handoff_has_bounded_lifetime_and_no_alpha_jump() {
         assert_eq!(handoff_alpha(Duration::ZERO), 1.0);

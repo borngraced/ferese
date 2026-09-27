@@ -11,6 +11,7 @@ pub enum Page {
     Startup,
     Displays,
 }
+
 impl Page {
     pub const ALL: [Self; 10] = [
         Self::Appearance,
@@ -24,6 +25,7 @@ impl Page {
         Self::Startup,
         Self::Displays,
     ];
+
     pub fn title(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
@@ -38,6 +40,7 @@ impl Page {
             Self::Displays => "Displays",
         }
     }
+
     pub fn subtitle(self) -> &'static str {
         match self {
             Self::Appearance => "A desktop that feels like yours.",
@@ -52,6 +55,7 @@ impl Page {
             Self::Displays => "A place for every screen.",
         }
     }
+
     pub fn icon(self) -> &'static str {
         match self {
             Self::Appearance => {
@@ -72,6 +76,7 @@ impl Page {
             Self::Displays => "M3 4h18v13H3z M12 17v4 M8 21h8",
         }
     }
+
     pub fn matches(self, query: &str) -> bool {
         let query = query.to_lowercase();
         self.title().to_lowercase().contains(&query)
@@ -103,6 +108,7 @@ pub enum Kind {
         argv: bool,
     },
 }
+
 #[derive(Clone, Debug)]
 pub struct Field {
     pub path: String,
@@ -110,6 +116,7 @@ pub struct Field {
     pub description: String,
     pub kind: Kind,
 }
+
 impl Field {
     pub fn new(
         path: impl Into<String>,
@@ -125,9 +132,11 @@ impl Field {
         }
     }
 }
+
 fn toggle(path: &str, label: &str, description: &str, default: bool) -> Field {
     Field::new(path, label, description, Kind::Toggle(default))
 }
+
 pub fn range(
     path: impl Into<String>,
     label: impl Into<String>,
@@ -153,6 +162,7 @@ pub fn range(
         },
     )
 }
+
 pub fn text(
     path: impl Into<String>,
     label: impl Into<String>,
@@ -169,6 +179,7 @@ pub fn text(
         },
     )
 }
+
 fn choice(
     path: &str,
     label: &str,

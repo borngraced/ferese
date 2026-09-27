@@ -12,48 +12,45 @@ pub fn save(path: &Path, edits: &[Edit]) -> Result<(), String> {
     let canonical = path.canonicalize().map_err(|e| e.to_string())?;
     let path = canonical.as_path();
     let source = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let mut doc: toml_edit::DocumentMut = source
-        .parse()
-        .map_err(|e: toml_edit::TomlError| e.to_string())?;
+    let mut doc = ferese_config::Document::parse(&source).map_err(|e| e.to_string())?;
     for edit in edits {
         if let Edit::ClockPosition(x, y) = edit {
-            let clock = doc
-                .get_mut("desktop_widgets")
-                .and_then(|item| item.get_mut("clock"))
-                .ok_or("Clock was removed from the config.")?;
-            clock["anchor"] = toml_edit::value("top_left");
-            clock["margin_x"] = toml_edit::value(i64::from(*x));
-            clock["margin_y"] = toml_edit::value(i64::from(*y));
+            if doc.get("desktop_widgets.clock").is_none() {
+                return Err("Clock was removed from the config.".into());
+            }
+            for (field, value) in [
+                ("anchor", "top_left".into()),
+                ("margin_x", i64::from(*x).into()),
+                ("margin_y", i64::from(*y).into()),
+            ] {
+                doc.set(&format!("desktop_widgets.clock.{field}"), value)
+                    .map_err(|e| e.to_string())?;
+            }
             continue;
         }
-        let notes = doc
-            .get_mut("desktop_widgets")
-            .and_then(|item| item.get_mut("notes"))
-            .and_then(toml_edit::Item::as_array_of_tables_mut)
-            .ok_or("Notes were removed from the config.")?;
         let id = match edit {
             Edit::Text(id, _) | Edit::Position(id, _, _) => id,
             Edit::ClockPosition(..) => unreachable!(),
         };
-        let note = notes
-            .iter_mut()
-            .find(|note| {
-                note.get("id")
-                    .and_then(toml_edit::Item::as_str)
-                    .unwrap_or("note")
-                    == id
-            })
+        let index = doc
+            .get("desktop_widgets.notes")
+            .and_then(|v| v.as_array())
+            .ok_or("Notes were removed from the config.")?
+            .iter()
+            .position(|note| note.get("id").and_then(|v| v.as_str()).unwrap_or("note") == id)
             .ok_or("This note no longer exists in the config.")?;
-        match edit {
-            Edit::Text(_, value) => {
-                note["text"] = toml_edit::value(value);
-            }
-            Edit::Position(_, x, y) => {
-                note["anchor"] = toml_edit::value("top_left");
-                note["margin_x"] = toml_edit::value(i64::from(*x));
-                note["margin_y"] = toml_edit::value(i64::from(*y));
-            }
+        let fields = match edit {
+            Edit::Text(_, value) => vec![("text", value.clone().into())],
+            Edit::Position(_, x, y) => vec![
+                ("anchor", "top_left".into()),
+                ("margin_x", i64::from(*x).into()),
+                ("margin_y", i64::from(*y).into()),
+            ],
             Edit::ClockPosition(..) => unreachable!(),
+        };
+        for (field, value) in fields {
+            doc.set(&format!("desktop_widgets.notes.{index}.{field}"), value)
+                .map_err(|e| e.to_string())?;
         }
     }
     let updated = doc.to_string();
@@ -87,10 +84,10 @@ mod tests {
     #[test]
     fn clock_position_saves_without_a_notes_table() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
+        let path = dir.path().join("config.kdl");
         fs::write(
             &path,
-            "[desktop_widgets.clock]\nenabled = true\ntime_size = 80\n",
+            "desktop-widgets {\n    clock {\n        enabled #true\n        time-size 80\n    }\n}\n",
         )
         .unwrap();
         save(&path, &[Edit::ClockPosition(120, 240)]).unwrap();
@@ -104,11 +101,25 @@ mod tests {
         );
         assert_eq!(config.desktop_widgets.clock.time_size, 80.);
     }
+
     #[test]
     fn note_edits_preserve_unrelated_config_and_multiline_content() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        fs::write(&path, "# keep this\n[theme.colors]\naccent = '#123456'\n[[desktop_widgets.notes]]\nid = 'a'\ntext = 'old'\n").unwrap();
+        let path = dir.path().join("config.kdl");
+        fs::write(
+            &path,
+            r##"// keep this
+theme {
+    colors {
+        accent "#123456"
+    }
+}
+desktop-widgets {
+    note id="a" text="old"
+}
+"##,
+        )
+        .unwrap();
         save(
             &path,
             &[
@@ -118,7 +129,7 @@ mod tests {
         )
         .unwrap();
         let source = fs::read_to_string(&path).unwrap();
-        assert!(source.contains("# keep this"));
+        assert!(source.contains("// keep this"));
         assert!(source.contains("#123456"));
         let notes = crate::config::parse_source(&source)
             .unwrap()

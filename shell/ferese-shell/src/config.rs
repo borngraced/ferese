@@ -1,4 +1,3 @@
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 
@@ -174,11 +173,13 @@ impl Default for BarConfig {
         }
     }
 }
+
 #[derive(Debug, Deserialize)]
 struct PopoverConfig {
     #[serde(default = "default_popover_opacity")]
     opacity: f32,
 }
+
 impl Default for PopoverConfig {
     fn default() -> Self {
         Self {
@@ -186,6 +187,7 @@ impl Default for PopoverConfig {
         }
     }
 }
+
 const fn default_popover_opacity() -> f32 {
     0.96
 }
@@ -299,13 +301,13 @@ pub(crate) fn load() -> ShellConfig {
     }
 }
 
-pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, toml::de::Error> {
-    match toml::from_str::<FereseConfig>(source) {
+pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, ferese_config::Error> {
+    match ferese_config::from_str::<FereseConfig>(source) {
         Ok(config) => {
             config
                 .desktop_widgets
                 .validate()
-                .map_err(<toml::de::Error as serde::de::Error>::custom)?;
+                .map_err(ferese_config::Error::from)?;
             let mut theme = shell_theme(&config.theme);
             theme.material_radius =
                 nonnegative_or(config.appearance.corner_radius.unwrap_or(14.0), 14.0);
@@ -415,48 +417,63 @@ fn finite_or(value: f32, fallback: f32) -> f32 {
 fn default_surface_base() -> String {
     "#111821".to_owned()
 }
+
 fn default_text_primary() -> String {
     "#F4F7FB".to_owned()
 }
+
 fn default_text_muted() -> String {
     "#7F8A98".to_owned()
 }
+
 fn default_accent() -> String {
     "#5B8CFF".to_owned()
 }
+
 fn default_border() -> String {
     "#FFFFFF18".to_owned()
 }
+
 fn default_shadow() -> String {
     "#00000055".to_owned()
 }
+
 const fn default_bar_height() -> f32 {
     28.0
 }
+
 const fn default_bar_window_gap() -> i32 {
     0
 }
+
 const fn default_bar_margin_top() -> i32 {
     0
 }
+
 const fn default_bar_margin_horizontal() -> i32 {
     0
 }
+
 const fn default_bar_radius() -> f32 {
     0.0
 }
+
 const fn default_panel_padding() -> f32 {
     12.0
 }
+
 const fn default_control_gap() -> f32 {
     12.0
 }
+
 const fn default_shadow_offset_y() -> f32 {
     4.0
 }
+
 const fn default_shadow_blur() -> f32 {
     18.0
 }
+
 const fn default_shadow_opacity() -> f32 {
     0.20
 }
@@ -466,42 +483,59 @@ pub(crate) const fn default_background() -> [u8; 3] {
 }
 
 pub(crate) fn config_path() -> Option<PathBuf> {
-    if let Some(directory) = env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
-        return Some(PathBuf::from(directory).join("ferese/config.toml"));
-    }
-
-    env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .map(|home| home.join(".config/ferese/config.toml"))
+    ferese_config::config_path()
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn desktop_clock_parses_and_rejects_invalid_reload_values() {
-        let clock = super::parse_source("[desktop_widgets.clock]\nenabled = true\nanchor = 'bottom_right'\nfont_family = ''\ncolor = ''\ntime_zone = ''").unwrap().desktop_widgets.clock;
+        let clock = super::parse_source(
+            r#"desktop-widgets {
+    clock {
+        enabled #true
+        anchor "bottom_right"
+        font-family ""
+        color ""
+        time-zone ""
+    }
+}
+"#,
+        )
+        .unwrap()
+        .desktop_widgets
+        .clock;
         assert!(clock.enabled);
         assert_eq!(clock.anchor, ferese_core::desktop::Anchor::BottomRight);
-        assert!(super::parse_source("[desktop_widgets.clock]\nopacity = 1.1").is_err());
-        assert!(super::parse_source("[desktop_widgets.clock]\ntime_format = '%'").is_err());
+        assert!(
+            super::parse_source("desktop-widgets {\n    clock {\n        opacity 1.1\n    }\n}\n")
+                .is_err()
+        );
+        assert!(
+            super::parse_source(
+                "desktop-widgets {\n    clock {\n        time-format \"%\"\n    }\n}\n"
+            )
+            .is_err()
+        );
     }
     use super::*;
 
     #[test]
     fn parses_theme_without_rejecting_compositor_sections() {
-        let config: FereseConfig = toml::from_str(
-            r#"
-                [layout]
-                mode = "scrolling"
-
-                [theme.typography]
-                font_family = "JetBrainsMono Nerd Font"
-
-                [theme.background]
-                path = "/tmp/wallpaper.png"
-                mode = "fit"
-            "#,
+        let config: FereseConfig = ferese_config::from_str(
+            r#"layout {
+    mode "scrolling"
+}
+theme {
+    typography {
+        font-family "JetBrainsMono Nerd Font"
+    }
+    background {
+        path "/tmp/wallpaper.png"
+        mode "fit"
+    }
+}
+"#,
         )
         .unwrap();
 
@@ -518,7 +552,7 @@ mod tests {
 
     #[test]
     fn defaults_to_the_ferese_visual_profile() {
-        let config: FereseConfig = toml::from_str("").unwrap();
+        let config: FereseConfig = ferese_config::from_str("").unwrap();
 
         assert_eq!(config.theme.typography.font_family, None);
         assert_eq!(config.theme.background.path, None);
@@ -535,13 +569,17 @@ mod tests {
 
     #[test]
     fn bar_palette_can_be_changed_without_changing_popovers() {
-        let config: FereseConfig = toml::from_str(
-            r##"
-            [theme.surface.bar]
-            background = "#EAECEEDD"
-            text_primary = "#222222"
-            text_muted = "#666666"
-            "##,
+        let config: FereseConfig = ferese_config::from_str(
+            r##"theme {
+    surface {
+        bar {
+            background "#EAECEEDD"
+            text-primary "#222222"
+            text-muted "#666666"
+        }
+    }
+}
+"##,
         )
         .unwrap();
         let theme = shell_theme(&config.theme);
@@ -553,13 +591,20 @@ mod tests {
 
     #[test]
     fn bar_transparency_and_shadow_opacity_are_independent() {
-        let config: FereseConfig = toml::from_str(
-            r#"
-            [theme.surface.bar]
-            opacity = 0.6
-            [theme.shadow.soft]
-            opacity = 0.07
-            "#,
+        let config: FereseConfig = ferese_config::from_str(
+            r#"theme {
+    surface {
+        bar {
+            opacity 0.6
+        }
+    }
+    shadow {
+        soft {
+            opacity 0.07
+        }
+    }
+}
+"#,
         )
         .unwrap();
         let theme = shell_theme(&config.theme);

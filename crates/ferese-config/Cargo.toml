@@ -1,0 +1,11 @@
+[package]
+name = "ferese-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version = "1.95"
+
+[dependencies]
+kdl = "6.7.1"
+serde.workspace = true
+serde_json.workspace = true

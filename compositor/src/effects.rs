@@ -368,6 +368,7 @@ pub(crate) fn begin_surface_dismiss(surface: &WlSurface) -> bool {
             })
     })
 }
+
 pub(crate) fn fade_dismissed_surface(surface: &WlSurface, opacity: f64) {
     with_states(surface, |states| {
         if let Some(effects) = states.data_map.get::<SurfaceEffectsState>() {

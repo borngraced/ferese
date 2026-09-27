@@ -55,7 +55,7 @@ done
 install -m 0755 -- "$repo_dir/packaging/ferese-session" "$release_dir/ferese-session"
 install -m 0755 -- "$repo_dir/packaging/ferese-lock" "$release_dir/ferese-lock"
 install -m 0755 -- "$repo_dir/packaging/ferese-screenshot" "$release_dir/ferese-screenshot"
-install -m 0644 -- "$repo_dir/packaging/config.toml" "$release_dir/config.example.toml"
+install -m 0644 -- "$repo_dir/packaging/config.kdl" "$release_dir/config.example.kdl"
 
 if [[ -L $install_root/current ]]; then
     ln -sfn -- "$(readlink -- "$install_root/current")" "$install_root/previous"

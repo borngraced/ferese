@@ -30,6 +30,7 @@ pub(crate) fn config_chunks(source: &str) -> Vec<&str> {
     }
     chunks
 }
+
 pub(crate) fn send_shell_config(shell: &FereseShellV1, source: &str) {
     shell.config_begin();
     for chunk in config_chunks(source) {

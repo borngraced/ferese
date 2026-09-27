@@ -13,6 +13,7 @@ pub(crate) struct Settings {
     reduced_motion: bool,
     speed: f64,
 }
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -22,10 +23,12 @@ impl Default for Settings {
         }
     }
 }
+
 impl Settings {
     fn hover_duration(self) -> std::time::Duration {
         self.duration(120.0)
     }
+
     pub(crate) fn duration(self, milliseconds: f64) -> std::time::Duration {
         if !self.enabled || self.reduced_motion {
             return std::time::Duration::ZERO;
@@ -52,6 +55,7 @@ pub(crate) struct PopupMotion {
     started: Option<std::time::Instant>,
     settings: Settings,
 }
+
 impl PopupMotion {
     pub(crate) fn update_settings(&mut self, settings: Settings) {
         let now = std::time::Instant::now();
@@ -59,6 +63,7 @@ impl PopupMotion {
         self.settings = settings;
         self.started = Some(now);
     }
+
     pub(crate) fn new(settings: Settings) -> Self {
         Self {
             start: 0.0,
@@ -67,11 +72,13 @@ impl PopupMotion {
             settings,
         }
     }
+
     pub(crate) fn begin(&mut self, now: std::time::Instant) {
         if self.started.is_none() {
             self.started = Some(now);
         }
     }
+
     pub(crate) fn progress_at(&self, now: std::time::Instant) -> f32 {
         let duration = self
             .settings
@@ -89,15 +96,19 @@ impl PopupMotion {
         }
         self.start + (self.target - self.start) * t * t * (3.0 - 2.0 * t)
     }
+
     pub(crate) fn progress(&self) -> f32 {
         self.progress_at(std::time::Instant::now())
     }
+
     pub(crate) fn closing(&self) -> bool {
         self.target == 0.0
     }
+
     pub(crate) fn animating(&self) -> bool {
         self.progress() != self.target
     }
+
     pub(crate) fn retarget(&mut self, target: f32, now: std::time::Instant) {
         self.start = self.progress_at(now);
         self.target = target;
@@ -157,6 +168,7 @@ struct HoverState {
     target: f32,
     started: Option<std::time::Instant>,
 }
+
 impl HoverState {
     fn advance(
         &mut self,
@@ -185,11 +197,13 @@ impl HoverState {
         self.current != target
     }
 }
+
 struct Hover<'a, M> {
     content: Element<'a, M>,
     progress: std::rc::Rc<std::cell::Cell<f32>>,
     duration: std::time::Duration,
 }
+
 impl<M> Widget<M, Theme, cosmic::Renderer> for Hover<'_, M> {
     fn a11y_nodes(
         &self,
@@ -201,21 +215,27 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Hover<'_, M> {
             .as_widget()
             .a11y_nodes(layout, &tree.children[0], cursor)
     }
+
     fn tag(&self) -> widget::tree::Tag {
         widget::tree::Tag::of::<HoverState>()
     }
+
     fn state(&self) -> widget::tree::State {
         widget::tree::State::new(HoverState::default())
     }
+
     fn children(&self) -> Vec<widget::Tree> {
         vec![widget::Tree::new(&self.content)]
     }
+
     fn diff(&mut self, tree: &mut widget::Tree) {
         tree.diff_children(std::slice::from_mut(&mut self.content));
     }
+
     fn size(&self) -> Size<Length> {
         self.content.as_widget().size()
     }
+
     fn layout(
         &mut self,
         tree: &mut widget::Tree,
@@ -226,6 +246,7 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Hover<'_, M> {
             .as_widget_mut()
             .layout(&mut tree.children[0], renderer, limits)
     }
+
     fn update(
         &mut self,
         tree: &mut widget::Tree,
@@ -255,6 +276,7 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Hover<'_, M> {
             viewport,
         );
     }
+
     fn draw(
         &self,
         tree: &widget::Tree,
@@ -277,6 +299,7 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Hover<'_, M> {
             viewport,
         );
     }
+
     fn mouse_interaction(
         &self,
         tree: &widget::Tree,
@@ -293,6 +316,7 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Hover<'_, M> {
             renderer,
         )
     }
+
     fn operate(
         &mut self,
         tree: &mut widget::Tree,
@@ -304,6 +328,7 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Hover<'_, M> {
             .as_widget_mut()
             .operate(&mut tree.children[0], layout, renderer, operation);
     }
+
     fn overlay<'a>(
         &'a mut self,
         tree: &'a mut widget::Tree,
@@ -333,37 +358,46 @@ pub fn animated<'a, M: 'a>(
         regions,
     })
 }
+
 struct Motion<'a, M> {
     content: Element<'a, M>,
     progress: f32,
     regions: Regions,
 }
+
 impl<M> Motion<'_, M> {
     fn translation(&self) -> Vector {
         Vector::new(0.0, -4.0 * (1.0 - self.progress))
     }
+
     fn cursor(&self, cursor: mouse::Cursor) -> mouse::Cursor {
         cursor.position().map_or(mouse::Cursor::Unavailable, |p| {
             mouse::Cursor::Available(p - self.translation())
         })
     }
 }
+
 impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
     fn tag(&self) -> widget::tree::Tag {
         self.content.as_widget().tag()
     }
+
     fn state(&self) -> widget::tree::State {
         self.content.as_widget().state()
     }
+
     fn children(&self) -> Vec<widget::Tree> {
         self.content.as_widget().children()
     }
+
     fn diff(&mut self, tree: &mut widget::Tree) {
         self.content.as_widget_mut().diff(tree);
     }
+
     fn size(&self) -> Size<Length> {
         self.content.as_widget().size()
     }
+
     fn layout(
         &mut self,
         tree: &mut widget::Tree,
@@ -372,6 +406,7 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
     ) -> layout::Node {
         self.content.as_widget_mut().layout(tree, renderer, limits)
     }
+
     fn update(
         &mut self,
         tree: &mut widget::Tree,
@@ -417,6 +452,7 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
             tree, event, layout, cursor, renderer, clipboard, shell, viewport,
         );
     }
+
     fn draw(
         &self,
         tree: &widget::Tree,
@@ -441,6 +477,7 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
             )
         });
     }
+
     fn mouse_interaction(
         &self,
         tree: &widget::Tree,
@@ -457,6 +494,7 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
             renderer,
         )
     }
+
     fn operate(
         &mut self,
         tree: &mut widget::Tree,
@@ -475,6 +513,7 @@ impl widget::Operation for CollectRegions {
     fn traverse(&mut self, children: &mut dyn FnMut(&mut dyn widget::Operation)) {
         children(self);
     }
+
     fn container(&mut self, id: Option<&widget::Id>, bounds: Rectangle) {
         if id == Some(&widget::Id::new("ferese-blur-card")) {
             let contains = |outer: &Rectangle, inner: &Rectangle| {
@@ -524,6 +563,7 @@ mod tests {
             0.0
         );
     }
+
     #[test]
     fn popup_reversal_and_motion_policy_are_consistent() {
         let now = std::time::Instant::now();
@@ -560,6 +600,7 @@ mod tests {
             assert_eq!(motion.progress_at(now), 0.0);
         }
     }
+
     #[test]
     fn hover_fades_settle_and_idle_does_not_schedule_frames() {
         let now = std::time::Instant::now();
@@ -578,6 +619,7 @@ mod tests {
         assert!(!hover.advance(0.0, start + duration * 12, duration));
         assert_eq!(hover.current, 0.0);
     }
+
     #[test]
     fn hover_reversals_preserve_current_paint() {
         let now = std::time::Instant::now();
@@ -591,6 +633,7 @@ mod tests {
         hover.advance(0.0, now + duration, duration);
         assert!(hover.current > 0.0 && hover.current < before);
     }
+
     #[test]
     fn hover_obeys_global_motion_policy() {
         assert_eq!(
@@ -617,6 +660,7 @@ mod tests {
             assert_eq!(hover.current, 1.0);
         }
     }
+
     #[test]
     fn material_regions_include_cards_but_not_the_parent_or_gaps() {
         let mut collector = CollectRegions(Vec::new());

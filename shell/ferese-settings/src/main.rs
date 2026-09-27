@@ -21,6 +21,7 @@ fn main() -> cosmic::iced::Result {
             std::env::set_var("ICED_BACKEND", "tiny-skia,wgpu");
         }
     }
+
     let mut args = std::env::args_os().skip(1);
     let path = match args.next() {
         Some(arg) if arg == "--config" => {
@@ -35,6 +36,7 @@ fn main() -> cosmic::iced::Result {
     let path = path.canonicalize().unwrap_or(path);
     let initial = Snapshot::read(&path);
     let theme = visuals::native_theme(initial.as_ref().ok());
+
     cosmic::app::run::<App>(
         Settings::default()
             .theme(theme)
@@ -107,14 +109,18 @@ impl cosmic::Application for App {
     type Flags = (PathBuf, Result<Snapshot, String>);
     type Message = Message;
     const APP_ID: &'static str = "dev.ferese.Settings";
+
     fn core(&self) -> &Core {
         &self.core
     }
+
     fn core_mut(&mut self) -> &mut Core {
         &mut self.core
     }
+
     fn init(mut core: Core, (path, initial): Self::Flags) -> (Self, Task<Message>) {
         core.window.show_headerbar = false;
+
         let status = if path == store::config_path() {
             "Changes save automatically"
         } else {
@@ -152,15 +158,18 @@ impl cosmic::Application for App {
             .main_window_id()
             .map(|id| app.set_window_title("Ferese Settings".into(), id))
             .unwrap_or_else(Task::none);
+
         app.sync_notes();
         (app, task)
     }
+
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::NoteAction(id, action) => {
                 if let Some(editor) = self.note_editors.get_mut(&id) {
                     let edited = action.is_edit();
                     editor.content.perform(action);
+
                     if edited {
                         editor.dirty = true;
                         editor.revision = editor.revision.wrapping_add(1);
@@ -176,6 +185,7 @@ impl cosmic::Application for App {
                 let Some(index) = self.note_index(&id) else {
                     return Task::none();
                 };
+
                 if let Some(editor) = self.note_editors.get_mut(&id)
                     && editor.dirty
                     && editor.revision == revision
@@ -203,6 +213,7 @@ impl cosmic::Application for App {
                         ("text".into(), "".into()),
                     ],
                 ));
+
                 self.sync_notes();
                 return task;
             }
@@ -229,6 +240,7 @@ impl cosmic::Application for App {
                         self.undo = None;
                         self.error = None;
                         self.status = "Updated from your config".into();
+
                         return Task::batch([
                             cosmic::command::set_theme(visuals::native_theme(Some(&self.draft))),
                             self.load_thumbnail(),
@@ -266,9 +278,12 @@ impl cosmic::Application for App {
                 if let Some(value) = self.inputs.remove(&field.path) {
                     let edit = if matches!(field.kind, Kind::Text { argv: true, .. }) {
                         match shlex::split(&value).filter(|v| !v.is_empty()) {
-                            Some(args) => {
-                                set(&field.path, args.into_iter().collect::<toml_edit::Array>())
-                            }
+                            Some(args) => set(
+                                &field.path,
+                                args.into_iter()
+                                    .map(serde_json::Value::from)
+                                    .collect::<Vec<_>>(),
+                            ),
                             None => {
                                 self.error = Some("Enter a program and arguments with balanced quotes. Commands are not run through a shell.".into());
                                 return Task::none();
@@ -289,11 +304,13 @@ impl cosmic::Application for App {
                         self.current = snapshot;
                         self.font = visuals::configured_font(&self.current);
                         self.draft = self.current.clone();
+
                         for edit in &self.pending {
                             if let Err(error) = self.draft.edit(edit) {
                                 self.error = Some(error);
                             }
                         }
+
                         self.sync_notes();
                         self.status = if live {
                             "Saved · desktop updated"
@@ -303,7 +320,9 @@ impl cosmic::Application for App {
                             "Saved · could not confirm desktop reload"
                         }
                         .into();
+
                         let theme = visuals::native_theme(Some(&self.draft));
+
                         return Task::batch([
                             cosmic::command::set_theme(theme),
                             self.flush(),
@@ -331,6 +350,7 @@ impl cosmic::Application for App {
                     self.error = None;
                     self.undo = None;
                     self.status = "Reloaded from your config".into();
+
                     return Task::batch([
                         cosmic::command::set_theme(visuals::native_theme(Some(&self.draft))),
                         self.load_thumbnail(),
@@ -349,6 +369,7 @@ impl cosmic::Application for App {
                         self.error = Some(error);
                         return Task::none();
                     }
+
                     self.pending.push(edit);
                 }
                 return self.flush();
@@ -420,7 +441,10 @@ impl cosmic::Application for App {
                             vec![
                                 (
                                     "command".into(),
-                                    args.into_iter().collect::<toml_edit::Array>().into(),
+                                    args.into_iter()
+                                        .map(serde_json::Value::from)
+                                        .collect::<Vec<_>>()
+                                        .into(),
                                 ),
                                 ("enabled".into(), true.into()),
                                 ("restart".into(), true.into()),
@@ -444,9 +468,11 @@ impl cosmic::Application for App {
                     ("keys".into(), keys.into()),
                     ("action".into(), action.into()),
                 ];
+
                 if let Some(argument) = argument {
                     fields.push(("argument".into(), argument.into()));
                 }
+
                 return self.change(Edit::Add("bindings".into(), fields));
             }
             Message::Remove(table, index) if !self.saving => {
@@ -459,9 +485,11 @@ impl cosmic::Application for App {
         }
         Task::none()
     }
+
     fn subscription(&self) -> cosmic::iced::Subscription<Message> {
         cosmic::iced::Subscription::run_with(self.path.clone(), watch::changes)
     }
+
     fn view(&self) -> Element<'_, Message> {
         let palette = visuals::Palette::from(&self.draft);
         let mut sidebar = column([])
@@ -538,6 +566,7 @@ impl cosmic::Application for App {
                 .width(Length::Fill),
         );
         let mut body = column([]).spacing(12);
+
         if !self.search.is_empty() {
             if !Page::ALL.into_iter().any(|p| p.matches(&self.search)) {
                 body = body
@@ -586,6 +615,7 @@ impl cosmic::Application for App {
                 }
                 body = body.push(presets);
             }
+
             if self.page == Page::Wallpaper {
                 if let Some(handle) = &self.thumbnail {
                     body = body.push(
@@ -607,6 +637,7 @@ impl cosmic::Application for App {
                     body.push(button::standard("Choose image…").on_press(Message::PickWallpaper));
             }
             let fields = schema::fields(self.page);
+
             if !fields.is_empty() {
                 let mut group = column([]).spacing(1);
                 for field in fields {
@@ -618,6 +649,7 @@ impl cosmic::Application for App {
                         .class(visuals::surface(palette.card, 14.)),
                 );
             }
+
             match self.page {
                 Page::Desktop => {
                     let can_change_list =
@@ -629,9 +661,11 @@ impl cosmic::Application for App {
                             .draft
                             .string(&format!("desktop_widgets.notes.{index}.id"), "note");
                         let mut group = column([]).spacing(8);
+
                         for field in schema::note_fields(index) {
                             group = group.push(self.field(field));
                         }
+
                         if let Some(editor) = self.note_editors.get(&id) {
                             let id = id.clone();
                             group = group.push(
@@ -666,6 +700,7 @@ impl cosmic::Application for App {
                 }
                 Page::Startup => {
                     body = body.push(self.note("Login items update live. Disabling or removing an item stops the session-owned process; enabling one starts it."));
+
                     for index in 0..self.draft.records("autostart") {
                         let prefix = format!("autostart.{index}");
                         let group = column([])
@@ -735,6 +770,7 @@ impl cosmic::Application for App {
                                 .string(&format!("bindings.{index}.keys"), "")
                                 .eq_ignore_ascii_case(keys)
                         });
+
                         if !exists {
                             gestures =
                                 gestures.push(button::standard(label).on_press_maybe(
@@ -742,7 +778,9 @@ impl cosmic::Application for App {
                                 ));
                         }
                     }
+
                     body = body.push(gestures);
+
                     for index in 0..self.draft.records("bindings") {
                         let prefix = format!("bindings.{index}");
                         let group = column([])
@@ -772,7 +810,7 @@ impl cosmic::Application for App {
                         );
                     }
                     if self.draft.records("bindings") == 0 {
-                        body = body.push(self.note("You are using the built-in shortcuts. Add custom bindings in config.toml; they will appear here after Reload."));
+                        body = body.push(self.note("You are using the built-in shortcuts. Add custom bindings in config.kdl; they will appear here after Reload."));
                     }
                 }
                 Page::Displays => {
@@ -786,6 +824,7 @@ impl cosmic::Application for App {
                                 17.,
                             ),
                         );
+
                         for output in 0..self.draft.records(&format!("{prefix}.outputs")) {
                             let prefix = format!("{prefix}.outputs.{output}");
                             let group = column([]).spacing(1)
@@ -806,7 +845,9 @@ impl cosmic::Application for App {
                 _ => {}
             }
         }
+
         let mut content = column([]).spacing(16).push(heading);
+
         if let Some(error) = &self.error {
             content = content.push(
                 container(self.label(error.clone(), 12.))
@@ -815,6 +856,7 @@ impl cosmic::Application for App {
                     .class(visuals::surface(palette.error, 10.)),
             );
         }
+
         content = content.push(
             scrollable(container(body).padding([0, 2]).width(Length::Fill)).height(Length::Fill),
         );
@@ -902,8 +944,10 @@ impl App {
                 == id
         })
     }
+
     fn sync_notes(&mut self) {
         let mut ids = Vec::new();
+
         for index in 0..self.draft.records("desktop_widgets.notes") {
             let prefix = format!("desktop_widgets.notes.{index}");
             let id = self.draft.string(&format!("{prefix}.id"), "note");
@@ -921,8 +965,10 @@ impl App {
             }
             ids.push(id);
         }
+
         self.note_editors.retain(|id, _| ids.contains(id));
     }
+
     fn load_thumbnail(&mut self) -> Task<Message> {
         let path = self.current.string("theme.background.path", "");
         if self.page != Page::Wallpaper || self.thumbnail_loading || path == self.thumbnail_path {
@@ -934,6 +980,7 @@ impl App {
             self.thumbnail_error = None;
             return Task::none();
         }
+
         self.thumbnail_loading = true;
         cosmic::task::future(async move {
             let (send, receive) = cosmic::iced::futures::channel::oneshot::channel();
@@ -970,6 +1017,7 @@ impl App {
             )
         })
     }
+
     fn label<'a>(
         &self,
         text: impl Into<std::borrow::Cow<'a, str>> + 'a,
@@ -977,12 +1025,14 @@ impl App {
     ) -> widget::Text<'a, cosmic::Theme, cosmic::Renderer> {
         widget::text(text).size(size).font(self.font)
     }
+
     fn note(&self, text: &str) -> Element<'static, Message> {
         let palette = visuals::Palette::from(&self.draft);
         self.label(text.to_owned(), 12.)
             .class(cosmic::theme::Text::Color(palette.muted))
             .into()
     }
+
     fn field(&self, field: Field) -> Element<'static, Message> {
         let palette = visuals::Palette::from(&self.draft);
         let mut labels = column([])
@@ -1096,6 +1146,7 @@ impl App {
         .class(visuals::surface(palette.card, 0.))
         .into()
     }
+
     fn change(&mut self, edit: Edit) -> Task<Message> {
         match self.draft.edit(&edit) {
             Ok(()) => {
@@ -1122,6 +1173,7 @@ impl App {
             }
         }
     }
+
     fn flush(&mut self) -> Task<Message> {
         if self.saving || self.pending.is_empty() {
             return Task::none();
@@ -1132,6 +1184,7 @@ impl App {
         }
         self.start_save(self.draft.source.clone())
     }
+
     fn start_save(&mut self, desired: String) -> Task<Message> {
         self.saving = true;
         self.saving_previous = self.current.source.clone();
@@ -1164,12 +1217,13 @@ mod tests {
         App::init(
             Core::default(),
             (
-                PathBuf::from("/unused/settings-test.toml"),
+                PathBuf::from("/unused/settings-test.kdl"),
                 Snapshot::parse(String::new()),
             ),
         )
         .0
     }
+
     #[test]
     fn notes_save_only_the_latest_revision_and_preserve_multiline_text() {
         let mut app = app();
@@ -1210,11 +1264,12 @@ mod tests {
         app.sync_notes();
         app.note_editors.get_mut("test").unwrap().dirty = true;
         let _ = app.update(Message::ExternalConfig(Snapshot::parse(
-            "[animations]\nspeed = 0.5".into(),
+            "animations {\n    speed 0.5\n}\n".into(),
         )));
         assert!(app.note_editors.contains_key("test"));
         assert!(app.status.contains("externally"));
     }
+
     #[test]
     fn rapid_edits_are_serialized_and_not_lost_when_a_save_finishes() {
         let mut app = app();
@@ -1230,24 +1285,26 @@ mod tests {
         assert_eq!(app.draft.number("layout.inner_gap", 0.), 6.);
         assert_eq!(app.draft.number("animations.speed", 0.), 0.75);
     }
+
     #[test]
     fn external_config_refreshes_idle_settings_but_preserves_active_edits() {
         let mut app = app();
-        let external = Snapshot::parse("[animations]\nspeed = 0.5".into()).unwrap();
+        let external = Snapshot::parse("animations {\n    speed 0.5\n}\n".into()).unwrap();
         let _ = app.update(Message::ExternalConfig(Ok(external.clone())));
         assert_eq!(app.current.source, external.source);
         assert_eq!(app.draft.number("animations.speed", 0.), 0.5);
         app.inputs
             .insert("theme.colors.accent".into(), "#ffffff".into());
-        let newer = Snapshot::parse("[animations]\nspeed = 0.8".into()).unwrap();
+        let newer = Snapshot::parse("animations {\n    speed 0.8\n}\n".into()).unwrap();
         let _ = app.update(Message::ExternalConfig(Ok(newer)));
         assert_eq!(app.current.source, external.source);
         assert_eq!(app.inputs["theme.colors.accent"], "#ffffff");
         assert!(app.status.contains("externally"));
-        let _ = app.update(Message::ExternalConfig(Err("invalid TOML".into())));
+        let _ = app.update(Message::ExternalConfig(Err("invalid KDL".into())));
         assert_eq!(app.current.source, external.source);
-        assert!(app.error.unwrap().contains("invalid TOML"));
+        assert!(app.error.unwrap().contains("invalid KDL"));
     }
+
     #[test]
     fn settings_has_no_native_headerbar() {
         assert!(!app().core.window.show_headerbar);

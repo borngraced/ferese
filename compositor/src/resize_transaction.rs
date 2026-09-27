@@ -28,6 +28,7 @@ impl ResizeTransaction {
         self.source_geometry = Some(geometry);
         self
     }
+
     pub(crate) fn source_geometry(self) -> Option<Rectangle<i32, Logical>> {
         self.source_geometry
     }

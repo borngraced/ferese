@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::env;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -265,7 +264,7 @@ struct ThemeConfig {
 
 impl Config {
     pub(crate) fn parse_source(source: &str) -> Result<Self, ConfigError> {
-        toml::from_str(source).map_err(|source| ConfigError::Parse {
+        ferese_config::from_str(source).map_err(|source| ConfigError::Parse {
             path: config_path().unwrap_or_default(),
             source,
         })
@@ -308,6 +307,7 @@ impl Config {
             overview_font_family: self.overview_font_family(),
         })
     }
+
     pub(crate) fn overview_font_family(&self) -> String {
         self.theme
             .typography
@@ -315,6 +315,7 @@ impl Config {
             .clone()
             .unwrap_or_else(|| "sans-serif".into())
     }
+
     pub(crate) fn wallpaper_settings(&self) -> crate::wallpaper::WallpaperConfig {
         self.theme.background.clone()
     }
@@ -738,7 +739,7 @@ pub enum ConfigError {
     },
     Parse {
         path: PathBuf,
-        source: toml::de::Error,
+        source: ferese_config::Error,
     },
     InvalidColumnWidth {
         field: &'static str,
@@ -827,7 +828,7 @@ impl Config {
             Err(source) => return Err(ConfigError::Read { path, source }),
         };
 
-        toml::from_str(&source).map_err(|source| ConfigError::Parse { path, source })
+        ferese_config::from_str(&source).map_err(|source| ConfigError::Parse { path, source })
     }
 
     pub fn layout_mode(&self) -> LayoutMode {
@@ -1813,14 +1814,7 @@ fn parse_column_width(
 }
 
 pub(crate) fn config_path() -> Option<PathBuf> {
-    if let Some(directory) = env::var_os("XDG_CONFIG_HOME").filter(|value| !value.is_empty()) {
-        return Some(PathBuf::from(directory).join("ferese/config.toml"));
-    }
-
-    env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .map(|home| home.join(".config/ferese/config.toml"))
+    ferese_config::config_path()
 }
 
 #[cfg(test)]
@@ -1828,27 +1822,51 @@ mod tests {
     use super::*;
 
     #[test]
+    fn packaged_and_custom_kdl_pass_runtime_validation() {
+        Config::parse_source(include_str!("../../packaging/config.kdl"))
+            .unwrap()
+            .runtime_config()
+            .unwrap();
+        let source = "input {\n    touchpad {\n        swipe-threshold 96\n    }\n}\nbinding keys=\"Swipe3Up\" action=\"toggle-overview\"\noutput-profile name=\"desk\" {\n    output match=\"DP-1\" scale=1.5 {\n        position 0 0\n    }\n}\ndesktop-widgets {\n    clock {\n        enabled #true\n        outputs \"DP-1\"\n    }\n}\nautostart {\n    command \"program\" \"argument with space\"\n}\n";
+        let config = Config::parse_source(source).unwrap();
+        config.runtime_config().unwrap();
+        assert_eq!(
+            config.input_settings().unwrap().touchpad.swipe_threshold,
+            96
+        );
+        assert_eq!(config.desktop_widgets.clock.outputs, ["DP-1"]);
+        assert_eq!(
+            config.output_profiles().unwrap()[0].outputs[0].position,
+            Some([0, 0])
+        );
+    }
+
+    #[test]
     fn desktop_clock_settings_are_validated_before_live_publication() {
         assert!(
             parse(
-                "[desktop_widgets.clock]\nenabled = true\nanchor = 'center'\ntime_format = '%H:%M'"
+                "desktop-widgets {\n    clock {\n        enabled #true\n        anchor \"center\"\n        time-format \"%H:%M\"\n    }\n}\n"
             )
             .runtime_config()
             .is_ok()
         );
         for source in [
-            "[desktop_widgets.clock]\nwidth = 8192",
-            "[desktop_widgets.clock]\nopacity = nan",
-            "[desktop_widgets.clock]\ntime_format = '%'",
-            "[desktop_widgets.clock]\ntime_zone = 'invalid/zone'",
+            "desktop-widgets {\n    clock {\n        width 8192\n    }\n}\n",
+            "desktop-widgets {\n    clock {\n        opacity #nan\n    }\n}\n",
+            "desktop-widgets {\n    clock {\n        time-format \"%\"\n    }\n}\n",
+            "desktop-widgets {\n    clock {\n        time-zone \"invalid/zone\"\n    }\n}\n",
         ] {
-            assert!(parse(source).runtime_config().is_err());
+            assert!(
+                Config::parse_source(source)
+                    .and_then(|config| config.runtime_config())
+                    .is_err()
+            );
         }
-        assert!(Config::parse_source("[desktop_widgets.clock]\nanchor = 'wrong'").is_err());
+        assert!(Config::parse_source("desktop-widgets { clock { anchor \"wrong\"; }; }").is_err());
     }
 
     fn parse(source: &str) -> Config {
-        toml::from_str(source).unwrap()
+        ferese_config::from_str(source).unwrap()
     }
 
     #[test]
@@ -1865,8 +1883,8 @@ mod tests {
 
     #[test]
     fn accepts_full_and_numeric_column_widths() {
-        let full = parse("[scrolling]\ndefault_column_width = \"full\"");
-        let numeric = parse("[scrolling]\ndefault_column_width = 1.0");
+        let full = parse("scrolling {\n    default-column-width \"full\"\n}\n");
+        let numeric = parse("scrolling {\n    default-column-width 1.0\n}\n");
 
         assert_eq!(full.default_column_width().unwrap(), ColumnWidth::Full);
         assert_eq!(
@@ -1878,7 +1896,7 @@ mod tests {
     #[test]
     fn parses_width_presets_and_supplies_defaults() {
         let defaults = parse("");
-        let configured = parse("[scrolling]\nwidth_presets = [0.5, 1.0, \"full\"]");
+        let configured = parse("scrolling {\n    width-presets 0.5 1.0 \"full\"\n}\n");
 
         assert_eq!(defaults.width_presets().unwrap().len(), 4);
         assert_eq!(
@@ -1894,8 +1912,8 @@ mod tests {
     #[test]
     fn parses_scrolling_focus_strategy() {
         let minimal = parse("");
-        let centered = parse("[scrolling]\nfocus_strategy = \"center_on_focus\"");
-        let paged = parse("[scrolling]\nfocus_strategy = \"paged\"");
+        let centered = parse("scrolling {\n    focus-strategy \"center_on_focus\"\n}\n");
+        let paged = parse("scrolling {\n    focus-strategy \"paged\"\n}\n");
         assert_eq!(
             paged.scrolling_focus_strategy(),
             ViewportFocusStrategy::Paged
@@ -1913,8 +1931,8 @@ mod tests {
 
     #[test]
     fn rejects_non_positive_or_unknown_column_widths() {
-        let zero = parse("[scrolling]\ndefault_column_width = 0.0");
-        let unknown = parse("[scrolling]\ndefault_column_width = \"wide\"");
+        let zero = parse("scrolling {\n    default-column-width 0.0\n}\n");
+        let unknown = parse("scrolling {\n    default-column-width \"wide\"\n}\n");
 
         assert!(zero.default_column_width().is_err());
         assert!(unknown.default_column_width().is_err());
@@ -1923,7 +1941,7 @@ mod tests {
     #[test]
     fn parses_animation_policy_and_reduced_motion() {
         let config = parse(
-            "[animations]\nspeed = 1.5\nreduced_motion = true\n\n[animations.spring]\nmass = 2.0\nstiffness = 500.0\ndamping = 40.0",
+            "animations {\n    speed 1.5\n    reduced-motion #true\n    spring {\n        mass 2.0\n        stiffness 500.0\n        damping 40.0\n    }\n}\n",
         );
 
         assert!(!config.animations_enabled());
@@ -1941,8 +1959,8 @@ mod tests {
 
     #[test]
     fn rejects_invalid_animation_numbers() {
-        let speed = parse("[animations]\nspeed = 0.0");
-        let damping = parse("[animations.spring]\ndamping = -1.0");
+        let speed = parse("animations {\n    speed 0.0\n}\n");
+        let damping = parse("animations {\n    spring {\n        damping -1.0\n    }\n}\n");
 
         assert!(speed.animation_speed().is_err());
         assert!(damping.spring_config().is_err());
@@ -1950,8 +1968,9 @@ mod tests {
 
     #[test]
     fn parses_and_validates_layout_gaps() {
-        let configured = parse("[layout]\ninner_gap = 6.0\nouter_gap = 14.0\nsmart_gaps = true");
-        let invalid = parse("[layout]\nouter_gap = -1.0");
+        let configured =
+            parse("layout {\n    inner-gap 6.0\n    outer-gap 14.0\n    smart-gaps #true\n}\n");
+        let invalid = parse("layout {\n    outer-gap -1.0\n}\n");
 
         assert_eq!(
             configured.gap_config().unwrap(),
@@ -1967,11 +1986,14 @@ mod tests {
     #[test]
     fn parses_and_validates_theme_window_tokens() {
         let configured = parse(
-            "[theme.colors]\nborder = \"#11223344\"\naccent = \"#AABBCC\"\nshadow = \"#01020380\"\n\n[theme.geometry]\nborder_width = 1.5\nfocus_ring_width = 3.0\nwindow_radius = 12.0\n\n[theme.shadow.soft]\noffset_y = -2.0\nblur = 24.0\nopacity = 0.4\n\n[theme.material]\nstyle = \"translucent\"",
+            "theme {\n    colors {\n        border \"#11223344\"\n        accent \"#AABBCC\"\n        shadow \"#01020380\"\n    }\n    geometry {\n        border-width 1.5\n        focus-ring-width 3.0\n        window-radius 12.0\n    }\n    shadow {\n        soft {\n            offset-y -2.0\n            blur 24.0\n            opacity 0.4\n        }\n    }\n    material {\n        style \"translucent\"\n    }\n}\n",
         );
-        let invalid_color = parse("[theme.colors]\naccent = \"blue\"");
-        let invalid_radius = parse("[theme.geometry]\nwindow_radius = -1.0");
-        let invalid_opacity = parse("[theme.shadow.soft]\nopacity = 1.1");
+        let invalid_color = parse("theme {\n    colors {\n        accent \"blue\"\n    }\n}\n");
+        let invalid_radius =
+            parse("theme {\n    geometry {\n        window-radius -1.0\n    }\n}\n");
+        let invalid_opacity = parse(
+            "theme {\n    shadow {\n        soft {\n            opacity 1.1\n        }\n    }\n}\n",
+        );
 
         assert_eq!(
             configured.theme_settings().unwrap(),
@@ -2003,7 +2025,12 @@ mod tests {
         assert!(invalid_color.theme_settings().is_err());
         assert!(invalid_radius.theme_settings().is_err());
         assert!(invalid_opacity.theme_settings().is_err());
-        assert!(toml::from_str::<Config>("[theme.material]\nstyle = \"mist\"").is_err());
+        assert!(
+            ferese_config::from_str::<Config>(
+                "theme {\n    material {\n        style \"mist\"\n    }\n}\n"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -2012,7 +2039,12 @@ mod tests {
             parse("").theme_settings().unwrap().material_style,
             MaterialStyle::Solid
         );
-        assert!(toml::from_str::<Config>("[theme.material]\nstyle = \"glass\"").is_err());
+        assert!(
+            ferese_config::from_str::<Config>(
+                "theme {\n    material {\n        style \"glass\"\n    }\n}\n"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -2021,14 +2053,14 @@ mod tests {
         assert_eq!(defaults.border_gradient, None);
         assert_eq!(defaults.focus_ring_gradient, None);
         let configured =
-            parse("[theme.focus_ring.gradient]\nfrom = '#e5c890'\nto = '#b98d5880'\nangle = -45")
+            parse("theme {\n    focus-ring {\n        gradient {\n            from \"#e5c890\"\n            to \"#b98d5880\"\n            angle -45\n        }\n    }\n}\n")
                 .theme_settings()
                 .unwrap();
         let gradient = configured.focus_ring_gradient.unwrap();
         assert_eq!(configured.border_gradient, None);
         assert_eq!(gradient.angle, 315.0);
         assert_eq!(gradient.to.0[3], 128.0 / 255.0);
-        let border = parse("[theme.border.gradient]\nfrom = '#112233'\nto = '#445566'")
+        let border = parse("theme {\n    border {\n        gradient {\n            from \"#112233\"\n            to \"#445566\"\n        }\n    }\n}\n")
             .theme_settings()
             .unwrap();
         assert_eq!(border.border_gradient.unwrap().angle, 0.0);
@@ -2040,23 +2072,25 @@ mod tests {
     #[test]
     fn border_gradients_reject_invalid_colors_and_nonfinite_angles() {
         for settings in [
-            "from = 'invalid'\nto = '#445566'",
-            "from = '#112233'\nto = 'invalid'",
-            "from = '#112233'\nto = '#445566'\nangle = nan",
-            "from = '#112233'\nto = '#445566'\nangle = inf",
+            "from \"invalid\"\nto \"#445566\"\n",
+            "from \"#112233\"\nto \"invalid\"\n",
+            "from \"#112233\"\nto \"#445566\"\nangle #nan\n",
+            "from \"#112233\"\nto \"#445566\"\nangle #inf\n",
         ] {
             assert!(
-                parse(&format!("[theme.focus_ring.gradient]\n{settings}"))
-                    .theme_settings()
-                    .is_err()
+                Config::parse_source(&format!(
+                    "theme {{ focus-ring {{ gradient {{\n{settings}\n}} }} }}"
+                ))
+                .and_then(|config| config.theme_settings())
+                .is_err()
             );
         }
-        assert!(toml::from_str::<Config>("[theme.border.gradient]\nfrom = '#112233'").is_err());
+        assert!(ferese_config::from_str::<Config>("theme {\n    border {\n        gradient {\n            from \"#112233\"\n        }\n    }\n}\n").is_err());
     }
 
     #[test]
     fn material_color_comes_from_surface_base() {
-        let theme = parse("[theme.colors]\nsurface_base = \"#000000\"\n[theme.surface.bar]\nbackground = \"#FFFFFF\"")
+        let theme = parse("theme {\n    colors {\n        surface-base \"#000000\"\n    }\n    surface {\n        bar {\n            background \"#FFFFFF\"\n        }\n    }\n}\n")
             .theme_settings()
             .unwrap();
         assert_eq!(theme.surface_base_color, RgbaColor([0.0, 0.0, 0.0, 1.0]));
@@ -2067,18 +2101,22 @@ mod tests {
         assert_eq!(parse("").theme_settings().unwrap().panel_opacity, 0.78);
         for opacity in [0.0, 0.65, 1.0] {
             assert_eq!(
-                parse(&format!("[theme.surface.bar]\nopacity = {opacity}"))
-                    .theme_settings()
-                    .unwrap()
-                    .panel_opacity,
+                parse(&format!(
+                    "theme {{ surface {{ bar {{ opacity {opacity}; }} }} }}"
+                ))
+                .theme_settings()
+                .unwrap()
+                .panel_opacity,
                 opacity
             );
         }
-        for opacity in ["-0.1", "1.1", "nan", "inf"] {
+        for opacity in ["-0.1", "1.1", "#nan", "#inf"] {
             assert!(
-                parse(&format!("[theme.surface.bar]\nopacity = {opacity}"))
-                    .theme_settings()
-                    .is_err()
+                Config::parse_source(&format!(
+                    "theme {{ surface {{ bar {{ opacity {opacity}; }} }} }}"
+                ))
+                .and_then(|config| config.theme_settings())
+                .is_err()
             );
         }
     }
@@ -2087,23 +2125,23 @@ mod tests {
     fn backdrop_blur_is_configurable_without_glass_settings() {
         assert_eq!(parse("").theme_settings().unwrap().backdrop_blur, 12.0);
         assert_eq!(
-            parse("[theme.material]\nstyle = \"translucent\"\nblur_radius = 100")
+            parse("theme {\n    material {\n        style \"translucent\"\n        blur-radius 100\n    }\n}\n")
                 .theme_settings()
                 .unwrap()
                 .backdrop_blur,
             32.0
         );
         assert_eq!(
-            parse("[theme.material]\nblur_radius = 0")
+            parse("theme {\n    material {\n        blur-radius 0\n    }\n}\n")
                 .theme_settings()
                 .unwrap()
                 .backdrop_blur,
             0.0
         );
-        for value in ["-1", "nan", "inf"] {
+        for value in ["-1", "#nan", "#inf"] {
             assert!(
-                parse(&format!("[theme.material]\nblur_radius = {value}"))
-                    .theme_settings()
+                Config::parse_source(&format!("theme {{ material {{ blur-radius {value}; }} }}"))
+                    .and_then(|config| config.theme_settings())
                     .is_err()
             );
         }
@@ -2116,7 +2154,7 @@ mod tests {
         assert_eq!(defaults.amount, 0.15);
         assert_eq!(defaults.duration_ms, 150.0);
         let settings =
-            parse("[appearance.inactive_dim]\nenabled = true\namount = 0.25\nduration_ms = 100")
+            parse("appearance {\n    inactive-dim {\n        enabled #true\n        amount 0.25\n        duration-ms 100\n    }\n}\n")
                 .theme_settings()
                 .unwrap()
                 .inactive_dim;
@@ -2126,14 +2164,16 @@ mod tests {
         for (key, value) in [
             ("amount", "-0.1"),
             ("amount", "1.1"),
-            ("amount", "nan"),
+            ("amount", "#nan"),
             ("duration_ms", "-1"),
-            ("duration_ms", "inf"),
+            ("duration_ms", "#inf"),
         ] {
             assert!(
-                parse(&format!("[appearance.inactive_dim]\n{key} = {value}"))
-                    .theme_settings()
-                    .is_err()
+                Config::parse_source(&format!(
+                    "appearance {{ inactive-dim {{ {key} {value}; }} }}"
+                ))
+                .and_then(|config| config.theme_settings())
+                .is_err()
             );
         }
     }
@@ -2141,7 +2181,7 @@ mod tests {
     #[test]
     fn parses_input_and_touchpad_settings() {
         let config = parse(
-            "[input]\nfocus_follows_mouse = true\nxkb_layout = \"us,de\"\nxkb_variant = \",nodeadkeys\"\nxkb_options = [\"grp:alt_shift_toggle\"]\nrepeat_rate = 30\nrepeat_delay_ms = 450\n\n[input.touchpad]\ntap = false\nnatural_scroll = false\ndisable_while_typing = true",
+            "input {\n    focus-follows-mouse #true\n    xkb-layout \"us,de\"\n    xkb-variant \",nodeadkeys\"\n    xkb-options \"grp:alt_shift_toggle\"\n    repeat-rate 30\n    repeat-delay-ms 450\n    touchpad {\n        tap #false\n        natural-scroll #false\n        disable-while-typing #true\n    }\n}\n",
         );
 
         assert_eq!(
@@ -2165,9 +2205,9 @@ mod tests {
 
     #[test]
     fn rejects_invalid_input_settings() {
-        let layout = parse("[input]\nxkb_layout = \"\"");
-        let rate = parse("[input]\nrepeat_rate = 0");
-        let delay = parse("[input]\nrepeat_delay_ms = -1");
+        let layout = parse("input {\n    xkb-layout \"\"\n}\n");
+        let rate = parse("input {\n    repeat-rate 0\n}\n");
+        let delay = parse("input {\n    repeat-delay-ms -1\n}\n");
 
         assert!(layout.input_settings().is_err());
         assert!(rate.input_settings().is_err());
@@ -2178,7 +2218,7 @@ mod tests {
     fn swipe_bindings_can_override_actions_disable_defaults_and_set_distance() {
         use crate::gestures::SwipeDirection;
         let config = parse(
-            "[input.touchpad]\nswipe_threshold = 120\n[[bindings]]\nkeys = 'Swipe3Up'\naction = 'toggle-overview'\n[[bindings]]\nkeys = 'Swipe3Left'\naction = 'move'\nargument = 'left'\n[[bindings]]\nkeys = 'Swipe3Down'\ndisabled = true",
+            "input {\n    touchpad {\n        swipe-threshold 120\n    }\n}\nbinding keys=\"Swipe3Up\" action=\"toggle-overview\"\nbinding keys=\"Swipe3Left\" action=\"move\" argument=\"left\"\nbinding keys=\"Swipe3Down\" disabled=#true\n",
         );
         let input = config.input_settings().unwrap();
         assert_eq!(input.touchpad.swipe_threshold, 120);
@@ -2202,9 +2242,11 @@ mod tests {
         );
         for threshold in [0, 15, 1001] {
             assert!(
-                parse(&format!("[input.touchpad]\nswipe_threshold = {threshold}"))
-                    .input_settings()
-                    .is_err()
+                parse(&format!(
+                    "input {{ touchpad {{ swipe-threshold {threshold}; }} }}"
+                ))
+                .input_settings()
+                .is_err()
             );
         }
     }
@@ -2212,12 +2254,10 @@ mod tests {
     #[test]
     fn gesture_bindings_validate_fingers_directions_and_actions() {
         for keys in ["Swipe2Up", "Swipe3Diagonal", "Super+Swipe3Up"] {
-            let config = parse(&format!(
-                "[[bindings]]\nkeys = '{keys}'\naction = 'toggle-overview'"
-            ));
+            let config = parse(&format!("binding \"{keys}\" \"toggle-overview\""));
             assert!(config.bindings(&config.input_settings().unwrap()).is_err());
         }
-        let config = parse("[[bindings]]\nkeys = 'Swipe4Up'\naction = 'toggle-overview'");
+        let config = parse("binding keys=\"Swipe4Up\" action=\"toggle-overview\"\n");
         let bindings = config.bindings(&config.input_settings().unwrap()).unwrap();
         assert!(
             bindings
@@ -2277,9 +2317,9 @@ mod tests {
     #[test]
     fn replaces_and_unbinds_default_bindings() {
         let replaced = parse(
-            "[commands]\nterm = [\"foot\", \"--app-id\", \"work\"]\n\n[[bindings]]\nkeys = \"Super+Enter\"\naction = \"spawn\"\nargument = \"term\"",
+            "commands {\n    term \"foot\" \"--app-id\" \"work\"\n}\nbinding keys=\"Super+Enter\" action=\"spawn\" argument=\"term\"\n",
         );
-        let unbound = parse("[[bindings]]\nkeys = \"Super+Q\"\ndisabled = true");
+        let unbound = parse("binding keys=\"Super+Q\" disabled=#true\n");
 
         let input = replaced.input_settings().unwrap();
         let bindings = replaced.bindings(&input).unwrap();
@@ -2306,7 +2346,7 @@ mod tests {
     #[test]
     fn accepts_physical_xkb_key_names() {
         let config = parse(
-            "[[bindings]]\nkeys = \"Super+AD06\"\nmatch = \"physical\"\naction = \"focus\"\nargument = \"left\"",
+            "binding keys=\"Super+AD06\" match=\"physical\" action=\"focus\" argument=\"left\"\n",
         );
         let input = config.input_settings().unwrap();
         let bindings = config.bindings(&input).unwrap();
@@ -2320,13 +2360,12 @@ mod tests {
     #[test]
     fn rejects_duplicate_or_invalid_user_bindings() {
         let duplicate = parse(
-            "[[bindings]]\nkeys = \"Super+Q\"\naction = \"close\"\n\n[[bindings]]\nkeys = \"logo+q\"\naction = \"close\"",
+            "binding keys=\"Super+Q\" action=\"close\"\nbinding keys=\"logo+q\" action=\"close\"\n",
         );
-        let missing_command = parse(
-            "[[bindings]]\nkeys = \"Super+Enter\"\naction = \"spawn\"\nargument = \"missing\"",
-        );
+        let missing_command =
+            parse("binding keys=\"Super+Enter\" action=\"spawn\" argument=\"missing\"\n");
         let invalid_argument =
-            parse("[[bindings]]\nkeys = \"Super+Q\"\naction = \"close\"\nargument = \"left\"");
+            parse("binding keys=\"Super+Q\" action=\"close\" argument=\"left\"\n");
 
         for config in [duplicate, missing_command, invalid_argument] {
             let input = config.input_settings().unwrap();
@@ -2337,7 +2376,7 @@ mod tests {
     #[test]
     fn parses_and_validates_window_rules() {
         let config = parse(
-            "[[window_rules]]\napp_id = \"org.example.Editor\"\nworkspace = 3\nfloating = true\nwidth = 900.0\nheight = 600.0\nfullscreen = false",
+            "window-rule app-id=\"org.example.Editor\" workspace=3 floating=#true width=900.0 height=600.0 fullscreen=#false\n",
         );
         let rules = config.window_rules().unwrap();
         let result = window_rules::resolve(
@@ -2356,8 +2395,8 @@ mod tests {
 
     #[test]
     fn rejects_invalid_window_rule_configuration() {
-        let catch_all = parse("[[window_rules]]\nfloating = true");
-        let zero_workspace = parse("[[window_rules]]\napp_id = \"editor\"\nworkspace = 0");
+        let catch_all = parse("window-rule floating=#true\n");
+        let zero_workspace = parse("window-rule app-id=\"editor\" workspace=0\n");
 
         assert!(catch_all.window_rules().is_err());
         assert!(zero_workspace.window_rules().is_err());
@@ -2376,21 +2415,7 @@ mod tests {
     #[test]
     fn parses_output_profiles() {
         let config = parse(
-            r#"
-[[output_profiles]]
-name = "docked"
-
-[[output_profiles.outputs]]
-match = "HDMI-A-1"
-mode = "3840x2160@119.998"
-scale = 1.6
-position = [0, 0]
-
-[[output_profiles.outputs]]
-match = "eDP-1"
-enabled = false
-transform = "rotate_90"
-"#,
+            "output-profile name=\"docked\" {\n    output match=\"HDMI-A-1\" mode=\"3840x2160@119.998\" scale=1.6 {\n        position 0 0\n    }\n    output match=\"eDP-1\" enabled=#false transform=\"rotate_90\"\n}\n",
         );
 
         assert_eq!(
@@ -2425,14 +2450,12 @@ transform = "rotate_90"
 
     #[test]
     fn rejects_invalid_output_profiles() {
-        let invalid_scale = parse(
-            "[[output_profiles]]\nname = \"bad\"\n[[output_profiles.outputs]]\nmatch = \"eDP-1\"\nscale = 0.0",
-        );
-        let invalid_mode = parse(
-            "[[output_profiles]]\nname = \"bad\"\n[[output_profiles.outputs]]\nmatch = \"eDP-1\"\nmode = \"native\"",
-        );
+        let invalid_scale =
+            parse("output-profile name=\"bad\" {\n    output match=\"eDP-1\" scale=0.0\n}\n");
+        let invalid_mode =
+            parse("output-profile name=\"bad\" {\n    output match=\"eDP-1\" mode=\"native\"\n}\n");
         let duplicate = parse(
-            "[[output_profiles]]\nname = \"bad\"\n[[output_profiles.outputs]]\nmatch = \"eDP-1\"\n[[output_profiles.outputs]]\nmatch = \"eDP-1\"",
+            "output-profile name=\"bad\" {\n    output match=\"eDP-1\"\n    output match=\"eDP-1\"\n}\n",
         );
 
         assert!(invalid_scale.output_profiles().is_err());

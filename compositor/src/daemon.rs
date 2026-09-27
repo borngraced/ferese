@@ -54,6 +54,7 @@ impl Runner {
             }
         }
     }
+
     pub fn new(configs: &[DaemonConfig], nested: bool) -> Self {
         Self(
             configs
@@ -155,6 +156,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+
     #[test]
     fn previews_do_not_duplicate_session_daemons() {
         let configs = vec![DaemonConfig {

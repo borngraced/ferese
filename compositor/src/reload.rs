@@ -26,6 +26,7 @@ pub(crate) struct ConfigMonitor {
     dirty: Option<Instant>,
     observed: Option<String>,
 }
+
 impl ConfigMonitor {
     pub(crate) fn new(path: PathBuf) -> notify::Result<Self> {
         let (sender, events) = mpsc::sync_channel(1);
@@ -64,6 +65,7 @@ impl ConfigMonitor {
             observed: None,
         })
     }
+
     pub(crate) fn poll(&mut self, now: Instant) -> Option<Result<String, String>> {
         if self.events.try_iter().next().is_some() {
             self.dirty = Some(now);
@@ -118,6 +120,7 @@ impl crate::Ferese {
         tracing::info!("configuration reloaded live");
         Ok(())
     }
+
     pub(crate) fn reload_config(&mut self) -> Result<(), String> {
         let path = crate::config::config_path().ok_or("config directory is unavailable")?;
         let source = read_source(&path)?;
@@ -141,18 +144,28 @@ mod tests {
             Self(path)
         }
     }
+
     impl Drop for Directory {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+
     #[test]
     fn runtime_validation_rejects_bad_edits_before_application() {
         for source in [
-            "[animations]\nspeed = 0",
-            "[theme.focus_ring.gradient]\nfrom = 'bad'\nto = '#ffffff'",
-            "[status]\nlow_battery_threshold = 'bad'",
-            "[layout]\ninner_gap = -1",
+            "animations {\n    speed 0\n}\n",
+            r##"theme {
+    focus-ring {
+        gradient {
+            from "bad"
+            to "#ffffff"
+        }
+    }
+}
+"##,
+            "status {\n    low-battery-threshold \"bad\"\n}\n",
+            "layout {\n    inner-gap -1\n}\n",
         ] {
             assert!(
                 crate::config::Config::parse_source(source)
@@ -161,17 +174,18 @@ mod tests {
             );
         }
         assert!(
-            crate::config::Config::parse_source("[animations]\nspeed = 0.75")
+            crate::config::Config::parse_source("animations {\n    speed 0.75\n}\n")
                 .unwrap()
                 .runtime_config()
                 .is_ok()
         );
     }
+
     #[test]
     fn directory_watch_detects_atomic_save_and_does_not_read_during_idle() {
         let directory = Directory::new();
-        let path = directory.0.join("config.toml");
-        std::fs::write(&path, "[animations]\nspeed = 1").unwrap();
+        let path = directory.0.join("config.kdl");
+        std::fs::write(&path, "animations {\n    speed 1\n}\n").unwrap();
         let mut monitor = ConfigMonitor::new(path.clone()).unwrap();
         monitor.dirty = Some(Instant::now() - Duration::from_secs(1));
         assert!(monitor.poll(Instant::now()).unwrap().is_ok());
@@ -180,13 +194,13 @@ mod tests {
         monitor.path = directory.0.join("missing");
         assert!(monitor.poll(Instant::now()).is_none());
         monitor.path = original_path;
-        let temporary = directory.0.join("config.toml.new");
-        std::fs::write(&temporary, "[animations]\nspeed = 0.75").unwrap();
+        let temporary = directory.0.join("config.kdl.new");
+        std::fs::write(&temporary, "animations {\n    speed 0.75\n}\n").unwrap();
         std::fs::rename(&temporary, &path).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             if let Some(result) = monitor.poll(Instant::now()) {
-                assert_eq!(result.unwrap(), "[animations]\nspeed = 0.75");
+                assert_eq!(result.unwrap(), "animations {\n    speed 0.75\n}\n");
                 break;
             }
             assert!(
@@ -196,13 +210,14 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+
     #[test]
     fn source_size_limit_is_bounded_and_debounce_coalesces_edits() {
         let directory = Directory::new();
-        let path = directory.0.join("config.toml");
+        let path = directory.0.join("config.kdl");
         std::fs::write(&path, "x".repeat(60 * 1024 + 1)).unwrap();
         assert!(read_source(&path).is_err());
-        std::fs::write(&path, "[animations]\nspeed = 1").unwrap();
+        std::fs::write(&path, "animations {\n    speed 1\n}\n").unwrap();
         let mut monitor = ConfigMonitor::new(path).unwrap();
         let now = Instant::now();
         monitor.dirty = Some(now);

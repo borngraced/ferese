@@ -65,22 +65,22 @@ mod tests {
     use cosmic::iced::futures::{StreamExt, pin_mut};
 
     #[test]
-    fn watches_atomic_replacement_and_retains_subscription_after_bad_toml() {
+    fn watches_atomic_replacement_and_retains_subscription_after_bad_kdl() {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap()
             .block_on(async {
                 let directory = tempfile::tempdir().unwrap();
-                let path = directory.path().join("config.toml");
-                std::fs::write(&path, "[animations]\nspeed = 1").unwrap();
+                let path = directory.path().join("config.kdl");
+                std::fs::write(&path, "animations {\n    speed 1\n}\n").unwrap();
                 let stream = changes(&path);
                 pin_mut!(stream);
                 assert!(matches!(
                     stream.next().await,
                     Some(Message::ExternalConfig(Ok(_)))
                 ));
-                for source in ["bad [", "[animations]\nspeed = 0.75"] {
+                for source in ["bad [", "animations {\n    speed 0.75\n}\n"] {
                     let temporary = directory.path().join("replacement");
                     std::fs::write(&temporary, source).unwrap();
                     std::fs::rename(temporary, &path).unwrap();

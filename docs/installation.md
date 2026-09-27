@@ -24,8 +24,8 @@ It preserves your configuration and other desktop sessions. Log out and select
 ```
 
 Use `--help` for all options. New configs can be copied from
-`/usr/local/lib/ferese/current/config.example.toml` to
-`~/.config/ferese/config.toml`. See [Configuration](configuration.md).
+`/usr/local/lib/ferese/current/config.example.kdl` to
+`~/.config/ferese/config.kdl`. See [Configuration](configuration.md).
 
 ## Preview and logs
 

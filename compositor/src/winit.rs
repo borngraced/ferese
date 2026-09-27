@@ -2530,6 +2530,7 @@ fn blur_uniforms(p: &MaterialParameters) -> Vec<Uniform<'static>> {
 fn framebuffer_capture_rect(rect: [f32; 4]) -> [i32; 4] {
     rect.map(|v| v.round() as i32)
 }
+
 fn expanded_blur_region(
     visible: Rectangle<i32, Logical>,
     radius: i32,

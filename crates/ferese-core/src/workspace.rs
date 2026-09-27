@@ -449,6 +449,7 @@ impl WorkspaceSet {
             }
         }
     }
+
     pub fn new(
         default_layout_mode: LayoutMode,
         default_column_width: ColumnWidth,

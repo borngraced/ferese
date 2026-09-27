@@ -1,16 +1,58 @@
 # Configuration
 
-Edit `~/.config/ferese/config.toml` (or `$XDG_CONFIG_HOME/ferese/config.toml`),
-or open **Control Center → Settings**. Start with the [example](../packaging/config.toml).
+Edit `~/.config/ferese/config.kdl` (or `$XDG_CONFIG_HOME/ferese/config.kdl`),
+or open **Control Center → Settings**. Start with the [example](../packaging/config.kdl).
 All supported configuration sections are listed below; [desktop widgets](desktop-widgets.md)
 covers the complete clock and sticky-note fields separately.
+
+## KDL syntax
+
+Sections use nested braces, values follow their names, and booleans are `#true`
+or `#false`. Multiple values represent arrays. Hyphenated keys are preferred;
+underscore spellings remain accepted. Enum values retain their documented spelling.
+A newline or semicolon ends each node. Comments use `//` or `/* ... */`.
+For example:
+
+```kdl
+input {
+    repeat-rate 30
+    touchpad {
+        swipe-threshold 80
+    }
+}
+
+commands {
+    terminal "foot"
+}
+
+binding "Super+Enter" "spawn" "terminal"
+binding "Swipe3Up" "toggle-overview"
+binding "Swipe3Down" disabled=#true
+output-profile "docked" {
+    output "HDMI-A-1" {
+        scale 1.5
+        position 0 0
+    }
+}
+```
+
+Repeated `binding`, `window-rule`, `output-profile`, `output`, `note` and
+`autostart` nodes describe lists of settings. Bindings accept positional
+keys/action/argument; profiles, outputs and notes accept a positional name,
+match or ID. Other fields can be properties or child nodes. Autostart accepts
+its command as positional arguments. Duplicate fields are rejected.
+The dotted paths in the reference tables below describe nested sections.
+
+Settings preserves comments and custom fields when editing, while normalizing
+indentation. Runtime configuration uses KDL only. KDL parsing requires Rust 1.95
+or newer to build.
 
 ## Saving and validation
 
 Settings saves automatically: text on Enter/focus loss, sliders when released.
 Undo restores the previous save; Reload picks up external edits without merging
 unfinished drafts. Wallpaper browsing needs `zenity`; a path can also be entered.
-Settings keeps `config.toml.settings-backup` before saving.
+Settings keeps `config.kdl.settings-backup` before saving.
 
 File edits reload automatically, including atomic editor saves. Invalid changes
 keep the last working configuration. Appearance, wallpaper, motion, input,
@@ -29,14 +71,14 @@ Live config is limited to 60 KiB.
 
 ## Layout
 
-| `[layout]` key | Type / values | Default | Meaning |
+| `layout` key | Type / values | Default | Meaning |
 | --- | --- | --- | --- |
 | `mode` | `"scrolling"`, `"tree"` | `"scrolling"` | Workspace layout |
 | `inner_gap` | number ≥ 0 | `10` | Between windows |
 | `outer_gap` | number ≥ 0 | `4` | Around workspace edges |
 | `smart_gaps` | boolean | `false` | Remove outer gaps for one tiled window |
 
-| `[scrolling]` key | Type / values | Default | Meaning |
+| `scrolling` key | Type / values | Default | Meaning |
 | --- | --- | --- | --- |
 | `default_column_width` | proportion > 0; or `"full"` | `0.5` | Width of new columns |
 | `focus_strategy` | `"minimal"`, `"center_on_focus"`, `"paged"` | `"minimal"` | Viewport movement on focus |
@@ -75,7 +117,7 @@ Changing default width preserves manually resized columns.
 | `theme.material.style` | `"solid"`, `"translucent"` | `"solid"` | Shell background material |
 | `theme.material.blur_radius` | number ≥ 0 | `12` | Translucent backdrop blur, capped at 32; 0 disables |
 
-| `[theme.colors]` key | Default | Meaning |
+| `theme.colors` key | Default | Meaning |
 | --- | --- | --- |
 | `surface_base` | `"#111821"` | Material/card base color |
 | `text_primary` | `"#F4F7FB"` | Main text |
@@ -84,7 +126,7 @@ Changing default width preserves manually resized columns.
 | `border` | `"#FFFFFF18"` | Unfocused window border |
 | `shadow` | `"#00000055"` | Window shadow color |
 
-| `[theme.geometry]` key | Type | Default | Meaning |
+| `theme.geometry` key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `border_width` | number ≥ 0 | `1` | Window border thickness |
 | `focus_ring_width` | number ≥ 0 | `2` | Focused border thickness |
@@ -111,21 +153,26 @@ Changing default width preserves manually resized columns.
 Solid materials omit blur; translucent materials blur behind the surface color.
 True fullscreen removes decorations. Focus transitions never scale the content.
 
-Optional `[theme.focus_ring.gradient]` and `[theme.border.gradient]` use the same
+Optional `theme.focus_ring.gradient` and `theme.border.gradient` use the same
 keys: required `from` and `to` colors, and `angle` (number, default `0`). Angles
 are clockwise: 0 is left-to-right, 90 top-to-bottom. Omit the gradient section
 for solid `accent` or `border` colors.
 
-```toml
-[theme.focus_ring.gradient]
-from = "#e5c890"
-to = "#b98d58"
-angle = 135.0
+```kdl
+theme {
+    focus-ring {
+        gradient {
+            from "#e5c890"
+            to "#b98d58"
+            angle 135.0
+        }
+    }
+}
 ```
 
 ## Input
 
-| `[input]` key | Type | Default | Meaning |
+| `input` key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `focus_follows_mouse` | boolean | `false` | Focus windows under the pointer without raising them; click to raise |
 | `xkb_layout` | nonempty string | `"us"` | XKB layout |
@@ -150,37 +197,28 @@ keyboard bindings. Choose a "Customize swipe" button to add an override. The
 gesture keys are `Swipe3Up`, `Swipe3Down`, `Swipe3Left`, and `Swipe3Right`; 4 or 5
 fingers are also supported. Changes reload live:
 
-```toml
-[[bindings]]
-keys = "Swipe3Up"
-action = "toggle-overview"
-
-[[bindings]]
-keys = "Swipe3Left"
-action = "move"
-argument = "left"
-
-[[bindings]]
-keys = "Swipe3Down"
-disabled = true
+```kdl
+binding keys="Swipe3Up" action="toggle-overview"
+binding keys="Swipe3Left" action="move" argument="left"
+binding keys="Swipe3Down" disabled=#true
 ```
 
-`spawn` uses a named entry from `[commands]`, just like keyboard shortcuts. To
+`spawn` uses a named entry from `commands`, just like keyboard shortcuts. To
 disable a direction in Settings, set its action to `none` and leave Argument
-empty. In TOML, `disabled = true` removes the default binding. Swipes do not use
+empty. In KDL, `disabled=#true` removes the default binding. Swipes do not use
 keyboard modifiers or physical key matching. The trigger is automatically
 recognized from its name. Gesture navigation uses native touchpad events in a
 hardware session.
 
 Adjust recognition distance in **Settings → Keyboard & mouse**, or with
-`swipe_threshold = 80` under `[input.touchpad]` (integer 16–1000 logical pixels).
+`swipe-threshold 80` under `input.touchpad` (integer 16–1000 logical pixels).
 
 ## Commands and bindings
 
-`[commands]` maps arbitrary names to nonempty argument arrays. The built-in
-`terminal = ["foot"]` can be overridden. Commands run directly, without a shell.
+`commands` maps arbitrary names to nonempty argument arrays. The built-in
+`terminal "foot"` can be overridden. Commands run directly, without a shell.
 
-| `[[bindings]]` key | Type / values | Default |
+| `binding` key | Type / values | Default |
 | --- | --- | --- |
 | `keys` | chord or gesture, e.g. `"Super+Enter"`, `"Swipe3Up"` | required |
 | `match` | `"keysym"`, `"physical"` | `"keysym"` |
@@ -195,21 +233,18 @@ invalid. A disabled binding must omit `action` and `argument`.
 
 | Actions | Argument |
 | --- | --- |
-| `spawn` | Name in `[commands]` |
+| `spawn` | Name in `commands` |
 | `focus`, `move`, `resize` | `"left"`, `"right"`, `"up"`, `"down"` |
 | `workspace`, `move-to-workspace` | Workspace number string, 1–255 |
 | `workspace-next`, `workspace-previous` | None; next/previous workspace on this monitor |
 | `none` | None; ignore this trigger |
 | `close`, `exit`, `toggle-maximized`, `toggle-fullscreen`, `toggle-layout`, `cycle-column-width`, `center-column`, `consume`, `expel`, `toggle-floating`, `toggle-overview` | None |
 
-```toml
-[commands]
-terminal = ["foot"]
-
-[[bindings]]
-keys = "Super+Enter"
-action = "spawn"
-argument = "terminal"
+```kdl
+commands {
+    terminal "foot"
+}
+binding keys="Super+Enter" action="spawn" argument="terminal"
 ```
 
 Defaults: Super+Enter terminal; Super+Q close; Super+H/J/K/L focus;
@@ -233,7 +268,7 @@ this command. Both modes open Satty with the same save and copy workflow.
 
 ## Window rules
 
-| `[[window_rules]]` key | Type | Default / meaning |
+| `window-rule` key | Type | Default / meaning |
 | --- | --- | --- |
 | `app_id` | nonempty string | Optional exact match; case-insensitive, `.desktop` suffix ignored |
 | `title` | nonempty string | Optional exact, case-sensitive match |
@@ -249,20 +284,18 @@ when `floating` is omitted. Floating apps without dimensions choose their own
 size and open centered on the output. Title changes do not trigger new rules;
 config rule changes apply to existing windows.
 
-```toml
-[[window_rules]]
-app_id = "dev.ferese.Settings"
-floating = true
+```kdl
+window-rule app-id="dev.ferese.Settings" floating=#true
 ```
 
 ## Displays
 
-`[[output_profiles]]` has a required unique nonempty `name` and one or more
-`[[output_profiles.outputs]]` entries. The first profile whose listed monitors
+`output-profile` has a required unique nonempty `name` and one or more
+`output-profile → output` entries. The first profile whose listed monitors
 are connected wins. Find connector names and persistent identities using
 `feresectl get-outputs`.
 
-| `[[output_profiles.outputs]]` key | Type | Default |
+| `output-profile → output` key | Type | Default |
 | --- | --- | --- |
 | `match` | nonempty connector or persistent identity string | required; unique within profile |
 | `enabled` | boolean | `true` |
@@ -275,14 +308,12 @@ Transforms: `normal`, `rotate_90`, `rotate_180`, `rotate_270`, `flipped`,
 `flipped_90`, `flipped_180`, `flipped_270`. Unspecified connected displays stay
 enabled with defaults. Disabling every usable output is rejected.
 
-```toml
-[[output_profiles]]
-name = "docked"
-
-[[output_profiles.outputs]]
-match = "HDMI-A-1"
-scale = 1.5
-position = [0, 0]
+```kdl
+output-profile name="docked" {
+    output match="HDMI-A-1" scale=1.5 {
+        position 0 0
+    }
+}
 ```
 
 With a usable external display, closing the lid disables internal panels.
@@ -291,7 +322,7 @@ returns. Ferese does not change the system's suspend policy.
 
 ## Status controls
 
-| `[status]` key | Type | Default | Meaning |
+| `status` key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `battery_percentage` | boolean | `true` | Show percentage beside icon |
 | `low_battery_threshold` | integer 0–100 | `20` | Warning-color threshold |
@@ -299,7 +330,7 @@ returns. Ferese does not change the system's suspend policy.
 
 ## Login items and locking
 
-| `[[autostart]]` key | Type | Default | Meaning |
+| `autostart` key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `command` | nonempty argument array | required | Foreground process, not a self-daemonizing command |
 | `enabled` | boolean | `true` | Start service |
@@ -309,9 +340,10 @@ returns. Ferese does not change the system's suspend policy.
 Unchanged services keep running on reload; removed/disabled items stop. To lock
 after five minutes and before sleep:
 
-```toml
-[[autostart]]
-command = ["swayidle", "-w", "timeout", "300", "ferese-lock", "before-sleep", "ferese-lock", "lock", "ferese-lock"]
+```kdl
+autostart {
+    command "swayidle" "-w" "timeout" "300" "ferese-lock" "before-sleep" "ferese-lock" "lock" "ferese-lock"
+}
 ```
 
 `ferese-lock` uses swaylock/swaylock-effects and optional
@@ -321,7 +353,7 @@ ending the session from another TTY.
 
 ## Optional session protocols
 
-These are launch-time environment switches, not TOML keys. Enable only for
+These are launch-time environment switches, not KDL keys. Enable only for
 trusted clients: `FERESE_ENABLE_INPUT_METHOD=1`,
 `FERESE_ENABLE_SHORTCUT_INHIBIT=1`, `FERESE_ENABLE_SCREENCOPY=1`.
 The installed session launcher enables screencopy for screenshots unless

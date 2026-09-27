@@ -4,6 +4,7 @@ members = [
     "feresectl",
     "crates/ferese-animation",
     "crates/ferese-core",
+    "crates/ferese-config",
     "crates/ferese-ipc",
     "crates/ferese-layout",
     "crates/ferese-protocols",
@@ -40,7 +41,6 @@ tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 tempfile = "3.23.0"
-toml = "0.9.7"
 xcursor = "0.3.11"
 wayland-backend = "0.3.17"
 wayland-client = "0.31.15"
