@@ -76,6 +76,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let runtime = config.runtime_config()?;
     let mut state = Ferese::new(&mut event_loop, display, runtime)?;
     state.config_source = initial_source.filter(|source| source.len() <= 60 * 1024);
+    overview::init_font_loader(&mut event_loop, &mut state)?;
     backends::init(launch.backend, &mut event_loop, &mut state)?;
     let mut monitor =
         config::config_path().and_then(|path| match reload::ConfigMonitor::new(path) {

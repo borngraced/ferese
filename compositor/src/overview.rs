@@ -1,4 +1,8 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, mpsc},
+    time::Duration,
+};
 
 use ferese_animation::{AnimatedRect, AnimatedValue, SpringConfig};
 use ferese_core::{OutputId, WorkspaceId};
@@ -20,6 +24,73 @@ const OVERVIEW_GAP: f64 = 24.0;
 const WORKSPACE_CARD_GAP: f64 = 8.0;
 const MAX_PREVIEW_SCALE: f64 = 0.82;
 
+// A single worker loads fonts. The bounded wake channel and latest
+// request slot coalesce rapid config reloads without spawning more loaders.
+#[derive(Debug)]
+struct FontRequests {
+    latest: Arc<Mutex<String>>,
+    wake: mpsc::SyncSender<()>,
+}
+
+impl FontRequests {
+    fn request(&self, family: &str) {
+        *self.latest.lock().unwrap() = family.to_owned();
+        let _ = self.wake.try_send(());
+    }
+}
+
+pub(crate) fn init_font_loader(
+    event_loop: &mut smithay::reexports::calloop::EventLoop<'static, Ferese>,
+    state: &mut Ferese,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use smithay::reexports::calloop::channel;
+    let (results, source) = channel::sync_channel::<(String, Option<FontArc>)>(1);
+    event_loop
+        .handle()
+        .insert_source(source, |event, _, state| {
+            if let channel::Event::Msg((family, font)) = event
+                && state.overview.complete_font_load(&family, font)
+                && state.overview.is_presenting()
+            {
+                crate::backends::direct::render_all(state);
+            }
+        })?;
+    let latest = Arc::new(Mutex::new(state.overview.font_family.clone()));
+    let worker_latest = latest.clone();
+    let (wake, requests) = mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("ferese-overview-font".into())
+        .spawn(move || {
+            while requests.recv().is_ok() {
+                let family = worker_latest.lock().unwrap().clone();
+                // Rescan on a font change so newly installed fonts remain usable.
+                let mut database = fontdb::Database::new();
+                database.load_system_fonts();
+                let families = [fontdb::Family::Name(&family), fontdb::Family::SansSerif];
+                let font = database
+                    .query(&fontdb::Query {
+                        families: &families,
+                        ..Default::default()
+                    })
+                    .and_then(|id| {
+                        database.with_face_data(id, |bytes, index| {
+                            FontVec::try_from_vec_and_index(bytes.to_vec(), index)
+                                .ok()
+                                .map(FontArc::new)
+                        })
+                    })
+                    .flatten();
+                if results.send((family, font)).is_err() {
+                    break;
+                }
+            }
+        })?;
+    let requests = FontRequests { latest, wake };
+    requests.request(&state.overview.font_family);
+    state.overview.font_requests = Some(requests);
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(crate) struct OverviewState {
     active: bool,
@@ -28,7 +99,7 @@ pub(crate) struct OverviewState {
     opacity: AnimatedValue,
     strip_offsets: HashMap<OutputId, usize>,
     font_family: String,
-    font_loaded: bool,
+    font_requests: Option<FontRequests>,
     font: Option<FontArc>,
     labels: HashMap<
         (String, u64),
@@ -48,7 +119,7 @@ impl Default for OverviewState {
             opacity: AnimatedValue::new(0.0),
             strip_offsets: HashMap::new(),
             font_family: "sans-serif".into(),
-            font_loaded: false,
+            font_requests: None,
             font: None,
             labels: HashMap::new(),
         }
@@ -106,9 +177,10 @@ impl OverviewState {
     pub(crate) fn set_font_family(&mut self, family: String) {
         if self.font_family != family {
             self.font_family = family;
-            self.font_loaded = false;
-            self.font = None;
-            self.labels.clear();
+            // Keep the current labels visible until the replacement is ready.
+            if let Some(requests) = &self.font_requests {
+                requests.request(&self.font_family);
+            }
         }
     }
 
@@ -117,6 +189,15 @@ impl OverviewState {
             font_family,
             ..Self::default()
         }
+    }
+
+    fn complete_font_load(&mut self, family: &str, font: Option<FontArc>) -> bool {
+        if family != self.font_family {
+            return false;
+        }
+        self.font = font;
+        self.labels.clear();
+        true
     }
 
     fn label(
@@ -130,28 +211,6 @@ impl OverviewState {
         let key = (text.to_owned(), scale.to_bits());
         if let Some(buffer) = self.labels.get(&key) {
             return Some(buffer.clone());
-        }
-        if !self.font_loaded {
-            self.font_loaded = true;
-            let mut database = fontdb::Database::new();
-            database.load_system_fonts();
-            let families = [
-                fontdb::Family::Name(&self.font_family),
-                fontdb::Family::SansSerif,
-            ];
-            self.font = database
-                .query(&fontdb::Query {
-                    families: &families,
-                    ..Default::default()
-                })
-                .and_then(|id| {
-                    database.with_face_data(id, |bytes, index| {
-                        FontVec::try_from_vec_and_index(bytes.to_vec(), index)
-                            .ok()
-                            .map(FontArc::new)
-                    })
-                })
-                .flatten();
         }
         let font = self.font.as_ref()?;
         let scaled = font.as_scaled((13.0 * scale) as f32);
@@ -732,6 +791,55 @@ fn directional_distance(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_font() -> FontArc {
+        FontArc::try_from_slice(include_bytes!("../../assets/fonts/Comfortaa-Regular.otf")).unwrap()
+    }
+
+    #[test]
+    fn font_reload_keeps_labels_until_current_result_arrives() {
+        let mut overview = OverviewState::with_font_family("first".into());
+        assert!(overview.complete_font_load("first", Some(test_font())));
+        assert!(overview.label("1", 1.0).is_some());
+        assert_eq!(overview.labels.len(), 1);
+        overview.set_font_family("second".into());
+        assert!(overview.font.is_some());
+        assert_eq!(overview.labels.len(), 1);
+        assert!(!overview.complete_font_load("first", None));
+        assert!(overview.font.is_some());
+        assert_eq!(overview.labels.len(), 1);
+        assert!(overview.complete_font_load("second", Some(test_font())));
+        assert!(overview.labels.is_empty());
+        assert!(overview.label("1", 1.0).is_some());
+    }
+
+    #[test]
+    fn rapid_font_requests_are_bounded_and_keep_latest_family() {
+        let (wake, receiver) = mpsc::sync_channel(1);
+        let requests = FontRequests {
+            latest: Arc::new(Mutex::new(String::new())),
+            wake,
+        };
+        for family in ["first", "second", "third"] {
+            requests.request(family);
+        }
+        receiver.try_recv().unwrap();
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        assert_eq!(*requests.latest.lock().unwrap(), "third");
+        drop(requests);
+        assert!(matches!(receiver.recv(), Err(mpsc::RecvError)));
+    }
+
+    #[test]
+    fn labels_do_not_load_fonts_synchronously() {
+        let mut overview = OverviewState::default();
+        assert!(overview.label("1", 1.0).is_none());
+        assert!(overview.font.is_none());
+        assert!(overview.labels.is_empty());
+    }
 
     #[test]
     fn workspace_cards_are_centered_as_a_group_on_each_output() {
