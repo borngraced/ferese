@@ -107,6 +107,30 @@ impl From<ShellTheme> for BarMetrics {
     }
 }
 
+fn stacked_clock_digits(label: &str) -> Option<[String; 2]> {
+    let mut parts = label.split_whitespace();
+    let time = parts.next()?;
+    if let Some(period) = parts.next() {
+        if !period.eq_ignore_ascii_case("am") && !period.eq_ignore_ascii_case("pm") {
+            return None;
+        }
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    let (hour, minute) = time.split_once(':')?;
+    if !(1..=2).contains(&hour.len())
+        || minute.len() != 2
+        || !hour
+            .bytes()
+            .chain(minute.bytes())
+            .all(|digit| digit.is_ascii_digit())
+    {
+        return None;
+    }
+    Some([format!("{hour:0>2}"), minute.to_owned()])
+}
+
 fn main() -> cosmic::iced::Result {
     // Small shell surfaces do not need a second GPU device and shader setup.
     // Keep wgpu as a fallback and honor an explicit renderer preference.
@@ -115,6 +139,18 @@ fn main() -> cosmic::iced::Result {
         // toolkit threads are started.
         unsafe { std::env::set_var("ICED_BACKEND", "tiny-skia,wgpu") };
     }
+    cosmic::iced::advanced::graphics::text::font_system()
+        .write()
+        .unwrap()
+        .load_font(std::borrow::Cow::Borrowed(include_bytes!(
+            "../../../assets/fonts/Comfortaa-Regular.otf"
+        )));
+    cosmic::iced::advanced::graphics::text::font_system()
+        .write()
+        .unwrap()
+        .load_font(std::borrow::Cow::Borrowed(include_bytes!(
+            "../../../assets/fonts/Cantarell-ExtraBold.otf"
+        )));
     let mut config = config::load();
     motion::configure(config.animations);
     let compositor_wallpaper = std::env::var_os("FERESE_COMPOSITOR_WALLPAPER").is_some();
@@ -1336,16 +1372,22 @@ impl FereseShell {
             ClockAlignment::Center => alignment::Horizontal::Center,
             ClockAlignment::Right => alignment::Horizontal::Right,
         };
-        let mut font = configured_font(
-            clock
-                .font_family
-                .as_deref()
-                .filter(|family| !family.trim().is_empty())
-                .or(self.config.font_family.as_deref()),
-        );
-        if clock.bold {
+        let pixel = clock.style == ferese_core::desktop::ClockStyle::Pixel;
+        let custom_font = clock
+            .font_family
+            .as_deref()
+            .filter(|family| !family.trim().is_empty());
+        let mut font = configured_font(if pixel {
+            custom_font.or(Some("Cantarell"))
+        } else {
+            custom_font.or(self.config.font_family.as_deref())
+        });
+        if pixel && custom_font.is_none() {
+            font.weight = cosmic::iced::font::Weight::Black;
+        } else if clock.bold {
             font.weight = cosmic::iced::font::Weight::Bold;
         }
+        let date_font = configured_font(custom_font.or(self.config.font_family.as_deref()));
         let tint = |custom: &Option<String>, fallback| {
             let mut tint = color(
                 custom
@@ -1356,21 +1398,98 @@ impl FereseShell {
             tint.a *= clock.opacity;
             tint
         };
+        let foreground = tint(&clock.color, self.config.theme.text_primary);
+        let accent = color(self.config.theme.accent);
+        let custom_color = clock
+            .color
+            .as_deref()
+            .and_then(config::parse_color)
+            .is_some();
+        let digit_colors = [0.8, 0.45].map(|text_mix| {
+            if custom_color {
+                return foreground;
+            }
+            Color {
+                r: foreground.r * text_mix + accent.r * (1.0 - text_mix),
+                g: foreground.g * text_mix + accent.g * (1.0 - text_mix),
+                b: foreground.b * text_mix + accent.b * (1.0 - text_mix),
+                a: foreground.a,
+            }
+        });
         let mut labels = cosmic::widget::column([])
             .spacing(clock.gap)
-            .align_x(alignment)
-            .push(
-                cosmic::widget::text(self.desktop_clock.0.clone())
-                    .font(font)
-                    .size(clock.time_size)
-                    .width(Length::Fill)
-                    .align_x(alignment)
+            .align_x(alignment);
+
+        if pixel && clock.show_date {
+            labels = labels.push(
+                cosmic::widget::text(self.desktop_clock.1.clone())
+                    .font(date_font)
+                    .size(clock.date_size)
                     .class(theme::Text::Color(tint(
-                        &clock.color,
+                        &clock.date_color,
                         self.config.theme.text_primary,
                     ))),
             );
-        if clock.show_date {
+        }
+
+        if let Some(digits) = pixel
+            .then(|| stacked_clock_digits(&self.desktop_clock.0))
+            .flatten()
+        {
+            let available_height = (clock.height as f32
+                - clock.padding * 2.0
+                - if clock.show_date {
+                    clock.date_size * 1.3 + clock.gap
+                } else {
+                    0.0
+                })
+            .max(16.0);
+            let size = clock
+                .time_size
+                .min(available_height / 1.6)
+                .min((clock.width as f32 - clock.padding * 2.0).max(16.0) / 1.5);
+            let mut stack = cosmic::widget::column([]).spacing(0).align_x(alignment);
+
+            for (line, digits) in digits.into_iter().enumerate() {
+                let mut digit_row = row([]).spacing(0);
+                for (position, digit) in digits.chars().enumerate() {
+                    digit_row = digit_row.push(
+                        cosmic::widget::text(digit.to_string())
+                            .font(font)
+                            .size(size)
+                            .line_height(cosmic::iced::widget::text::LineHeight::Relative(0.8))
+                            .class(theme::Text::Color(digit_colors[(line + position) % 2])),
+                    );
+                }
+                stack = stack.push(digit_row);
+            }
+            labels = labels.push(stack);
+        } else {
+            let characters = self.desktop_clock.0.chars().count().max(1) as f32;
+            let available_width = (clock.width as f32 - clock.padding * 2.0).max(1.0);
+            let available_height = (clock.height as f32
+                - clock.padding * 2.0
+                - if clock.show_date {
+                    clock.date_size * 1.3 + clock.gap
+                } else {
+                    0.0
+                })
+            .max(1.0);
+            let size = clock
+                .time_size
+                .min(available_width / (characters * 0.75))
+                .min(available_height / 1.3);
+            labels = labels.push(
+                cosmic::widget::text(self.desktop_clock.0.clone())
+                    .font(font)
+                    .size(size)
+                    .width(Length::Fill)
+                    .align_x(alignment)
+                    .class(theme::Text::Color(foreground)),
+            );
+        }
+
+        if !pixel && clock.show_date {
             labels = labels.push(
                 cosmic::widget::text(self.desktop_clock.1.clone())
                     .font(font)
@@ -2379,6 +2498,21 @@ mod tests {
             ),
             Point::new(200., 100.)
         );
+    }
+
+    #[test]
+    fn pixel_clock_stacks_only_hour_and_minute_formats() {
+        assert_eq!(
+            super::stacked_clock_digits("2:45 pm"),
+            Some(["02".into(), "45".into()])
+        );
+        assert_eq!(
+            super::stacked_clock_digits("14:45"),
+            Some(["14".into(), "45".into()])
+        );
+        assert!(super::stacked_clock_digits("14:45:30").is_none());
+        assert!(super::stacked_clock_digits("Today 14:45").is_none());
+        assert!(super::stacked_clock_digits("14:45 pm extra").is_none());
     }
 
     #[test]

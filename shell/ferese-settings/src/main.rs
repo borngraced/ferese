@@ -1,3 +1,4 @@
+mod fonts;
 mod schema;
 mod store;
 mod visuals;
@@ -26,6 +27,7 @@ fn main() -> cosmic::iced::Result {
         None => store::config_path(),
     };
     let path = path.canonicalize().unwrap_or(path);
+    fonts::families();
     let initial = Snapshot::read(&path);
     let theme = visuals::native_theme(initial.as_ref().ok());
 
@@ -45,6 +47,7 @@ enum Message {
     Page(Page),
     Search(String),
     Change(Edit),
+    SelectFont(String, String),
     Draft(String, String),
     Commit(Field),
     Range(Field, f64),
@@ -211,6 +214,10 @@ impl cosmic::Application for App {
 
                 self.sync_notes();
                 return task;
+            }
+            Message::SelectFont(path, family) => {
+                self.inputs.remove(&path);
+                return self.change(set(&path, family));
             }
             Message::DragWindow => return self.core.drag(None),
             Message::ExternalConfig(result) => match result {
@@ -1085,6 +1092,41 @@ impl App {
         let labels = labels.width(Length::Fill);
         let path = field.path.clone();
         let control: Element<'static, Message> = match field.kind.clone() {
+            Kind::Font => {
+                let value = self
+                    .inputs
+                    .get(&path)
+                    .cloned()
+                    .unwrap_or_else(|| self.draft.string(&path, ""));
+                let families = fonts::families();
+                let selected = if value.is_empty() {
+                    Some(0)
+                } else {
+                    families.iter().position(|family| family == &value)
+                };
+                let selection_path = path.clone();
+                let commit = field.clone();
+                column([])
+                    .spacing(6)
+                    .push(
+                        widget::dropdown(families, selected, move |index| {
+                            let family = if index == 0 { "" } else { &families[index] };
+                            Message::SelectFont(selection_path.clone(), family.to_owned())
+                        })
+                        .width(225),
+                    )
+                    .push(
+                        text_input("Default font", value)
+                            .font(self.font)
+                            .style(visuals::input_style(palette))
+                            .on_input(move |value| Message::Draft(path.clone(), value))
+                            .on_submit(move |_| Message::Commit(field.clone()))
+                            .on_unfocus(Message::Commit(commit))
+                            .width(225)
+                            .size(12),
+                    )
+                    .into()
+            }
             Kind::Toggle(default) => toggler(self.draft.boolean(&path, default))
                 .size(22)
                 .on_toggle(move |value| Message::Change(set(&path, value)))

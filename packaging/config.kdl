@@ -33,11 +33,12 @@ window-rule title="Choose a wallpaper" floating=#true
 
 desktop-widgets {
     clock {
+        style "pixel"
         enabled #false
         anchor "top_left"
         margin-x 64
         margin-y 80
-        time-size 72.0
+        time-size 128.0
         date-size 18.0
         opacity 0.9
     }

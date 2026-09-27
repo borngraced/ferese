@@ -90,6 +90,7 @@ impl Page {
 
 #[derive(Clone, Debug)]
 pub enum Kind {
+    Font,
     Toggle(bool),
     Range {
         default: f64,
@@ -198,6 +199,13 @@ fn clock_fields() -> Vec<Field> {
             "Behind windows and click-through.",
             false,
         ),
+        choice(
+            "desktop_widgets.clock.style",
+            "Clock style",
+            "Pixel stacks heavy, alternating-color digits; Minimal uses plain text.",
+            "pixel",
+            &[("pixel", "Pixel"), ("minimal", "Minimal")],
+        ),
         toggle(
             "desktop_widgets.clock.bold",
             "Bold text",
@@ -207,7 +215,7 @@ fn clock_fields() -> Vec<Field> {
         toggle(
             "desktop_widgets.clock.show_date",
             "Show date",
-            "A separate line beneath the time.",
+            "A small date above the digits in Pixel; beneath the time in Minimal.",
             true,
         ),
         toggle(
@@ -222,11 +230,11 @@ fn clock_fields() -> Vec<Field> {
             "top_left, top_center, top_right, center_left, center, center_right, bottom_left, bottom_center, bottom_right",
             "top_left",
         ),
-        text(
+        Field::new(
             "desktop_widgets.clock.font_family",
             "Font",
-            "Empty follows the desktop font.",
-            "",
+            "Choose an installed family or enter a name. Empty uses the style default.",
+            Kind::Font,
         ),
         text(
             "desktop_widgets.clock.time_format",
@@ -238,7 +246,7 @@ fn clock_fields() -> Vec<Field> {
             "desktop_widgets.clock.date_format",
             "Date format",
             "%A, %-d %B for weekday and date; %-d %b for a short date.",
-            "%A, %-d %B",
+            "%a, %b %-d",
         ),
         text(
             "desktop_widgets.clock.time_zone",
@@ -301,7 +309,7 @@ fn clock_fields() -> Vec<Field> {
             "desktop_widgets.clock.height",
             "Widget height",
             "Leave room for both text lines.",
-            160.0,
+            320.0,
             32.0,
             800.0,
             1.0,
@@ -312,7 +320,7 @@ fn clock_fields() -> Vec<Field> {
             "desktop_widgets.clock.time_size",
             "Time size",
             "Logical pixels; scales with your output.",
-            72.0,
+            128.0,
             8.0,
             240.0,
             1.0,
@@ -411,11 +419,11 @@ pub fn note_fields(index: usize) -> Vec<Field> {
             "Nine positions, e.g. top_right or center.",
             "top_right",
         ),
-        text(
+        Field::new(
             format!("{prefix}.font_family"),
             "Font",
-            "Empty follows the desktop font.",
-            "",
+            "Choose an installed family or enter a name. Empty follows the desktop font.",
+            Kind::Font,
         ),
         text(
             format!("{prefix}.color"),

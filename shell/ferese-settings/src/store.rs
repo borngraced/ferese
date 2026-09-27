@@ -384,6 +384,7 @@ window-rule app-id="mine" floating=#true
             for field in fields {
                 use crate::schema::Kind;
                 let values: Vec<Value> = match field.kind {
+                    Kind::Font => vec!["".into(), "sans-serif".into()],
                     Kind::Toggle(_) => vec![true.into(), false.into()],
                     Kind::Range {
                         min, max, integer, ..

@@ -179,9 +179,18 @@ pub enum Alignment {
     Right,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ClockStyle {
+    #[default]
+    Pixel,
+    Minimal,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Clock {
+    pub style: ClockStyle,
     pub enabled: bool,
     /// Empty means every output; otherwise exact connector names.
     pub outputs: Vec<String>,
@@ -212,19 +221,20 @@ pub struct Clock {
 impl Default for Clock {
     fn default() -> Self {
         Self {
+            style: ClockStyle::Pixel,
             enabled: false,
             outputs: Vec::new(),
             anchor: Anchor::TopLeft,
             margin_x: 64,
             margin_y: 80,
             width: 440,
-            height: 160,
+            height: 320,
             font_family: None,
             bold: false,
-            time_size: 72.,
+            time_size: 128.,
             date_size: 18.,
             time_format: "%-I:%M %p".into(),
-            date_format: "%A, %-d %B".into(),
+            date_format: "%a, %b %-d".into(),
             time_zone: None,
             show_date: true,
             lowercase: true,

@@ -14,15 +14,16 @@ Enable it in Settings → Desktop widgets or in your Ferese config:
 ```kdl
 desktop-widgets {
     clock enabled=#true anchor="top_left" margin-x=64 margin-y=80 {
+        style "pixel"                   // or "minimal"
         outputs                         // every output; or outputs "DP-2"
         width 440
-        height 160
-        font-family ""                  // inherit the desktop font
+        height 320
+        font-family ""                  // style default; or "Comfortaa"
         bold #false
-        time-size 72.0
+        time-size 128.0
         date-size 18.0
         time-format "%-I:%M %p"          // use "%H:%M" for 24-hour time
-        date-format "%A, %-d %B"
+        date-format "%a, %b %-d"
         time-zone ""                    // system zone; or "Africa/Lagos"
         show-date #true
         lowercase #true
@@ -44,6 +45,8 @@ Margins affect anchored axes only: a centered horizontal position ignores
 `margin_x`; a centered vertical position ignores `margin_y`.
 All geometry and text sizes use logical pixels and follow the output's scale.
 Increase the widget width/height for longer formats or larger text.
+
+Pixel is the default clock style: heavy hours above minutes, alternating theme colors, and a small plain date above. Its bundled Cantarell display font can be replaced with the font selector. Minimal retains the plain time/date layout. Pixel zero-pads hours and hides am/pm for the stacked display. Formats with seconds or additional text retain their full formatted label on one line. Both styles shrink time text to fit smaller widget dimensions; an explicit text color overrides the alternating colors.
 
 Saving reloads appearance and labels live. Placement, size, output filters and
 enable/disable changes recreate only clock surfaces; normal windows and the bar
@@ -84,6 +87,8 @@ click Edit for its multiline editor, then Done to finish. Text autosaves after
 500 ms without typing. Escape cancels a drag or finishes editing. Position saves
 on release; dragging changes the anchor to `top_left` and saves pixel margins.
 Title, size and style are also editable in Settings. Notes persist in the config.
+Choose each note’s font in Settings using the installed-font dropdown or enter a family name manually. Default font inherits the interface font. In KDL, use `font-family "Comfortaa"` inside the `note` node.
+
 These are plain-text notes, not Markdown or HTML.
 
 ```kdl

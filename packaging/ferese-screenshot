@@ -48,13 +48,13 @@ trap '[[ -z $input ]] || rm -f -- "$input"; [[ -s $file ]] || rm -f -- "$file"' 
 input=$(mktemp "$XDG_RUNTIME_DIR/ferese-screenshot-XXXXXX.png") || fail 'Could not create the temporary capture.'
 grim "${capture_args[@]}" "$input" || fail 'Could not capture the screen. Log back into Ferese after enabling screen capture.'
 # Enter saves the annotated image and copies it; Escape discards the capture.
-# Do not pass the selector lock to Satty or its clipboard subprocess.
+exec 9>&-
 satty --filename "$input" --output-filename "$file" \
     --fullscreen current-screen \
     --copy-command 'wl-copy --type image/png' \
     --save-after-copy \
     --actions-on-enter save-to-file,save-to-clipboard,exit \
-    --actions-on-escape exit 9>&- || fail 'Could not open the screenshot in Satty.'
+    --actions-on-escape exit || fail 'Could not open the screenshot in Satty.'
 if [[ -s $file ]]; then
     printf '%s\n' "$file"
 fi

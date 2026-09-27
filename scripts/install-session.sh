@@ -59,6 +59,8 @@ install -m 0755 -- "$repo_dir/packaging/ferese-session" "$release_dir/ferese-ses
 install -m 0755 -- "$repo_dir/packaging/ferese-lock" "$release_dir/ferese-lock"
 install -m 0755 -- "$repo_dir/packaging/ferese-screenshot" "$release_dir/ferese-screenshot"
 install -m 0644 -- "$repo_dir/packaging/config.kdl" "$release_dir/config.example.kdl"
+install -D -m 0644 -- "$repo_dir/assets/fonts/Comfortaa-LICENSE.txt" "$release_dir/licenses/Comfortaa-LICENSE.txt"
+install -D -m 0644 -- "$repo_dir/assets/fonts/Cantarell-LICENSE.txt" "$release_dir/licenses/Cantarell-LICENSE.txt"
 install -d -m 0755 -- "$release_dir/wallpapers"
 install -m 0644 -- "$repo_dir/assets/wallpapers/ferese.png" "$release_dir/wallpapers/ferese.png"
 install -m 0644 -- "$repo_dir/assets/wallpapers/ferese.svg" "$release_dir/wallpapers/ferese.svg"
