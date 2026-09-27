@@ -1,4 +1,5 @@
 //! Bounded, off-UI-thread adapters. A missing service is `None`, never a fake state.
+mod bluetooth;
 mod network;
 
 use std::{
@@ -337,7 +338,7 @@ impl StatusBus {
 fn poll(system_bus: &mut StatusBus, session_bus: &mut StatusBus) -> Snapshot {
     Snapshot {
         network: system_bus.query(network::read).flatten(),
-        bluetooth: bluetooth(),
+        bluetooth: system_bus.query(bluetooth::read).flatten(),
         audio: audio(),
         battery: battery(),
         brightness: brightness(),
@@ -346,28 +347,6 @@ fn poll(system_bus: &mut StatusBus, session_bus: &mut StatusBus) -> Snapshot {
         reboot: system_bus.can_power("CanReboot"),
         suspend: system_bus.can_power("CanSuspend"),
     }
-}
-
-fn bluetooth() -> Option<Bluetooth> {
-    let info = run("bluetoothctl", &["show"]).ok()?;
-    let enabled = info
-        .lines()
-        .find_map(|line| line.trim().strip_prefix("Powered: "))?
-        == "yes";
-    let devices = if enabled {
-        run("bluetoothctl", &["devices", "Connected"])
-            .ok()?
-            .lines()
-            .filter_map(|line| {
-                line.strip_prefix("Device ")
-                    .and_then(|s| s.split_once(' '))
-                    .map(|(_, name)| name.to_owned())
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-    Some(Bluetooth { enabled, devices })
 }
 
 pub fn parse_audio(value: &str) -> Option<(u8, bool)> {
