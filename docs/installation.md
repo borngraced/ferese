@@ -14,7 +14,11 @@ desktop instead of direct access to the graphics device.
 Build with **Rust 1.95 or newer**, a C/C++ toolchain, CMake, pkg-config, and the
 native development libraries below. The installer builds Ferese, its shell,
 Settings, command-line tools, locker, polkit agent, and ScreenCast portal together. It does not install system
-packages or enable services for you.
+packages or enable background services at boot. On systemd systems, the installed
+session helper activates `ferese-session.target` after exporting the compositor's
+Wayland display, and stops it when the shell exits. This keeps
+`graphical-session.target` active so desktop portals can start. Nested previews
+do not alter the host's activation environment or session targets.
 
 ### Fedora
 

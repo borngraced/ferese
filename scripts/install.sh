@@ -75,7 +75,7 @@ fi
 
 cd -- "$repo_dir"
 if ! $skip_build; then "${build[@]}"; fi
-for name in ferese ferese-shell ferese-settings feresectl ferese-lock ferese-polkit-agent; do
+for name in ferese ferese-shell ferese-settings feresectl ferese-lock ferese-polkit-agent xdg-desktop-portal-ferese ferese-record; do
     [[ -x $repo_dir/target/release/$name ]] || fail "missing release binary: $name"
 done
 "${installer[@]}"

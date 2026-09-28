@@ -73,6 +73,11 @@ if [[ -e $service ]] && ! cmp -s "$repo_dir/packaging/portal/$(basename "$servic
     echo "Unmanaged portal service exists: $service" >&2; exit 1
 fi
 
+session_target=/usr/local/lib/systemd/user/ferese-session.target
+if [[ -e $session_target ]] && ! cmp -s "$repo_dir/packaging/systemd/ferese-session.target" "$session_target"; then
+    echo "Unmanaged session target exists: $session_target" >&2; exit 1
+fi
+
 desktop-file-validate "$repo_dir/packaging/ferese.desktop"
 desktop-file-validate "$repo_dir/packaging/dev.ferese.Settings.desktop"
 
@@ -85,6 +90,7 @@ for name in ferese ferese-shell ferese-settings feresectl ferese-lock ferese-pol
 done
 install -m 0755 -- "$repo_dir/packaging/ferese-session" "$release_dir/ferese-session"
 install -m 0755 -- "$repo_dir/packaging/ferese-session-shell" "$release_dir/ferese-session-shell"
+install -D -m 0644 -- "$repo_dir/packaging/systemd/ferese-session.target" "$session_target"
 install -m 0755 -- "$repo_dir/packaging/ferese-screenshot" "$release_dir/ferese-screenshot"
 install -m 0644 -- "$repo_dir/packaging/config.kdl" "$release_dir/config.example.kdl"
 install -D -m 0644 -- "$repo_dir/assets/fonts/Comfortaa-LICENSE.txt" "$release_dir/licenses/Comfortaa-LICENSE.txt"

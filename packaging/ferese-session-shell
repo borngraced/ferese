@@ -1,12 +1,47 @@
 #!/usr/bin/env bash
 set -euo pipefail
+session_target_started=0
+shell_pid=
+agent_pid=
+cleanup() {
+    trap - EXIT INT TERM
+    if [[ -n $shell_pid ]]; then kill "$shell_pid" 2>/dev/null || true; fi
+    if [[ -n $agent_pid ]]; then
+        kill "$agent_pid" 2>/dev/null || true
+        wait "$agent_pid" 2>/dev/null || true
+    fi
+    if ((session_target_started)); then
+        systemctl --user stop ferese-session.target || true
+    fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
 # The compositor supplies its new Wayland socket before this helper starts.
 # Nested previews must never replace the host session's activation environment.
 if [[ ${FERESE_SESSION_IMPORT_ENV:-0} == 1 ]]; then
-    dbus-update-activation-environment --systemd \
+    # Shell control uses a private socket FD. Activation must use the public
+    # socket so portal and other desktop services connect as ordinary clients.
+    public_display=${FERESE_PUBLIC_WAYLAND_DISPLAY:-${WAYLAND_DISPLAY:-}}
+    env WAYLAND_DISPLAY="$public_display" dbus-update-activation-environment --systemd \
         WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE || \
-        dbus-update-activation-environment \
+        env WAYLAND_DISPLAY="$public_display" dbus-update-activation-environment \
             WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE || true
+    # User buses can outlive logout and may predate a newly installed service directory.
+    if command -v dbus-send >/dev/null; then
+        dbus-send --session --type=method_call --print-reply \
+            --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+            org.freedesktop.DBus.ReloadConfig >/dev/null || true
+    fi
+    if command -v systemctl >/dev/null; then
+        systemctl --user daemon-reload || true
+        if systemctl --user start ferese-session.target; then
+            session_target_started=1
+        else
+            echo 'Ferese: graphical session target could not start; portal activation may be unavailable.' >&2
+        fi
+    fi
 fi
 release_dir=$(dirname -- "$(readlink -f -- "$0")")
 env -u WAYLAND_SOCKET WAYLAND_DISPLAY="${FERESE_PUBLIC_WAYLAND_DISPLAY:-${WAYLAND_DISPLAY:-}}" \
@@ -14,12 +49,9 @@ env -u WAYLAND_SOCKET WAYLAND_DISPLAY="${FERESE_PUBLIC_WAYLAND_DISPLAY:-${WAYLAN
 agent_pid=$!
 "$release_dir/ferese-shell" &
 shell_pid=$!
-trap 'kill "$shell_pid" "$agent_pid" 2>/dev/null || true' EXIT INT TERM
 if wait "$shell_pid"; then
     status=0
 else
     status=$?
 fi
-kill "$agent_pid" 2>/dev/null || true
-wait "$agent_pid" 2>/dev/null || true
 exit "$status"
