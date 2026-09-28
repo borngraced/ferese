@@ -996,6 +996,18 @@ fn control_card<'a>(
         .into()
 }
 
+fn connection_caption(detail: &str) -> String {
+    const MAX_CHARS: usize = 12;
+    let normalized = detail.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut chars = normalized.chars();
+    let mut caption: String = chars.by_ref().take(MAX_CHARS).collect();
+    if chars.next().is_some() {
+        caption.pop();
+        caption.push('…');
+    }
+    caption
+}
+
 fn connection_control<'a>(
     label: &'static str,
     detail: &str,
@@ -1026,15 +1038,15 @@ fn connection_control<'a>(
     };
     let icon = container(accented_icon(source, 28, icon_color, icon_color))
         .width(Length::Fill)
-        .height(40)
+        .height(28)
         .align_x(alignment::Horizontal::Center)
         .align_y(alignment::Vertical::Center);
     let content = column![icon]
-        .spacing(4)
+        .spacing(2)
         .width(Length::Fill)
         .align_x(Alignment::Center);
     let content = content.push(
-        text(detail.to_owned())
+        text(connection_caption(detail))
             .size(11)
             .width(Length::Fill)
             .height(16)
@@ -1529,6 +1541,24 @@ fn status_icon(kind: Menu, s: &Snapshot) -> (&'static [u8], bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn connection_captions_fit_one_short_line() {
+        assert_eq!(super::connection_caption("88%"), "88%");
+        assert_eq!(super::connection_caption("Flow84@Lofree"), "Flow84@Lofr…");
+        assert_eq!(super::connection_caption("123456789012"), "123456789012");
+        assert_eq!(
+            super::connection_caption("My very long headphones"),
+            "My very lon…"
+        );
+        assert_eq!(
+            super::connection_caption("  Device\n name  "),
+            "Device name"
+        );
+        let caption = super::connection_caption("耳機耳機耳機耳機耳機耳機耳機");
+        assert_eq!(caption.chars().count(), 12);
+        assert!(caption.ends_with('…'));
+    }
+
     #[test]
     fn calendar_aligns_leap_months_and_year_boundaries() {
         let february = jiff::civil::Date::new(2024, 2, 15).unwrap();
