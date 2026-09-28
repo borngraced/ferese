@@ -1,0 +1,9 @@
+[Unit]
+Description=Ferese desktop portal
+PartOf=ferese-session.target graphical-session.target
+After=ferese-session.target
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.impl.portal.desktop.ferese
+ExecStart=/usr/local/lib/ferese/current/xdg-desktop-portal-ferese

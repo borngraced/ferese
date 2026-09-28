@@ -1,3 +1,4 @@
 [D-BUS Service]
 Name=org.freedesktop.impl.portal.desktop.ferese
 Exec=/usr/local/lib/ferese/current/xdg-desktop-portal-ferese
+SystemdService=xdg-desktop-portal-ferese.service

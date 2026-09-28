@@ -17,7 +17,9 @@ Settings, command-line tools, locker, polkit agent, and ScreenCast portal togeth
 packages or enable background services at boot. On systemd systems, the installed
 session helper activates `ferese-session.target` after exporting the compositor's
 Wayland display, and stops it when the shell exits. This keeps
-`graphical-session.target` active so desktop portals can start. Nested previews
+`graphical-session.target` active so desktop portals can start. The native portal
+is D-Bus activated and supervised by systemd; it stops with the session so a
+previous release cannot remain running after logout. Nested previews
 do not alter the host's activation environment or session targets.
 
 ### Fedora

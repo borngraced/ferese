@@ -70,7 +70,17 @@ for entry in \
 done
 service=/usr/local/share/dbus-1/services/org.freedesktop.impl.portal.desktop.ferese.service
 if [[ -e $service ]] && ! cmp -s "$repo_dir/packaging/portal/$(basename "$service")" "$service"; then
-    echo "Unmanaged portal service exists: $service" >&2; exit 1
+    # Upgrade the exact activation file shipped before systemd supervision.
+    if ! cmp -s <(printf '%s\n' '[D-BUS Service]' \
+        'Name=org.freedesktop.impl.portal.desktop.ferese' \
+        'Exec=/usr/local/lib/ferese/current/xdg-desktop-portal-ferese') "$service"; then
+        echo "Unmanaged portal service exists: $service" >&2; exit 1
+    fi
+fi
+
+portal_unit=/usr/local/lib/systemd/user/xdg-desktop-portal-ferese.service
+if [[ -e $portal_unit ]] && ! cmp -s "$repo_dir/packaging/systemd/xdg-desktop-portal-ferese.service" "$portal_unit"; then
+    echo "Unmanaged portal unit exists: $portal_unit" >&2; exit 1
 fi
 
 session_target=/usr/local/lib/systemd/user/ferese-session.target
@@ -91,6 +101,7 @@ done
 install -m 0755 -- "$repo_dir/packaging/ferese-session" "$release_dir/ferese-session"
 install -m 0755 -- "$repo_dir/packaging/ferese-session-shell" "$release_dir/ferese-session-shell"
 install -D -m 0644 -- "$repo_dir/packaging/systemd/ferese-session.target" "$session_target"
+install -D -m 0644 -- "$repo_dir/packaging/systemd/xdg-desktop-portal-ferese.service" "$portal_unit"
 install -m 0755 -- "$repo_dir/packaging/ferese-screenshot" "$release_dir/ferese-screenshot"
 install -m 0644 -- "$repo_dir/packaging/config.kdl" "$release_dir/config.example.kdl"
 install -D -m 0644 -- "$repo_dir/assets/fonts/Comfortaa-LICENSE.txt" "$release_dir/licenses/Comfortaa-LICENSE.txt"
