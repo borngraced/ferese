@@ -36,6 +36,15 @@ pub struct Recorder {
     updates: Option<Receiver<Event>>,
 }
 impl Recorder {
+    pub fn label(&self) -> &'static str {
+        match self.state {
+            State::Selecting => "Cancel display selection",
+            State::Recording(_) => "Stop recording",
+            State::Saving => "Saving recording",
+            _ => "Record a display",
+        }
+    }
+
     pub fn busy(&self) -> bool {
         self.updates.is_some()
     }
@@ -87,11 +96,15 @@ impl Recorder {
                     let _ = send.send(Event::Exited);
                 });
             }
-            Err(error) => self.state = State::Error(format!("Cannot start recorder: {error}")),
+            Err(error) => {
+                let message = format!("Cannot start recorder: {error}");
+                notify("Recording unavailable", message.clone());
+                self.state = State::Error(message);
+            }
         }
     }
     pub fn stop(&mut self) {
-        if self.busy() {
+        if self.busy() && !matches!(self.state, State::Saving) {
             // EOF requests EOS/finalization. Never terminate the encoder abruptly.
             self.control.take();
             self.state = State::Saving;
@@ -134,8 +147,47 @@ impl Recorder {
             }
         }
         if done {
+            match &self.state {
+                State::Saved(path) => notify("Recording saved", path.display().to_string()),
+                State::Error(message) => notify("Recording failed", message.clone()),
+                _ => (),
+            }
             self.control.take();
             self.updates.take();
         }
     }
+}
+
+// Use the normal notification center for results, without an extra recording menu.
+fn notify(title: &'static str, body: String) {
+    std::thread::spawn(move || {
+        let result = (|| -> zbus::Result<()> {
+            let connection = zbus::blocking::connection::Builder::session()?
+                .method_timeout(std::time::Duration::from_secs(3))
+                .build()?;
+            let proxy = zbus::blocking::Proxy::new(
+                &connection,
+                "org.freedesktop.Notifications",
+                "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications",
+            )?;
+            let _: u32 = proxy.call(
+                "Notify",
+                &(
+                    "Ferese",
+                    0u32,
+                    "ferese",
+                    title,
+                    body,
+                    Vec::<String>::new(),
+                    std::collections::HashMap::<String, zbus::zvariant::OwnedValue>::new(),
+                    -1i32,
+                ),
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("ferese-shell: recording notification: {error}");
+        }
+    });
 }

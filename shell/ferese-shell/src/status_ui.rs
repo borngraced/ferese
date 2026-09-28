@@ -257,15 +257,26 @@ impl FereseShell {
             if !kind.available(&self.status) {
                 continue;
             }
-            let (source, enabled) = if kind == Menu::Recording && self.recorder.busy() {
-                (
-                    include_bytes!("../assets/icons/status/record-stop.svg").as_slice(),
-                    true,
-                )
+            let (source, enabled) = if kind == Menu::Recording {
+                let source: &'static [u8] = match self.recorder.state {
+                    recording::State::Selecting => {
+                        include_bytes!("../assets/icons/status/record-cancel.svg")
+                    }
+                    recording::State::Recording(_) => {
+                        include_bytes!("../assets/icons/status/record-stop.svg")
+                    }
+                    recording::State::Saving => {
+                        include_bytes!("../assets/icons/status/record-saving.svg")
+                    }
+                    _ => include_bytes!("../assets/icons/status/record.svg"),
+                };
+                (source, true)
             } else {
                 status_icon(kind, &self.status)
             };
-            let selected = self.menu.as_ref().is_some_and(|m| m.kind == kind);
+            let selected = self.menu.as_ref().is_some_and(|m| m.kind == kind)
+                || (kind == Menu::Recording
+                    && matches!(self.recorder.state, recording::State::Recording(_)));
             let foreground = color(if selected {
                 theme.accent
             } else if enabled {
@@ -326,7 +337,9 @@ impl FereseShell {
             let recording_busy = kind == Menu::Recording && self.recorder.busy();
             let control = button::custom(content)
                 .name(if recording_busy {
-                    "Stop screen recording".into()
+                    self.recorder.label().into()
+                } else if kind == Menu::Recording {
+                    "Record a display".into()
                 } else {
                     status_label(kind, &self.status)
                 })
@@ -336,8 +349,12 @@ impl FereseShell {
                 ])
                 .height(metrics.control_height)
                 .on_press_with_rectangle(move |offset, bounds| {
-                    if recording_busy {
-                        return cosmic::Action::App(Message::StopRecording);
+                    if kind == Menu::Recording {
+                        return cosmic::Action::App(if recording_busy {
+                            Message::StopRecording
+                        } else {
+                            Message::StartRecording
+                        });
                     }
                     cosmic::Action::App(Message::OpenMenu(
                         kind,
@@ -434,42 +451,6 @@ impl FereseShell {
                     ]
                     .spacing(8),
                 );
-        } else if kind == Menu::Recording {
-            use recording::State;
-            let description = match &self.recorder.state {
-                State::Idle => {
-                    "Record a display. Video is saved to Videos/Ferese as WebM. Audio is off."
-                        .to_owned()
-                }
-                State::Selecting => "Choose a display in the sharing dialog.".to_owned(),
-                State::Recording(_) => format!(
-                    "Recording {} · audio off",
-                    self.recorder.elapsed().unwrap_or_default()
-                ),
-                State::Saving => "Finishing your recording…".to_owned(),
-                State::Saved(path) => format!("Saved to {}", path.display()),
-                State::Error(message) => message.clone(),
-            };
-            rows = rows.push(text(description).size(13).class(theme::Text::Color(muted)));
-            if !self.recorder.busy() {
-                rows = rows.push(menu_button(
-                    "Record display",
-                    Message::StartRecording,
-                    primary,
-                    p,
-                ));
-            } else if !matches!(self.recorder.state, State::Saving) {
-                rows = rows.push(menu_button(
-                    if matches!(self.recorder.state, State::Selecting) {
-                        "Cancel"
-                    } else {
-                        "Stop and save"
-                    },
-                    Message::StopRecording,
-                    primary,
-                    p,
-                ));
-            }
         } else {
             let combined = menu.kind == Menu::System;
             if combined {

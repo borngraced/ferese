@@ -2,8 +2,8 @@ use crate::capture::Source;
 use cosmic::{
     ApplicationExt, Element,
     app::{Core, Settings, Task},
-    iced::Length,
-    widget::{button, column, container, row, text},
+    iced::{Alignment, Length},
+    widget::{button, column, container, icon, row, scrollable, text},
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -41,9 +41,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (theme, font) = appearance();
+    let height = 156. + (prompt.sources.len().min(4) as f32 * 56.);
     cosmic::app::run::<Picker>(
         Settings::default()
-            .size(cosmic::iced::Size::new(480., 440.))
+            .size(cosmic::iced::Size::new(400., height))
             .theme(theme)
             .default_font(font)
             .default_text_size(14.)
@@ -68,7 +69,9 @@ impl cosmic::Application for Picker {
         &mut self.core
     }
 
-    fn init(core: Core, prompt: Prompt) -> (Self, Task<Message>) {
+    fn init(mut core: Core, prompt: Prompt) -> (Self, Task<Message>) {
+        core.window.show_headerbar = false;
+        core.window.border_padding = Some(0);
         // No preselected source: clicking Share must be a deliberate choice.
         let mut app = Self {
             core,
@@ -121,71 +124,114 @@ impl cosmic::Application for Picker {
 
     fn view(&self) -> Element<'_, Message> {
         let app = if self.prompt.app.is_empty() {
-            "An application"
+            "this application"
         } else {
             &self.prompt.app
         };
-        let mut content = column([])
-            .spacing(16)
-            .push(
-                text(if self.prompt.indicator {
-                    "Your screen is being shared"
-                } else {
-                    "Share your screen"
-                })
-                .size(24),
-            )
-            .push(text(if self.prompt.indicator {
-                format!("{app} can see the displays below.")
-            } else {
-                format!("{app} wants to see your screen. Choose what to share.")
-            }));
-
+        let mut content = column([]).width(Length::Fill).spacing(10).push(
+            row![
+                glyph(include_bytes!("../assets/display.svg"), 24),
+                column![
+                    text(if self.prompt.indicator {
+                        "Screen sharing"
+                    } else {
+                        "Choose a display"
+                    })
+                    .size(18),
+                    text(if self.prompt.indicator {
+                        format!("Shared with {app}")
+                    } else {
+                        format!("Share with {app}")
+                    })
+                    .size(12),
+                ]
+                .spacing(2)
+                .width(Length::Fill),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+        );
+        let mut sources = column([]).spacing(6);
         for (index, source) in self.prompt.sources.iter().enumerate() {
-            let label = format!(
-                "{}{} — {} × {}",
-                if self.selected.contains(&index) {
-                    "✓  "
-                } else {
-                    ""
-                },
-                source.name,
-                source.width,
-                source.height
-            );
-
+            let selected = self.selected.contains(&index);
+            let mut entry = row![
+                glyph(include_bytes!("../assets/display.svg"), 24),
+                column![
+                    text(&source.name).size(14),
+                    text(format!("{} × {}", source.width, source.height)).size(12)
+                ]
+                .spacing(3)
+                .width(Length::Fill),
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center);
+            if selected || self.prompt.indicator {
+                entry = entry.push(glyph(include_bytes!("../assets/check.svg"), 20));
+            }
             if self.prompt.indicator {
-                content = content.push(text(label));
+                sources = sources.push(container(entry).padding(8).width(Length::Fill));
             } else {
-                content = content.push(
-                    button::text(label)
+                sources = sources.push(
+                    button::custom(entry)
+                        .class(if selected {
+                            cosmic::theme::Button::Suggested
+                        } else {
+                            cosmic::theme::Button::Standard
+                        })
+                        .padding(8)
                         .width(Length::Fill)
                         .on_press(Message::Select(index)),
                 );
             }
         }
-
-        content = content.push(text(
-            "Everything visible on a shared display, including notifications, may be seen.",
-        ));
-
+        content = content.push(scrollable(sources).height(Length::Fixed(
+            (self.prompt.sources.len().min(4) * 56) as f32,
+        )));
+        content = content.push(
+            text("Everything on this display, including notifications, is visible.")
+                .size(12)
+                .width(Length::Fill),
+        );
         if self.prompt.indicator {
-            content = content.push(button::destructive("Stop sharing").on_press(Message::Cancel));
+            content = content.push(
+                button::custom(
+                    row![
+                        glyph(include_bytes!("../assets/stop.svg"), 16),
+                        text("Stop sharing")
+                    ]
+                    .spacing(8)
+                    .align_y(Alignment::Center),
+                )
+                .class(cosmic::theme::Button::Destructive)
+                .padding([6, 16])
+                .on_press(Message::Cancel),
+            );
         } else {
-            let mut share = button::suggested("Share");
+            let mut share = button::custom(
+                row![
+                    text("Share"),
+                    glyph(include_bytes!("../assets/arrow.svg"), 16)
+                ]
+                .spacing(8)
+                .align_y(Alignment::Center),
+            )
+            .class(cosmic::theme::Button::Suggested)
+            .padding([6, 16]);
             if !self.selected.is_empty() {
                 share = share.on_press(Message::Share);
             }
-            content = content.push(
-                row([])
-                    .spacing(12)
-                    .push(button::text("Cancel").on_press(Message::Cancel))
-                    .push(share),
-            );
+            content = content
+                .push(row![button::text("Cancel").on_press(Message::Cancel), share].spacing(8));
         }
-
-        container(content).padding(24).width(Length::Fill).into()
+        container(content).padding(14).width(Length::Fill).into()
     }
+}
+
+fn glyph(source: &'static [u8], size: u16) -> icon::Icon {
+    icon::from_svg_bytes(source)
+        .symbolic(true)
+        .icon()
+        .size(size)
 }
 
 fn appearance() -> (cosmic::Theme, cosmic::font::Font) {

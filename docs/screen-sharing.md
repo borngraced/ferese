@@ -7,19 +7,19 @@ saving files, or sending video; those tasks do not run inside the compositor.
 
 ## Record from the top bar
 
-1. Click the screen-recording icon in the top bar, then **Record display**.
+1. Click the screen-recording icon in the top bar to open the display picker.
 2. Choose a monitor in the native picker and click **Share**.
 3. The icon changes to a stop square and shows elapsed time. Click it to stop.
 
-The recorder finishes the video before reporting it saved. Open the recording
-menu again to see its saved path. Videos are saved as VP8 WebM files under
+The recorder finishes the video before sending a notification with its saved
+path. Videos are saved as VP8 WebM files under
 `Videos/Ferese` (using your configured XDG Videos folder). Audio is off.
 The icon uses the same theme accent, hover effect, and corner radius as the
 other bar controls.
 
 Encoding runs in a separate native `ferese-record` process using GStreamer.
 The shell remains responsive while a file is recorded or finalized. If saving
-fails, an error appears in the recording menu; an unfinished `.webm.part` file
+fails, an error appears in the notification center; an unfinished `.webm.part` file
 may remain at the path shown in the error.
 
 ## Start sharing
