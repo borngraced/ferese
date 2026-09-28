@@ -27,6 +27,8 @@ struct Picker {
     core: Core,
     prompt: Prompt,
     selected: Vec<usize>,
+    background: cosmic::iced::Color,
+    foreground: cosmic::iced::Color,
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -40,7 +42,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("No shareable displays".into());
     }
 
-    let (theme, font) = appearance();
+    let (theme, font, background, foreground) = appearance();
     let height = 156. + (prompt.sources.len().min(4) as f32 * 56.);
     cosmic::app::run::<Picker>(
         Settings::default()
@@ -49,7 +51,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             .default_font(font)
             .default_text_size(14.)
             .is_daemon(false),
-        prompt,
+        (prompt, background, foreground),
     )?;
 
     Ok(())
@@ -57,7 +59,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 impl cosmic::Application for Picker {
     type Executor = cosmic::executor::Default;
-    type Flags = Prompt;
+    type Flags = (Prompt, cosmic::iced::Color, cosmic::iced::Color);
     type Message = Message;
     const APP_ID: &'static str = "dev.ferese.ScreenShare";
 
@@ -69,14 +71,20 @@ impl cosmic::Application for Picker {
         &mut self.core
     }
 
-    fn init(mut core: Core, prompt: Prompt) -> (Self, Task<Message>) {
+    fn init(
+        mut core: Core,
+        (prompt, background, foreground): Self::Flags,
+    ) -> (Self, Task<Message>) {
         core.window.show_headerbar = false;
         core.window.border_padding = Some(0);
+        core.window.content_container = false;
         // No preselected source: clicking Share must be a deliberate choice.
         let mut app = Self {
             core,
             prompt,
             selected: Vec::new(),
+            background,
+            foreground,
         };
         let title = if app.prompt.indicator {
             "Ferese — screen sharing"
@@ -120,6 +128,14 @@ impl cosmic::Application for Picker {
             _ => (),
         }
         Task::none()
+    }
+
+    fn style(&self) -> Option<cosmic::iced::theme::Style> {
+        Some(cosmic::iced::theme::Style {
+            background_color: self.background,
+            text_color: self.foreground,
+            icon_color: self.foreground,
+        })
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -234,7 +250,12 @@ fn glyph(source: &'static [u8], size: u16) -> icon::Icon {
         .size(size)
 }
 
-fn appearance() -> (cosmic::Theme, cosmic::font::Font) {
+fn appearance() -> (
+    cosmic::Theme,
+    cosmic::font::Font,
+    cosmic::iced::Color,
+    cosmic::iced::Color,
+) {
     let document = ferese_config::config_path()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| ferese_config::Document::parse(&s).ok());
@@ -296,6 +317,15 @@ fn appearance() -> (cosmic::Theme, cosmic::font::Font) {
         .corner_radii(corners)
         .build();
     ferese_theme::apply(&mut native, foreground.into());
+    let mut material: cosmic::iced::Color = background.into();
+    material.a = material_opacity(
+        &string("theme.material.style", "solid"),
+        document
+            .as_ref()
+            .and_then(|d| d.get("theme.surface.popover.opacity"))
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.96),
+    );
     let theme = cosmic::Theme::custom(std::sync::Arc::new(native));
     let family: &'static str =
         Box::leak(string("theme.typography.font_family", "Inter").into_boxed_str());
@@ -306,5 +336,31 @@ fn appearance() -> (cosmic::Theme, cosmic::font::Font) {
             family: cosmic::iced::font::Family::Name(family),
             ..cosmic::font::default()
         },
+        material,
+        cosmic::iced::Color {
+            a: 1.,
+            ..foreground.into()
+        },
     )
+}
+
+// Only the surface tint is translucent; control fills and foregrounds stay opaque.
+fn material_opacity(style: &str, opacity: f64) -> f32 {
+    if style == "translucent" && opacity.is_finite() {
+        opacity.clamp(0., 1.) as f32
+    } else {
+        1.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn material_preserves_solid_and_bounds_translucent_opacity() {
+        assert_eq!(super::material_opacity("solid", 0.4), 1.);
+        assert_eq!(super::material_opacity("translucent", 0.4), 0.4);
+        assert_eq!(super::material_opacity("translucent", 2.), 1.);
+        assert_eq!(super::material_opacity("translucent", -1.), 0.);
+        assert_eq!(super::material_opacity("translucent", f64::NAN), 1.);
+    }
 }

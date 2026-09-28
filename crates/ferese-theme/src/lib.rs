@@ -47,6 +47,32 @@ pub fn foreground(background: Color, preferred: Color) -> Color {
     }
 }
 
+/// Prefer the theme's foreground for filled controls. A small shade adjustment
+/// is less disruptive than flipping light text to black when selecting a row.
+/// Very bright/dark accents still use a contrasting foreground rather than
+/// changing the user's accent into a substantially different color.
+pub fn accent_pair(background: Color, preferred: Color) -> (Color, Color) {
+    let on = composite(preferred, background);
+    let shade = if luminance(on) > luminance(background) {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    };
+    for step in 0..=20 {
+        let fill = composite(
+            Color {
+                a: step as f32 / 100.,
+                ..shade
+            },
+            background,
+        );
+        if contrast(fill, on) >= 4.5 {
+            return (fill, on);
+        }
+    }
+    (background, foreground(background, preferred))
+}
+
 /// Resolve configured accent transparency before passing an opaque color to a toolkit.
 pub fn accent_color(accent: Color, surface: Color) -> cosmic::cosmic_theme::palette::Srgb {
     rgba(composite(accent, surface)).color
@@ -56,8 +82,7 @@ pub fn accent_color(accent: Color, surface: Color) -> cosmic::cosmic_theme::pale
 pub fn apply(native: &mut cosmic::cosmic_theme::Theme, preferred: Color) {
     let surface: Color = native.primary(false).base.into();
     for component in [&mut native.accent, &mut native.accent_button] {
-        let base = composite(component.base.into(), surface);
-        let on = foreground(base, preferred);
+        let (base, on) = accent_pair(composite(component.base.into(), surface), preferred);
         component.hover = rgba(readable_fill(
             composite(component.hover.into(), surface),
             base,
@@ -68,7 +93,11 @@ pub fn apply(native: &mut cosmic::cosmic_theme::Theme, preferred: Color) {
             base,
             on,
         ));
-        component.selected = rgba(composite(component.selected.into(), surface));
+        component.selected = rgba(readable_fill(
+            composite(component.selected.into(), surface),
+            base,
+            on,
+        ));
         component.base = rgba(base);
         component.on = rgba(on);
         component.selected_text = rgba(foreground(
@@ -170,12 +199,31 @@ mod tests {
                     for surface in [Color::BLACK, Color::WHITE] {
                         for alpha in [0., 0.2, 0.5, 1.] {
                             let fill = composite(Color::from_rgba8(r, g, b, alpha), surface);
-                            let on = foreground(fill, Color::from_rgb8(120, 130, 140));
+                            let (fill, on) = accent_pair(fill, Color::from_rgb8(120, 130, 140));
                             assert!(contrast(fill, on) >= 4.5, "{fill:?}: {on:?}");
                         }
                     }
                 }
             }
+        }
+    }
+    #[test]
+    fn blue_accent_preserves_light_theme_text_in_every_state() {
+        let preferred = Color::from_rgb8(244, 247, 251);
+        let mut native = cosmic::cosmic_theme::ThemeBuilder::dark()
+            .accent(rgba(Color::from_rgb8(61, 123, 230)).color)
+            .build();
+        apply(&mut native, preferred);
+        let theme = cosmic::Theme::custom(std::sync::Arc::new(native));
+        for state in [
+            State::Active,
+            State::Hovered,
+            State::Pressed,
+            State::Disabled,
+        ] {
+            let actual = style(&theme, state, false);
+            assert_eq!(actual.text_color, Some(preferred));
+            assert_eq!(actual.icon_color, Some(preferred));
         }
     }
     #[test]

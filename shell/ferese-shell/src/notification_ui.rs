@@ -341,7 +341,8 @@ impl FereseShell {
                     palette.surface_popover
                 }),
             );
-            let badge_text = ferese_theme::foreground(badge_fill, color(palette.text_primary));
+            let (badge_fill, badge_text) =
+                ferese_theme::accent_pair(badge_fill, color(palette.text_primary));
             let badge = container(
                 text(count.to_string())
                     .size(10)

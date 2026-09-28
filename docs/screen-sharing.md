@@ -27,10 +27,15 @@ may remain at the path shown in the error.
 Use a Wayland screen-sharing or recording source in your application. Ferese
 opens a display picker. Select a display and press **Share**. Nothing is selected
 by default. Applications that request multiple displays can share up to four.
-The picker uses your Ferese theme colors, font, and shell corner radius.
+The picker uses your Ferese theme colors, font, and shell corner radius. Its
+background follows `theme.material.style`: opaque in solid mode, or translucent
+using `theme.surface.popover.opacity`. Text and icons remain opaque.
 
-A **screen sharing** window remains visible while sharing. Press **Stop sharing**
-or close that window to revoke the session. Closing the requesting application,
+Other applications keep a **screen sharing** window with a **Stop sharing** button.
+Ferese’s built-in recorder uses the top-bar stop control instead, leaving your
+windows accessible after display selection. The command-line recorder keeps the
+sharing window when it is not launched by the shell. Press **Stop sharing** or
+close the sharing window to revoke an ordinary application’s session. Closing the requesting application,
 locking Ferese, disconnecting the selected display, or changing its capture size
 also ends sharing. A new request needs fresh consent; selections are not saved.
 Everything visible on a shared display, including notifications, is included.

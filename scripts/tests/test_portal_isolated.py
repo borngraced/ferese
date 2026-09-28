@@ -126,6 +126,12 @@ class PortalTest(unittest.TestCase):
                         None, Gio.DBusCallFlags.NONE, 5000, None)
                 def create(token):
                     session = request("CreateSession", GLib.Variant("(a{sv})", ({"session_handle_token": GLib.Variant("s", token)},)))["session_handle"]
+                    # An ordinary portal client cannot suppress its stop indicator.
+                    with self.assertRaises(GLib.Error) as denied:
+                        connection.call_sync("org.freedesktop.impl.portal.desktop.ferese", "/org/ferese/ScreenRecorder",
+                            "org.ferese.ScreenRecorder", "UseBarControls", GLib.Variant("(o)", (session,)),
+                            None, Gio.DBusCallFlags.NONE, 5000, None)
+                    self.assertIn("AccessDenied", str(denied.exception))
                     request("SelectSources", GLib.Variant("(oa{sv})", (session, {"types": GLib.Variant("u", 1)})))
                     return session
                 def helpers():

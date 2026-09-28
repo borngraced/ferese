@@ -146,10 +146,10 @@ fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button 
         } else {
             p.card
         };
-        let on = if selected {
-            ferese_theme::foreground(background, p.text)
+        let (background, on) = if selected {
+            ferese_theme::accent_pair(background, p.text)
         } else {
-            p.text
+            (background, p.text)
         };
         button::Style {
             background: Some(Background::Color(background)),

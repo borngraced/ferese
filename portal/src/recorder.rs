@@ -136,6 +136,21 @@ pub async fn run() -> Result<(), String> {
             .map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
+    // Older/foreign backends keep their normal sharing indicator. Only Ferese
+    // can verify this helper's identity and that its parent owns a bar stop button.
+    let _ = tokio::time::timeout(Duration::from_secs(3), async {
+        let control = Proxy::new(
+            &connection,
+            "org.freedesktop.impl.portal.desktop.ferese",
+            "/org/ferese/ScreenRecorder",
+            "org.ferese.ScreenRecorder",
+        )
+        .await?;
+        control
+            .call::<_, _, ()>("UseBarControls", &(handle.clone(),))
+            .await
+    })
+    .await;
     let session = Proxy::new(
         &connection,
         DESKTOP,

@@ -73,12 +73,80 @@ struct Session {
     phase: Phase,
     multiple: bool,
     cursor: bool,
+    bar_controlled: bool,
     cancel: Arc<Cancel>,
 }
 #[derive(Clone, Default)]
 pub struct Backend {
     sessions: Arc<Mutex<HashMap<String, Session>>>,
 }
+// This private interface only transfers stop controls to the shell's own recorder.
+// The ordinary portal picker and all session revocation rules still apply.
+struct RecorderControl(Backend);
+#[zbus::interface(name = "org.ferese.ScreenRecorder")]
+impl RecorderControl {
+    async fn use_bar_controls(
+        &self,
+        session_handle: OwnedObjectPath,
+        #[zbus(connection)] connection: &Connection,
+        #[zbus(header)] header: Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let sender = header
+            .sender()
+            .ok_or_else(|| error("Missing recorder caller"))?;
+        if !owns_session(sender.as_str(), session_handle.as_str()) {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "Not your recording session".into(),
+            ));
+        }
+        let dbus = zbus::fdo::DBusProxy::new(connection).await?;
+        let pid = dbus
+            .get_connection_unix_process_id(sender.clone().into())
+            .await?;
+        if !shell_recorder(pid) {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "The shell must own the recording controls".into(),
+            ));
+        }
+        let mut sessions = self.0.sessions.lock().await;
+        let session = sessions
+            .get_mut(session_handle.as_str())
+            .ok_or_else(|| error("Unknown session"))?;
+        if session.phase != Phase::Created {
+            return Err(error("Recording already configured"));
+        }
+        session.bar_controlled = true;
+        Ok(())
+    }
+}
+fn owns_session(sender: &str, path: &str) -> bool {
+    let Some(sender) = sender.strip_prefix(':') else {
+        return false;
+    };
+    path.starts_with(&format!("{PATH}/session/{}/", sender.replace('.', "_")))
+}
+fn shell_recorder(pid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let matches_binary = |pid: u32, name: &str| -> Option<bool> {
+        let expected = std::env::current_exe().ok()?.parent()?.join(name);
+        let expected = std::fs::metadata(expected).ok()?;
+        let actual = std::fs::metadata(format!("/proc/{pid}/exe")).ok()?;
+        Some(expected.dev() == actual.dev() && expected.ino() == actual.ino())
+    };
+    if matches_binary(pid, "ferese-record") != Some(true) {
+        return false;
+    }
+    let parent = std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .ok()
+        .and_then(|status| {
+            status.lines().find_map(|line| {
+                line.strip_prefix("PPid:")
+                    .and_then(|s| s.trim().parse::<u32>().ok())
+            })
+        });
+    parent.is_some_and(|pid| matches_binary(pid, "ferese-shell") == Some(true))
+}
+
 async fn authorize(connection: &Connection, header: &Header<'_>) -> zbus::fdo::Result<String> {
     let sender = header
         .sender()
@@ -199,6 +267,7 @@ impl Backend {
                 phase: Phase::Created,
                 multiple: false,
                 cursor: false,
+                bar_controlled: false,
                 cancel: Arc::default(),
             },
         );
@@ -257,7 +326,7 @@ impl Backend {
         {
             return Err(error("Invalid request path"));
         }
-        let (multiple, cursor, cancel) = {
+        let (multiple, cursor, bar_controlled, cancel) = {
             let mut sessions = self.sessions.lock().await;
             let session = sessions
                 .get_mut(session_handle.as_str())
@@ -266,7 +335,12 @@ impl Backend {
                 return Err(error("Select sources before starting a session"));
             }
             session.phase = Phase::Starting;
-            (session.multiple, session.cursor, session.cancel.clone())
+            (
+                session.multiple,
+                session.cursor,
+                session.bar_controlled,
+                session.cancel.clone(),
+            )
         };
         let inserted = connection
             .object_server()
@@ -290,7 +364,7 @@ impl Backend {
         }
         let result = tokio::select! {
             _ = cancel.wait() => Err(StartError::Cancelled),
-            result = tokio::time::timeout(Duration::from_secs(120), start_streams(&app_id, multiple, cursor)) => result.unwrap_or_else(|_| Err(StartError::Failed("Sharing request timed out".into()))),
+            result = tokio::time::timeout(Duration::from_secs(120), start_streams(if bar_controlled { "Ferese" } else { &app_id }, multiple, cursor, !bar_controlled)) => result.unwrap_or_else(|_| Err(StartError::Failed("Sharing request timed out".into()))),
         };
         let _ = connection
             .object_server()
@@ -414,7 +488,8 @@ async fn start_streams(
     app: &str,
     multiple: bool,
     cursor: bool,
-) -> Result<(Vec<Child>, Child, Vec<Ready>), StartError> {
+    show_indicator: bool,
+) -> Result<(Vec<Child>, Option<Child>, Vec<Ready>), StartError> {
     let sources = tokio::task::spawn_blocking(|| {
         Capture::connect(&AtomicBool::new(false)).map(|capture| capture.sources())
     })
@@ -469,13 +544,19 @@ async fn start_streams(
         streams.push(ready);
         children.push(child);
     }
-    let indicator = picker(&Prompt {
-        app: app.to_owned(),
-        sources: selected,
-        multiple,
-        indicator: true,
-    })
-    .await?;
+    let indicator = if show_indicator {
+        Some(
+            picker(&Prompt {
+                app: app.to_owned(),
+                sources: selected,
+                multiple,
+                indicator: true,
+            })
+            .await?,
+        )
+    } else {
+        None
+    };
     Ok((children, indicator, streams))
 }
 fn validate_selection(
@@ -501,10 +582,12 @@ fn validate_selection(
     }
     Ok(selected)
 }
-async fn supervise(mut children: Vec<Child>, mut indicator: Child, cancel: Arc<Cancel>) {
+async fn supervise(mut children: Vec<Child>, mut indicator: Option<Child>, cancel: Arc<Cancel>) {
     loop {
         if cancel.stopped.load(Ordering::SeqCst)
-            || !matches!(indicator.try_wait(), Ok(None))
+            || indicator
+                .as_mut()
+                .is_some_and(|child| !matches!(child.try_wait(), Ok(None)))
             || children
                 .iter_mut()
                 .any(|c| !matches!(c.try_wait(), Ok(None)))
@@ -517,13 +600,19 @@ async fn supervise(mut children: Vec<Child>, mut indicator: Child, cancel: Arc<C
     for child in &mut children {
         let _ = child.kill().await;
     }
-    let _ = indicator.kill().await;
+    if let Some(indicator) = &mut indicator {
+        let _ = indicator.kill().await;
+    }
 }
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let backend = Backend::default();
     let connection = zbus::connection::Builder::session()?
         .name("org.freedesktop.impl.portal.desktop.ferese")?
         .serve_at(PATH, backend.clone())?
+        .serve_at(
+            "/org/ferese/ScreenRecorder",
+            RecorderControl(backend.clone()),
+        )?
         .build()
         .await?;
     // Frontend death must revoke every stream, even if Session.Close never arrives.
@@ -556,6 +645,22 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bar_control_claims_are_bound_to_the_recorder_connection() {
+        assert!(owns_session(
+            ":1.42",
+            "/org/freedesktop/portal/desktop/session/1_42/record"
+        ));
+        assert!(!owns_session(
+            ":1.4",
+            "/org/freedesktop/portal/desktop/session/1_42/record"
+        ));
+        assert!(!owns_session(
+            ":1.43",
+            "/org/freedesktop/portal/desktop/session/1_42/record"
+        ));
+        assert!(!shell_recorder(std::process::id()));
+    }
     #[test]
     fn rejects_unimplemented_sources_and_cursor_modes() {
         assert_eq!(source_options(&Options::new()).unwrap(), (false, false));
