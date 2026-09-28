@@ -1024,23 +1024,27 @@ fn connection_control<'a>(
     } else {
         color_with_opacity(palette.text_muted, opacity)
     };
-    let icon = container(accented_icon(source, 18, icon_color, icon_color))
-        .width(32)
-        .height(32)
+    let icon = container(accented_icon(source, 28, icon_color, icon_color))
+        .width(Length::Fill)
+        .height(40)
         .align_x(alignment::Horizontal::Center)
         .align_y(alignment::Vertical::Center);
-    let content = column![
-        icon,
-        text(label).size(13).class(theme::Text::Color(foreground)),
+    let content = column![icon]
+        .spacing(4)
+        .width(Length::Fill)
+        .align_x(Alignment::Center);
+    let content = content.push(
         text(detail.to_owned())
-            .size(12)
+            .size(11)
             .width(Length::Fill)
-            .height(18)
+            .height(16)
+            .align_x(alignment::Horizontal::Center)
             .wrapping(cosmic::iced::widget::text::Wrapping::None)
-            .class(theme::Text::Color(muted))
-    ]
-    .spacing(6)
-    .width(Length::Fill);
+            .ellipsize(cosmic::iced::widget::text::Ellipsize::End(
+                cosmic::iced::advanced::text::EllipsizeHeightLimit::Lines(1),
+            ))
+            .class(theme::Text::Color(muted)),
+    );
     let Some(action) = action else {
         return container(content)
             .width(Length::FillPortion(1))
@@ -1050,7 +1054,10 @@ fn connection_control<'a>(
     let button = button::custom(content)
         .width(Length::Fill)
         .padding(4)
-        .name(format!("{label}: {}", if enabled { "on" } else { "off" }))
+        .name(format!(
+            "{label}: {}, {detail}",
+            if enabled { "on" } else { "off" }
+        ))
         .on_press(cosmic::Action::App(Message::Control(action)));
     let tile: Element<'_, cosmic::Action<Message>> = if selected {
         let paint = move |outline| cosmic::widget::button::Style {
