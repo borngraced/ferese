@@ -2149,40 +2149,42 @@ impl FereseShell {
             .width(Length::Fill)
             .height(bar.control_height);
         let (date, time) = self.clock.split_once(", ").unwrap_or(("", &self.clock));
-        let clock = container(
-            row![
-                motion::button(
-                    button::custom(text(date).size(12))
-                        .padding([4, 2])
-                        .name("Open calendar")
-                        .on_press_with_rectangle(move |offset, bounds| {
-                            cosmic::Action::App(Message::OpenMenuOn(
-                                id,
-                                status_ui::Menu::Calendar,
-                                cosmic::iced::Rectangle {
-                                    x: (bounds.x - offset.x).round() as i32,
-                                    y: (bounds.y - offset.y).round() as i32,
-                                    width: bounds.width.round() as i32,
-                                    height: bounds.height.round() as i32,
-                                },
-                            ))
-                        }),
-                    color(shell_theme.text_muted),
-                    self.menu
-                        .as_ref()
-                        .is_some_and(|menu| menu.kind == status_ui::Menu::Calendar),
-                    1.0
-                ),
-                text(time)
-                    .size(bar.text_size)
-                    .class(theme::Text::Color(foreground)),
-            ]
-            .spacing(8)
-            .align_y(cosmic::iced::Alignment::Center),
-        )
+        let clock = container(motion::button(
+            button::custom(
+                row![
+                    text(date)
+                        .size(12)
+                        .class(theme::Text::Color(color(shell_theme.text_muted))),
+                    text(time)
+                        .size(bar.text_size)
+                        .class(theme::Text::Color(foreground)),
+                ]
+                .spacing(8)
+                .align_y(cosmic::iced::Alignment::Center),
+            )
+            .padding([4, 8])
+            .height(bar.control_height)
+            .name("Open calendar")
+            .on_press_with_rectangle(move |offset, bounds| {
+                cosmic::Action::App(Message::OpenMenuOn(
+                    id,
+                    status_ui::Menu::Calendar,
+                    cosmic::iced::Rectangle {
+                        x: (bounds.x - offset.x).round() as i32,
+                        y: (bounds.y - offset.y).round() as i32,
+                        width: bounds.width.round() as i32,
+                        height: bounds.height.round() as i32,
+                    },
+                ))
+            }),
+            foreground,
+            self.menu
+                .as_ref()
+                .is_some_and(|menu| menu.kind == status_ui::Menu::Calendar),
+            1.0,
+        ))
         .height(bar.control_height)
         .align_y(alignment::Vertical::Center)
-        .padding([0, 8])
         .class(theme::Container::custom(move |_| {
             bar_group_style(shell_theme)
         }));
