@@ -71,6 +71,9 @@ pub fn resolve(
 ) -> WindowRuleResult {
     let app_id = app_id.map(normalize_app_id);
     let mut result = WindowRuleResult::default();
+    if app_id.as_deref() == Some("dev.ferese.Authentication") {
+        result.floating = Some(true);
+    }
 
     for rule in rules {
         let app_id_matches = rule

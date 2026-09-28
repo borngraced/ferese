@@ -134,6 +134,7 @@ these six visually distinct.
 | `theme.background.path` | string | bundled Ferese wallpaper | Wallpaper image path; an existing selection overrides the default |
 | `theme.background.mode` | `"fill"`, `"fit"` | `"fill"` | Crop or letterbox |
 | `theme.material.style` | `"solid"`, `"translucent"` | `"solid"` | Shell background material |
+| `theme.material.opacity` | number 0–1 | `0.78` | Shared shell background opacity for bars, menus, popovers, notifications and the sharing dialog. Text/icons stay opaque; 0 and 1 skip blur. Solid mode is always opaque |
 | `theme.material.blur_radius` | number ≥ 0 | `12` | Translucent backdrop blur, capped at 32; 0 disables |
 
 | `theme.colors` key | Default | Meaning |
@@ -172,10 +173,8 @@ The target follows [normal-text contrast guidance](https://www.w3.org/WAI/WCAG22
 | Section / key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `theme.surface.bar.background` | color | `"#1C202EF2"` | Shell fallback background; compositor materials use `surface_base` |
-| `theme.surface.bar.opacity` | number 0–1 | omitted | Translucent bar background opacity, including blur; defaults to `0.78`. Text/icons stay opaque; 0 and 1 skip blur. Fallback retains background alpha |
 | `theme.surface.bar.text_primary` | color | `"#F0F3FA"` | Bar text/icons |
 | `theme.surface.bar.text_muted` | color | `"#AAB4C7"` | Inactive bar foreground |
-| `theme.surface.popover.opacity` | number 0–1 | `0.96` | Shell popover fill alpha |
 | `theme.shadow.soft.offset_y` | number | `4` | Window shadow vertical offset |
 | `theme.shadow.soft.blur` | number ≥ 0 | `18` | Window shadow softness |
 | `theme.shadow.soft.opacity` | number 0–1 | `0.20` | Window shadow strength |

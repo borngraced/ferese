@@ -3,6 +3,8 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
 use std::{fmt, path::PathBuf};
 
+pub const DEFAULT_MATERIAL_OPACITY: f64 = 0.78;
+
 #[derive(Debug)]
 pub struct Error(String);
 

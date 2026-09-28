@@ -21,6 +21,7 @@ pub struct Snapshot {
     pub bluetooth: Option<Bluetooth>,
     pub audio: Option<Audio>,
     pub battery: Option<Battery>,
+    pub power_profiles: Option<PowerProfiles>,
     pub brightness: Option<u8>,
     pub notifications: Option<Notifications>,
     pub poweroff: bool,
@@ -55,6 +56,12 @@ pub struct Battery {
 }
 
 #[derive(Clone, Debug)]
+pub struct PowerProfiles {
+    pub active: String,
+    pub available: [bool; 3],
+}
+
+#[derive(Clone, Debug)]
 pub struct Notifications {
     pub count: u32,
     pub dnd: bool,
@@ -73,6 +80,7 @@ pub enum Action {
     Poweroff,
     Reboot,
     Suspend,
+    PowerProfile(&'static str),
 }
 
 impl Action {
@@ -143,11 +151,13 @@ impl Service {
             Condvar::new(),
         ));
         let polling = shared.clone();
+
         thread::spawn(move || {
             let mut system_bus = StatusBus::new(true);
             let mut session_bus = StatusBus::new(false);
             let mut network = dbus_cache::Cache::new("org.freedesktop.NetworkManager");
             let mut bluetooth = dbus_cache::Cache::new("org.bluez");
+
             loop {
                 // A poll overlapping a write is discarded below. Wait for the
                 // write to finish before retrying instead of launching commands
@@ -159,9 +169,11 @@ impl Service {
                 snapshot.network = network.read(before, network::read);
                 snapshot.bluetooth = bluetooth.read(before, bluetooth::read);
                 let state = polling.0.lock().unwrap();
+
                 if state.3 {
                     break;
                 }
+
                 if state.0 == before && !state.1 {
                     updates.send_replace(Some(Update {
                         snapshot,
@@ -172,6 +184,7 @@ impl Service {
                 }
             }
         });
+
         thread::spawn(move || {
             loop {
                 let first = match commands.recv() {
@@ -200,6 +213,7 @@ impl Service {
             shared.0.lock().unwrap().3 = true;
             shared.1.notify_one();
         });
+
         Self {
             settings: live_settings,
             tx,
@@ -214,6 +228,7 @@ impl Service {
             .try_send((generation, action))
             .map_err(|_| "Controls are busy; please try again".to_owned())?;
         self.generation = generation;
+
         Ok(())
     }
 
@@ -228,13 +243,16 @@ impl Service {
 
 pub fn available(program: &str) -> bool {
     use std::os::unix::fs::PermissionsExt;
+
     let executable = |p: &Path| {
         p.metadata()
             .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
     };
+
     if program.contains('/') {
         return executable(Path::new(program));
     }
+
     env::var_os("PATH")
         .is_some_and(|paths| env::split_paths(&paths).any(|path| executable(&path.join(program))))
 }
@@ -243,6 +261,7 @@ fn run(program: &str, args: &[&str]) -> Result<String, String> {
     if !available(program) {
         return Err(format!("{program} is not installed"));
     }
+
     // Coreutils timeout bounds disconnected D-Bus services, too. Never invoke a shell.
     let output = Command::new("timeout")
         .args(["--kill-after=1s", "2s", program])
@@ -251,6 +270,7 @@ fn run(program: &str, args: &[&str]) -> Result<String, String> {
         .stdin(Stdio::null())
         .output()
         .map_err(|e| e.to_string())?;
+
     if !output.status.success() {
         let message = String::from_utf8_lossy(&output.stderr)
             .trim()
@@ -263,6 +283,7 @@ fn run(program: &str, args: &[&str]) -> Result<String, String> {
             message
         });
     }
+
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
@@ -291,12 +312,14 @@ impl StatusBus {
             } else {
                 zbus::blocking::connection::Builder::session()
             };
+
             self.connection = builder
                 .ok()?
                 .method_timeout(Duration::from_secs(2))
                 .build()
                 .ok();
         }
+
         match query(self.connection.as_ref()?) {
             Ok(value) => Some(value),
             Err(_) => {
@@ -346,6 +369,7 @@ fn poll(system_bus: &mut StatusBus, session_bus: &mut StatusBus) -> Snapshot {
         bluetooth: None,
         audio: audio(),
         battery: battery(),
+        power_profiles: power_profiles(system_bus),
         brightness: brightness(),
         notifications: notifications(session_bus),
         poweroff: system_bus.can_power("CanPowerOff"),
@@ -361,9 +385,11 @@ pub fn parse_audio(value: &str) -> Option<(u8, bool)> {
         .next()?
         .parse::<f32>()
         .ok()?;
+
     if !volume.is_finite() || volume < 0.0 {
         return None;
     }
+
     Some((
         (volume * 100.0).round().clamp(0.0, 100.0) as u8,
         value.contains("[MUTED]"),
@@ -379,6 +405,7 @@ fn audio() -> Option<Audio> {
         .find_map(|line| line.trim().strip_prefix("node.description = "))
         .map(|s| s.trim_matches('"').to_owned())
         .unwrap_or_else(|| "Default output".into());
+
     Some(Audio {
         volume,
         muted,
@@ -403,6 +430,7 @@ fn battery() -> Option<Battery> {
                 && read(p, "scope").as_deref() != Some("Device")
         })
         .collect::<Vec<_>>();
+
     batteries.sort();
     batteries.iter().find_map(|path| {
         Some(Battery {
@@ -410,6 +438,46 @@ fn battery() -> Option<Battery> {
             status: read(path, "status")?,
         })
     })
+}
+
+fn power_profiles(bus: &mut StatusBus) -> Option<PowerProfiles> {
+    bus.query(|connection| {
+        read_power_profiles(
+            connection,
+            "org.freedesktop.UPower.PowerProfiles",
+            "/org/freedesktop/UPower/PowerProfiles",
+        )
+        .or_else(|_| {
+            read_power_profiles(
+                connection,
+                "net.hadess.PowerProfiles",
+                "/net/hadess/PowerProfiles",
+            )
+        })
+    })
+}
+
+fn read_power_profiles(
+    connection: &zbus::blocking::Connection,
+    destination: &str,
+    path: &str,
+) -> zbus::Result<PowerProfiles> {
+    let proxy = zbus::blocking::Proxy::new(connection, destination, path, destination)?;
+    let active = proxy.get_property::<String>("ActiveProfile")?;
+    let profiles = proxy
+        .get_property::<Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>>>(
+            "Profiles",
+        )?;
+    let names = ["power-saver", "balanced", "performance"];
+    let available = names.map(|name| {
+        profiles.iter().any(|profile| {
+            profile
+                .get("Profile")
+                .and_then(|value| String::try_from(value.clone()).ok())
+                .is_some_and(|value| value == name)
+        })
+    });
+    Ok(PowerProfiles { active, available })
 }
 
 fn brightness() -> Option<u8> {
@@ -490,6 +558,12 @@ fn execute(action: &Action, settings: Option<&[String]>) -> Result<(), String> {
             &[if *on { "--dnd-on" } else { "--dnd-off" }],
         ),
         Action::Notifications => run("swaync-client", &["--open-panel"]),
+        Action::PowerProfile(profile)
+            if matches!(*profile, "power-saver" | "balanced" | "performance") =>
+        {
+            run("powerprofilesctl", &["set", profile])
+        }
+        Action::PowerProfile(_) => return Err("Invalid power profile".to_owned()),
         Action::Poweroff => run("systemctl", &["poweroff"]),
         Action::Reboot => run("systemctl", &["reboot"]),
         Action::Suspend => run("systemctl", &["suspend"]),
@@ -523,8 +597,10 @@ mod tests {
 
     pub(super) struct TestBus {
         daemon: std::process::Child,
+
         pub(super) address: String,
     }
+
     impl TestBus {
         pub(super) fn new() -> Self {
             use std::io::{BufRead, BufReader};
@@ -534,14 +610,17 @@ mod tests {
                 .spawn()
                 .unwrap();
             let mut address = String::new();
+
             BufReader::new(daemon.stdout.take().unwrap())
                 .read_line(&mut address)
                 .unwrap();
+
             Self {
                 daemon,
                 address: address.trim().to_owned(),
             }
         }
+
         pub(super) fn connect(&self) -> zbus::blocking::Connection {
             zbus::blocking::connection::Builder::address(self.address.as_str())
                 .unwrap()
@@ -550,11 +629,26 @@ mod tests {
                 .unwrap()
         }
     }
+
     impl Drop for TestBus {
         fn drop(&mut self) {
             let _ = self.daemon.kill();
             let _ = self.daemon.wait();
         }
+    }
+
+    #[test]
+    #[ignore = "requires a running Power Profiles D-Bus service"]
+    fn reads_available_power_profiles_from_system_bus() {
+        let mut bus = StatusBus::new(true);
+        let profiles = power_profiles(&mut bus).expect("Power Profiles service is available");
+        let names = ["power-saver", "balanced", "performance"];
+        assert!(
+            names
+                .iter()
+                .zip(profiles.available)
+                .any(|(name, available)| { available && profiles.active == *name })
+        );
     }
 
     struct MockLogin1(Arc<std::sync::atomic::AtomicU8>);

@@ -6,6 +6,7 @@ use std::{path::PathBuf, time::Duration};
 
 pub fn changes(path: &PathBuf) -> impl Stream<Item = Message> + use<> {
     let path = path.clone();
+
     cosmic::iced::stream::channel(1, async move |mut output| {
         let (send, mut events) = tokio::sync::mpsc::channel(1);
         let target = path.clone();
@@ -26,6 +27,7 @@ pub fn changes(path: &PathBuf) -> impl Stream<Item = Message> + use<> {
                 return;
             }
         };
+
         if let Err(error) = watcher.watch(
             path.parent().unwrap_or(std::path::Path::new(".")),
             RecursiveMode::NonRecursive,
@@ -35,6 +37,7 @@ pub fn changes(path: &PathBuf) -> impl Stream<Item = Message> + use<> {
                 .await;
             return;
         }
+
         // Read once after installing the watch to cover the startup race.
         loop {
             let file = path.clone();

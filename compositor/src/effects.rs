@@ -37,7 +37,11 @@ pub(crate) struct ResolvedMaterial {
     pub shadow: [f64; 3],
 }
 
-pub(crate) fn resolve_material(role: SemanticRole, style: MaterialStyle) -> ResolvedMaterial {
+pub(crate) fn resolve_material(
+    role: SemanticRole,
+    style: MaterialStyle,
+    opacity: f32,
+) -> ResolvedMaterial {
     let shadow = match role {
         SemanticRole::Panel => [1.0, 5.0, 0.04],
         SemanticRole::PanelElevated | SemanticRole::Popover | SemanticRole::Menu => {
@@ -46,11 +50,9 @@ pub(crate) fn resolve_material(role: SemanticRole, style: MaterialStyle) -> Reso
         SemanticRole::Hud => [1.0, 4.0, 0.04],
         SemanticRole::Notification | SemanticRole::Modal => [3.0, 10.0, 0.09],
     };
-    let opacity = match (style, role) {
-        (MaterialStyle::Solid, _) => 1.0,
-        (_, SemanticRole::Panel) => 0.78,
-        (_, SemanticRole::Hud | SemanticRole::Modal) => 0.88,
-        _ => 0.84,
+    let opacity = match style {
+        MaterialStyle::Solid => 1.0,
+        MaterialStyle::Translucent => opacity.clamp(0.0, 1.0),
     };
     ResolvedMaterial {
         style,
@@ -430,10 +432,10 @@ mod tests {
             SemanticRole::Notification,
             SemanticRole::Modal,
         ] {
-            let solid = resolve_material(role, MaterialStyle::Solid);
-            let translucent = resolve_material(role, MaterialStyle::Translucent);
+            let solid = resolve_material(role, MaterialStyle::Solid, 0.6);
+            let translucent = resolve_material(role, MaterialStyle::Translucent, 0.6);
             assert_eq!(solid.opacity, 1.0);
-            assert!(translucent.opacity < 1.0);
+            assert_eq!(translucent.opacity, 0.6);
             assert_eq!(solid.shadow, translucent.shadow);
         }
     }

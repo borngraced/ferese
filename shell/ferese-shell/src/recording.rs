@@ -48,6 +48,7 @@ impl Recorder {
     pub fn busy(&self) -> bool {
         self.updates.is_some()
     }
+
     pub fn elapsed(&self) -> Option<String> {
         let State::Recording(start) = self.state else {
             return None;
@@ -55,15 +56,18 @@ impl Recorder {
         let seconds = start.elapsed().as_secs();
         Some(format!("{:02}:{:02}", seconds / 60, seconds % 60))
     }
+
     pub fn start(&mut self) {
         if self.busy() {
             return;
         }
+
         let program = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|p| p.join("ferese-record")))
             .filter(|p| p.is_file())
             .unwrap_or_else(|| PathBuf::from("ferese-record"));
+
         match Command::new(program)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -92,6 +96,7 @@ impl Recorder {
                             }
                         }
                     }
+
                     let _ = child.wait();
                     let _ = send.send(Event::Exited);
                 });
@@ -103,6 +108,7 @@ impl Recorder {
             }
         }
     }
+
     pub fn stop(&mut self) {
         if self.busy() && !matches!(self.state, State::Saving) {
             // EOF requests EOS/finalization. Never terminate the encoder abruptly.
@@ -110,6 +116,7 @@ impl Recorder {
             self.state = State::Saving;
         }
     }
+
     pub fn poll(&mut self) {
         let mut done = false;
         if let Some(updates) = &self.updates {
@@ -146,6 +153,7 @@ impl Recorder {
                 }
             }
         }
+
         if done {
             match &self.state {
                 State::Saved(path) => notify("Recording saved", path.display().to_string()),

@@ -151,6 +151,7 @@ fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button 
         } else {
             (background, p.text)
         };
+
         button::Style {
             background: Some(Background::Color(background)),
             text_color: Some(on),
@@ -196,6 +197,7 @@ pub fn native_theme(snapshot: Option<&Snapshot>) -> cosmic::Theme {
         .text_tint(cosmic_color(palette.text).color)
         .accent(ferese_theme::accent_color(palette.accent, palette.card))
         .build();
+
     ferese_theme::apply(&mut theme, palette.text);
     cosmic::Theme::custom(std::sync::Arc::new(theme))
 }
@@ -204,16 +206,20 @@ pub fn configured_font(snapshot: &Snapshot) -> cosmic::font::Font {
     static FONTS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, cosmic::font::Font>>,
     > = std::sync::OnceLock::new();
+
     let family = snapshot.string("theme.typography.font_family", "Inter");
     let mut fonts = FONTS.get_or_init(Default::default).lock().unwrap();
     if let Some(font) = fonts.get(&family) {
         return *font;
     }
+
     if fonts.len() >= 32 {
         return cosmic::font::default();
     }
+
     let font = cosmic::font::Font::with_name(Box::leak(family.clone().into_boxed_str()));
     fonts.insert(family, font);
+
     font
 }
 
@@ -331,6 +337,7 @@ pub fn preset(index: usize) -> Vec<Edit> {
     let Some(preset) = PRESETS.get(index) else {
         return Vec::new();
     };
+
     vec![
         set("theme.colors.accent", preset.accent),
         set("theme.colors.surface_base", preset.base),
@@ -351,6 +358,7 @@ pub fn preset_selected(snapshot: &Snapshot, index: usize) -> bool {
     let Some(preset) = PRESETS.get(index) else {
         return false;
     };
+
     [
         ("theme.colors.accent", preset.accent, "#3D7BE6"),
         ("theme.colors.surface_base", preset.base, "#111821"),
@@ -442,7 +450,11 @@ pub fn preview(snapshot: &Snapshot) -> Element<'static, Message> {
     let bar_margin = snapshot.number("theme.geometry.top_bar_margin_horizontal", 0.) * 0.5 + 14.;
     let bar_height = snapshot.number("theme.geometry.top_bar_height", 30.) * 0.65;
     let bar_radius = snapshot.number("theme.geometry.shell_radius", 14.) * 0.65;
-    let opacity = snapshot.number("theme.surface.bar.opacity", 0.78);
+    let opacity = if snapshot.string("theme.material.style", "solid") == "translucent" {
+        snapshot.number("theme.material.opacity", ferese_config::DEFAULT_MATERIAL_OPACITY).clamp(0., 1.)
+    } else {
+        1.
+    };
     let right = 340. + gap / 2.;
     let left_width = 288. - gap / 2.;
     let svg = format!(
@@ -465,6 +477,7 @@ pub fn preview(snapshot: &Snapshot) -> Element<'static, Message> {
         bar_y + bar_height / 2.,
         right + 16.
     );
+
     svg_icon::from_svg_bytes(svg.into_bytes())
         .symbolic(false)
         .icon()

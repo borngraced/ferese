@@ -18,10 +18,12 @@ layout {
 }
 
 theme {
+    material {
+        opacity 0.95
+    }
     surface {
         bar {
             background "#111821"
-            opacity 0.95
             text-primary "#F4F7FB"
             text-muted "#8793A2"
         }

@@ -29,7 +29,7 @@ opens a display picker. Select a display and press **Share**. Nothing is selecte
 by default. Applications that request multiple displays can share up to four.
 The picker uses your Ferese theme colors, font, and shell corner radius. Its
 background follows `theme.material.style`: opaque in solid mode, or translucent
-using `theme.surface.popover.opacity`. Text and icons remain opaque.
+using the shared **Appearance → Shell opacity** setting (`theme.material.opacity`). Text and icons remain opaque.
 
 Other applications keep a **screen sharing** window with a **Stop sharing** button.
 Ferese’s built-in recorder uses the top-bar stop control instead, leaving your

@@ -322,9 +322,9 @@ fn appearance() -> (
         &string("theme.material.style", "solid"),
         document
             .as_ref()
-            .and_then(|d| d.get("theme.surface.popover.opacity"))
+            .and_then(|d| d.get("theme.material.opacity"))
             .and_then(|v| v.as_f64())
-            .unwrap_or(0.96),
+            .unwrap_or(ferese_config::DEFAULT_MATERIAL_OPACITY),
     );
     let theme = cosmic::Theme::custom(std::sync::Arc::new(native));
     let family: &'static str =

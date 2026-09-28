@@ -1532,7 +1532,11 @@ fn overview_strip_elements(
         }
     }
     let mut color = state.theme_settings.surface_base_color.0;
-    color[3] = alpha * state.theme_settings.panel_opacity as f32;
+    color[3] = alpha * crate::effects::resolve_material(
+        crate::effects::SemanticRole::Panel,
+        state.theme_settings.material_style,
+        state.theme_settings.shell_opacity as f32,
+    ).opacity;
     if let Some(strip) = overview_chrome_element(
         state,
         renderer,
@@ -2306,13 +2310,12 @@ fn material_element(
     capture_geometry: Rectangle<i32, Logical>,
 ) -> Option<(AnimatedWindowRenderElement, AnimatedWindowRenderElement)> {
     let (role, generation) = crate::effects::surface_role(surface)?;
-    let mut material = crate::effects::resolve_material(role, state.theme_settings.material_style);
+    let material = crate::effects::resolve_material(
+        role,
+        state.theme_settings.material_style,
+        state.theme_settings.shell_opacity as f32,
+    );
     let presentation_alpha = crate::effects::surface_opacity(surface);
-    if role == crate::effects::SemanticRole::Panel
-        && material.style == crate::config::MaterialStyle::Translucent
-    {
-        material.opacity = state.theme_settings.panel_opacity as f32;
-    }
     let mode = output.current_mode()?;
     let scale = output.current_scale().fractional_scale();
     let transform = output.current_transform().invert();
@@ -2330,11 +2333,7 @@ fn material_element(
         (geometry.loc.x, geometry.loc.y + offset_y.round() as i32).into(),
         geometry.size,
     );
-    let background_opacity = if role == crate::effects::SemanticRole::Panel {
-        material.opacity
-    } else {
-        1.0
-    };
+    let background_opacity = material.opacity;
     let blur = material_blur_radius(
         material.style,
         material.opacity,

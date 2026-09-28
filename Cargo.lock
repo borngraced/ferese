@@ -1722,6 +1722,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferese-polkit-agent"
+version = "0.1.0"
+dependencies = [
+ "ferese-config",
+ "glib",
+ "libc",
+ "libcosmic",
+ "libloading",
+ "serde",
+ "serde_json",
+ "tokio",
+ "zbus",
+ "zeroize",
+]
+
+[[package]]
 name = "ferese-protocols"
 version = "0.1.0"
 dependencies = [

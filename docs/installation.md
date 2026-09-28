@@ -13,7 +13,7 @@ desktop instead of direct access to the graphics device.
 
 Build with **Rust 1.95 or newer**, a C/C++ toolchain, CMake, pkg-config, and the
 native development libraries below. The installer builds Ferese, its shell,
-Settings, command-line tools, locker, and ScreenCast portal together. It does not install system
+Settings, command-line tools, locker, polkit agent, and ScreenCast portal together. It does not install system
 packages or enable services for you.
 
 ### Fedora
@@ -23,7 +23,8 @@ sudo dnf install git curl gcc gcc-c++ make cmake pkgconf-pkg-config \
   wayland-devel libxkbcommon-devel libinput-devel systemd-devel libseat-devel \
   mesa-libgbm-devel mesa-libEGL-devel libdrm-devel fontconfig-devel \
   freetype-devel expat-devel dbus-daemon dbus-tools desktop-file-utils foot pam \
-  clang clang-devel pipewire-devel pipewire wireplumber xdg-desktop-portal xdg-desktop-portal-gtk \
+  clang clang-devel pipewire-devel pipewire wireplumber polkit polkit-libs \
+  xdg-desktop-portal xdg-desktop-portal-gtk \
   gstreamer1-devel gstreamer1-plugins-base gstreamer1-plugins-good pipewire-gstreamer
 ```
 
@@ -32,7 +33,7 @@ sudo dnf install git curl gcc gcc-c++ make cmake pkgconf-pkg-config \
 ```sh
 sudo pacman -S --needed base-devel git curl cmake pkgconf wayland libxkbcommon \
   libinput systemd seatd mesa libdrm fontconfig freetype2 expat dbus \
-  desktop-file-utils foot pam clang pipewire libpipewire wireplumber \
+  desktop-file-utils foot pam clang pipewire libpipewire wireplumber polkit \
   xdg-desktop-portal xdg-desktop-portal-gtk \
   gstreamer gst-plugins-base gst-plugins-good gst-plugin-pipewire
 ```
@@ -45,7 +46,7 @@ sudo apt install build-essential git curl cmake pkg-config libwayland-dev \
   libxkbcommon-dev libinput-dev libudev-dev libseat-dev libgbm-dev libegl-dev \
   libdrm-dev libfontconfig1-dev libfreetype-dev libexpat1-dev dbus-bin \
   dbus-user-session desktop-file-utils foot libpam0g clang libclang-dev \
-  libpipewire-0.3-dev libspa-0.2-dev pipewire wireplumber \
+  libpipewire-0.3-dev libspa-0.2-dev pipewire wireplumber polkitd libpolkit-agent-1-0 \
   xdg-desktop-portal xdg-desktop-portal-gtk \
   libgstreamer1.0-dev gstreamer1.0-pipewire gstreamer1.0-plugins-base \
   gstreamer1.0-plugins-good
@@ -94,7 +95,7 @@ The installer adds:
 - Versioned releases under `/usr/local/lib/ferese/releases/`, with `current` and
   `previous` links for upgrades and rollback.
 - Commands under `/usr/local/bin/`, including `ferese-session`, `ferese-settings`,
-  `feresectl`, `ferese-lock`, `ferese-screenshot`,
+  `feresectl`, `ferese-lock`, `ferese-polkit-agent`, `ferese-screenshot`, and
   `xdg-desktop-portal-ferese`, and `ferese-record`.
 - D-Bus activation and Ferese-specific ScreenCast portal registration.
 - A Wayland session entry at `/usr/share/wayland-sessions/ferese.desktop`.
@@ -104,6 +105,12 @@ The installer adds:
 
 Your existing configuration and other desktop sessions are preserved. The
 installer does not change your default session or login manager.
+
+Ferese starts its own polkit authentication agent with the shell. Password
+prompts follow the configured font, accent, surface color, and corner radius.
+Authentication still uses polkit's system helper and policy. The agent starts
+only inside a Ferese session; logging into another desktop leaves its agent
+unchanged. Restart your Ferese session after upgrading to use the new prompt.
 
 ### Initial configuration
 
@@ -255,7 +262,7 @@ Installer options:
 
 `--dry-run` prints the planned commands. `--offline` requires dependencies to be
 cached already. `--skip-build` installs the binaries already in `target/release/`;
-use it only after building all session components from the intended revision.
+use it only after building all six components from the intended revision.
 Run `./scripts/install.sh --help` for all options.
 
 ## Logout and recovery

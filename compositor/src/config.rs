@@ -190,7 +190,7 @@ pub struct ThemeSettings {
     pub focus_ring_gradient: Option<BorderGradient>,
     pub shadow_color: RgbaColor,
     pub surface_base_color: RgbaColor,
-    pub panel_opacity: f64,
+    pub shell_opacity: f64,
     pub inactive_dim: InactiveDimSettings,
     pub window_radius: f64,
     pub shadow_offset_y: f64,
@@ -252,8 +252,6 @@ struct ThemeConfig {
     typography: OverviewTypographyConfig,
     #[serde(default)]
     background: crate::wallpaper::WallpaperConfig,
-    #[serde(default)]
-    surface: ThemeSurfaceConfig,
     #[serde(default)]
     colors: ThemeColorsConfig,
     #[serde(default)]
@@ -331,19 +329,10 @@ struct OverviewTypographyConfig {
     font_family: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize)]
-struct ThemeSurfaceConfig {
-    #[serde(default)]
-    bar: ThemeBarConfig,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct ThemeBarConfig {
-    opacity: Option<f64>,
-}
-
 #[derive(Debug, Deserialize)]
 struct ThemeMaterialConfig {
+    #[serde(default = "default_shell_opacity")]
+    opacity: f64,
     #[serde(default)]
     style: MaterialStyle,
     #[serde(default = "default_backdrop_blur")]
@@ -354,9 +343,14 @@ impl Default for ThemeMaterialConfig {
     fn default() -> Self {
         Self {
             style: MaterialStyle::Solid,
+            opacity: default_shell_opacity(),
             blur_radius: default_backdrop_blur(),
         }
     }
+}
+
+fn default_shell_opacity() -> f64 {
+    ferese_config::DEFAULT_MATERIAL_OPACITY
 }
 
 fn default_backdrop_blur() -> f64 {
@@ -1095,10 +1089,7 @@ impl Config {
                 &self.theme.colors.surface_base,
                 "colors.surface_base",
             )?,
-            panel_opacity: unit_theme_value(
-                self.theme.surface.bar.opacity.unwrap_or(0.78),
-                "surface.bar.opacity",
-            )?,
+            shell_opacity: unit_theme_value(self.theme.material.opacity, "material.opacity")?,
             inactive_dim: InactiveDimSettings {
                 enabled: self.appearance.inactive_dim.enabled,
                 amount: unit_theme_value(
@@ -2034,7 +2025,7 @@ mod tests {
                 focus_ring_gradient: None,
                 shadow_color: RgbaColor([1.0 / 255.0, 2.0 / 255.0, 3.0 / 255.0, 128.0 / 255.0]),
                 surface_base_color: RgbaColor([17.0 / 255.0, 24.0 / 255.0, 33.0 / 255.0, 1.0,]),
-                panel_opacity: 0.78,
+                shell_opacity: 0.78,
                 inactive_dim: InactiveDimSettings {
                     enabled: false,
                     amount: 0.15,
@@ -2125,26 +2116,22 @@ mod tests {
     }
 
     #[test]
-    fn bar_opacity_uses_config_and_rejects_invalid_values() {
-        assert_eq!(parse("").theme_settings().unwrap().panel_opacity, 0.78);
+    fn shell_opacity_uses_config_and_rejects_invalid_values() {
+        assert_eq!(parse("").theme_settings().unwrap().shell_opacity, 0.78);
         for opacity in [0.0, 0.65, 1.0] {
             assert_eq!(
-                parse(&format!(
-                    "theme {{ surface {{ bar {{ opacity {opacity}; }} }} }}"
-                ))
-                .theme_settings()
-                .unwrap()
-                .panel_opacity,
+                parse(&format!("theme {{ material {{ opacity {opacity}; }} }}"))
+                    .theme_settings()
+                    .unwrap()
+                    .shell_opacity,
                 opacity
             );
         }
         for opacity in ["-0.1", "1.1", "#nan", "#inf"] {
             assert!(
-                Config::parse_source(&format!(
-                    "theme {{ surface {{ bar {{ opacity {opacity}; }} }} }}"
-                ))
-                .and_then(|config| config.theme_settings())
-                .is_err()
+                Config::parse_source(&format!("theme {{ material {{ opacity {opacity}; }} }}"))
+                    .and_then(|config| config.theme_settings())
+                    .is_err()
             );
         }
     }

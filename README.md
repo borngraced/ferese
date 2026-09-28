@@ -23,7 +23,7 @@ cohesive experience—beautiful by default and unmistakably yours.
 - **Flexible layouts:** scrolling columns, tree tiling, floating windows and a
   workspace overview.
 - **A native shell:** menu bar, control center, settings, notifications and
-  desktop widgets designed to belong together.
+  desktop widgets designed to belong together, including themed authentication prompts.
 - **Personal by design:** themes, wallpapers, accent colors, blur, borders and
   motion that update without restarting your session.
 - **Ready for real setups:** gestures, multi-monitor support, fractional
@@ -83,6 +83,9 @@ These are the built-in defaults; every shortcut and gesture can be changed.
 | Super + Tab | Open workspace and window overview |
 | Super + M | Switch scrolling / tree layout |
 | Super + Shift + S | Select a screenshot area |
+
+Click the bar date for a calendar. Click the battery for power modes and
+confirmed Restart, Power off and Suspend actions.
 
 Three-finger swipes move between workspaces and windows. Open **Control Center →
 Settings → Shortcuts** to change them or assign gestures to other actions.

@@ -16,6 +16,7 @@ pub enum Menu {
     Bluetooth,
     Audio,
     Battery,
+    Calendar,
     Recording,
     Notifications,
     System,
@@ -25,7 +26,8 @@ impl Menu {
     fn width(self) -> f32 {
         match self {
             Self::System => 360.0,
-            Self::Battery => 280.0,
+            Self::Battery => 328.0,
+            Self::Calendar => 310.0,
             Self::Notifications => 368.0,
             _ => 300.0,
         }
@@ -42,6 +44,7 @@ impl Menu {
             Self::Bluetooth => "Bluetooth",
             Self::Audio => "Sound",
             Self::Battery => "Battery",
+            Self::Calendar => "Calendar",
             Self::Recording => "Screen recording",
             Self::Notifications => "Notifications",
         }
@@ -53,8 +56,9 @@ impl Menu {
             Self::Bluetooth => status.bluetooth.is_some(),
             Self::Audio => status.audio.is_some(),
             Self::Battery => status.battery.is_some(),
+            Self::Calendar | Self::Recording => true,
             Self::Notifications => status.notifications.is_some(),
-            Self::System | Self::Recording => true,
+            Self::System => true,
         }
     }
 }
@@ -88,6 +92,9 @@ impl FereseShell {
                 }
             }
             return self.close_menu();
+        }
+        if kind == Menu::Calendar {
+            self.calendar_offset = 0;
         }
         let destroy = self.destroy_menu();
         if !kind.available(&self.status) {
@@ -451,6 +458,8 @@ impl FereseShell {
                     ]
                     .spacing(8),
                 );
+        } else if kind == Menu::Calendar {
+            rows = rows.push(calendar_grid(self.calendar_offset, theme, p));
         } else {
             let combined = menu.kind == Menu::System;
             if combined {
@@ -715,6 +724,80 @@ impl FereseShell {
                         .size(12)
                         .class(theme::Text::Color(muted)),
                     );
+                }
+            }
+            if menu.kind == Menu::Battery {
+                rows = rows.push(text("Power mode").size(13).class(theme::Text::Color(muted)));
+                if let Some(profiles) = &self.status.power_profiles {
+                    let mut modes = row::with_capacity(3).spacing(6).width(Length::Fill);
+                    for (index, (label, icon, profile)) in [
+                        (
+                            "Battery saver",
+                            include_bytes!("../assets/icons/status/power-saver.svg").as_slice(),
+                            "power-saver",
+                        ),
+                        (
+                            "Balanced",
+                            include_bytes!("../assets/icons/status/power-balanced.svg").as_slice(),
+                            "balanced",
+                        ),
+                        (
+                            "Performance",
+                            include_bytes!("../assets/icons/status/power-performance.svg")
+                                .as_slice(),
+                            "performance",
+                        ),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        if profiles.available[index] {
+                            modes = modes.push(power_tile(
+                                label,
+                                icon,
+                                profile,
+                                profiles.active == profile,
+                                theme,
+                                p,
+                            ));
+                        }
+                    }
+                    rows = rows.push(modes);
+                } else {
+                    rows = rows.push(
+                        text("Power Profiles service unavailable")
+                            .size(12)
+                            .class(theme::Text::Color(muted)),
+                    );
+                }
+                let mut power = row::with_capacity(3).spacing(6).width(Length::Fill);
+                for (enabled, label, icon, action) in [
+                    (
+                        self.status.reboot,
+                        "Restart",
+                        include_bytes!("../assets/icons/status/restart.svg").as_slice(),
+                        Action::Reboot,
+                    ),
+                    (
+                        self.status.poweroff,
+                        "Power off",
+                        include_bytes!("../assets/icons/status/power-off.svg").as_slice(),
+                        Action::Poweroff,
+                    ),
+                    (
+                        self.status.suspend,
+                        "Suspend",
+                        include_bytes!("../assets/icons/status/suspend.svg").as_slice(),
+                        Action::Suspend,
+                    ),
+                ] {
+                    if enabled {
+                        power = power.push(power_tile_action(label, icon, action, theme, p));
+                    }
+                }
+                if self.status.reboot || self.status.poweroff || self.status.suspend {
+                    rows = rows.push(text("Power").size(13).class(theme::Text::Color(muted)));
+                    rows = rows.push(power);
                 }
             }
             if combined {
@@ -1002,6 +1085,155 @@ fn connection_control<'a>(
     .into()
 }
 
+fn power_tile<'a>(
+    label: &'static str,
+    icon: &'static [u8],
+    profile: &'static str,
+    selected: bool,
+    theme: ShellTheme,
+    opacity: f32,
+) -> Element<'a, cosmic::Action<Message>> {
+    let foreground = color_with_opacity(
+        if selected {
+            theme.accent
+        } else {
+            theme.text_primary
+        },
+        opacity,
+    );
+    let tile = column![bar_icon(icon, 19, foreground), text(label).size(11)]
+        .spacing(3)
+        .align_x(Alignment::Center);
+    motion::button(
+        button::custom(tile)
+            .width(Length::FillPortion(1))
+            .padding([8, 2])
+            .on_press(cosmic::Action::App(Message::Control(Action::PowerProfile(
+                profile,
+            )))),
+        foreground,
+        selected,
+        opacity,
+    )
+}
+
+fn power_tile_action<'a>(
+    label: &'static str,
+    icon: &'static [u8],
+    action: Action,
+    theme: ShellTheme,
+    opacity: f32,
+) -> Element<'a, cosmic::Action<Message>> {
+    let foreground = color_with_opacity(theme.text_primary, opacity);
+    motion::button(
+        button::custom(
+            column![bar_icon(icon, 19, foreground), text(label).size(11)]
+                .spacing(3)
+                .align_x(Alignment::Center),
+        )
+        .width(Length::FillPortion(1))
+        .padding([8, 2])
+        .on_press(cosmic::Action::App(Message::ConfirmPower(action))),
+        foreground,
+        false,
+        opacity,
+    )
+}
+
+fn calendar_month(today: jiff::civil::Date, offset: i32) -> (jiff::civil::Date, usize, usize) {
+    let month_index = i32::from(today.year()) * 12 + i32::from(today.month()) - 1 + offset;
+    let year = month_index.div_euclid(12) as i16;
+    let month = (month_index.rem_euclid(12) + 1) as i8;
+    let first = jiff::civil::Date::new(year, month, 1).expect("calendar month is in range");
+    let start = usize::try_from(first.weekday().since(jiff::civil::Weekday::Monday)).unwrap_or(0);
+    let days = usize::try_from(first.days_in_month()).unwrap_or(31);
+    (first, start, days)
+}
+
+fn calendar_grid<'a>(
+    offset: i32,
+    theme: ShellTheme,
+    opacity: f32,
+) -> Element<'a, cosmic::Action<Message>> {
+    let today = Zoned::now().date();
+    let months = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
+    let (first, start, days) = calendar_month(today, offset);
+    let year = first.year();
+    let month = first.month();
+    let primary = color_with_opacity(theme.text_primary, opacity);
+    let muted = color_with_opacity(theme.text_muted, opacity);
+    let header = row![
+        text(format!("{} {year}", months[(month - 1) as usize]))
+            .size(15)
+            .width(Length::Fill),
+        menu_button("‹", Message::CalendarMonth(-1), primary, opacity),
+        menu_button("Today", Message::CalendarToday, primary, opacity),
+        menu_button("›", Message::CalendarMonth(1), primary, opacity),
+    ]
+    .align_y(Alignment::Center)
+    .spacing(2);
+    let mut grid = column::with_capacity(7).spacing(2).push(header);
+    let mut weekdays = row::with_capacity(7).spacing(2);
+    for label in ["M", "T", "W", "T", "F", "S", "S"] {
+        weekdays = weekdays.push(
+            container(text(label).size(11).class(theme::Text::Color(muted)))
+                .width(Length::FillPortion(1))
+                .center_x(Length::Fill),
+        );
+    }
+    grid = grid.push(weekdays);
+    for week in 0..(start + days).div_ceil(7) {
+        let mut dates = row::with_capacity(7).spacing(2);
+        for weekday in 0..7 {
+            let cell = week * 7 + weekday;
+            let day = cell
+                .checked_sub(start)
+                .map(|day| day + 1)
+                .filter(|day| *day <= days);
+            let is_today =
+                year == today.year() && month == today.month() && day == Some(today.day() as usize);
+            let label = day.map_or(String::new(), |day| day.to_string());
+            dates = dates.push(
+                container(text(label).size(12).class(theme::Text::Color(if is_today {
+                    primary
+                } else {
+                    muted
+                })))
+                .width(Length::FillPortion(1))
+                .height(27)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill)
+                .class(theme::Container::custom(move |_| container::Style {
+                    background: is_today.then_some(Background::Color(color_with_opacity(
+                        theme.accent,
+                        0.2 * opacity,
+                    ))),
+                    border: Border {
+                        radius: motion::radius(12.0).into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                })),
+            );
+        }
+        grid = grid.push(dates);
+    }
+    grid.into()
+}
+
 fn menu_button<'a>(
     label: &'a str,
     message: Message,
@@ -1146,11 +1378,12 @@ fn status_label(kind: Menu, s: &Snapshot) -> String {
             Some(n) => format!("Notifications: {} unread", n.count),
             _ => "Notifications: unavailable".into(),
         },
+        Menu::Calendar => "Calendar".into(),
+        Menu::Recording => "Screen recording".into(),
         Menu::Battery => s.battery.as_ref().map_or_else(
             || "Battery: unavailable".into(),
             |b| format!("Battery: {}%, {}", b.percent, b.status),
         ),
-        Menu::Recording => "Screen recording".into(),
         Menu::System => "Control Center".into(),
     }
 }
@@ -1203,6 +1436,8 @@ fn status_icon(kind: Menu, s: &Snapshot) -> (&'static [u8], bool) {
         Menu::Audio => s.audio.as_ref().map_or((audio_icon(0, true), false), |a| {
             (audio_icon(a.volume, a.muted), !a.muted && a.volume > 0)
         }),
+        Menu::Calendar => (include_bytes!("../assets/icons/status/calendar.svg"), true),
+        Menu::Recording => (include_bytes!("../assets/icons/status/record.svg"), true),
         Menu::Battery => {
             let Some(b) = &s.battery else {
                 return (
@@ -1238,7 +1473,6 @@ fn status_icon(kind: Menu, s: &Snapshot) -> (&'static [u8], bool) {
                 )
             }
         }
-        Menu::Recording => (include_bytes!("../assets/icons/status/record.svg"), true),
         Menu::System => (
             include_bytes!("../assets/icons/status/control-center.svg"),
             true,
@@ -1249,11 +1483,27 @@ fn status_icon(kind: Menu, s: &Snapshot) -> (&'static [u8], bool) {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn calendar_aligns_leap_months_and_year_boundaries() {
+        let february = jiff::civil::Date::new(2024, 2, 15).unwrap();
+        let (first, start, days) = calendar_month(february, 0);
+        assert_eq!((first.year(), first.month(), start, days), (2024, 2, 3, 29));
+        let (first, start, days) = calendar_month(february, -2);
+        assert_eq!(
+            (first.year(), first.month(), start, days),
+            (2023, 12, 4, 31)
+        );
+        let june = jiff::civil::Date::new(2025, 6, 1).unwrap();
+        let (_, start, days) = calendar_month(june, 0);
+        assert_eq!((start, days), (6, 30));
+    }
+
+    #[test]
     fn smaller_popups_have_content_specific_widths() {
         assert_eq!(Menu::System.width(), 360.0);
         assert_eq!(Menu::Network.width(), 300.0);
         assert_eq!(Menu::Bluetooth.width(), 300.0);
-        assert_eq!(Menu::Battery.width(), 280.0);
+        assert_eq!(Menu::Battery.width(), 328.0);
+        assert_eq!(Menu::Calendar.width(), 310.0);
         assert_eq!(Menu::Audio.width(), 300.0);
         assert_eq!(Menu::Notifications.width(), 368.0);
     }

@@ -62,11 +62,11 @@ pub(crate) struct ShellTheme {
 impl Default for ShellTheme {
     fn default() -> Self {
         Self {
-            bar_background: [28, 32, 46, 242],
+            bar_background: [28, 32, 46, 255],
             bar_text_primary: [240, 243, 250, 255],
             bar_text_muted: [170, 180, 199, 255],
             surface_base: [17, 24, 33, 255],
-            surface_popover: [17, 24, 33, 245],
+            surface_popover: [17, 24, 33, 255],
             text_primary: [244, 247, 251, 255],
             text_muted: [135, 147, 162, 255],
             accent: [61, 123, 230, 255],
@@ -149,6 +149,8 @@ struct AppearanceConfig {
 #[derive(Debug, Default, Deserialize)]
 struct ThemeConfig {
     #[serde(default)]
+    material: MaterialConfig,
+    #[serde(default)]
     surface: SurfaceConfig,
     #[serde(default)]
     colors: ThemeColorsConfig,
@@ -166,16 +168,12 @@ struct ThemeConfig {
 struct SurfaceConfig {
     #[serde(default)]
     bar: BarConfig,
-    #[serde(default)]
-    popover: PopoverConfig,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 struct BarConfig {
     background: String,
-    // If omitted, preserve the alpha supplied in `background`.
-    opacity: Option<f32>,
     text_primary: String,
     text_muted: String,
 }
@@ -184,29 +182,17 @@ impl Default for BarConfig {
     fn default() -> Self {
         Self {
             background: "#1C202EF2".to_owned(),
-            opacity: None,
             text_primary: "#F0F3FA".to_owned(),
             text_muted: "#AAB4C7".to_owned(),
         }
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct PopoverConfig {
-    #[serde(default = "default_popover_opacity")]
-    opacity: f32,
-}
-
-impl Default for PopoverConfig {
-    fn default() -> Self {
-        Self {
-            opacity: default_popover_opacity(),
-        }
-    }
-}
-
-const fn default_popover_opacity() -> f32 {
-    0.96
+#[derive(Debug, Default, Deserialize)]
+struct MaterialConfig {
+    #[serde(default)]
+    style: String,
+    opacity: Option<f32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -364,17 +350,26 @@ pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, ferese_config::E
 
 fn shell_theme(theme: &ThemeConfig) -> ShellTheme {
     let defaults = ShellTheme::default();
+    let opacity = if theme.material.style == "translucent" {
+        finite_or(
+            theme
+                .material
+                .opacity
+                .unwrap_or(ferese_config::DEFAULT_MATERIAL_OPACITY as f32),
+            ferese_config::DEFAULT_MATERIAL_OPACITY as f32,
+        )
+        .clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    let alpha = (opacity * 255.0).round() as u8;
 
     ShellTheme {
         material_radius: defaults.material_radius,
         bar_background: {
             let mut background =
                 parse_color(&theme.surface.bar.background).unwrap_or(defaults.bar_background);
-            if let Some(opacity) = theme.surface.bar.opacity {
-                background[3] =
-                    (finite_or(opacity, f32::from(background[3]) / 255.0).clamp(0.0, 1.0) * 255.0)
-                        .round() as u8;
-            }
+            background[3] = alpha;
             background
         },
         bar_text_primary: parse_color(&theme.surface.bar.text_primary)
@@ -385,10 +380,7 @@ fn shell_theme(theme: &ThemeConfig) -> ShellTheme {
         surface_popover: {
             let mut color =
                 parse_color(&theme.colors.surface_base).unwrap_or(defaults.surface_base);
-            color[3] = (finite_or(theme.surface.popover.opacity, default_popover_opacity())
-                .clamp(0.0, 1.0)
-                * 255.0)
-                .round() as u8;
+            color[3] = alpha;
             color
         },
         text_primary: parse_color(&theme.colors.text_primary).unwrap_or(defaults.text_primary),
@@ -617,7 +609,7 @@ theme {
         assert_eq!(theme.bar_height, 28.0);
         assert_eq!(theme.bar_margin_horizontal, 0);
         assert_eq!(theme.bar_radius, 14.0);
-        assert_eq!(theme.bar_background, ShellTheme::default().bar_background);
+        assert_eq!(theme.bar_background[3], 255);
         assert_eq!(theme.for_bar().text_primary, theme.bar_text_primary);
         assert_ne!(theme.for_bar().text_primary, theme.text_primary);
     }
@@ -638,21 +630,17 @@ theme {
         )
         .unwrap();
         let theme = shell_theme(&config.theme);
-        assert_eq!(theme.bar_background, [234, 236, 238, 221]);
+        assert_eq!(theme.bar_background, [234, 236, 238, 255]);
         assert_eq!(theme.for_bar().text_primary, [34, 34, 34, 255]);
         assert_eq!(theme.for_bar().text_muted, [102, 102, 102, 255]);
         assert_eq!(theme.text_primary, ShellTheme::default().text_primary);
     }
 
     #[test]
-    fn bar_transparency_and_shadow_opacity_are_independent() {
+    fn shell_opacity_is_shared_and_solid_remains_opaque() {
         let config: FereseConfig = ferese_config::from_str(
             r#"theme {
-    surface {
-        bar {
-            opacity 0.6
-        }
-    }
+    material { style "translucent"; opacity 0.6; }
     shadow {
         soft {
             opacity 0.07
@@ -664,6 +652,12 @@ theme {
         .unwrap();
         let theme = shell_theme(&config.theme);
         assert_eq!(theme.bar_background[3], 153);
+        assert_eq!(theme.surface_popover[3], 153);
         assert_eq!(theme.shadow_opacity, 0.07);
+        let mut config = config;
+        config.theme.material.style = "solid".into();
+        let solid = shell_theme(&config.theme);
+        assert_eq!(solid.bar_background[3], 255);
+        assert_eq!(solid.surface_popover[3], 255);
     }
 }

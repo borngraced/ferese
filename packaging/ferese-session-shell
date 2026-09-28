@@ -9,4 +9,17 @@ if [[ ${FERESE_SESSION_IMPORT_ENV:-0} == 1 ]]; then
             WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE || true
 fi
 release_dir=$(dirname -- "$(readlink -f -- "$0")")
-exec "$release_dir/ferese-shell"
+env -u WAYLAND_SOCKET WAYLAND_DISPLAY="${FERESE_PUBLIC_WAYLAND_DISPLAY:-${WAYLAND_DISPLAY:-}}" \
+    "$release_dir/ferese-polkit-agent" &
+agent_pid=$!
+"$release_dir/ferese-shell" &
+shell_pid=$!
+trap 'kill "$shell_pid" "$agent_pid" 2>/dev/null || true' EXIT INT TERM
+if wait "$shell_pid"; then
+    status=0
+else
+    status=$?
+fi
+kill "$agent_pid" 2>/dev/null || true
+wait "$agent_pid" 2>/dev/null || true
+exit "$status"

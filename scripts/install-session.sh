@@ -19,7 +19,7 @@ session_entry=/usr/share/wayland-sessions/ferese.desktop
 [[ ! -e $release_dir ]] || { echo "Release already exists: $release_dir" >&2; exit 1; }
 
 # Refuse to overwrite unrelated installations.
-for name in ferese ferese-shell ferese-settings feresectl ferese-session ferese-lock ferese-screenshot xdg-desktop-portal-ferese ferese-record; do
+for name in ferese ferese-shell ferese-settings feresectl ferese-session ferese-lock ferese-polkit-agent ferese-screenshot xdg-desktop-portal-ferese ferese-record; do
     link=/usr/local/bin/$name
     if [[ -e $link || -L $link ]]; then
         [[ -L $link && $(readlink -- "$link") == "$install_root/current/$name" ]] || {
@@ -39,9 +39,10 @@ if [[ -e $session_entry ]]; then
         echo "Different session entry exists: $session_entry" >&2; exit 1;
     }
 fi
-for name in ferese ferese-shell ferese-settings feresectl ferese-lock xdg-desktop-portal-ferese ferese-record; do
+for name in ferese ferese-shell ferese-settings feresectl ferese-lock ferese-polkit-agent xdg-desktop-portal-ferese ferese-record; do
     [[ -x $repo_dir/target/release/$name ]] || { echo "Missing release binary: $name" >&2; exit 1; }
 done
+"$repo_dir/target/release/ferese-polkit-agent" --check
 for name in ferese.png ferese.svg; do
     [[ -f $repo_dir/assets/wallpapers/$name ]] || { echo "Missing wallpaper asset: $name" >&2; exit 1; }
 done
@@ -79,7 +80,7 @@ install -d -m 0755 -- "$release_dir" /usr/local/bin /usr/share/wayland-sessions
 if [[ -e $session_entry ]]; then
     install -m 0644 -- "$session_entry" "$release_dir/session.previous.desktop"
 fi
-for name in ferese ferese-shell ferese-settings feresectl ferese-lock xdg-desktop-portal-ferese ferese-record; do
+for name in ferese ferese-shell ferese-settings feresectl ferese-lock ferese-polkit-agent xdg-desktop-portal-ferese ferese-record; do
     install -m 0755 -- "$repo_dir/target/release/$name" "$release_dir/$name"
 done
 install -m 0755 -- "$repo_dir/packaging/ferese-session" "$release_dir/ferese-session"
@@ -101,7 +102,7 @@ if [[ -L $install_root/current ]]; then
 fi
 ln -s -- "releases/$release_id" "$install_root/current-$release_id"
 mv -Tf -- "$install_root/current-$release_id" "$install_root/current"
-for name in ferese ferese-shell ferese-settings feresectl ferese-session ferese-lock ferese-screenshot xdg-desktop-portal-ferese ferese-record; do
+for name in ferese ferese-shell ferese-settings feresectl ferese-session ferese-lock ferese-polkit-agent ferese-screenshot xdg-desktop-portal-ferese ferese-record; do
     ln -sfn -- "$install_root/current/$name" "/usr/local/bin/$name"
 done
 install -m 0644 -- "$repo_dir/packaging/ferese.desktop" "$session_entry"
