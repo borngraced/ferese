@@ -47,10 +47,8 @@ pub fn foreground(background: Color, preferred: Color) -> Color {
     }
 }
 
-/// Prefer the theme's foreground for filled controls. A small shade adjustment
-/// is less disruptive than flipping light text to black when selecting a row.
-/// Very bright/dark accents still use a contrasting foreground rather than
-/// changing the user's accent into a substantially different color.
+/// Prefer the theme's foreground for filled controls by adjusting the accent's
+/// brightness until the text has enough contrast.
 pub fn accent_pair(background: Color, preferred: Color) -> (Color, Color) {
     let on = composite(preferred, background);
     let shade = if luminance(on) > luminance(background) {
@@ -58,7 +56,7 @@ pub fn accent_pair(background: Color, preferred: Color) -> (Color, Color) {
     } else {
         Color::WHITE
     };
-    for step in 0..=20 {
+    for step in 0..=65 {
         let fill = composite(
             Color {
                 a: step as f32 / 100.,
@@ -224,6 +222,26 @@ mod tests {
             let actual = style(&theme, state, false);
             assert_eq!(actual.text_color, Some(preferred));
             assert_eq!(actual.icon_color, Some(preferred));
+        }
+    }
+
+    #[test]
+    fn gruvbox_orange_button_keeps_its_light_theme_text_when_enabled() {
+        let preferred = Color::from_rgb8(235, 219, 178);
+        let accent = Color::from_rgb8(254, 128, 25);
+        let mut native = cosmic::cosmic_theme::ThemeBuilder::dark()
+            .accent(rgba(accent).color)
+            .build();
+        apply(&mut native, preferred);
+        let theme = cosmic::Theme::custom(std::sync::Arc::new(native));
+
+        for state in [State::Active, State::Hovered, State::Pressed] {
+            let actual = style(&theme, state, false);
+            assert_eq!(actual.text_color, Some(preferred));
+            let Some(Background::Color(fill)) = actual.background else {
+                panic!("No button fill")
+            };
+            assert!(contrast(fill, preferred) >= 4.5);
         }
     }
     #[test]
