@@ -587,7 +587,9 @@ impl Ferese {
         if self.session_lock.active {
             return;
         }
-        if self.overview.is_active()
+        // Keep the explicitly selected window focused until Overview's exit
+        // animation settles. Moving previews must not steal focus on pointer jitter.
+        if self.overview.is_presenting()
             || !self.input_settings.focus_follows_mouse
             || pointer.is_grabbed()
         {
