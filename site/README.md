@@ -18,7 +18,8 @@ site sources or Markdown guides, then refresh the browser.
 
 - `site/index.html` and `site/styles.css`: homepage and shared visual design.
 - `site/content/index.md`: handbook introduction.
-- `docs/{installation,configuration,desktop-widgets,notifications}.md`: source guides.
+- `docs/{installation,configuration,desktop-widgets,notifications,locking,screen-sharing}.md`:
+  source guides.
 - `scripts/build-site.py`: renders Markdown, resolves links, generates section
   navigation, previous/next links, and the search index.
 - `site/app.js`: handbook search and code copying. Reading and navigation work

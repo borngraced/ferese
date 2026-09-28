@@ -28,6 +28,8 @@ cohesive experience—beautiful by default and unmistakably yours.
   motion that update without restarting your session.
 - **Ready for real setups:** gestures, multi-monitor support, fractional
   scaling, screenshots, background services and session locking.
+- **Screen sharing:** a native display picker and PipeWire video streams for
+  portal-compatible recording and conferencing apps.
 
 ## Make it yours
 
@@ -92,6 +94,7 @@ Settings → Shortcuts** to change them or assign gestures to other actions.
 - [Desktop widgets](docs/desktop-widgets.md)
 - [Notifications](docs/notifications.md)
 - [Native locker](docs/locking.md)
+- [Screen sharing and recording](docs/screen-sharing.md)
 
 ## Development
 

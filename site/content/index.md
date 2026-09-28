@@ -43,6 +43,13 @@ If you prefer a text editor, your configuration lives at:
 
 Ferese reloads changes as you make them. An invalid edit keeps the last working configuration. Settings also preserves a backup of your previous save. See [Saving and validation](configuration.md#saving-and-validation).
 
+## Share your screen
+
+Use Ferese’s native display picker to share a monitor with a portal-compatible
+recording or conferencing app. The app handles saving or sending video; Ferese
+does not yet have a Record button in the shell. See [Screen sharing and
+recording](screen-sharing.md) for setup, stopping a session, and supported sources.
+
 ## Keep a recovery path
 
 Keep another desktop session available while testing hardware behavior. Save your work before logging out: `feresectl exit` and **Super + Shift + E** end the current session immediately.
@@ -59,5 +66,3 @@ cargo fmt --all --check
 ```
 
 The [source repository](https://github.com/ferese-wm/ferese) is the place to explore implementation details and report issues. When reporting a problem, include how to reproduce it, whether you used the nested or DRM backend, and relevant logs.
-
-[Screen sharing](screen-sharing.md) covers display consent, PipeWire streams, and recording support.

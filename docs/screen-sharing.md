@@ -5,6 +5,9 @@ Applications use the standard desktop portal to request a display, then receive
 video through PipeWire. A recorder or conferencing application handles encoding,
 saving files, or sending video; those tasks do not run inside the compositor.
 
+There is no built-in Record button or video-file recorder in the shell yet.
+Start recording from an application that supports the Wayland ScreenCast portal.
+
 ## Start sharing
 
 Use a Wayland screen-sharing or recording source in your application. Ferese
@@ -54,6 +57,32 @@ compositor's shared-memory screencopy path, not DMA-BUF zero-copy. High-resoluti
 or multiple-display recording can therefore use significant CPU and memory
 bandwidth. A paused stream checks capture availability once per second so locking
 also ends sessions without an active consumer.
+
+## Development checks
+
+Build the backend after installing the native dependencies in the
+[installation guide](installation.md#requirements):
+
+```sh
+cargo build --release --locked -p xdg-desktop-portal-ferese
+cargo test --locked -p xdg-desktop-portal-ferese
+```
+
+The opt-in integration test opens a temporary nested compositor and uses a
+private D-Bus session. It requires built Ferese and locker binaries, Python
+GI/GStreamer with `pipewiresrc`, `dbus-daemon`, `xdg-desktop-portal`, and `bwrap`.
+It checks capture delivery, cancellation, frontend loss, and lock revocation:
+
+```sh
+FERESE_TEST_PORTAL=1 \
+FERESE_TEST_PORTAL_BINARY=target/release/xdg-desktop-portal-ferese \
+python3 scripts/tests/test_portal_isolated.py
+```
+
+Add `FERESE_TEST_PORTAL_CONSENT=1` to exercise the native picker and restricted
+PipeWire connection. Select the temporary display and click **Share** when
+prompted. Tests capture only the nested preview and leave host PAM policies and
+D-Bus activation unchanged.
 
 ## Troubleshooting
 
