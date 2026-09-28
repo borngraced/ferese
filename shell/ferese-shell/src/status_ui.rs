@@ -27,10 +27,14 @@ impl Menu {
         match self {
             Self::System => 360.0,
             Self::Battery => 328.0,
-            Self::Calendar => 310.0,
+            Self::Calendar => 268.0,
             Self::Notifications => 368.0,
             _ => 300.0,
         }
+    }
+
+    fn height_limit(self) -> f32 {
+        if self == Self::Calendar { 270.0 } else { 720.0 }
     }
 
     pub(super) fn material_role(self) -> Option<ferese_surface_effects_v1::Role> {
@@ -156,7 +160,7 @@ impl FereseShell {
                     size_limits: Limits::NONE
                         .min_width(kind.width())
                         .max_width(kind.width())
-                        .max_height(720.0),
+                        .max_height(kind.height_limit()),
                     constraint_adjustment: 3, // slide X/Y, never flip above the bar
                     ..Default::default()
                 },
@@ -455,10 +459,10 @@ impl FereseShell {
                 p,
             ));
         }
-        let mut rows = column::with_capacity(12)
-            .push(heading)
-            .spacing(12)
-            .width(Length::Fill);
+        let mut rows = column::with_capacity(12).spacing(12).width(Length::Fill);
+        if kind != Menu::Calendar {
+            rows = rows.push(heading);
+        }
         if let Some(action) = &menu.confirm {
             let title = match action {
                 Action::Poweroff => "Power off this computer?",
@@ -869,7 +873,7 @@ impl FereseShell {
             Limits::NONE
                 .min_width(kind.width())
                 .max_width(kind.width())
-                .max_height(720.0),
+                .max_height(kind.height_limit()),
         )
         .into()
     }
@@ -1172,18 +1176,18 @@ fn calendar_grid<'a>(
     ]
     .align_y(Alignment::Center)
     .spacing(2);
-    let mut grid = column::with_capacity(7).spacing(2).push(header);
-    let mut weekdays = row::with_capacity(7).spacing(2);
+    let mut grid = column::with_capacity(8).spacing(3).push(header);
+    let mut weekdays = row::with_capacity(7).spacing(3);
     for label in ["M", "T", "W", "T", "F", "S", "S"] {
         weekdays = weekdays.push(
             container(text(label).size(11).class(theme::Text::Color(muted)))
-                .width(Length::FillPortion(1))
-                .center_x(Length::Fill),
+                .width(30)
+                .center_x(30),
         );
     }
     grid = grid.push(weekdays);
     for week in 0..(start + days).div_ceil(7) {
-        let mut dates = row::with_capacity(7).spacing(2);
+        let mut dates = row::with_capacity(7).spacing(3);
         for weekday in 0..7 {
             let cell = week * 7 + weekday;
             let day = cell
@@ -1199,10 +1203,10 @@ fn calendar_grid<'a>(
                 } else {
                     muted
                 })))
-                .width(Length::FillPortion(1))
-                .height(27)
-                .center_x(Length::Fill)
-                .center_y(Length::Fill)
+                .width(30)
+                .height(25)
+                .center_x(30)
+                .center_y(25)
                 .class(theme::Container::custom(move |_| container::Style {
                     background: is_today.then_some(Background::Color(color_with_opacity(
                         theme.accent,
@@ -1539,7 +1543,8 @@ mod tests {
         assert_eq!(Menu::Network.width(), 300.0);
         assert_eq!(Menu::Bluetooth.width(), 300.0);
         assert_eq!(Menu::Battery.width(), 328.0);
-        assert_eq!(Menu::Calendar.width(), 310.0);
+        assert_eq!(Menu::Calendar.width(), 268.0);
+        assert_eq!(Menu::Calendar.height_limit(), 270.0);
         assert_eq!(Menu::Audio.width(), 300.0);
         assert_eq!(Menu::Notifications.width(), 368.0);
     }
