@@ -307,6 +307,9 @@ this command. Both modes open Satty with the same save and copy workflow.
 
 ## Window rules
 
+Native authentication and display-sharing dialogs float by default. Explicit
+window rules can override that behavior.
+
 | `window-rule` key | Type | Default / meaning |
 | --- | --- | --- |
 | `app_id` | nonempty string | Optional exact match; case-insensitive, `.desktop` suffix ignored |

@@ -71,7 +71,10 @@ pub fn resolve(
 ) -> WindowRuleResult {
     let app_id = app_id.map(normalize_app_id);
     let mut result = WindowRuleResult::default();
-    if app_id.as_deref() == Some("dev.ferese.Authentication") {
+    if matches!(
+        app_id.as_deref(),
+        Some("dev.ferese.authentication" | "dev.ferese.screenshare")
+    ) {
         result.floating = Some(true);
     }
 
@@ -209,6 +212,30 @@ mod tests {
             height: None,
             fullscreen: None,
         }
+    }
+
+    #[test]
+    fn native_dialogs_float_by_default_and_allow_user_overrides() {
+        for app_id in [
+            "dev.ferese.ScreenShare",
+            "dev.ferese.ScreenShare.desktop",
+            "dev.ferese.Authentication",
+        ] {
+            assert_eq!(resolve(&[], Some(app_id), None, false).floating, Some(true));
+            let rules = validate(&[WindowRuleConfig {
+                floating: Some(false),
+                ..config(app_id)
+            }])
+            .unwrap();
+            assert_eq!(
+                resolve(&rules, Some(app_id), None, false).floating,
+                Some(false)
+            );
+        }
+        assert_eq!(
+            resolve(&[], Some("org.example.Editor"), None, false).floating,
+            None
+        );
     }
 
     #[test]
