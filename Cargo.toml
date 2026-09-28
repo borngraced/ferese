@@ -11,6 +11,7 @@ members = [
     "shell/ferese-shell",
     "shell/ferese-settings",
     "shell/ferese-lock",
+    "portal",
 ]
 resolver = "3"
 

@@ -18,6 +18,7 @@ PAGES = [
     ('desktop-widgets', 'Desktop widgets', ROOT / 'docs/desktop-widgets.md'),
     ('notifications', 'Notifications', ROOT / 'docs/notifications.md'),
     ('locking', 'Native locker', ROOT / 'docs/locking.md'),
+    ('screen-sharing', 'Screen sharing', ROOT / 'docs/screen-sharing.md'),
 ]
 md = MarkdownIt('commonmark', {'html': False}).enable('table')
 OUTPUT.mkdir(parents=True, exist_ok=True)

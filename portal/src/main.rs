@@ -1,0 +1,22 @@
+mod backend;
+mod capture;
+mod picker;
+mod stream;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+
+    match args.as_slice() {
+        [flag, name, cursor] if flag == "--stream" => {
+            stream::run(name.clone(), cursor == "embedded")
+        }
+        [flag] if flag == "--sources" => {
+            let capture = capture::Capture::connect(&std::sync::atomic::AtomicBool::new(false))?;
+            println!("{}", serde_json::to_string(&capture.sources())?);
+            Ok(())
+        }
+        [flag] if flag == "--picker" => picker::run(),
+        [] => tokio::runtime::Runtime::new()?.block_on(backend::run()),
+        _ => Err("Usage: xdg-desktop-portal-ferese [--sources]".into()),
+    }
+}

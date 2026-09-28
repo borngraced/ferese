@@ -29,6 +29,7 @@ theme {
 }
 
 window-rule app-id="dev.ferese.Settings" floating=#true
+window-rule app-id="dev.ferese.ScreenShare" floating=#true
 window-rule title="Choose a wallpaper" floating=#true
 
 desktop-widgets {

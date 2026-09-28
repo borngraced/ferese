@@ -32,6 +32,9 @@ export PATH="$release_dir:$PATH"
 unset WAYLAND_SOCKET
 if [[ $backend == drm ]]; then
     unset DISPLAY WAYLAND_DISPLAY
+    export FERESE_SESSION_IMPORT_ENV=1
+else
+    export FERESE_SESSION_IMPORT_ENV=0
 fi
 
 if [[ $backend == drm ]] && command -v systemctl >/dev/null; then
@@ -39,7 +42,7 @@ if [[ $backend == drm ]] && command -v systemctl >/dev/null; then
 fi
 
 command=("$release_dir/ferese" --backend "$backend" --grant-effects
-    --grant-shell-control -- "$release_dir/ferese-shell")
+    --grant-shell-control -- "$release_dir/ferese-session-shell")
 if [[ -z ${DBUS_SESSION_BUS_ADDRESS:-} ]]; then
     exec dbus-run-session -- "${command[@]}"
 else

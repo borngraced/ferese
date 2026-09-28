@@ -59,3 +59,5 @@ cargo fmt --all --check
 ```
 
 The [source repository](https://github.com/ferese-wm/ferese) is the place to explore implementation details and report issues. When reporting a problem, include how to reproduce it, whether you used the nested or DRM backend, and relevant logs.
+
+[Screen sharing](screen-sharing.md) covers display consent, PipeWire streams, and recording support.

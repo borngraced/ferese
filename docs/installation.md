@@ -13,7 +13,7 @@ desktop instead of direct access to the graphics device.
 
 Build with **Rust 1.95 or newer**, a C/C++ toolchain, CMake, pkg-config, and the
 native development libraries below. The installer builds Ferese, its shell,
-Settings, command-line tools, and locker together. It does not install system
+Settings, command-line tools, locker, and ScreenCast portal together. It does not install system
 packages or enable services for you.
 
 ### Fedora
@@ -22,7 +22,8 @@ packages or enable services for you.
 sudo dnf install git curl gcc gcc-c++ make cmake pkgconf-pkg-config \
   wayland-devel libxkbcommon-devel libinput-devel systemd-devel libseat-devel \
   mesa-libgbm-devel mesa-libEGL-devel libdrm-devel fontconfig-devel \
-  freetype-devel expat-devel dbus-daemon dbus-tools desktop-file-utils foot pam
+  freetype-devel expat-devel dbus-daemon dbus-tools desktop-file-utils foot pam \
+  clang clang-devel pipewire-devel pipewire wireplumber xdg-desktop-portal xdg-desktop-portal-gtk
 ```
 
 ### Arch Linux
@@ -30,7 +31,8 @@ sudo dnf install git curl gcc gcc-c++ make cmake pkgconf-pkg-config \
 ```sh
 sudo pacman -S --needed base-devel git curl cmake pkgconf wayland libxkbcommon \
   libinput systemd seatd mesa libdrm fontconfig freetype2 expat dbus \
-  desktop-file-utils foot pam
+  desktop-file-utils foot pam clang pipewire libpipewire wireplumber \
+  xdg-desktop-portal xdg-desktop-portal-gtk
 ```
 
 ### Debian and Ubuntu
@@ -40,7 +42,9 @@ sudo apt update
 sudo apt install build-essential git curl cmake pkg-config libwayland-dev \
   libxkbcommon-dev libinput-dev libudev-dev libseat-dev libgbm-dev libegl-dev \
   libdrm-dev libfontconfig1-dev libfreetype-dev libexpat1-dev dbus-bin \
-  dbus-user-session desktop-file-utils foot libpam0g
+  dbus-user-session desktop-file-utils foot libpam0g clang libclang-dev \
+  libpipewire-0.3-dev libspa-0.2-dev pipewire wireplumber \
+  xdg-desktop-portal xdg-desktop-portal-gtk
 ```
 
 These are package recipes, not a claim that every distribution release has been
@@ -86,7 +90,9 @@ The installer adds:
 - Versioned releases under `/usr/local/lib/ferese/releases/`, with `current` and
   `previous` links for upgrades and rollback.
 - Commands under `/usr/local/bin/`, including `ferese-session`, `ferese-settings`,
-  `feresectl`, `ferese-lock`, and `ferese-screenshot`.
+  `feresectl`, `ferese-lock`, `ferese-screenshot`, and
+  `xdg-desktop-portal-ferese`.
+- D-Bus activation and Ferese-specific ScreenCast portal registration.
 - A Wayland session entry at `/usr/share/wayland-sessions/ferese.desktop`.
 - A Settings application entry, icons, the default wallpaper, and an example config.
 - `/etc/pam.d/ferese-lock`, using your distribution's authentication stack.
@@ -203,7 +209,7 @@ To preview a source build before installing, run these commands from the checkou
 inside an existing Wayland desktop:
 
 ```sh
-cargo build --release --locked -p ferese -p ferese-shell -p ferese-settings -p feresectl -p ferese-lock
+cargo build --release --locked -p ferese -p ferese-shell -p ferese-settings -p feresectl -p ferese-lock -p xdg-desktop-portal-ferese
 target/release/ferese --backend nested --grant-effects --grant-shell-control -- \
   target/release/ferese-shell
 ```
@@ -245,7 +251,7 @@ Installer options:
 
 `--dry-run` prints the planned commands. `--offline` requires dependencies to be
 cached already. `--skip-build` installs the binaries already in `target/release/`;
-use it only after building all five components from the intended revision.
+use it only after building all six components from the intended revision.
 Run `./scripts/install.sh --help` for all options.
 
 ## Logout and recovery
@@ -299,3 +305,9 @@ sudo mv /usr/share/wayland-sessions/ferese.desktop \
 
 For a command-based greeter, remove Ferese from its session choices using that
 greeter's configuration. Reinstalling restores the desktop session entry.
+
+## Screen sharing and recording
+
+The installer includes Ferese’s native ScreenCast portal. See
+[Screen sharing](screen-sharing.md) for consent, PipeWire setup, supported sources,
+and current recording limitations.

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# The compositor supplies its new Wayland socket before this helper starts.
+# Nested previews must never replace the host session's activation environment.
+if [[ ${FERESE_SESSION_IMPORT_ENV:-0} == 1 ]]; then
+    dbus-update-activation-environment --systemd \
+        WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE || \
+        dbus-update-activation-environment \
+            WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE || true
+fi
+release_dir=$(dirname -- "$(readlink -f -- "$0")")
+exec "$release_dir/ferese-shell"

@@ -1,0 +1,19 @@
+[package]
+name = "xdg-desktop-portal-ferese"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version = "1.95"
+
+[dependencies]
+libcosmic.workspace = true
+ferese-config = { path = "../crates/ferese-config" }
+libc.workspace = true
+memmap2 = "0.9"
+pipewire = { version = "0.10.1", features = ["v0_3_65"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util"] }
+wayland-client.workspace = true
+wayland-protocols-wlr.workspace = true
+zbus = { version = "5.19.0", default-features = false, features = ["tokio"] }

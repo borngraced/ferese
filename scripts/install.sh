@@ -49,7 +49,7 @@ desktop-file-validate "$repo_dir/packaging/ferese.desktop"
 
 build=(cargo build --manifest-path "$repo_dir/Cargo.toml"
     --target-dir "$repo_dir/target" --release --locked
-    -p ferese -p ferese-shell -p ferese-settings -p feresectl -p ferese-lock)
+    -p ferese -p ferese-shell -p ferese-settings -p feresectl -p ferese-lock -p xdg-desktop-portal-ferese)
 if $offline; then build+=(--offline); fi
 if ! $skip_build; then
     ((EUID != 0)) || fail 'build as your normal user, without sudo (or use --skip-build)'
