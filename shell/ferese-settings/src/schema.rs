@@ -705,6 +705,12 @@ pub fn fields(page: Page) -> Vec<Field> {
             ),
         ],
         Page::Bar => vec![
+            toggle(
+                "status.window_title",
+                "Focused window title",
+                "Show the focused window title in the center of the bar when space allows.",
+                true,
+            ),
             range(
                 "theme.geometry.top_bar_height",
                 "Height",

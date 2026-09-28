@@ -652,8 +652,7 @@ impl FereseShell {
             }
             if combined || menu.kind == Menu::Notifications {
                 if let Some(n) = &self.status.notifications {
-                    let toggle =
-                        toggle_row("Do Not Disturb", n.dnd, Action::Dnd(!n.dnd), primary, p);
+                    let toggle = toggle_row("Do Not Disturb", n.dnd, Action::Dnd(!n.dnd), theme, p);
                     rows = rows.push(if combined {
                         control_card(toggle, primary, p)
                     } else {
@@ -802,7 +801,6 @@ impl FereseShell {
             }
             if combined {
                 let mut actions = column::with_capacity(2).spacing(8);
-                let mut power = row::with_capacity(3).spacing(6).width(Length::Fill);
                 if self
                     .config
                     .status
@@ -817,33 +815,6 @@ impl FereseShell {
                         primary,
                         p,
                     ));
-                }
-                if self.status.poweroff {
-                    power = power.push(footer_button(
-                        "Power off…",
-                        Message::ConfirmPower(Action::Poweroff),
-                        primary,
-                        p,
-                    ));
-                }
-                if self.status.reboot {
-                    power = power.push(footer_button(
-                        "Restart…",
-                        Message::ConfirmPower(Action::Reboot),
-                        primary,
-                        p,
-                    ));
-                }
-                if self.status.suspend {
-                    power = power.push(footer_button(
-                        "Suspend…",
-                        Message::ConfirmPower(Action::Suspend),
-                        primary,
-                        p,
-                    ));
-                }
-                if self.status.poweroff || self.status.reboot || self.status.suspend {
-                    actions = actions.push(power);
                 }
                 rows = rows.push(control_card(actions.into(), primary, p));
             }
@@ -1022,33 +993,23 @@ fn connection_control<'a>(
     source: &'static [u8],
     enabled: bool,
     action: Option<Action>,
-    theme: ShellTheme,
+    palette: ShellTheme,
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
-    let foreground = color_with_opacity(theme.text_primary, opacity);
-    let icon_accent = color_with_opacity(theme.accent, opacity);
-    let accent = color_with_opacity(theme.accent, opacity * 0.14);
-    let icon = container(accented_icon(source, 18, foreground, icon_accent))
+    let foreground = color_with_opacity(palette.text_primary, opacity);
+    let icon_color = color_with_opacity(
+        if enabled {
+            palette.accent
+        } else {
+            palette.text_muted
+        },
+        opacity,
+    );
+    let icon = container(accented_icon(source, 18, icon_color, icon_color))
         .width(32)
         .height(32)
         .align_x(alignment::Horizontal::Center)
-        .align_y(alignment::Vertical::Center)
-        .class(theme::Container::custom(move |_| container::Style {
-            background: enabled.then_some(Background::Color(accent)),
-            icon_color: Some(color_with_opacity(
-                if enabled {
-                    theme.text_primary
-                } else {
-                    theme.text_muted
-                },
-                opacity,
-            )),
-            border: Border {
-                radius: motion::radius(20.0).into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        }));
+        .align_y(alignment::Vertical::Center);
     let content = column![
         icon,
         text(label).size(13),
@@ -1058,14 +1019,12 @@ fn connection_control<'a>(
             .height(18)
             .wrapping(cosmic::iced::widget::text::Wrapping::None)
             .class(theme::Text::Color(color_with_opacity(
-                theme.text_muted,
+                palette.text_muted,
                 opacity
             )))
     ]
     .spacing(6)
     .width(Length::Fill);
-    // Battery is informational, not a toggle. Match its tile's layout without
-    // giving it a misleading clickable/disabled-button appearance.
     let Some(action) = action else {
         return container(content)
             .width(Length::FillPortion(1))
@@ -1074,8 +1033,9 @@ fn connection_control<'a>(
     };
     container(motion::button(
         button::custom(content)
-            .width(Length::FillPortion(1))
+            .width(Length::Fill)
             .padding(4)
+            .name(format!("{label}: {}", if enabled { "on" } else { "off" }))
             .on_press(cosmic::Action::App(Message::Control(action))),
         foreground,
         false,
@@ -1267,21 +1227,87 @@ fn footer_button<'a>(
     )
 }
 
+fn shell_switch<'a>(
+    label: &str,
+    enabled: bool,
+    action: Action,
+    palette: ShellTheme,
+    opacity: f32,
+) -> Element<'a, cosmic::Action<Message>> {
+    let track = if enabled {
+        color(palette.accent)
+    } else {
+        Color {
+            a: 0.22,
+            ..color(palette.text_primary)
+        }
+    };
+    let thumb = if enabled {
+        ferese_theme::foreground(track, color(palette.text_primary))
+    } else {
+        color(palette.text_primary)
+    };
+    let knob = container(text(""))
+        .width(16)
+        .height(16)
+        .class(theme::Container::custom(move |_| container::Style {
+            background: Some(
+                Color {
+                    a: opacity,
+                    ..thumb
+                }
+                .into(),
+            ),
+            border: Border {
+                radius: motion::radius(8.).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+    let toggle = container(knob)
+        .width(36)
+        .height(20)
+        .padding(2)
+        .align_x(if enabled {
+            alignment::Horizontal::Right
+        } else {
+            alignment::Horizontal::Left
+        })
+        .class(theme::Container::custom(move |_| container::Style {
+            background: Some(
+                Color {
+                    a: track.a * opacity,
+                    ..track
+                }
+                .into(),
+            ),
+            border: Border {
+                radius: motion::radius(10.).into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }));
+    motion::button(
+        button::custom(toggle)
+            .padding(4)
+            .name(format!("{label}: {}", if enabled { "on" } else { "off" }))
+            .on_press(cosmic::Action::App(Message::Control(action))),
+        color(palette.text_primary),
+        false,
+        opacity,
+    )
+}
+
 fn toggle_row<'a>(
     label: &'a str,
     on: bool,
     action: Action,
-    foreground: Color,
+    palette: ShellTheme,
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
     row![
         text(label).width(Length::Fill).size(14),
-        menu_button(
-            if on { "On" } else { "Off" },
-            Message::Control(action),
-            foreground,
-            opacity
-        )
+        shell_switch(label, on, action, palette, opacity)
     ]
     .align_y(Alignment::Center)
     .into()

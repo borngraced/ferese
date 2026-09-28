@@ -20,6 +20,7 @@ pub(crate) struct ShellConfig {
 #[serde(default)]
 pub(crate) struct StatusConfig {
     pub(crate) battery_percentage: bool,
+    pub(crate) window_title: bool,
     pub(crate) low_battery_threshold: u8,
     pub(crate) settings_command: Option<Vec<String>>,
 }
@@ -28,6 +29,7 @@ impl Default for StatusConfig {
     fn default() -> Self {
         Self {
             battery_percentage: true,
+            window_title: true,
             low_battery_threshold: 20,
             settings_command: Some(vec!["ferese-settings".into()]),
         }

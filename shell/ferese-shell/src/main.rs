@@ -1229,7 +1229,6 @@ impl FereseShell {
                 size_limits: Limits::NONE,
                 ..Default::default()
             },
-
             Some(Box::new(Self::view_note_drag)),
         );
 
@@ -1360,7 +1359,6 @@ impl FereseShell {
                             ..Default::default()
                         }
                     },
-
                     Some(Box::new(move |app| app.view_note(&note_id, id))),
                 );
 
@@ -1586,7 +1584,6 @@ impl FereseShell {
                         ..Default::default()
                     }
                 },
-
                 Some(Box::new(move |app| app.view_desktop_clock(id))),
             );
 
@@ -2199,11 +2196,47 @@ impl FereseShell {
         ]
         .spacing(8)
         .align_y(cosmic::iced::Alignment::Center);
+        let available = self
+            .outputs
+            .iter()
+            .find(|output| output.bar == id)
+            .and_then(|output| output.size)
+            .map_or(0., |(width, _)| width as f32)
+            - 2. * (shell_theme.panel_padding + shell_theme.bar_margin_horizontal as f32);
+        let title_width = (available - 920.).clamp(0., 360.);
+        let title = if self.config.status.window_title && title_width > 0. {
+            focused_bar_title(&self.snapshot, focused_output)
+        } else {
+            ""
+        };
+        let center = text(title)
+            .size(bar.text_size)
+            .width(title_width)
+            .height(bar.control_height)
+            .align_x(alignment::Horizontal::Center)
+            .align_y(alignment::Vertical::Center)
+            .wrapping(cosmic::iced::widget::text::Wrapping::None)
+            .ellipsize(cosmic::iced::widget::text::Ellipsize::End(
+                cosmic::iced::advanced::text::EllipsizeHeightLimit::Lines(1),
+            ))
+            .class(theme::Text::Color(foreground));
+        let right = cosmic::iced::widget::scrollable(container(right).width(Length::Shrink))
+            .direction(cosmic::iced::widget::scrollable::Direction::Horizontal(
+                cosmic::iced::widget::scrollable::Scrollbar::default()
+                    .width(0)
+                    .scroller_width(0),
+            ))
+            .anchor_right()
+            .width(Length::Shrink)
+            .height(bar.control_height);
         let content = row![
             container(left).width(Length::Fill),
-            container(right).width(Length::Shrink),
+            center,
+            container(right)
+                .width(Length::Fill)
+                .align_x(alignment::Horizontal::Right),
         ]
-        .spacing(16)
+        .spacing(8)
         .align_y(cosmic::iced::Alignment::Center)
         .height(Length::Fill);
 
@@ -2360,6 +2393,26 @@ fn workspace_indicator(
         workspace_selector_style(active, active_elsewhere, occupied, shell_theme)
     }))
     .into()
+}
+
+fn focused_bar_title<'a>(
+    snapshot: &'a ShellSnapshot,
+    output: Option<&control::OutputSnapshot>,
+) -> &'a str {
+    let Some(output) = output else {
+        return "";
+    };
+    snapshot
+        .windows
+        .iter()
+        .find(|window| window.focused && window.workspace == output.active_workspace)
+        .map_or("", |window| {
+            if window.title.trim().is_empty() {
+                &window.app_id
+            } else {
+                &window.title
+            }
+        })
 }
 
 fn workspace_active_on_bar(workspace: u64, output: Option<&control::OutputSnapshot>) -> bool {
@@ -3070,6 +3123,27 @@ mod tests {
         snapshot.outputs[1].focused = true;
         assert!(output_bar_hidden(&snapshot, Some(1)));
         assert!(!output_bar_hidden(&snapshot, Some(2)));
+    }
+
+    #[test]
+    fn bar_title_tracks_focus_and_the_outputs_active_workspace() {
+        let mut snapshot = snapshot_with_fullscreen_window(7);
+        assert_eq!(
+            focused_bar_title(&snapshot, snapshot.outputs.first()),
+            "Test"
+        );
+        snapshot.windows[0].focused = false;
+        assert_eq!(focused_bar_title(&snapshot, snapshot.outputs.first()), "");
+        snapshot.windows[0].focused = true;
+        snapshot.windows[0].workspace = 8;
+        assert_eq!(focused_bar_title(&snapshot, snapshot.outputs.first()), "");
+        snapshot.windows[0].workspace = 7;
+        snapshot.windows[0].title.clear();
+        assert_eq!(
+            focused_bar_title(&snapshot, snapshot.outputs.first()),
+            "dev.ferese.Test"
+        );
+        assert_eq!(focused_bar_title(&snapshot, None), "");
     }
 
     fn snapshot_with_fullscreen_window(workspace: u64) -> ShellSnapshot {
