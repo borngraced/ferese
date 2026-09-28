@@ -33,6 +33,7 @@ struct Output {
     global: u32,
     proxy: wl_output::WlOutput,
     source: Source,
+    transform: wl_output::Transform,
 }
 
 pub struct Frame {
@@ -110,7 +111,13 @@ impl Capture {
         self.state
             .outputs
             .iter()
-            .map(|o| o.source.clone())
+            .map(|o| {
+                let mut source = o.source.clone();
+                if swaps_axes(o.transform) {
+                    std::mem::swap(&mut source.width, &mut source.height);
+                }
+                source
+            })
             .collect()
     }
 
@@ -128,6 +135,7 @@ impl Capture {
             .find(|o| o.source.name == name)
             .ok_or("Shared monitor disconnected")?;
 
+        let transform = output.transform;
         self.state.result = None;
         self.state.flipped = false;
 
@@ -154,22 +162,20 @@ impl Capture {
             .buffer
             .as_ref()
             .ok_or("Capture supplied no buffer")?;
-        pixels.resize(buffer.map.len(), 0);
-        pixels.copy_from_slice(&buffer.map);
-
-        if self.state.flipped {
-            let stride = buffer.stride as usize;
-            for y in 0..buffer.height as usize / 2 {
-                let bottom = (buffer.height as usize - y - 1) * stride;
-                let (top, tail) = pixels.split_at_mut(bottom);
-                top[y * stride..(y + 1) * stride].swap_with_slice(&mut tail[..stride]);
-            }
-        }
+        let (width, height) = copy_oriented_pixels(
+            &buffer.map,
+            buffer.width,
+            buffer.height,
+            buffer.stride,
+            transform,
+            self.state.flipped,
+            &mut pixels,
+        );
 
         Ok(Frame {
-            width: buffer.width,
-            height: buffer.height,
-            stride: buffer.stride,
+            width,
+            height,
+            stride: width * 4,
             pixels,
         })
     }
@@ -231,6 +237,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
             } => match interface.as_str() {
                 "wl_output" => state.outputs.push(Output {
                     global: name,
+                    transform: wl_output::Transform::Normal,
                     proxy: registry.bind(name, version.min(4), qh, name),
                     source: Source {
                         name: format!("output-{name}"),
@@ -270,7 +277,12 @@ impl Dispatch<wl_output::WlOutput, u32> for State {
         match event {
             wl_output::Event::Name { name } => output.source.name = name,
             wl_output::Event::Description { description } => output.source.label = description,
-            wl_output::Event::Geometry { x, y, .. } => {
+            wl_output::Event::Geometry {
+                x, y, transform, ..
+            } => {
+                if let WEnum::Value(transform) = transform {
+                    output.transform = transform;
+                }
                 output.source.x = x;
                 output.source.y = y;
             }
@@ -380,6 +392,70 @@ impl Dispatch<frame::ZwlrScreencopyFrameV1, ()> for State {
     }
 }
 
+fn swaps_axes(transform: wl_output::Transform) -> bool {
+    matches!(
+        transform,
+        wl_output::Transform::_90
+            | wl_output::Transform::_270
+            | wl_output::Transform::Flipped90
+            | wl_output::Transform::Flipped270
+    )
+}
+
+// Screencopy supplies output-buffer coordinates. Normalize both the output's
+// presentation transform and the independent YInvert storage flag before
+// publishing upright, tightly packed BGRx frames to PipeWire.
+fn copy_oriented_pixels(
+    source: &[u8],
+    width: u32,
+    height: u32,
+    stride: u32,
+    transform: wl_output::Transform,
+    y_invert: bool,
+    pixels: &mut Vec<u8>,
+) -> (u32, u32) {
+    use wl_output::Transform;
+    let (out_width, out_height) = if swaps_axes(transform) {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    let row = out_width as usize * 4;
+    pixels.resize(row * out_height as usize, 0);
+
+    // The usual DRM and nested outputs need only one contiguous copy per row.
+    if matches!(transform, Transform::Normal | Transform::Flipped180) {
+        let flip = y_invert ^ (transform == Transform::Flipped180);
+        for (y, dst) in pixels.chunks_exact_mut(row).enumerate() {
+            let sy = if flip { height as usize - 1 - y } else { y };
+            let start = sy * stride as usize;
+            dst.copy_from_slice(&source[start..start + row]);
+        }
+        return (out_width, out_height);
+    }
+
+    for y in 0..out_height {
+        for x in 0..out_width {
+            let (sx, mut sy) = match transform {
+                Transform::_90 => (y, height - 1 - x),
+                Transform::_180 => (width - 1 - x, height - 1 - y),
+                Transform::_270 => (width - 1 - y, x),
+                Transform::Flipped => (width - 1 - x, y),
+                Transform::Flipped90 => (y, x),
+                Transform::Flipped270 => (width - 1 - y, height - 1 - x),
+                _ => (x, y),
+            };
+            if y_invert {
+                sy = height - 1 - sy;
+            }
+            let src = sy as usize * stride as usize + sx as usize * 4;
+            let dst = y as usize * row + x as usize * 4;
+            pixels[dst..dst + 4].copy_from_slice(&source[src..src + 4]);
+        }
+    }
+    (out_width, out_height)
+}
+
 fn buffer_size(width: u32, height: u32, stride: u32) -> Result<usize, String> {
     let row = width.checked_mul(4).ok_or("Capture dimensions overflow")?;
     let bytes = stride
@@ -414,6 +490,46 @@ wayland_client::delegate_noop!(State: ignore manager::ZwlrScreencopyManagerV1);
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_orientation_matches_presentation_for_all_transforms() {
+        use wl_output::Transform::*;
+        // Asymmetric 3x2 image with row padding and distinct four-byte pixels.
+        let cases = [
+            (Normal, (3, 2), "abcdef"),
+            (_90, (2, 3), "daebfc"),
+            (_180, (3, 2), "fedcba"),
+            (_270, (2, 3), "cfbead"),
+            (Flipped, (3, 2), "cbafed"),
+            (Flipped90, (2, 3), "adbecf"),
+            (Flipped180, (3, 2), "defabc"),
+            (Flipped270, (2, 3), "fcebda"),
+        ];
+        let pixel = |value: u8| [value, value + 1, value + 2, 255];
+        let mut pixels = vec![0; 100];
+        for (transform, size, expected) in cases {
+            for y_invert in [false, true] {
+                let mut source = Vec::new();
+                let rows = if y_invert {
+                    [b"def", b"abc"]
+                } else {
+                    [b"abc", b"def"]
+                };
+                for row in rows {
+                    for &value in row {
+                        source.extend_from_slice(&pixel(value));
+                    }
+                    source.extend_from_slice(&[0; 4]);
+                }
+                assert_eq!(
+                    copy_oriented_pixels(&source, 3, 2, 16, transform, y_invert, &mut pixels),
+                    size,
+                );
+                let expected: Vec<_> = expected.bytes().flat_map(pixel).collect();
+                assert_eq!(pixels, expected, "{transform:?}, YInvert={y_invert}");
+            }
+        }
+    }
+
     #[test]
     fn rejects_unbounded_and_invalid_buffers() {
         assert_eq!(buffer_size(640, 480, 2560).unwrap(), 1228800);
