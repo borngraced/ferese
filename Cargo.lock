@@ -1726,6 +1726,7 @@ name = "ferese-polkit-agent"
 version = "0.1.0"
 dependencies = [
  "ferese-config",
+ "ferese-theme",
  "glib",
  "libc",
  "libcosmic",

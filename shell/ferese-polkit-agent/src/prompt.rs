@@ -17,7 +17,6 @@ use zeroize::{Zeroize, Zeroizing};
 #[derive(Clone)]
 struct Appearance {
     surface: Color,
-    translucent: bool,
     text: Color,
     muted: Color,
     accent: Color,
@@ -48,12 +47,12 @@ impl Appearance {
             .and_then(|value| value.as_f64())
             .unwrap_or(ferese_config::DEFAULT_MATERIAL_OPACITY)
             .clamp(0., 1.) as f32;
+
         let mut surface = color("theme.colors.surface_base", "#111821");
         surface.a = if translucent { shell_opacity } else { 1. };
 
         Self {
             surface,
-            translucent,
             text: color("theme.colors.text_primary", "#F4F7FB"),
             muted: color("theme.colors.text_muted", "#8793A2"),
             accent: color("theme.colors.accent", "#3D7BE6"),
@@ -74,6 +73,10 @@ impl Appearance {
         use cosmic::cosmic_theme::{ThemeBuilder, palette::Srgba};
 
         let rgba = |color: Color| Srgba::new(color.r, color.g, color.b, color.a);
+        let opaque_surface = Color {
+            a: 1.,
+            ..self.surface
+        };
         let builder = if self.surface.r + self.surface.g + self.surface.b > 1.5 {
             ThemeBuilder::light()
         } else {
@@ -87,18 +90,15 @@ impl Appearance {
         corners.radius_l = [self.radius; 4];
         corners.radius_xl = [self.radius; 4];
 
-        cosmic::Theme::custom(Arc::new(
-            builder
-                .corner_radii(corners)
-                .bg_color(rgba(Color {
-                    a: if self.translucent { 0. } else { 1. },
-                    ..self.surface
-                }))
-                .primary_container_bg(rgba(self.surface))
-                .text_tint(rgba(self.text).color)
-                .accent(rgba(self.accent).color)
-                .build(),
-        ))
+        let mut native = builder
+            .corner_radii(corners)
+            .bg_color(rgba(opaque_surface))
+            .primary_container_bg(rgba(opaque_surface))
+            .text_tint(rgba(self.text).color)
+            .accent(ferese_theme::accent_color(self.accent, opaque_surface))
+            .build();
+        ferese_theme::apply(&mut native, self.text);
+        cosmic::Theme::custom(Arc::new(native))
     }
 }
 
@@ -272,11 +272,21 @@ impl cosmic::Application for Prompt {
         &mut self.core
     }
 
+    fn style(&self) -> Option<cosmic::iced::theme::Style> {
+        Some(cosmic::iced::theme::Style {
+            background_color: self.appearance.surface,
+            text_color: self.appearance.text,
+            icon_color: self.appearance.text,
+        })
+    }
+
     fn init(
         mut core: Core,
         (incoming, description, user, appearance): Self::Flags,
     ) -> (Self, Task<Message>) {
         core.window.show_headerbar = false;
+        core.window.border_padding = Some(0);
+        core.window.content_container = false;
         let height = content_height(&description, None);
         let bounds = core
             .main_window_id()
@@ -375,7 +385,7 @@ impl cosmic::Application for Prompt {
             });
         }
         let action = button::custom(text("Authenticate").font(palette.font).size(13))
-            .class(theme::Button::Suggested)
+            .class(ferese_theme::accent_button())
             .height(Length::Fixed(36.))
             .padding([8, 16])
             .on_press_maybe((!self.waiting && !self.answer.is_empty()).then_some(Message::Submit));
@@ -460,17 +470,6 @@ impl cosmic::Application for Prompt {
             .padding(20)
             .width(Length::Fill)
             .height(Length::Fill)
-            .class(theme::Container::custom(move |_| {
-                widget::container::Style {
-                    background: Some(Background::Color(palette.surface)),
-                    text_color: Some(palette.text),
-                    border: Border {
-                        radius: palette.radius.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }
-            }))
             .into()
     }
 }

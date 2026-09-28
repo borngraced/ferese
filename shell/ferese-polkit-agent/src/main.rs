@@ -14,6 +14,7 @@ use zbus::zvariant::{OwnedValue, Value};
 const AGENT_PATH: &str = "/dev/ferese/PolkitAgent";
 const AUTHORITY: &str = "org.freedesktop.PolicyKit1";
 const AUTHORITY_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
+const AUTHORITY_INTERFACE: &str = "org.freedesktop.PolicyKit1.Authority";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -102,17 +103,25 @@ fn choose_identity(identities: &[Identity]) -> Option<u32> {
 }
 
 fn session_subject() -> Result<(String, HashMap<String, Value<'static>>), String> {
-    let id = std::env::var("XDG_SESSION_ID")
-        .map_err(|_| "XDG_SESSION_ID is required for polkit registration".to_owned())?;
-
-    if id.is_empty() {
-        return Err("XDG_SESSION_ID is empty".into());
-    }
-
+    let stat = std::fs::read_to_string("/proc/self/stat").map_err(|error| error.to_string())?;
+    let suffix = stat
+        .rsplit_once(") ")
+        .map(|(_, suffix)| suffix)
+        .ok_or("Invalid /proc/self/stat")?;
+    let started = suffix
+        .split_whitespace()
+        .nth(19)
+        .ok_or("Missing process start time")?
+        .parse::<u64>()
+        .map_err(|error| error.to_string())?;
     let mut details = HashMap::new();
-    details.insert("session-id".to_owned(), Value::from(id));
-
-    Ok(("unix-session".into(), details))
+    details.insert("pid".to_owned(), Value::from(std::process::id()));
+    details.insert(
+        "uid".to_owned(),
+        Value::from(unsafe { libc::geteuid() } as i32),
+    );
+    details.insert("start-time".to_owned(), Value::from(started));
+    Ok(("unix-process".into(), details))
 }
 
 async fn run_agent() -> Result<(), Box<dyn std::error::Error>> {
@@ -121,7 +130,8 @@ async fn run_agent() -> Result<(), Box<dyn std::error::Error>> {
         .serve_at(AGENT_PATH, Agent::default())?
         .build()
         .await?;
-    let authority = zbus::Proxy::new(&connection, AUTHORITY, AUTHORITY_PATH, AUTHORITY).await?;
+    let authority =
+        zbus::Proxy::new(&connection, AUTHORITY, AUTHORITY_PATH, AUTHORITY_INTERFACE).await?;
     let locale = std::env::var("LANG").unwrap_or_default();
 
     authority
