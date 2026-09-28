@@ -20,7 +20,8 @@ use smithay::{
 };
 
 const OVERVIEW_MARGIN: f64 = 48.0;
-const OVERVIEW_GAP: f64 = 24.0;
+const OVERVIEW_GAP: f64 = 40.0;
+const EXIT_DURATION: f64 = 0.18;
 const WORKSPACE_CARD_GAP: f64 = 8.0;
 const MAX_PREVIEW_SCALE: f64 = 0.82;
 
@@ -97,12 +98,13 @@ pub(crate) struct OverviewState {
     selected: Option<WindowId>,
     presentations: HashMap<WindowId, AnimatedRect>,
     opacity: AnimatedValue,
+    exit_transition: Option<(f64, f64)>,
     strip_offsets: HashMap<OutputId, usize>,
     font_family: String,
     font_requests: Option<FontRequests>,
     font: Option<FontArc>,
     labels: HashMap<
-        (String, u64),
+        (String, u64, [u32; 4]),
         (
             MemoryRenderBuffer,
             smithay::utils::Size<i32, smithay::utils::Buffer>,
@@ -117,6 +119,7 @@ impl Default for OverviewState {
             selected: None,
             presentations: HashMap::new(),
             opacity: AnimatedValue::new(0.0),
+            exit_transition: None,
             strip_offsets: HashMap::new(),
             font_family: "sans-serif".into(),
             font_requests: None,
@@ -132,6 +135,14 @@ pub(crate) struct WorkspaceCard {
     pub rect: Rect,
     pub selected: bool,
     pub windows: Vec<(WindowId, Rect)>,
+}
+
+impl WorkspaceCard {
+    fn window_at(&self, point: Point<f64, Logical>) -> Option<WindowId> {
+        self.windows
+            .iter()
+            .find_map(|(id, rect)| contains(*rect, point).then_some(*id))
+    }
 }
 
 pub(crate) fn workspace_strip(bounds: Rect) -> Rect {
@@ -204,11 +215,12 @@ impl OverviewState {
         &mut self,
         text: &str,
         scale: f64,
+        color: [f32; 4],
     ) -> Option<(
         MemoryRenderBuffer,
         smithay::utils::Size<i32, smithay::utils::Buffer>,
     )> {
-        let key = (text.to_owned(), scale.to_bits());
+        let key = (text.to_owned(), scale.to_bits(), color.map(f32::to_bits));
         if let Some(buffer) = self.labels.get(&key) {
             return Some(buffer.clone());
         }
@@ -238,8 +250,13 @@ impl OverviewState {
                     let y = y as i32 + bounds.min.y as i32;
                     if x >= 0 && x < width && y >= 0 && y < height {
                         let offset = ((y * width + x) * 4) as usize;
-                        let alpha = (coverage * 255.0).round() as u8;
-                        pixels[offset..offset + 4].copy_from_slice(&[alpha, alpha, alpha, alpha]);
+                        let alpha = coverage * color[3];
+                        pixels[offset..offset + 4].copy_from_slice(&[
+                            (color[0] * alpha * 255.0).round() as u8,
+                            (color[1] * alpha * 255.0).round() as u8,
+                            (color[2] * alpha * 255.0).round() as u8,
+                            (alpha * 255.0).round() as u8,
+                        ]);
                     }
                 });
             }
@@ -308,9 +325,17 @@ impl OverviewState {
     }
 
     pub(crate) fn presented_rect(&self, id: WindowId, normal: Rect) -> Rect {
-        self.presentations
-            .get(&id)
-            .map_or(normal, |presentation| presentation.current)
+        let preview = self.presentations.get(&id).map_or(normal, |p| p.current);
+        if let Some((elapsed, _)) = self.exit_transition {
+            let t = 1.0 - (1.0 - (elapsed / EXIT_DURATION).clamp(0.0, 1.0)).powi(3);
+            return Rect::new(
+                preview.x + (normal.x - preview.x) * t,
+                preview.y + (normal.y - preview.y) * t,
+                preview.width + (normal.width - preview.width) * t,
+                preview.height + (normal.height - preview.height) * t,
+            );
+        }
+        preview
     }
 
     fn enter(
@@ -319,6 +344,19 @@ impl OverviewState {
         selected: Option<WindowId>,
         animations_enabled: bool,
     ) {
+        // Reverse a dismissal from the currently visible geometry, not the old grid.
+        if self.exit_transition.is_some() {
+            let visible: Vec<_> = targets
+                .iter()
+                .map(|(id, (normal, _))| (*id, self.presented_rect(*id, *normal)))
+                .collect();
+            for (id, rect) in visible {
+                if let Some(presentation) = self.presentations.get_mut(&id) {
+                    *presentation = AnimatedRect::new(rect);
+                }
+            }
+        }
+        self.exit_transition = None;
         self.active = true;
         self.opacity.retarget_preserving_motion(1.0);
         if !animations_enabled {
@@ -355,6 +393,7 @@ impl OverviewState {
 
     fn exit(&mut self, normal: HashMap<WindowId, Rect>, animations_enabled: bool) {
         self.active = false;
+        self.exit_transition = animations_enabled.then_some((0.0, self.opacity.current));
         self.opacity.retarget_preserving_motion(0.0);
         if !animations_enabled {
             self.opacity.snap();
@@ -383,6 +422,23 @@ impl OverviewState {
         spring: SpringConfig,
         animations_enabled: bool,
     ) -> bool {
+        if let Some((elapsed, initial_opacity)) = self.exit_transition {
+            let elapsed = if animations_enabled {
+                elapsed + delta.as_secs_f64()
+            } else {
+                EXIT_DURATION
+            };
+            let remaining = (1.0 - elapsed / EXIT_DURATION).clamp(0.0, 1.0);
+            self.opacity.current = initial_opacity * remaining.powi(3);
+            if elapsed >= EXIT_DURATION {
+                self.exit_transition = None;
+                self.presentations.clear();
+                self.opacity.snap();
+                return false;
+            }
+            self.exit_transition = Some((elapsed, initial_opacity));
+            return true;
+        }
         let mut active_animation = false;
 
         for presentation in self.presentations.values_mut() {
@@ -417,6 +473,53 @@ impl OverviewState {
 }
 
 impl Ferese {
+    pub(crate) fn hover_overview_window(&mut self, point: Point<f64, Logical>) {
+        if !self.overview.is_active() {
+            return;
+        }
+        let selected = self
+            .window_under_visual(point)
+            .and_then(|w| self.window_ids.get(&w).copied());
+        if selected.is_some() && self.overview.selected != selected {
+            self.overview.selected = selected;
+            crate::backends::direct::render_all(self);
+        }
+    }
+
+    pub(crate) fn overview_window_label(
+        &mut self,
+        window: &smithay::desktop::Window,
+        scale: f64,
+        width: f64,
+    ) -> Option<(
+        MemoryRenderBuffer,
+        smithay::utils::Size<i32, smithay::utils::Buffer>,
+    )> {
+        use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData};
+        let surface = window.toplevel()?.wl_surface();
+        let title = with_states(surface, |states| {
+            let data = states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()?
+                .lock()
+                .ok()?;
+            data.title
+                .clone()
+                .filter(|title| !title.trim().is_empty())
+                .or_else(|| data.app_id.clone())
+        })
+        .unwrap_or_else(|| "Window".into());
+        let limit = ((width - 16.0) / 8.0).clamp(1.0, 48.0) as usize;
+        let mut chars = title.chars().filter(|c| !c.is_control());
+        let mut title: String = chars.by_ref().take(limit).collect();
+        if chars.next().is_some() {
+            title.pop();
+            title.push('…');
+        }
+        self.overview
+            .label(&title, scale, self.theme_settings.text_primary_color.0)
+    }
+
     pub(crate) fn overview_workspace_label(
         &mut self,
         workspace: WorkspaceId,
@@ -426,7 +529,8 @@ impl Ferese {
         smithay::utils::Size<i32, smithay::utils::Buffer>,
     )> {
         let name = self.workspaces.workspace(workspace)?.name.clone();
-        self.overview.label(&name, scale)
+        self.overview
+            .label(&name, scale, self.theme_settings.text_primary_color.0)
     }
 
     pub(crate) fn set_overview_active(&mut self, active: bool) {
@@ -618,6 +722,12 @@ impl Ferese {
             .into_iter()
             .find(|card| contains(card.rect, point));
         if let Some(card) = card {
+            if let Some(id) = card.window_at(point) {
+                if self.activate_managed_window(id) {
+                    self.set_overview_active(false);
+                }
+                return true;
+            }
             let Some(output_id) = self.output_id(&output) else {
                 return true;
             };
@@ -686,17 +796,19 @@ impl Ferese {
             let Some(bounds) = self.output_bounds_for(output) else {
                 continue;
             };
-            let mut windows = self
-                .window_ids
-                .values()
-                .filter(|id| self.workspaces.workspace_for_window(**id) == Some(workspace))
+            let Some(workspace) = self.workspaces.workspace(workspace) else {
+                continue;
+            };
+            let windows = workspace
+                .layout
+                .window_ids()
+                .chain(workspace.floating.iter().copied())
                 .filter_map(|id| {
-                    let normal = self.window_geometry.get(id)?.visual.current;
-                    Some((*id, normal))
+                    let normal = self.window_geometry.get(&id)?.visual.current;
+                    Some((id, normal))
                 })
                 .collect::<Vec<_>>();
 
-            windows.sort_by_key(|(id, _)| id.0);
             for (id, target) in overview_layout(window_area(bounds), &windows) {
                 let normal = self.window_geometry[&id].visual.current;
                 targets.insert(id, (normal, target));
@@ -731,15 +843,43 @@ fn preview_layout(
     let margin = margin.min(bounds.width * 0.1).min(bounds.height * 0.1);
     let content_width = (bounds.width - margin * 2.0).max(1.0);
     let content_height = (bounds.height - margin * 2.0).max(1.0);
-    let aspect = (content_width / content_height).max(0.1);
-    let columns = ((windows.len() as f64 * aspect).sqrt().ceil() as usize).clamp(1, windows.len());
+    // Choose the grid from the actual window shapes. Three tall windows should
+    // share one row instead of becoming tiny previews spread over two rows.
+    let cell_size = |columns: usize| {
+        let rows = windows.len().div_ceil(columns);
+        (
+            ((content_width - gap * columns.saturating_sub(1) as f64) / columns as f64)
+                .clamp(1.0, 480.0),
+            ((content_height - gap * rows.saturating_sub(1) as f64) / rows as f64)
+                .clamp(1.0, 420.0),
+        )
+    };
+    let score = |columns: usize| {
+        let (w, h) = cell_size(columns);
+        windows
+            .iter()
+            .map(|(_, source)| {
+                let scale = (w / source.width.max(1.0))
+                    .min(h / source.height.max(1.0))
+                    .min(MAX_PREVIEW_SCALE);
+                source.width * source.height * scale * scale
+            })
+            .sum::<f64>()
+    };
+    let columns = (1..=windows.len())
+        .max_by(|a, b| {
+            let (sa, sb) = (score(*a), score(*b));
+            if (sa - sb).abs() < 1.0 {
+                windows.len().div_ceil(*b).cmp(&windows.len().div_ceil(*a))
+            } else {
+                sa.total_cmp(&sb)
+            }
+        })
+        .unwrap_or(1);
     let rows = windows.len().div_ceil(columns);
-    let cell_width =
-        ((content_width - gap * columns.saturating_sub(1) as f64) / columns as f64).max(1.0);
-    let cell_height =
-        ((content_height - gap * rows.saturating_sub(1) as f64) / rows as f64).max(1.0);
-    let origin_x = bounds.x + margin;
-    let origin_y = bounds.y + margin;
+    let (cell_width, cell_height) = cell_size(columns);
+    let grid_height = cell_height * rows as f64 + gap * rows.saturating_sub(1) as f64;
+    let origin_y = bounds.y + (bounds.height - grid_height) * 0.5;
 
     windows
         .iter()
@@ -752,7 +892,11 @@ fn preview_layout(
                 .min(MAX_PREVIEW_SCALE);
             let width = (source.width * scale).max(1.0);
             let height = (source.height * scale).max(1.0);
-            let cell_x = origin_x + column as f64 * (cell_width + gap);
+            let row_count = (windows.len() - row * columns).min(columns);
+            let row_width =
+                cell_width * row_count as f64 + gap * row_count.saturating_sub(1) as f64;
+            let cell_x =
+                bounds.x + (bounds.width - row_width) * 0.5 + column as f64 * (cell_width + gap);
             let cell_y = origin_y + row as f64 * (cell_height + gap);
             let target = Rect::new(
                 cell_x + (cell_width - width) / 2.0,
@@ -800,7 +944,7 @@ mod tests {
     fn font_reload_keeps_labels_until_current_result_arrives() {
         let mut overview = OverviewState::with_font_family("first".into());
         assert!(overview.complete_font_load("first", Some(test_font())));
-        assert!(overview.label("1", 1.0).is_some());
+        assert!(overview.label("1", 1.0, [1.0; 4]).is_some());
         assert_eq!(overview.labels.len(), 1);
         overview.set_font_family("second".into());
         assert!(overview.font.is_some());
@@ -810,7 +954,7 @@ mod tests {
         assert_eq!(overview.labels.len(), 1);
         assert!(overview.complete_font_load("second", Some(test_font())));
         assert!(overview.labels.is_empty());
-        assert!(overview.label("1", 1.0).is_some());
+        assert!(overview.label("1", 1.0, [1.0; 4]).is_some());
     }
 
     #[test]
@@ -836,7 +980,7 @@ mod tests {
     #[test]
     fn labels_do_not_load_fonts_synchronously() {
         let mut overview = OverviewState::default();
-        assert!(overview.label("1", 1.0).is_none());
+        assert!(overview.label("1", 1.0, [1.0; 4]).is_none());
         assert!(overview.font.is_none());
         assert!(overview.labels.is_empty());
     }
@@ -952,6 +1096,21 @@ mod tests {
     }
 
     #[test]
+    fn tall_windows_share_a_row_when_their_shapes_fit() {
+        let bounds = Rect::new(0.0, 0.0, 1192.0, 1100.0);
+        let windows = (1..=3)
+            .map(|id| (WindowId(id), Rect::new(0.0, 0.0, 586.0, 1250.0)))
+            .collect::<Vec<_>>();
+        let grid = overview_layout(bounds, &windows);
+        let first = grid[&WindowId(1)];
+        for rect in grid.values() {
+            assert_eq!(rect.y, first.y);
+            assert!(rect.height >= 400.0);
+            assert!(rect.x >= 0.0 && rect.x + rect.width <= bounds.width);
+        }
+    }
+
+    #[test]
     fn overview_grid_preserves_preview_aspect_ratio() {
         let source = Rect::new(0.0, 0.0, 1200.0, 800.0);
         let layout = overview_layout(
@@ -961,6 +1120,54 @@ mod tests {
         let preview = layout[&WindowId(1)];
 
         assert!((preview.width / preview.height - source.width / source.height).abs() < 0.001);
+    }
+
+    #[test]
+    fn exiting_overview_tracks_a_moving_layout_and_finishes_in_180ms() {
+        let id = WindowId(1);
+        let initial = Rect::new(-400.0, 0.0, 800.0, 600.0);
+        let preview = Rect::new(100.0, 100.0, 400.0, 300.0);
+        let moved = Rect::new(200.0, 0.0, 800.0, 600.0);
+        let mut overview = OverviewState::default();
+        overview.enter(HashMap::from([(id, (initial, preview))]), Some(id), false);
+        overview.exit(HashMap::from([(id, initial)]), true);
+        overview.advance(Duration::from_millis(90), SpringConfig::default(), true);
+        let shown = overview.presented_rect(id, moved);
+        assert!((shown.x - 187.5).abs() < 0.001);
+        overview.advance(Duration::from_millis(90), SpringConfig::default(), true);
+        assert!(!overview.is_presenting());
+        assert_eq!(overview.presented_rect(id, moved), moved);
+    }
+
+    #[test]
+    fn reversing_exit_preserves_the_visible_window_position() {
+        let id = WindowId(1);
+        let normal = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let preview = Rect::new(100.0, 100.0, 400.0, 300.0);
+        let targets = HashMap::from([(id, (normal, preview))]);
+        let mut overview = OverviewState::default();
+        overview.enter(targets.clone(), Some(id), false);
+        overview.exit(HashMap::from([(id, normal)]), true);
+        overview.advance(Duration::from_millis(60), SpringConfig::default(), true);
+        let shown = overview.presented_rect(id, normal);
+        overview.enter(targets, Some(id), true);
+        assert_eq!(overview.presented_rect(id, normal), shown);
+    }
+
+    #[test]
+    fn workspace_thumbnail_hit_selects_the_clicked_window_not_workspace_focus() {
+        let card = WorkspaceCard {
+            workspace: WorkspaceId(1),
+            rect: Rect::new(0.0, 0.0, 160.0, 100.0),
+            selected: true,
+            windows: vec![
+                (WindowId(1), Rect::new(5.0, 5.0, 70.0, 65.0)),
+                (WindowId(2), Rect::new(85.0, 5.0, 70.0, 65.0)),
+            ],
+        };
+        assert_eq!(card.window_at((120.0, 35.0).into()), Some(WindowId(2)));
+        assert_eq!(card.window_at((30.0, 35.0).into()), Some(WindowId(1)));
+        assert_eq!(card.window_at((80.0, 85.0).into()), None);
     }
 
     #[test]

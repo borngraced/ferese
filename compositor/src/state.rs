@@ -837,11 +837,17 @@ impl Ferese {
 
     pub fn window_under_visual(&self, position: Point<f64, Logical>) -> Option<Window> {
         let workspace = self.workspace_under_pointer(position)?;
-        let candidates = if self.overview.is_active() {
+        let mut candidates = if self.overview.is_active() {
             self.window_ids.keys().cloned().collect::<Vec<_>>()
         } else {
             self.space.elements().rev().cloned().collect::<Vec<_>>()
         };
+        if self.overview.is_active() {
+            // Match Overview's front-to-back render order during overlapping motion.
+            candidates.sort_by_key(|window| {
+                std::cmp::Reverse(self.window_ids.get(window).map_or(0, |id| id.0))
+            });
+        }
         candidates.iter().find_map(|window| {
             if !self.window_content_ready(window) {
                 return None;
@@ -852,10 +858,11 @@ impl Ferese {
             }
             let visual = self.presented_window_rect(*id)?;
 
+            let caption_height = if self.overview.is_active() { 34.0 } else { 0.0 };
             (position.x >= visual.x
                 && position.y >= visual.y
                 && position.x < visual.x + visual.width
-                && position.y < visual.y + visual.height)
+                && position.y < visual.y + visual.height + caption_height)
                 .then(|| window.clone())
         })
     }

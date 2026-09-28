@@ -190,6 +190,7 @@ pub struct ThemeSettings {
     pub focus_ring_gradient: Option<BorderGradient>,
     pub shadow_color: RgbaColor,
     pub surface_base_color: RgbaColor,
+    pub text_primary_color: RgbaColor,
     pub shell_opacity: f64,
     pub inactive_dim: InactiveDimSettings,
     pub window_radius: f64,
@@ -359,6 +360,8 @@ fn default_backdrop_blur() -> f64 {
 
 #[derive(Debug, Deserialize)]
 struct ThemeColorsConfig {
+    #[serde(default = "default_text_primary_color")]
+    text_primary: String,
     #[serde(default = "default_surface_base_color")]
     surface_base: String,
     #[serde(default = "default_border_color")]
@@ -373,6 +376,7 @@ impl Default for ThemeColorsConfig {
     fn default() -> Self {
         Self {
             surface_base: default_surface_base_color(),
+            text_primary: default_text_primary_color(),
             border: default_border_color(),
             accent: default_accent_color(),
             shadow: default_shadow_color(),
@@ -1081,6 +1085,10 @@ impl Config {
             border_width,
             focus_ring_width,
             border_color: parse_color(&self.theme.colors.border, "colors.border")?,
+            text_primary_color: parse_color(
+                &self.theme.colors.text_primary,
+                "colors.text_primary",
+            )?,
             accent_color: parse_color(&self.theme.colors.accent, "colors.accent")?,
             border_gradient: self.theme.border.settings("border")?,
             focus_ring_gradient: self.theme.focus_ring.settings("focus_ring")?,
@@ -1670,6 +1678,10 @@ fn default_border_color() -> String {
     "#FFFFFF18".to_owned()
 }
 
+fn default_text_primary_color() -> String {
+    "#F4F7FB".to_owned()
+}
+
 fn default_surface_base_color() -> String {
     "#111821".to_owned()
 }
@@ -2025,6 +2037,7 @@ mod tests {
                 focus_ring_gradient: None,
                 shadow_color: RgbaColor([1.0 / 255.0, 2.0 / 255.0, 3.0 / 255.0, 128.0 / 255.0]),
                 surface_base_color: RgbaColor([17.0 / 255.0, 24.0 / 255.0, 33.0 / 255.0, 1.0,]),
+                text_primary_color: RgbaColor([244.0 / 255.0, 247.0 / 255.0, 251.0 / 255.0, 1.0]),
                 shell_opacity: 0.78,
                 inactive_dim: InactiveDimSettings {
                     enabled: false,

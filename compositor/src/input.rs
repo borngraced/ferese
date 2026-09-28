@@ -135,6 +135,17 @@ impl Ferese {
                         }
 
                         let symbol = keysym.modified_sym().raw();
+                        if data.overview.is_active()
+                            && matches!(symbol, keysyms::KEY_Return | keysyms::KEY_KP_Enter)
+                        {
+                            if state == KeyState::Pressed {
+                                data.intercepted_keys.insert(keycode);
+                                if let Some(id) = data.overview.selected() {
+                                    data.select_overview_window(id);
+                                }
+                            }
+                            return FilterResult::Intercept(());
+                        }
                         if overview_escape(symbol, data.overview.is_active()) {
                             if state == KeyState::Pressed {
                                 data.intercepted_keys.insert(keycode);
@@ -596,6 +607,10 @@ impl Ferese {
         position: Point<f64, Logical>,
     ) {
         if self.session_lock.active {
+            return;
+        }
+        if self.overview.is_active() {
+            self.hover_overview_window(position);
             return;
         }
         // Keep the explicitly selected window focused until Overview's exit

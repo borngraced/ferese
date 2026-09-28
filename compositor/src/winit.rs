@@ -568,9 +568,17 @@ pub(crate) struct RoundedClipPrograms {
     shadow: GlesPixelProgram,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum OverviewChromePart {
+    Card,
+    Outline,
+    Strip,
+    Caption,
+}
+
 #[derive(Debug)]
 pub(crate) struct OverviewScrim {
-    chrome: HashMap<(u64, bool), HashMap<ErasedContextId, CachedBorder>>,
+    chrome: HashMap<(u64, OverviewChromePart), HashMap<ErasedContextId, CachedBorder>>,
 }
 
 #[derive(Clone, Debug)]
@@ -1334,7 +1342,7 @@ fn overview_chrome_element(
     output: &Output,
     output_geometry: Rectangle<i32, Logical>,
     scale: f64,
-    key: (u64, bool),
+    key: (u64, OverviewChromePart),
     rect: ferese_layout::Rect,
     color: [f32; 4],
     width: f64,
@@ -1357,13 +1365,13 @@ fn overview_chrome_element(
         focus_gradient_line: [0.0; 4],
         focus_mix: 0.0,
     };
-    let program = if key.1 {
+    let program = if key.1 == OverviewChromePart::Outline {
         rounded_clip_program(state, renderer)?.border
     } else {
         material_program(state, renderer)?.0
     };
     let uniforms = |p: &BorderParameters| {
-        if key.1 {
+        if key.1 == OverviewChromePart::Outline {
             border_uniforms(p)
         } else {
             vec![
@@ -1427,6 +1435,23 @@ fn overview_strip_elements(
         return Vec::new();
     };
     let cards = state.overview_workspace_cards(output);
+    let strip = crate::overview::workspace_strip(bounds);
+    let panel = match (cards.first(), cards.last()) {
+        (Some(first), Some(last)) => ferese_layout::Rect::new(
+            first.rect.x - 12.0,
+            strip.y,
+            last.rect.x + last.rect.width - first.rect.x + 24.0,
+            strip.height,
+        ),
+        _ => strip,
+    };
+    let radius = state.theme_settings.material_radius;
+    let material_opacity = crate::effects::resolve_material(
+        crate::effects::SemanticRole::Panel,
+        state.theme_settings.material_style,
+        state.theme_settings.shell_opacity as f32,
+    )
+    .opacity;
     let mut elements = Vec::new();
     let programs = rounded_clip_program(state, renderer);
     // Resolve IDs once per strip, rather than scanning all managed windows
@@ -1436,6 +1461,86 @@ fn overview_strip_elements(
         .iter()
         .map(|(window, id)| (*id, window.clone()))
         .collect();
+    if let Some(output_id) = state.output_id(output)
+        && let Some(cache) = state.overview_scrims.get_mut(&output_id)
+    {
+        cache.chrome.retain(|(id, part), _| match part {
+            OverviewChromePart::Caption => windows_by_id.keys().any(|window| window.0 == *id),
+            OverviewChromePart::Card | OverviewChromePart::Outline => {
+                cards.iter().any(|card| card.workspace.0 == *id)
+            }
+            OverviewChromePart::Strip => true,
+        });
+    }
+    // Cached title textures are independent of window content and stay readable
+    // when thumbnails are small. Their pills use the shell's material and radius.
+    for (id, window) in &windows_by_id {
+        if !state.window_belongs_to_output(*id, output) {
+            continue;
+        }
+        let Some(rect) = state.presented_window_rect(*id) else {
+            continue;
+        };
+        let Some((buffer, size)) = state.overview_window_label(window, scale, rect.width) else {
+            continue;
+        };
+        let width = (f64::from(size.w) / scale + 16.0).min(rect.width);
+        let caption = ferese_layout::Rect::new(
+            rect.x + (rect.width - width) * 0.5,
+            rect.y + rect.height + 8.0,
+            width,
+            26.0,
+        );
+        let location = Point::<i32, Physical>::from((
+            ((caption.x - f64::from(output_geometry.loc.x) + caption.width * 0.5) * scale).round()
+                as i32
+                - size.w / 2,
+            ((caption.y - f64::from(output_geometry.loc.y) + 4.0) * scale).round() as i32,
+        ));
+        if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            location.to_f64(),
+            &buffer,
+            Some(alpha),
+            Some(Rectangle::from_size(
+                (f64::from(size.w), f64::from(size.h)).into(),
+            )),
+            Some(
+                (
+                    (f64::from(size.w) / scale).round() as i32,
+                    (f64::from(size.h) / scale).round() as i32,
+                )
+                    .into(),
+            ),
+            RenderElementKind::Unspecified,
+        ) {
+            let element = RescaleRenderElement::from_element(element, location, 1.0);
+            let element = RelocateRenderElement::from_element(element, (0, 0), Relocate::Relative);
+            if let Some(element) = CropRenderElement::from_element(
+                element,
+                scale,
+                physical_rect(caption, output_geometry.loc, scale),
+            ) {
+                elements.push(element.into());
+            }
+        }
+        let mut fill = state.theme_settings.surface_base_color.0;
+        fill[3] = alpha * material_opacity;
+        if let Some(background) = overview_chrome_element(
+            state,
+            renderer,
+            output,
+            output_geometry,
+            scale,
+            (id.0, OverviewChromePart::Caption),
+            caption,
+            fill,
+            0.0,
+            radius.min(13.0),
+        ) {
+            elements.push(background.into());
+        }
+    }
     for card in cards {
         // Front-to-back: outline and live miniatures above each card, all above
         // the strip. Nothing is painted behind the main overview window grid.
@@ -1448,11 +1553,11 @@ fn overview_strip_elements(
                 output,
                 output_geometry,
                 scale,
-                (card.workspace.0, true),
+                (card.workspace.0, OverviewChromePart::Outline),
                 card.rect,
                 color,
                 1.0,
-                10.0,
+                radius,
             ) {
                 elements.push(border.into());
             }
@@ -1489,7 +1594,9 @@ fn overview_strip_elements(
                 location.to_f64(),
                 &buffer,
                 Some(alpha),
-                None,
+                Some(Rectangle::from_size(
+                    (f64::from(size.w), f64::from(size.h)).into(),
+                )),
                 Some(
                     (
                         (f64::from(size.w) / scale).round() as i32,
@@ -1515,39 +1622,41 @@ fn overview_strip_elements(
         for component in &mut card_color[..3] {
             *component = (*component + 0.035).min(1.0);
         }
-        card_color[3] = alpha * 0.75;
+        card_color[3] = alpha * material_opacity;
         if let Some(card_fill) = overview_chrome_element(
             state,
             renderer,
             output,
             output_geometry,
             scale,
-            (card.workspace.0, false),
+            (card.workspace.0, OverviewChromePart::Card),
             card.rect,
             card_color,
             0.0,
-            10.0,
+            radius,
         ) {
             elements.push(card_fill.into());
         }
     }
     let mut color = state.theme_settings.surface_base_color.0;
-    color[3] = alpha * crate::effects::resolve_material(
-        crate::effects::SemanticRole::Panel,
-        state.theme_settings.material_style,
-        state.theme_settings.shell_opacity as f32,
-    ).opacity;
+    color[3] = alpha
+        * crate::effects::resolve_material(
+            crate::effects::SemanticRole::Panel,
+            state.theme_settings.material_style,
+            state.theme_settings.shell_opacity as f32,
+        )
+        .opacity;
     if let Some(strip) = overview_chrome_element(
         state,
         renderer,
         output,
         output_geometry,
         scale,
-        (0, false),
-        crate::overview::workspace_strip(bounds),
+        (0, OverviewChromePart::Strip),
+        panel,
         color,
         0.0,
-        16.0,
+        radius,
     ) {
         elements.push(strip.into());
     }

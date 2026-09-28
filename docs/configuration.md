@@ -210,6 +210,16 @@ theme {
 | `repeat_rate` | integer > 0 | `25` | Repeats per second |
 | `repeat_delay_ms` | integer ≥ 0 | `600` | Delay before repeat |
 
+With focus-follows-mouse enabled, hovering a visible part of a window changes
+keyboard focus without raising it or moving the scrolling viewport. Clicking or
+using directional keyboard focus brings the selected window into view.
+
+In Overview (`Super+Tab`), click a window preview or a miniature inside a workspace
+card to activate that exact window. Hover highlights the target; directional
+focus keys move the selection, Enter activates it, and Escape dismisses Overview.
+Clicking a workspace card's background switches workspaces while keeping Overview
+open. Previews follow layout order and use the configured shell font and colors.
+
 The touchpad device keys are booleans, all defaulting to `true`: `tap`,
 `natural_scroll` and `disable_while_typing`. These apply to DRM devices; nested
 previews use the host's physical input settings.
