@@ -115,15 +115,15 @@ impl Appearance {
         corners.radius_m = [self.radius; 4];
         corners.radius_l = [self.radius; 4];
         corners.radius_xl = [self.radius; 4];
-        cosmic::Theme::custom(std::sync::Arc::new(
-            builder
-                .corner_radii(corners)
-                .bg_color(color(self.panel))
-                .primary_container_bg(color(self.panel))
-                .text_tint(color(self.text).color)
-                .accent(color(self.accent).color)
-                .build(),
-        ))
+        let mut native = builder
+            .corner_radii(corners)
+            .bg_color(color(self.panel))
+            .primary_container_bg(color(self.panel))
+            .text_tint(color(self.text).color)
+            .accent(ferese_theme::accent_color(self.accent, self.panel))
+            .build();
+        ferese_theme::apply(&mut native, self.text);
+        cosmic::Theme::custom(std::sync::Arc::new(native))
     }
 }
 

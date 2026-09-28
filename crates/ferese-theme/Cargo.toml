@@ -1,0 +1,9 @@
+[package]
+name = "ferese-theme"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version = "1.95"
+
+[dependencies]
+libcosmic.workspace = true

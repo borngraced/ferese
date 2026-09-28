@@ -6,6 +6,7 @@ license.workspace = true
 rust-version = "1.95"
 
 [dependencies]
+ferese-theme = { path = "../../crates/ferese-theme" }
 ferese-config = { path = "../../crates/ferese-config" }
 libcosmic.workspace = true
 jiff.workspace = true

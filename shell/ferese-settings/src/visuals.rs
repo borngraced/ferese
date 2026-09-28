@@ -62,16 +62,7 @@ impl Palette {
     }
 }
 
-fn luminance(color: Color) -> f32 {
-    let channel = |value: f32| {
-        if value <= 0.04045 {
-            value / 12.92
-        } else {
-            ((value + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    0.2126 * channel(color.r) + 0.7152 * channel(color.g) + 0.0722 * channel(color.b)
-}
+use ferese_theme::luminance;
 
 fn surface_shade(base: Color) -> Color {
     if luminance(base) > 0.5 {
@@ -145,8 +136,8 @@ pub fn input_style(p: Palette) -> theme::TextInput {
 }
 
 fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button {
-    let style = move |hover: bool| button::Style {
-        background: Some(Background::Color(if selected {
+    let style = move |hover: bool| {
+        let background = if selected {
             mix(p.sidebar, p.accent, if hover { 0.24 } else { 0.17 })
         } else if hover {
             mix(p.card, surface_shade(p.sidebar), 0.06)
@@ -154,20 +145,28 @@ fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button 
             p.sidebar
         } else {
             p.card
-        })),
-        text_color: Some(p.text),
-        icon_color: None,
-        border_radius: 9.into(),
-        border_width: if selected { 1. } else { 0. },
-        border_color: if selected {
-            p.accent
+        };
+        let on = if selected {
+            ferese_theme::foreground(background, p.text)
         } else {
-            Color::TRANSPARENT
-        },
-        outline_width: 0.,
-        outline_color: Color::TRANSPARENT,
-        overlay: None,
-        shadow_offset: Vector::ZERO,
+            p.text
+        };
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: Some(on),
+            icon_color: Some(on),
+            border_radius: 9.into(),
+            border_width: if selected { 1. } else { 0. },
+            border_color: if selected {
+                p.accent
+            } else {
+                Color::TRANSPARENT
+            },
+            outline_width: 0.,
+            outline_color: Color::TRANSPARENT,
+            overlay: None,
+            shadow_offset: Vector::ZERO,
+        }
     };
 
     theme::Button::Custom {
@@ -180,7 +179,10 @@ fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button 
 
 pub fn native_theme(snapshot: Option<&Snapshot>) -> cosmic::Theme {
     let Some(snapshot) = snapshot else {
-        return cosmic::Theme::custom(std::sync::Arc::new(cosmic::theme::COSMIC_DARK.clone()));
+        let mut native = cosmic::theme::COSMIC_DARK.clone();
+        let preferred = native.background(false).on.into();
+        ferese_theme::apply(&mut native, preferred);
+        return cosmic::Theme::custom(std::sync::Arc::new(native));
     };
     let palette = Palette::from(snapshot);
     let builder = if luminance(palette.sidebar) > 0.5 {
@@ -188,12 +190,13 @@ pub fn native_theme(snapshot: Option<&Snapshot>) -> cosmic::Theme {
     } else {
         cosmic::cosmic_theme::ThemeBuilder::dark()
     };
-    let theme = builder
+    let mut theme = builder
         .bg_color(cosmic_color(palette.background))
         .primary_container_bg(cosmic_color(palette.card))
         .text_tint(cosmic_color(palette.text).color)
-        .accent(cosmic_color(palette.accent).color)
+        .accent(ferese_theme::accent_color(palette.accent, palette.card))
         .build();
+    ferese_theme::apply(&mut theme, palette.text);
     cosmic::Theme::custom(std::sync::Arc::new(theme))
 }
 

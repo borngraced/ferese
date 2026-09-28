@@ -145,6 +145,15 @@ these six visually distinct.
 | `border` | `"#FFFFFF18"` | Unfocused window border |
 | `shadow` | `"#00000055"` | Window shadow color |
 
+Ferese derives the text and icon color for filled accent controls from the
+configured theme. It keeps the configured text color when it reaches a 4.5:1
+contrast ratio; otherwise it chooses black or white. The same rule is shared by
+native dialogs, settings selections, and notification badges. Hover, pressed,
+and disabled accent-button states use the same policy. Small filled controls
+resolve accent transparency against their theme surface so wallpaper cannot
+make their labels unreadable. No separate per-application color setting is needed.
+The target follows [normal-text contrast guidance](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html).
+
 | `theme.geometry` key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `border_width` | number ≥ 0 | `1` | Window border thickness |

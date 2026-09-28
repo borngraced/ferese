@@ -65,18 +65,6 @@ fn blend(base: Color, foreground: Color, amount: f32) -> Color {
     }
 }
 
-fn contrast_text(background: Color, opacity: f32) -> Color {
-    let level = background.r * 0.2126 + background.g * 0.7152 + background.b * 0.0722;
-    Color {
-        a: opacity,
-        ..if level > 0.6 {
-            Color::BLACK
-        } else {
-            Color::WHITE
-        }
-    }
-}
-
 fn age_label(age: Duration) -> String {
     match age.as_secs() {
         0..60 => "now".into(),
@@ -345,16 +333,25 @@ impl FereseShell {
                     ..Default::default()
                 }));
         let icon: Element<'_, cosmic::Action<Message>> = if count > 1 {
+            let badge_fill = ferese_theme::composite(
+                color(palette.accent),
+                color(if history {
+                    palette.surface_base
+                } else {
+                    palette.surface_popover
+                }),
+            );
+            let badge_text = ferese_theme::foreground(badge_fill, color(palette.text_primary));
             let badge = container(
                 text(count.to_string())
                     .size(10)
                     .font(bold)
-                    .class(theme::Text::Color(contrast_text(accent, opacity))),
+                    .class(theme::Text::Color(badge_text.scale_alpha(opacity))),
             )
             .center_x(16)
             .center_y(16)
             .class(theme::Container::custom(move |_| container::Style {
-                background: Some(Background::Color(accent)),
+                background: Some(Background::Color(badge_fill.scale_alpha(opacity))),
                 border: Border {
                     radius: motion::radius(8.0).into(),
                     ..Default::default()

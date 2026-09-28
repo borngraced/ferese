@@ -174,7 +174,7 @@ impl cosmic::Application for Picker {
                 sources = sources.push(
                     button::custom(entry)
                         .class(if selected {
-                            cosmic::theme::Button::Suggested
+                            ferese_theme::accent_button()
                         } else {
                             cosmic::theme::Button::Standard
                         })
@@ -215,7 +215,7 @@ impl cosmic::Application for Picker {
                 .spacing(8)
                 .align_y(Alignment::Center),
             )
-            .class(cosmic::theme::Button::Suggested)
+            .class(ferese_theme::accent_button())
             .padding([6, 16]);
             if !self.selected.is_empty() {
                 share = share.on_press(Message::Share);
@@ -288,15 +288,15 @@ fn appearance() -> (cosmic::Theme, cosmic::font::Font) {
     } else {
         cosmic::cosmic_theme::ThemeBuilder::dark()
     };
-    let theme = cosmic::Theme::custom(std::sync::Arc::new(
-        builder
-            .bg_color(background)
-            .primary_container_bg(background)
-            .text_tint(foreground.color)
-            .accent(accent.color)
-            .corner_radii(corners)
-            .build(),
-    ));
+    let mut native = builder
+        .bg_color(background)
+        .primary_container_bg(background)
+        .text_tint(foreground.color)
+        .accent(ferese_theme::accent_color(accent.into(), background.into()))
+        .corner_radii(corners)
+        .build();
+    ferese_theme::apply(&mut native, foreground.into());
+    let theme = cosmic::Theme::custom(std::sync::Arc::new(native));
     let family: &'static str =
         Box::leak(string("theme.typography.font_family", "Inter").into_boxed_str());
 

@@ -362,9 +362,12 @@ impl Locker {
             .center_x(avatar_size)
             .center_y(avatar_size)
             .class(theme::Container::custom(move |_| {
+                let fill = ferese_theme::composite(a.accent.scale_alpha(0.18), a.panel);
+                let on = ferese_theme::foreground(fill, a.accent);
                 widget::container::Style {
-                    background: Some(iced::Background::Color(a.accent.scale_alpha(0.18))),
-                    text_color: Some(a.accent),
+                    background: Some(iced::Background::Color(fill)),
+                    text_color: Some(on),
+                    icon_color: Some(on),
                     border: iced::Border {
                         radius: (avatar_size / 2.).into(),
                         width: 1.,

@@ -1709,6 +1709,7 @@ name = "ferese-lock"
 version = "0.1.0"
 dependencies = [
  "ferese-config",
+ "ferese-theme",
  "image",
  "jiff",
  "libc",
@@ -1737,6 +1738,7 @@ version = "0.1.0"
 dependencies = [
  "ferese-config",
  "ferese-ipc",
+ "ferese-theme",
  "image",
  "libcosmic",
  "notify",
@@ -1753,6 +1755,7 @@ dependencies = [
  "ferese-config",
  "ferese-core",
  "ferese-protocols",
+ "ferese-theme",
  "iced_accessibility",
  "jiff",
  "libcosmic",
@@ -1762,6 +1765,13 @@ dependencies = [
  "tokio",
  "wayland-client",
  "zbus",
+]
+
+[[package]]
+name = "ferese-theme"
+version = "0.1.0"
+dependencies = [
+ "libcosmic",
 ]
 
 [[package]]
@@ -7371,6 +7381,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "ferese-config",
+ "ferese-theme",
  "futures-util",
  "gstreamer",
  "jiff",
