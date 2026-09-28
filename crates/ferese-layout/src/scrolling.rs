@@ -78,7 +78,7 @@ pub struct ScrollingLayout {
     neighbor_context: f64,
     default_width: ColumnWidth,
     focus_strategy: ViewportFocusStrategy,
-    reveal_pending: bool,
+    reveal_pending: Option<WindowId>,
     width_cycle_pending: bool,
     last_viewport_width: Option<f64>,
 }
@@ -92,7 +92,7 @@ impl Default for ScrollingLayout {
             neighbor_context: 48.0,
             default_width: ColumnWidth::default(),
             focus_strategy: ViewportFocusStrategy::Minimal,
-            reveal_pending: false,
+            reveal_pending: None,
             width_cycle_pending: false,
             last_viewport_width: None,
         }
@@ -113,7 +113,7 @@ impl ScrollingLayout {
 
     pub fn set_focus_strategy(&mut self, strategy: ViewportFocusStrategy) {
         self.focus_strategy = strategy;
-        self.reveal_pending = true;
+        self.reveal_pending = self.active_window();
     }
 
     pub fn default_width(&self) -> ColumnWidth {
@@ -163,7 +163,7 @@ impl ScrollingLayout {
         self.columns
             .insert(index, Column::new(window, self.default_width));
         self.active_column = Some(index);
-        self.reveal_pending = self.columns.len() > 1;
+        self.reveal_pending = (self.columns.len() > 1).then_some(window);
 
         debug_assert!(self.validate().is_ok());
         Ok(())
@@ -191,9 +191,12 @@ impl ScrollingLayout {
             column.active = column.active.min(column.windows.len() - 1);
             column.normalize_heights();
         }
-        self.reveal_pending |= (removed_active_column
-            || self.focus_strategy == ViewportFocusStrategy::Paged)
-            && !self.columns.is_empty();
+        if self.reveal_pending == Some(window)
+            || removed_active_column
+            || self.focus_strategy == ViewportFocusStrategy::Paged
+        {
+            self.reveal_pending = self.active_window();
+        }
 
         debug_assert!(self.validate().is_ok());
         Ok(())
@@ -206,7 +209,27 @@ impl ScrollingLayout {
         let changed_column = self.active_column != Some(column);
         self.active_column = Some(column);
         self.columns[column].active = index;
-        self.reveal_pending |= changed_column;
+        if changed_column {
+            self.reveal_pending = Some(window);
+        }
+        Ok(())
+    }
+
+    /// Hover changes the active window without requesting viewport movement.
+    /// Keep any earlier explicit reveal attached to its original window.
+    pub fn focus_without_reveal(&mut self, window: WindowId) -> Result<(), LayoutError> {
+        let (column, index) = self
+            .window_location(window)
+            .ok_or(LayoutError::UnknownWindow(window))?;
+        self.active_column = Some(column);
+        self.columns[column].active = index;
+        Ok(())
+    }
+
+    /// An explicit selection must reveal even a window already focused by hover.
+    pub fn focus_and_reveal(&mut self, window: WindowId) -> Result<(), LayoutError> {
+        self.focus_without_reveal(window)?;
+        self.reveal_pending = Some(window);
         Ok(())
     }
 
@@ -231,7 +254,7 @@ impl ScrollingLayout {
         column.active = insertion;
         column.normalize_heights();
         self.active_column = Some(target_column);
-        self.reveal_pending = true;
+        self.reveal_pending = self.active_window();
 
         debug_assert!(self.validate().is_ok());
         Ok(())
@@ -251,7 +274,7 @@ impl ScrollingLayout {
         self.columns
             .insert(insertion, Column::new(window, self.default_width));
         self.active_column = Some(insertion);
-        self.reveal_pending = true;
+        self.reveal_pending = self.active_window();
 
         debug_assert!(self.validate().is_ok());
         Ok(())
@@ -266,7 +289,7 @@ impl ScrollingLayout {
             .window_location(window)
             .ok_or(LayoutError::UnknownWindow(window))?;
         self.columns[column].width = normalized_width(width);
-        self.reveal_pending = true;
+        self.reveal_pending = self.active_window();
         Ok(())
     }
 
@@ -480,12 +503,16 @@ impl ScrollingLayout {
         if self.width_cycle_pending {
             self.retarget_after_width_cycle(&column_positions, viewport_width);
             self.width_cycle_pending = false;
-            self.reveal_pending = false;
-        } else if self.reveal_pending
-            || (viewport_resized && self.focus_strategy == ViewportFocusStrategy::Paged)
-        {
-            self.reveal_active_column(&column_positions, viewport_width);
-            self.reveal_pending = false;
+            self.reveal_pending = None;
+        } else {
+            let reveal = self.reveal_pending.take().or_else(|| {
+                (viewport_resized && self.focus_strategy == ViewportFocusStrategy::Paged)
+                    .then(|| self.active_window())
+                    .flatten()
+            });
+            if let Some((column, _)) = reveal.and_then(|window| self.window_location(window)) {
+                self.reveal_column(&column_positions, viewport_width, column);
+            }
         }
 
         let mut result = LayoutResult::default();
@@ -518,14 +545,11 @@ impl ScrollingLayout {
         Ok(result)
     }
 
-    fn reveal_active_column(&mut self, positions: &[(f64, f64)], viewport_width: f64) {
-        if let Some(start) = self.paged_viewport(positions, viewport_width) {
+    fn reveal_column(&mut self, positions: &[(f64, f64)], viewport_width: f64, active: usize) {
+        if let Some(start) = self.paged_viewport(positions, viewport_width, Some(active)) {
             self.viewport_x = start;
             return;
         }
-        let Some(active) = self.active_column else {
-            return;
-        };
         let (start, width) = positions[active];
         let end = start + width;
         if self.focus_strategy == ViewportFocusStrategy::Center {
@@ -555,11 +579,16 @@ impl ScrollingLayout {
         }
     }
 
-    fn paged_viewport(&self, positions: &[(f64, f64)], viewport_width: f64) -> Option<f64> {
+    fn paged_viewport(
+        &self,
+        positions: &[(f64, f64)],
+        viewport_width: f64,
+        active: Option<usize>,
+    ) -> Option<f64> {
         if self.focus_strategy != ViewportFocusStrategy::Paged {
             return None;
         }
-        let active = self.active_column?;
+        let active = active?;
         // Pack actual allocated widths, including gaps and client constraints.
         // Page boundaries are independent of focus direction. An oversized
         // column occupies its own page rather than overlapping its neighbors.
@@ -582,7 +611,7 @@ impl ScrollingLayout {
     }
 
     fn retarget_after_width_cycle(&mut self, positions: &[(f64, f64)], viewport_width: f64) {
-        if let Some(start) = self.paged_viewport(positions, viewport_width) {
+        if let Some(start) = self.paged_viewport(positions, viewport_width, self.active_column) {
             self.viewport_x = start;
             return;
         }
@@ -617,7 +646,7 @@ impl ScrollingLayout {
         if self.columns[source].windows.len() == 1 {
             self.columns.swap(source, destination);
             self.active_column = Some(destination);
-            self.reveal_pending = true;
+            self.reveal_pending = self.active_window();
             return Ok(());
         }
 
@@ -631,7 +660,7 @@ impl ScrollingLayout {
         self.columns
             .insert(insertion, Column::new(window, self.default_width));
         self.active_column = Some(insertion);
-        self.reveal_pending = true;
+        self.reveal_pending = self.active_window();
         Ok(())
     }
 
@@ -802,6 +831,48 @@ mod tests {
                 .iter()
                 .all(|column| column.width == ColumnWidth::Full)
         );
+    }
+
+    #[test]
+    fn hover_does_not_replace_a_pending_explicit_reveal() {
+        for strategy in [
+            ViewportFocusStrategy::Minimal,
+            ViewportFocusStrategy::Center,
+            ViewportFocusStrategy::Paged,
+        ] {
+            let mut layout = ScrollingLayout::default();
+            layout.set_focus_strategy(strategy);
+            for id in 1..=3 {
+                layout.insert(window(id), None).unwrap();
+            }
+            let bounds = Rect::new(0.0, 0.0, 1000.0, 800.0);
+            let gaps = GapConfig {
+                inner: 0.0,
+                outer: 0.0,
+                smart: false,
+            };
+            for target in [3, 1] {
+                layout.focus_and_reveal(window(target)).unwrap();
+                let mut expected = layout.clone();
+                expected
+                    .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(target)))
+                    .unwrap();
+                layout.focus_without_reveal(window(2)).unwrap();
+                layout
+                    .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(2)))
+                    .unwrap();
+                assert_eq!(layout.active_window(), Some(window(2)));
+                assert_eq!(layout.viewport_x(), expected.viewport_x(), "{strategy:?}");
+            }
+            layout.focus_and_reveal(window(3)).unwrap();
+            layout.focus_without_reveal(window(2)).unwrap();
+            layout.remove(window(3)).unwrap();
+            assert!(
+                layout
+                    .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(2)))
+                    .is_ok()
+            );
+        }
     }
 
     #[test]

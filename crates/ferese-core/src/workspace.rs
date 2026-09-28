@@ -119,7 +119,14 @@ impl WorkspaceLayout {
 
     pub fn activate_window(&mut self, window: WindowId) -> Result<(), LayoutError> {
         match self {
-            Self::Scrolling(layout) => layout.focus(window),
+            Self::Scrolling(layout) => layout.focus_and_reveal(window),
+            Self::Tree(layout) => layout.activate_window(window),
+        }
+    }
+
+    pub fn activate_window_without_reveal(&mut self, window: WindowId) -> Result<(), LayoutError> {
+        match self {
+            Self::Scrolling(layout) => layout.focus_without_reveal(window),
             Self::Tree(layout) => layout.activate_window(window),
         }
     }
@@ -607,6 +614,18 @@ impl WorkspaceSet {
     }
 
     pub fn focus_window(&mut self, window: WindowId) -> Result<(), WorkspaceError> {
+        self.focus_window_with_reveal(window, true)
+    }
+
+    pub fn focus_window_without_reveal(&mut self, window: WindowId) -> Result<(), WorkspaceError> {
+        self.focus_window_with_reveal(window, false)
+    }
+
+    fn focus_window_with_reveal(
+        &mut self,
+        window: WindowId,
+        reveal: bool,
+    ) -> Result<(), WorkspaceError> {
         if self.workspace_for_window(window) != Some(self.active) {
             return Err(WorkspaceError::InvalidState(
                 "focused window is not on the active workspace",
@@ -623,7 +642,13 @@ impl WorkspaceSet {
         }
 
         if self.placement(window) == Some(WindowPlacement::Tiled) {
-            self.active_mut().layout.activate_window(window)?;
+            if reveal {
+                self.active_mut().layout.activate_window(window)?;
+            } else {
+                self.active_mut()
+                    .layout
+                    .activate_window_without_reveal(window)?;
+            }
         }
         self.active_mut().last_focused = Some(window);
 
@@ -1416,6 +1441,63 @@ mod tests {
             })
         );
         assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn hover_focus_preserves_geometry_and_click_reveals_the_hovered_window() {
+        for strategy in [
+            ViewportFocusStrategy::Minimal,
+            ViewportFocusStrategy::Center,
+            ViewportFocusStrategy::Paged,
+        ] {
+            let mut workspaces = WorkspaceSet::new(
+                LayoutMode::Scrolling,
+                ColumnWidth::Proportion(0.5),
+                strategy,
+            );
+            for id in 1..=3 {
+                workspaces
+                    .insert_window(WindowId(id), Axis::Horizontal, 0.5)
+                    .unwrap();
+            }
+            let bounds = Rect::new(0.0, 0.0, 1000.0, 800.0);
+            let gaps = GapConfig {
+                inner: 0.0,
+                outer: 0.0,
+                smart: false,
+            };
+            workspaces.focus_window(WindowId(2)).unwrap();
+            let before = workspaces
+                .active_mut()
+                .layout
+                .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(WindowId(2)))
+                .unwrap();
+            let scroll = workspaces.active().layout.viewport_x();
+            // Rapid right/middle/left hover must never scroll or skip a focus target,
+            // even if a later client commit causes another layout calculation.
+            for id in [3, 2, 1, 2, 3] {
+                let id = WindowId(id);
+                workspaces.focus_window_without_reveal(id).unwrap();
+                assert_eq!(workspaces.active().last_focused, Some(id));
+                let after = workspaces
+                    .active_mut()
+                    .layout
+                    .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(id))
+                    .unwrap();
+                assert_eq!(before.geometry, after.geometry, "{strategy:?}");
+                assert_eq!(scroll, workspaces.active().layout.viewport_x());
+            }
+            // Clicking the already-hovered window still requests a reveal.
+            workspaces.focus_window(WindowId(3)).unwrap();
+            let clicked = workspaces
+                .active_mut()
+                .layout
+                .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(WindowId(3)))
+                .unwrap();
+            let rect = clicked.geometry[&WindowId(3)];
+            assert!(rect.x >= 0.0 && rect.x + rect.width <= bounds.width);
+            assert_ne!(scroll, workspaces.active().layout.viewport_x());
+        }
     }
 
     #[test]

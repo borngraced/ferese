@@ -203,7 +203,7 @@ theme {
 
 | `input` key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `focus_follows_mouse` | boolean | `false` | Focus windows under the pointer without raising them; click to raise |
+| `focus_follows_mouse` | boolean | `false` | Focus visible windows under the pointer without raising them or scrolling; click or use keyboard focus to reveal a window |
 | `xkb_layout` | nonempty string | `"us"` | XKB layout |
 | `xkb_variant` | string | `""` | XKB variant |
 | `xkb_options` | string array | `[]` | XKB options |

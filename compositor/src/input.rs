@@ -543,11 +543,16 @@ impl Ferese {
 
         if let Some(window) = self.window_under_visual(position) {
             let focused = self.window_ids.get(&window).copied();
-            if let Some(focused) = focused
-                && let Err(error) = self.workspaces.focus_window(focused)
-            {
-                tracing::error!(%error, ?focused, "failed to update workspace focus");
-                return;
+            if let Some(focused) = focused {
+                let result = if raise {
+                    self.workspaces.focus_window(focused)
+                } else {
+                    self.workspaces.focus_window_without_reveal(focused)
+                };
+                if let Err(error) = result {
+                    tracing::error!(%error, ?focused, "failed to update workspace focus");
+                    return;
+                }
             }
             self.focused_window = focused;
             if raise {
@@ -576,7 +581,13 @@ impl Ferese {
             }
         });
 
-        self.relayout();
+        if raise {
+            self.relayout();
+        } else {
+            // Focus, dimming and the bar title update without moving the layout.
+            self.send_shell_snapshots();
+            crate::backends::direct::render_all(self);
+        }
     }
 
     fn focus_window_under_pointer(

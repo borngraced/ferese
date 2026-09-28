@@ -917,7 +917,7 @@ pub fn fields(page: Page) -> Vec<Field> {
             toggle(
                 "input.focus_follows_mouse",
                 "Focus follows pointer",
-                "Focus windows as the pointer moves over them.",
+                "Focus visible windows without raising or scrolling. Click to bring them into view.",
                 false,
             ),
             toggle(
