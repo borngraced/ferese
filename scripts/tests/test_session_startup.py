@@ -48,7 +48,8 @@ class SessionStartupTest(unittest.TestCase):
         status, events = self.run_session(shell_status=7)
         self.assertEqual(status, 7)
         self.assertEqual(events, ['import:public-display', 'reload-bus', '--user daemon-reload',
-                                  '--user start ferese-session.target', 'shell:77',
+                                  '--user start ferese-session.target',
+                                  '--user try-restart xdg-desktop-portal-ferese.service', 'shell:77',
                                   '--user stop ferese-session.target'])
 
     def test_nested_session_never_changes_host_activation(self):
@@ -61,6 +62,7 @@ class SessionStartupTest(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn('shell:77', events)
         self.assertNotIn('--user stop ferese-session.target', events)
+        self.assertNotIn('--user try-restart xdg-desktop-portal-ferese.service', events)
 
     def test_termination_stops_the_session_target(self):
         status, events = self.run_session(terminate=True)

@@ -19,7 +19,9 @@ session helper activates `ferese-session.target` after exporting the compositor'
 Wayland display, and stops it when the shell exits. This keeps
 `graphical-session.target` active so desktop portals can start. The native portal
 is D-Bus activated and supervised by systemd; it stops with the session so a
-previous release cannot remain running after logout. Nested previews
+previous release cannot remain running after logout. Session startup also refreshes
+an already-running native portal after importing the current display environment.
+Nested previews
 do not alter the host's activation environment or session targets.
 
 ### Fedora

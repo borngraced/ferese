@@ -38,6 +38,10 @@ if [[ ${FERESE_SESSION_IMPORT_ENV:-0} == 1 ]]; then
         systemctl --user daemon-reload || true
         if systemctl --user start ferese-session.target; then
             session_target_started=1
+            # A user manager can retain the target across session transitions.
+            # Refresh an already-running portal after importing this session's
+            # environment so it uses the installed release and current display.
+            systemctl --user try-restart xdg-desktop-portal-ferese.service || true
         else
             echo 'Ferese: graphical session target could not start; portal activation may be unavailable.' >&2
         fi
