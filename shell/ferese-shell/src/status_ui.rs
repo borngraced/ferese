@@ -428,9 +428,33 @@ impl FereseShell {
             },
             ..Default::default()
         }));
-        let heading = row![badge, text(kind.title()).size(18)]
+        let mut heading = row![badge, text(kind.title()).size(18).width(Length::Fill)]
             .spacing(10)
             .align_y(Alignment::Center);
+        if kind == Menu::System
+            && self
+                .config
+                .status
+                .settings_command
+                .as_ref()
+                .and_then(|command| command.first())
+                .is_some_and(|program| status::available(program))
+        {
+            heading = heading.push(motion::button(
+                button::custom(accented_icon(
+                    include_bytes!("../assets/icons/status/settings.svg"),
+                    20,
+                    primary,
+                    color_with_opacity(theme.accent, p),
+                ))
+                .padding(6)
+                .name("Open Settings")
+                .on_press(cosmic::Action::App(Message::Control(Action::Settings))),
+                primary,
+                false,
+                p,
+            ));
+        }
         let mut rows = column::with_capacity(12)
             .push(heading)
             .spacing(12)
@@ -799,25 +823,6 @@ impl FereseShell {
                     rows = rows.push(power);
                 }
             }
-            if combined {
-                let mut actions = column::with_capacity(2).spacing(8);
-                if self
-                    .config
-                    .status
-                    .settings_command
-                    .as_ref()
-                    .and_then(|a| a.first())
-                    .is_some_and(|p| status::available(p))
-                {
-                    actions = actions.push(footer_button(
-                        "Open Settings",
-                        Message::Control(Action::Settings),
-                        primary,
-                        p,
-                    ));
-                }
-                rows = rows.push(control_card(actions.into(), primary, p));
-            }
             if !menu.kind.available(&self.status) {
                 rows = rows.push(
                     text("Service unavailable")
@@ -996,15 +1001,25 @@ fn connection_control<'a>(
     palette: ShellTheme,
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
-    let foreground = color_with_opacity(palette.text_primary, opacity);
-    let icon_color = color_with_opacity(
-        if enabled {
-            palette.accent
-        } else {
-            palette.text_muted
-        },
-        opacity,
+    let selected = enabled && action.is_some();
+    let (fill, on_accent) = ferese_theme::accent_pair(
+        ferese_theme::composite(color(palette.accent), color(palette.surface_base)),
+        color(palette.text_primary),
     );
+    let foreground = if selected {
+        Color {
+            a: opacity,
+            ..on_accent
+        }
+    } else {
+        color_with_opacity(palette.text_primary, opacity)
+    };
+    let icon_color = foreground;
+    let muted = if selected {
+        foreground
+    } else {
+        color_with_opacity(palette.text_muted, opacity)
+    };
     let icon = container(accented_icon(source, 18, icon_color, icon_color))
         .width(32)
         .height(32)
@@ -1012,16 +1027,13 @@ fn connection_control<'a>(
         .align_y(alignment::Vertical::Center);
     let content = column![
         icon,
-        text(label).size(13),
+        text(label).size(13).class(theme::Text::Color(foreground)),
         text(detail.to_owned())
             .size(12)
             .width(Length::Fill)
             .height(18)
             .wrapping(cosmic::iced::widget::text::Wrapping::None)
-            .class(theme::Text::Color(color_with_opacity(
-                palette.text_muted,
-                opacity
-            )))
+            .class(theme::Text::Color(muted))
     ]
     .spacing(6)
     .width(Length::Fill);
@@ -1031,18 +1043,33 @@ fn connection_control<'a>(
             .padding(4)
             .into();
     };
-    container(motion::button(
-        button::custom(content)
-            .width(Length::Fill)
-            .padding(4)
-            .name(format!("{label}: {}", if enabled { "on" } else { "off" }))
-            .on_press(cosmic::Action::App(Message::Control(action))),
-        foreground,
-        false,
-        opacity,
-    ))
-    .width(Length::FillPortion(1))
-    .into()
+    let button = button::custom(content)
+        .width(Length::Fill)
+        .padding(4)
+        .name(format!("{label}: {}", if enabled { "on" } else { "off" }))
+        .on_press(cosmic::Action::App(Message::Control(action)));
+    let tile: Element<'_, cosmic::Action<Message>> = if selected {
+        let paint = move |outline| cosmic::widget::button::Style {
+            background: Some(Color { a: opacity, ..fill }.into()),
+            text_color: Some(foreground),
+            icon_color: Some(foreground),
+            border_radius: motion::radius(14.).into(),
+            outline_width: outline,
+            outline_color: foreground,
+            ..Default::default()
+        };
+        button
+            .class(theme::Button::Custom {
+                active: Box::new(move |focused, _| paint(if focused { 1. } else { 0. })),
+                hovered: Box::new(move |_, _| paint(1.)),
+                pressed: Box::new(move |_, _| paint(2.)),
+                disabled: Box::new(move |_| paint(0.)),
+            })
+            .into()
+    } else {
+        motion::button(button, foreground, false, opacity)
+    };
+    container(tile).width(Length::FillPortion(1)).into()
 }
 
 fn power_tile<'a>(
@@ -1203,23 +1230,6 @@ fn menu_button<'a>(
     motion::button(
         button::custom(text(label).size(13))
             .padding([6, 8])
-            .on_press(cosmic::Action::App(message)),
-        foreground,
-        false,
-        opacity,
-    )
-}
-
-fn footer_button<'a>(
-    label: &'a str,
-    message: Message,
-    foreground: Color,
-    opacity: f32,
-) -> Element<'a, cosmic::Action<Message>> {
-    motion::button(
-        button::custom(text(label).size(12))
-            .width(Length::Fill)
-            .padding([8, 6])
             .on_press(cosmic::Action::App(message)),
         foreground,
         false,
