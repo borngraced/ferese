@@ -16,9 +16,9 @@ shell, native settings, live-reloading themes and wallpapers, desktop widgets,
 fluid animations, and scrolling and tiling layouts work together as one
 cohesive experience—beautiful by default and unmistakably yours.
 
-![Ferese desktop with a stacked clock widget, compact workspace bar, and control center](docs/images/ferese-desktop.png)
+![Ferese Blue desktop with Settings, Control Center, and a clock widget](docs/images/ferese-desktop.webp)
 
-## One cohesive desktop
+## Why Ferese
 
 - **Flexible layouts:** scrolling columns, tree tiling, floating windows and a
   workspace overview.
@@ -31,6 +31,11 @@ cohesive experience—beautiful by default and unmistakably yours.
 - **Screen sharing:** a native display picker and PipeWire video streams for
   portal-compatible recording and conferencing apps.
 
+![Ferese Overview showing open windows and two workspace thumbnails](docs/images/ferese-overview.webp)
+
+The overview brings windows and workspaces into one view. Read more about
+[why Ferese builds the compositor and shell together](docs/why-ferese.md).
+
 ## Make it yours
 
 Use the native Settings app for everyday customization, or edit
@@ -38,7 +43,7 @@ Use the native Settings app for everyday customization, or edit
 changes as you make them and keeps the last working configuration if an edit is
 invalid.
 
-![Ferese Settings showing the Monochrome theme and appearance presets](docs/images/ferese-monochrome.png)
+![Ferese Settings and Control Center sharing the Gruvbox theme](docs/images/ferese-gruvbox.webp)
 
 Choose a preset or build your own look. Window behavior, gestures, shortcuts,
 rules, displays, widgets and login items are configurable too. Start with the

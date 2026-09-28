@@ -43,6 +43,8 @@ widgets, and native lock screen together. Managed windows have their own radius
 because they are a different kind of surface, but each value still has one clear
 meaning wherever it is used.
 
+![Ferese Settings and Control Center sharing the Gruvbox theme](images/ferese-gruvbox.webp)
+
 In an assembled desktop, making the same visual change may mean editing the
 window manager, bar CSS, launcher theme, notification daemon, and lock screen
 config separately, then keeping those values aligned as the setup changes.
@@ -52,6 +54,8 @@ scrolling as part of its workspace model, renders blur behind shell surfaces in
 the compositor, and builds the overview from the real window scene. Focus,
 fullscreen, workspace geometry, and input all work from the same state rather
 than waiting for separate tools to catch up with one another.
+
+![Ferese Overview showing open windows and two workspace thumbnails](images/ferese-overview.webp)
 
 When a window opens, Ferese can handle the result as one transition:
 

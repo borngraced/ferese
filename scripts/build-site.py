@@ -27,8 +27,7 @@ for name in ('index.html', 'styles.css', 'app.js'):
     shutil.copy2(ROOT / 'site' / name, OUTPUT / name)
 (OUTPUT / 'assets').mkdir(exist_ok=True)
 shutil.copytree(ROOT / 'site/assets', OUTPUT / 'assets', dirs_exist_ok=True)
-for name in ('ferese-desktop.png', 'ferese-monochrome.png'):
-    shutil.copy2(ROOT / 'docs/images' / name, OUTPUT / 'assets' / name)
+shutil.copytree(ROOT / 'docs/images', OUTPUT / 'assets', dirs_exist_ok=True)
 shutil.copy2(ROOT / 'packaging/icons/ferese.svg', OUTPUT / 'assets/ferese.svg')
 (OUTPUT / 'docs').mkdir(exist_ok=True)
 (OUTPUT / '.nojekyll').touch()
@@ -71,6 +70,16 @@ for page_number, (slug, title, source) in enumerate(PAGES):
         for child in token.children or []:
             if child.type == 'link_open':
                 child.attrSet('href', rewrite_link(child.attrGet('href'), source))
+            elif child.type == 'image':
+                image = urlsplit(child.attrGet('src'))
+                if not image.scheme and not image.netloc:
+                    path = (source.parent / image.path).resolve()
+                    relative = path.relative_to(ROOT / 'docs/images')
+                    if not path.is_file():
+                        raise FileNotFoundError(path)
+                    child.attrSet('src', f'../assets/{relative.as_posix()}')
+                child.attrSet('loading', 'lazy')
+                child.attrSet('decoding', 'async')
     search_index.extend(sections)
     body = md.renderer.render(tokens, md.options, {})
     body = body.replace('<table>', '<div class="table-scroll" tabindex="0" role="region" aria-label="Reference table"><table>').replace('</table>', '</table></div>')
