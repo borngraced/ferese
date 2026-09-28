@@ -89,6 +89,7 @@ Settings → Shortcuts** to change them or assign gestures to other actions.
 
 ## Documentation
 
+- [Why Ferese](docs/why-ferese.md)
 - [Installation and recovery](docs/installation.md)
 - [Configuration reference](docs/configuration.md)
 - [Desktop widgets](docs/desktop-widgets.md)
