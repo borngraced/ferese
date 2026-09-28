@@ -23,7 +23,8 @@ sudo dnf install git curl gcc gcc-c++ make cmake pkgconf-pkg-config \
   wayland-devel libxkbcommon-devel libinput-devel systemd-devel libseat-devel \
   mesa-libgbm-devel mesa-libEGL-devel libdrm-devel fontconfig-devel \
   freetype-devel expat-devel dbus-daemon dbus-tools desktop-file-utils foot pam \
-  clang clang-devel pipewire-devel pipewire wireplumber xdg-desktop-portal xdg-desktop-portal-gtk
+  clang clang-devel pipewire-devel pipewire wireplumber xdg-desktop-portal xdg-desktop-portal-gtk \
+  gstreamer1-devel gstreamer1-plugins-base gstreamer1-plugins-good pipewire-gstreamer
 ```
 
 ### Arch Linux
@@ -32,7 +33,8 @@ sudo dnf install git curl gcc gcc-c++ make cmake pkgconf-pkg-config \
 sudo pacman -S --needed base-devel git curl cmake pkgconf wayland libxkbcommon \
   libinput systemd seatd mesa libdrm fontconfig freetype2 expat dbus \
   desktop-file-utils foot pam clang pipewire libpipewire wireplumber \
-  xdg-desktop-portal xdg-desktop-portal-gtk
+  xdg-desktop-portal xdg-desktop-portal-gtk \
+  gstreamer gst-plugins-base gst-plugins-good gst-plugin-pipewire
 ```
 
 ### Debian and Ubuntu
@@ -44,7 +46,9 @@ sudo apt install build-essential git curl cmake pkg-config libwayland-dev \
   libdrm-dev libfontconfig1-dev libfreetype-dev libexpat1-dev dbus-bin \
   dbus-user-session desktop-file-utils foot libpam0g clang libclang-dev \
   libpipewire-0.3-dev libspa-0.2-dev pipewire wireplumber \
-  xdg-desktop-portal xdg-desktop-portal-gtk
+  xdg-desktop-portal xdg-desktop-portal-gtk \
+  libgstreamer1.0-dev gstreamer1.0-pipewire gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good
 ```
 
 These are package recipes, not a claim that every distribution release has been
@@ -90,8 +94,8 @@ The installer adds:
 - Versioned releases under `/usr/local/lib/ferese/releases/`, with `current` and
   `previous` links for upgrades and rollback.
 - Commands under `/usr/local/bin/`, including `ferese-session`, `ferese-settings`,
-  `feresectl`, `ferese-lock`, `ferese-screenshot`, and
-  `xdg-desktop-portal-ferese`.
+  `feresectl`, `ferese-lock`, `ferese-screenshot`,
+  `xdg-desktop-portal-ferese`, and `ferese-record`.
 - D-Bus activation and Ferese-specific ScreenCast portal registration.
 - A Wayland session entry at `/usr/share/wayland-sessions/ferese.desktop`.
 - A Settings application entry, icons, the default wallpaper, and an example config.
@@ -251,7 +255,7 @@ Installer options:
 
 `--dry-run` prints the planned commands. `--offline` requires dependencies to be
 cached already. `--skip-build` installs the binaries already in `target/release/`;
-use it only after building all six components from the intended revision.
+use it only after building all session components from the intended revision.
 Run `./scripts/install.sh --help` for all options.
 
 ## Logout and recovery

@@ -48,9 +48,8 @@ Ferese reloads changes as you make them. An invalid edit keeps the last working 
 ## Share your screen
 
 Use Ferese’s native display picker to share a monitor with a portal-compatible
-recording or conferencing app. The app handles saving or sending video; Ferese
-does not yet have a Record button in the shell. See [Screen sharing and
-recording](screen-sharing.md) for setup, stopping a session, and supported sources.
+recording or conferencing app. To save a video directly, click the recording
+icon in the top bar. See [Screen sharing and recording](screen-sharing.md) for setup, stopping a session, and supported sources.
 
 ## Keep a recovery path
 

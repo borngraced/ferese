@@ -4,6 +4,7 @@ mod motion;
 mod note_store;
 mod notification_ui;
 mod notifications;
+mod recording;
 mod status;
 mod status_ui;
 
@@ -205,6 +206,7 @@ struct FereseShell {
     notification_surface: Option<notification_ui::NotificationSurface>,
     status_service: status::Service,
     status: status::Snapshot,
+    recorder: recording::Recorder,
     status_error: Option<String>,
     menu: Option<status_ui::OpenMenu>,
     note_editor: Option<DesktopNoteEditor>,
@@ -264,6 +266,8 @@ enum Message {
     ActivateWorkspace(u64),
     ToggleOverview,
     StatusUpdated(status::Update),
+    StartRecording,
+    StopRecording,
     NotificationEvent(notifications::Event),
     NotificationTick,
     DismissNotification(u32),
@@ -311,6 +315,7 @@ impl cosmic::Application for FereseShell {
             notification_surface: None,
             status_service: status::Service::start(config.status.settings_command.clone()),
             status: status::Snapshot::default(),
+            recorder: recording::Recorder::default(),
             status_error: None,
             menu: None,
             note_editor: None,
@@ -543,6 +548,18 @@ impl cosmic::Application for FereseShell {
                 }
                 Task::none()
             }
+            Message::StartRecording => {
+                self.recorder.start();
+                if self.recorder.busy() {
+                    self.close_menu()
+                } else {
+                    Task::none()
+                }
+            }
+            Message::StopRecording => {
+                self.recorder.stop();
+                Task::none()
+            }
             Message::StatusUpdated(update) => {
                 if update.generation >= self.status_service.generation {
                     self.status = update.snapshot;
@@ -659,6 +676,7 @@ impl cosmic::Application for FereseShell {
             }
             Message::Event(event, id) => self.handle_event(event, id),
             Message::Tick => {
+                self.recorder.poll();
                 self.clock = current_time();
                 if self.config.desktop_widgets.clock.enabled {
                     self.desktop_clock = self

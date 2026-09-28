@@ -16,6 +16,7 @@ pub enum Menu {
     Bluetooth,
     Audio,
     Battery,
+    Recording,
     Notifications,
     System,
 }
@@ -41,6 +42,7 @@ impl Menu {
             Self::Bluetooth => "Bluetooth",
             Self::Audio => "Sound",
             Self::Battery => "Battery",
+            Self::Recording => "Screen recording",
             Self::Notifications => "Notifications",
         }
     }
@@ -52,7 +54,7 @@ impl Menu {
             Self::Audio => status.audio.is_some(),
             Self::Battery => status.battery.is_some(),
             Self::Notifications => status.notifications.is_some(),
-            Self::System => true,
+            Self::System | Self::Recording => true,
         }
     }
 }
@@ -242,19 +244,27 @@ impl FereseShell {
     pub fn view_status_bar(&self) -> Element<'_, cosmic::Action<Message>> {
         let theme = self.config.theme.for_bar();
         let metrics = BarMetrics::from(theme);
-        let mut controls = row::with_capacity(6).spacing(1).align_y(Alignment::Center);
+        let mut controls = row::with_capacity(7).spacing(1).align_y(Alignment::Center);
         for kind in [
             Menu::System,
             Menu::Network,
             Menu::Bluetooth,
             Menu::Audio,
+            Menu::Recording,
             Menu::Notifications,
             Menu::Battery,
         ] {
             if !kind.available(&self.status) {
                 continue;
             }
-            let (source, enabled) = status_icon(kind, &self.status);
+            let (source, enabled) = if kind == Menu::Recording && self.recorder.busy() {
+                (
+                    include_bytes!("../assets/icons/status/record-stop.svg").as_slice(),
+                    true,
+                )
+            } else {
+                status_icon(kind, &self.status)
+            };
             let selected = self.menu.as_ref().is_some_and(|m| m.kind == kind);
             let foreground = color(if selected {
                 theme.accent
@@ -271,6 +281,15 @@ impl FereseShell {
             )]
             .spacing(4)
             .align_y(Alignment::Center);
+            if kind == Menu::Recording
+                && let Some(elapsed) = self.recorder.elapsed()
+            {
+                content = content.push(
+                    text(elapsed)
+                        .size(metrics.text_size)
+                        .class(theme::Text::Color(foreground)),
+                );
+            }
             if kind == Menu::Battery && self.config.status.battery_percentage {
                 if let Some(battery) = &self.status.battery {
                     content = content.push(
@@ -304,14 +323,22 @@ impl FereseShell {
                 .align_x(alignment::Horizontal::Center)
                 .height(metrics.control_height)
                 .align_y(alignment::Vertical::Center);
+            let recording_busy = kind == Menu::Recording && self.recorder.busy();
             let control = button::custom(content)
-                .name(status_label(kind, &self.status))
+                .name(if recording_busy {
+                    "Stop screen recording".into()
+                } else {
+                    status_label(kind, &self.status)
+                })
                 .padding([
                     0.0,
                     ((metrics.height - f32::from(metrics.icon_size)) * 0.5).max(4.0),
                 ])
                 .height(metrics.control_height)
                 .on_press_with_rectangle(move |offset, bounds| {
+                    if recording_busy {
+                        return cosmic::Action::App(Message::StopRecording);
+                    }
                     cosmic::Action::App(Message::OpenMenu(
                         kind,
                         Rectangle {
@@ -407,6 +434,42 @@ impl FereseShell {
                     ]
                     .spacing(8),
                 );
+        } else if kind == Menu::Recording {
+            use recording::State;
+            let description = match &self.recorder.state {
+                State::Idle => {
+                    "Record a display. Video is saved to Videos/Ferese as WebM. Audio is off."
+                        .to_owned()
+                }
+                State::Selecting => "Choose a display in the sharing dialog.".to_owned(),
+                State::Recording(_) => format!(
+                    "Recording {} · audio off",
+                    self.recorder.elapsed().unwrap_or_default()
+                ),
+                State::Saving => "Finishing your recording…".to_owned(),
+                State::Saved(path) => format!("Saved to {}", path.display()),
+                State::Error(message) => message.clone(),
+            };
+            rows = rows.push(text(description).size(13).class(theme::Text::Color(muted)));
+            if !self.recorder.busy() {
+                rows = rows.push(menu_button(
+                    "Record display",
+                    Message::StartRecording,
+                    primary,
+                    p,
+                ));
+            } else if !matches!(self.recorder.state, State::Saving) {
+                rows = rows.push(menu_button(
+                    if matches!(self.recorder.state, State::Selecting) {
+                        "Cancel"
+                    } else {
+                        "Stop and save"
+                    },
+                    Message::StopRecording,
+                    primary,
+                    p,
+                ));
+            }
         } else {
             let combined = menu.kind == Menu::System;
             if combined {
@@ -1106,6 +1169,7 @@ fn status_label(kind: Menu, s: &Snapshot) -> String {
             || "Battery: unavailable".into(),
             |b| format!("Battery: {}%, {}", b.percent, b.status),
         ),
+        Menu::Recording => "Screen recording".into(),
         Menu::System => "Control Center".into(),
     }
 }
@@ -1193,6 +1257,7 @@ fn status_icon(kind: Menu, s: &Snapshot) -> (&'static [u8], bool) {
                 )
             }
         }
+        Menu::Recording => (include_bytes!("../assets/icons/status/record.svg"), true),
         Menu::System => (
             include_bytes!("../assets/icons/status/control-center.svg"),
             true,

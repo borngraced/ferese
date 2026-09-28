@@ -71,10 +71,11 @@ class PortalTest(unittest.TestCase):
                 if fd is not None:
                     source += f' fd={fd}'
                 pipeline = Gst.parse_launch(source + ' ! video/x-raw,format=BGRx ! appsink name=sink sync=false emit-signals=true')
-                sizes = []
+                sizes, timestamps = [], []
                 def sample(sink):
                     buffer = sink.emit("pull-sample").get_buffer()
                     sizes.append(buffer.get_size())
+                    timestamps.append(buffer.pts)
                     return Gst.FlowReturn.OK
                 pipeline.get_by_name("sink").connect("new-sample", sample)
                 try:
@@ -84,6 +85,8 @@ class PortalTest(unittest.TestCase):
                     self.assertEqual(message.type, Gst.MessageType.EOS)
                     self.assertEqual(len(sizes), 15)
                     self.assertGreater(min(sizes), 0)
+                    self.assertTrue(all(b > a for a, b in zip(timestamps, timestamps[1:])), timestamps)
+                    self.assertGreater(timestamps[-1] - timestamps[0], Gst.SECOND // 5)
                 finally:
                     pipeline.set_state(Gst.State.NULL)
 

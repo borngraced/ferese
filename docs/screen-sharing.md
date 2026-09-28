@@ -5,8 +5,22 @@ Applications use the standard desktop portal to request a display, then receive
 video through PipeWire. A recorder or conferencing application handles encoding,
 saving files, or sending video; those tasks do not run inside the compositor.
 
-There is no built-in Record button or video-file recorder in the shell yet.
-Start recording from an application that supports the Wayland ScreenCast portal.
+## Record from the top bar
+
+1. Click the screen-recording icon in the top bar, then **Record display**.
+2. Choose a monitor in the native picker and click **Share**.
+3. The icon changes to a stop square and shows elapsed time. Click it to stop.
+
+The recorder finishes the video before reporting it saved. Open the recording
+menu again to see its saved path. Videos are saved as VP8 WebM files under
+`Videos/Ferese` (using your configured XDG Videos folder). Audio is off.
+The icon uses the same theme accent, hover effect, and corner radius as the
+other bar controls.
+
+Encoding runs in a separate native `ferese-record` process using GStreamer.
+The shell remains responsive while a file is recorded or finalized. If saving
+fails, an error appears in the recording menu; an unfinished `.webm.part` file
+may remain at the path shown in the error.
 
 ## Start sharing
 
@@ -28,6 +42,9 @@ D-Bus activation entry, and a Ferese-specific portal preference file. Install
 `pipewire`, a PipeWire session manager such as `wireplumber`,
 `xdg-desktop-portal`, and `xdg-desktop-portal-gtk` using your distribution's package
 manager. The GTK backend supplies other portal interfaces such as file selection.
+The built-in recorder also needs GStreamer’s PipeWire, base, and good plugins
+(`pipewiresrc`, `videoconvert`, `vp8enc`, and `webmmux`). The installation guide
+includes these packages.
 
 Log into a new Ferese session after installation. The session launcher imports
 its Wayland display into the D-Bus activation environment. Nested previews leave
@@ -50,10 +67,9 @@ configuration is preserved during installation.
 - Cancellation during selection, an explicit stop control, and process cleanup.
 - ScreenCast backend version 3, without persistent or automatic consent.
 
-Window-only sharing, region selection, audio capture, and a built-in recorder
-control in the shell are not implemented yet. Audio can be handled separately by
-the recording application. Video currently uses CPU copies through the
-compositor's shared-memory screencopy path, not DMA-BUF zero-copy. High-resolution
+Window-only sharing, region selection, and audio capture in Ferese’s recorder
+are not implemented yet. Other recording applications can handle audio separately.
+Video currently uses CPU copies through the compositor's shared-memory screencopy path, not DMA-BUF zero-copy. High-resolution
 or multiple-display recording can therefore use significant CPU and memory
 bandwidth. A paused stream checks capture availability once per second so locking
 also ends sessions without an active consumer.
@@ -66,12 +82,15 @@ Build the backend after installing the native dependencies in the
 ```sh
 cargo build --release --locked -p xdg-desktop-portal-ferese
 cargo test --locked -p xdg-desktop-portal-ferese
+# Exercise real video encoding and playback (requires the plugins above):
+cargo test --locked -p xdg-desktop-portal-ferese --bin ferese-record encoder_finishes_a_real_webm -- --ignored
 ```
 
 The opt-in integration test opens a temporary nested compositor and uses a
 private D-Bus session. It requires built Ferese and locker binaries, Python
 GI/GStreamer with `pipewiresrc`, `dbus-daemon`, `xdg-desktop-portal`, and `bwrap`.
-It checks capture delivery, cancellation, frontend loss, and lock revocation:
+It checks capture delivery and timestamps, cancellation, frontend loss, and lock
+revocation:
 
 ```sh
 FERESE_TEST_PORTAL=1 \

@@ -26,6 +26,71 @@ struct Data {
     streaming: Arc<AtomicBool>,
     fresh: Arc<AtomicBool>,
     announced: bool,
+    sequence: u64,
+}
+
+// pipewire-rs exposes read-only metadata through Buffer. Own a dequeued raw
+// buffer here so header writes retain exclusive access and every exit requeues it.
+struct OutputBuffer<'a> {
+    stream: &'a pw::stream::Stream,
+    raw: std::ptr::NonNull<pw::sys::pw_buffer>,
+}
+impl<'a> OutputBuffer<'a> {
+    fn dequeue(stream: &'a pw::stream::Stream) -> Option<Self> {
+        // SAFETY: called on the owning PipeWire loop; the guard queues exactly once.
+        let raw = std::ptr::NonNull::new(unsafe { stream.dequeue_raw_buffer() })?;
+        Some(Self { stream, raw })
+    }
+    fn data(&mut self) -> Option<&mut spa::buffer::Data> {
+        // SAFETY: the dequeued buffer is exclusively ours until Drop. SPA Data
+        // is repr(transparent), and PipeWire owns the mapped allocation.
+        unsafe {
+            let buffer = self.raw.as_ref().buffer.as_mut()?;
+            if buffer.n_datas == 0 || buffer.datas.is_null() {
+                return None;
+            }
+            buffer.datas.cast::<spa::buffer::Data>().as_mut()
+        }
+    }
+    fn timestamp(&mut self, sequence: u64) {
+        // SAFETY: mutable access is exclusive, the metadata lookup checks its size,
+        // and clock_gettime writes only to our initialized stack timespec.
+        unsafe {
+            let buffer = self.raw.as_ref().buffer;
+            if buffer.is_null() {
+                return;
+            }
+            let header = spa::sys::spa_buffer_find_meta_data(
+                buffer,
+                spa::sys::SPA_META_Header,
+                std::mem::size_of::<spa::sys::spa_meta_header>(),
+            )
+            .cast::<spa::sys::spa_meta_header>();
+            if let Some(header) = header.as_mut() {
+                let mut now = libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                };
+                header.pts = if libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut now) == 0 {
+                    now.tv_sec * 1_000_000_000 + now.tv_nsec
+                } else {
+                    -1
+                };
+                header.flags = 0;
+                header.offset = 0;
+                header.dts_offset = 0;
+                header.seq = sequence;
+            }
+        }
+    }
+}
+impl Drop for OutputBuffer<'_> {
+    fn drop(&mut self) {
+        // SAFETY: raw came from this stream and has not yet been queued.
+        unsafe {
+            self.stream.queue_raw_buffer(self.raw.as_ptr());
+        }
+    }
 }
 
 fn int_property(key: u32, value: i32) -> spa::pod::Property {
@@ -88,6 +153,7 @@ pub fn run(name: String, cursor: bool) -> Result<(), Box<dyn std::error::Error>>
         streaming: streaming.clone(),
         fresh: fresh.clone(),
         announced: false,
+        sequence: 0,
     };
     let _listener = stream
         .add_local_listener_with_user_data(data)
@@ -152,18 +218,34 @@ pub fn run(name: String, cursor: bool) -> Result<(), Box<dyn std::error::Error>>
                 int_property(spa::sys::SPA_PARAM_BUFFERS_stride, (width * 4) as i32),
                 int_property(spa::sys::SPA_PARAM_BUFFERS_align, 16)
             ));
+            let header = pod(spa::pod::object!(
+                spa::utils::SpaTypes::ObjectParamMeta,
+                spa::param::ParamType::Meta,
+                spa::pod::Property {
+                    key: spa::sys::SPA_PARAM_META_type,
+                    flags: spa::pod::PropertyFlags::empty(),
+                    value: spa::pod::Value::Id(spa::utils::Id(spa::sys::SPA_META_Header)),
+                },
+                int_property(
+                    spa::sys::SPA_PARAM_META_size,
+                    std::mem::size_of::<spa::sys::spa_meta_header>() as i32
+                )
+            ));
             if stream
-                .update_params(&mut [Pod::from_bytes(&buffers).unwrap()])
+                .update_params(&mut [
+                    Pod::from_bytes(&buffers).unwrap(),
+                    Pod::from_bytes(&header).unwrap(),
+                ])
                 .is_err()
             {
                 data.stop.store(true, Ordering::Relaxed);
             }
         })
         .process(|stream, data| {
-            let Some(mut buffer) = stream.dequeue_buffer() else {
+            let Some(mut buffer) = OutputBuffer::dequeue(stream) else {
                 return;
             };
-            let Some(target) = buffer.datas_mut().first_mut() else {
+            let Some(target) = buffer.data() else {
                 return;
             };
             if data.stop.load(Ordering::Relaxed) || !data.fresh.load(Ordering::SeqCst) {
@@ -189,6 +271,8 @@ pub fn run(name: String, cursor: bool) -> Result<(), Box<dyn std::error::Error>>
             *target.chunk_mut().offset_mut() = 0;
             *target.chunk_mut().size_mut() = bytes as u32;
             *target.chunk_mut().stride_mut() = row as i32;
+            buffer.timestamp(data.sequence);
+            data.sequence = data.sequence.wrapping_add(1);
         })
         .register()?;
 
