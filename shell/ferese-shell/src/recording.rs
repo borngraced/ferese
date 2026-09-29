@@ -80,18 +80,20 @@ impl Recorder {
                 let (send, receive) = mpsc::sync_channel(8);
                 self.updates = Some(receive);
                 self.state = State::Selecting;
+
                 std::thread::spawn(move || {
                     let mut output = BufReader::new(output);
+
                     loop {
                         let mut line = String::new();
                         match output.by_ref().take(65537).read_line(&mut line) {
                             Ok(0) | Err(_) => break,
                             Ok(_) if line.len() > 65536 => break,
                             Ok(_) => {
-                                if let Ok(update) = serde_json::from_str::<Update>(&line) {
-                                    if send.send(Event::Update(update)).is_err() {
-                                        break;
-                                    }
+                                if let Ok(update) = serde_json::from_str::<Update>(&line)
+                                    && send.send(Event::Update(update)).is_err()
+                                {
+                                    break;
                                 }
                             }
                         }

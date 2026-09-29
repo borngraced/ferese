@@ -456,7 +456,10 @@ impl ScrollingLayout {
         if let Some(focused) = focused {
             self.focus(focused)?;
         }
-        self.validate()?;
+
+        self.validate_scalars()?;
+        debug_assert!(self.validate().is_ok());
+
         if self.columns.is_empty() {
             self.viewport_x = 0.0;
             return Ok(LayoutResult::default());
@@ -673,7 +676,7 @@ impl ScrollingLayout {
         })
     }
 
-    pub fn validate(&self) -> Result<(), LayoutError> {
+    fn validate_scalars(&self) -> Result<(), LayoutError> {
         if !self.viewport_x.is_finite() {
             return Err(LayoutError::InvalidTree(
                 "scrolling viewport offset is invalid",
@@ -701,6 +704,11 @@ impl ScrollingLayout {
                 "scrolling active column is invalid",
             ));
         }
+        Ok(())
+    }
+
+    pub fn validate(&self) -> Result<(), LayoutError> {
+        self.validate_scalars()?;
 
         let mut windows = HashSet::new();
         for column in &self.columns {

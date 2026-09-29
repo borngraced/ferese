@@ -74,14 +74,12 @@ impl Ferese {
             .space
             .outputs()
             .all(|output| self.session_lock.presented.contains(output))
+            && let Some(confirmation) = self.session_lock.confirmation.take()
+            && confirmation.ext_session_lock().is_alive()
         {
-            if let Some(confirmation) = self.session_lock.confirmation.take() {
-                if confirmation.ext_session_lock().is_alive() {
-                    confirmation.lock();
-                    self.session_lock.confirmed = true;
-                    tracing::info!("session lock confirmed after safe output frames");
-                }
-            }
+            confirmation.lock();
+            self.session_lock.confirmed = true;
+            tracing::info!("session lock confirmed after safe output frames");
         }
     }
 
@@ -163,14 +161,14 @@ impl SessionLockHandler for Ferese {
     }
 
     fn new_surface(&mut self, surface: LockSurface, output: WlOutput) {
-        if let Some(output) = Output::from_resource(&output) {
-            if let Some(geometry) = self.space.output_geometry(&output) {
-                surface.with_pending_state(|state| {
-                    state.size = Some((geometry.size.w as u32, geometry.size.h as u32).into())
-                });
-                self.session_lock.surfaces.insert(output, surface);
-                self.focus_lock_surface();
-            }
+        if let Some(output) = Output::from_resource(&output)
+            && let Some(geometry) = self.space.output_geometry(&output)
+        {
+            surface.with_pending_state(|state| {
+                state.size = Some((geometry.size.w as u32, geometry.size.h as u32).into())
+            });
+            self.session_lock.surfaces.insert(output, surface);
+            self.focus_lock_surface();
         }
     }
 }

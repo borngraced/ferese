@@ -24,7 +24,7 @@ use smithay::{
     },
     desktop::{
         LayerSurface, PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output,
-        utils::send_frames_surface_tree,
+        space::SpaceElement, utils::send_frames_surface_tree,
     },
     input::{
         Seat, SeatState,
@@ -241,17 +241,205 @@ pub struct RuntimeConfig {
 }
 
 impl Ferese {
+    pub fn new(
+        event_loop: &mut EventLoop<'static, Self>,
+        display: Display<Self>,
+        config: RuntimeConfig,
+    ) -> Result<Self, Box<dyn Error>> {
+        let display_handle = display.handle();
+        crate::handlers::screencopy::init_global(&display_handle);
+        crate::effects::init_global(&display_handle);
+        crate::shell_control::init_global(&display_handle);
+        let alpha_modifier_state = AlphaModifierState::new::<Self>(&display_handle);
+        let compositor_state = CompositorState::new::<Self>(&display_handle);
+        let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
+        let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
+        let decoration_state = XdgDecorationState::new::<Self>(&display_handle);
+        let dmabuf_state = DmabufState::new();
+        let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&display_handle);
+        let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&display_handle);
+        let idle_notifier_state = IdleNotifierState::new(&display_handle, event_loop.handle());
+        let session_lock_state = smithay::wayland::session_lock::SessionLockManagerState::new::<
+            Self,
+            _,
+        >(&display_handle, |_| true);
+        let input_method_enabled =
+            std::env::var_os("FERESE_ENABLE_INPUT_METHOD").is_some_and(|value| value == "1");
+        let input_method_manager_state =
+            InputMethodManagerState::new::<Self, _>(&display_handle, move |_| input_method_enabled);
+        let keyboard_shortcuts_inhibit_state =
+            KeyboardShortcutsInhibitState::new::<Self>(&display_handle);
+        let shortcut_inhibit_enabled =
+            std::env::var_os("FERESE_ENABLE_SHORTCUT_INHIBIT").is_some_and(|value| value == "1");
+        if !shortcut_inhibit_enabled {
+            display_handle.disable_global::<Self>(keyboard_shortcuts_inhibit_state.global());
+        }
+        let shm_state = ShmState::new::<Self>(&display_handle, Vec::new());
+        let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&display_handle);
+        let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
+        let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
+        let pointer_constraints_state = PointerConstraintsState::new::<Self>(&display_handle);
+        let presentation_state =
+            PresentationState::new::<Self>(&display_handle, libc::CLOCK_MONOTONIC as u32);
+        let data_device_state = DataDeviceState::new::<Self>(&display_handle);
+        let primary_selection_state = PrimarySelectionState::new::<Self>(&display_handle);
+        let relative_pointer_state = RelativePointerManagerState::new::<Self>(&display_handle);
+        let viewporter_state = ViewporterState::new::<Self>(&display_handle);
+        let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
+        let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
+        let xdg_foreign_state = XdgForeignState::new::<Self>(&display_handle);
+        let xdg_toplevel_icon_manager = XdgToplevelIconManager::new::<Self>(&display_handle);
+        let mut seat_state = SeatState::new();
+        let mut seat = seat_state.new_wl_seat(&display_handle, "ferese-winit");
+        let xkb_options = (!config.input_settings.xkb_options.is_empty())
+            .then(|| config.input_settings.xkb_options.join(","));
+        seat.add_keyboard(
+            XkbConfig {
+                layout: &config.input_settings.xkb_layout,
+                variant: &config.input_settings.xkb_variant,
+                options: xkb_options,
+                ..XkbConfig::default()
+            },
+            config.input_settings.repeat_delay_ms,
+            config.input_settings.repeat_rate,
+        )?;
+        seat.add_pointer();
+        seat.add_touch();
+        let socket_name = Self::init_wayland_listener(display, event_loop)?;
+
+        let start_time = Instant::now();
+        let cursor_theme = crate::cursor::cursor_theme();
+        let default_cursor = crate::cursor::load_named_cursor(&cursor_theme, CursorIcon::Default);
+        let named_cursors = HashMap::from([(CursorIcon::Default, default_cursor)]);
+
+        let mut state = Self {
+            session_lock_state,
+            session_lock: crate::session_lock::Lock::default(),
+            config_source: None,
+            start_time,
+            socket_name,
+            display_handle,
+            loop_signal: event_loop.get_signal(),
+            space: Space::default(),
+            workspaces: WorkspaceSet::new(
+                config.layout_mode,
+                config.default_column_width,
+                config.scrolling_focus_strategy,
+            ),
+            output_workspaces: OutputWorkspaceMap::default(),
+            output_ids: HashMap::new(),
+            output_identity_ids: HashMap::new(),
+            window_ids: HashMap::new(),
+            window_geometry: HashMap::new(),
+            resize_transactions: HashMap::new(),
+            resize_snapshots: HashMap::new(),
+            nested_backend: None,
+            wallpaper: crate::wallpaper::WallpaperState::with_wakeup(
+                config.wallpaper,
+                Some(event_loop.get_signal()),
+            ),
+            maximized_windows: HashSet::new(),
+            maximized_column_widths: HashMap::new(),
+            window_stack: crate::stacking::WindowStack::default(),
+            natural_floating_pending: HashSet::new(),
+            window_borders: HashMap::new(),
+            window_dims: HashMap::new(),
+            window_resize_fills: HashMap::new(),
+            window_dimming: HashMap::new(),
+            window_focus: HashMap::new(),
+            window_shadows: HashMap::new(),
+            rounded_clip_programs: HashMap::new(),
+            overview_scrims: HashMap::new(),
+            material_programs: HashMap::new(),
+            material_buffers: HashMap::new(),
+            blur_programs: HashMap::new(),
+            backdrop_generation: 0,
+            closing_windows: HashMap::new(),
+            viewport_animations: HashMap::new(),
+            scrolling_world_x: HashMap::new(),
+            viewport_coupled_widths: HashMap::new(),
+            pending_column_width_cycles: HashSet::new(),
+            focused_window: None,
+            column_width_presets: config.column_width_presets,
+            gap_config: config.gap_config,
+            input_settings: config.input_settings,
+            bindings: config.bindings,
+            window_rules: config.window_rules,
+            window_rules_applied: HashSet::new(),
+            theme_settings: config.theme_settings,
+            animations_enabled: config.animations_enabled,
+            animation_speed: config.animation_speed,
+            spring_config: config.spring_config,
+            viewport_spring_config: config.viewport_spring_config,
+            output_profiles: config.output_profiles,
+            autostart: config.autostart,
+            cursor_status: CursorImageStatus::default_named(),
+            cursor_redraw_pending: false,
+            cursor_theme,
+            named_cursors,
+            intercepted_keys: HashSet::new(),
+            swipe: crate::gestures::Swipe::default(),
+            idle_inhibitors: HashMap::new(),
+            active_shortcuts_inhibitor: None,
+            direct_backend: None,
+            _ipc_socket: None,
+            pending_dmabuf_imports: Vec::new(),
+            pending_screencopies: Vec::new(),
+            shell_resources: Vec::new(),
+            shell_snapshot_serial: 0,
+            last_shell_snapshot: None,
+            overview: crate::overview::OverviewState::with_font_family(config.overview_font_family),
+            next_window_id: 1,
+            next_output_id: 1,
+            last_animation_tick: start_time,
+            popups: PopupManager::default(),
+            dismissing_popups: Vec::new(),
+            seat,
+            alpha_modifier_state,
+            compositor_state,
+            cursor_shape_state,
+            data_device_state,
+            decoration_state,
+            dmabuf_state,
+            fractional_scale_state,
+            idle_inhibit_state,
+            idle_notifier_state,
+            input_method_manager_state,
+            keyboard_shortcuts_inhibit_state,
+            output_manager_state,
+            pointer_constraints_state,
+            presentation_state,
+            primary_selection_state,
+            relative_pointer_state,
+            seat_state,
+            shm_state,
+            single_pixel_buffer_state,
+            text_input_manager_state,
+            viewporter_state,
+            layer_shell_state,
+            xdg_activation_state,
+            xdg_foreign_state,
+            xdg_shell_state,
+            xdg_toplevel_icon_manager,
+        };
+        state._ipc_socket = Some(crate::ipc::init(event_loop)?);
+        Ok(state)
+    }
+
     pub(crate) fn apply_runtime_config(&mut self, config: RuntimeConfig) -> Result<(), String> {
         if self.output_profiles != config.output_profiles {
             crate::backends::direct::validate_live_outputs(self, &config.output_profiles)?;
         }
+
         let keyboard_changed = self.input_settings.xkb_layout != config.input_settings.xkb_layout
             || self.input_settings.xkb_variant != config.input_settings.xkb_variant
             || self.input_settings.xkb_options != config.input_settings.xkb_options;
+
         if let Some(keyboard) = self.seat.get_keyboard() {
             if keyboard_changed {
                 let options = (!config.input_settings.xkb_options.is_empty())
                     .then(|| config.input_settings.xkb_options.join(","));
+
                 keyboard
                     .set_xkb_config(
                         self,
@@ -269,7 +457,9 @@ impl Ferese {
                 config.input_settings.repeat_delay_ms,
             );
         }
+
         self.advance_animations(Instant::now());
+
         let touchpad_changed = self.input_settings.touchpad != config.input_settings.touchpad;
         let outputs_changed = self.output_profiles != config.output_profiles;
         let bounds = self
@@ -287,6 +477,7 @@ impl Ferese {
                 (workspace.id, rect)
             })
             .collect();
+
         self.workspaces
             .reconfigure_live(
                 config.layout_mode,
@@ -307,20 +498,25 @@ impl Ferese {
         self.viewport_spring_config = config.viewport_spring_config;
         self.output_profiles = config.output_profiles;
         self.autostart = config.autostart;
+
         if touchpad_changed {
             crate::backends::direct::reload_input_devices(self);
         }
+
         if outputs_changed {
             crate::backends::direct::reload_outputs(self);
         }
+
         if old_rules != self.window_rules {
             self.reapply_window_rules(&old_rules);
         }
+
         self.overview.set_font_family(config.overview_font_family);
         self.wallpaper.reload(config.wallpaper);
         self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
         self.relayout();
         crate::backends::direct::render_all(self);
+
         Ok(())
     }
 
@@ -509,191 +705,6 @@ impl Ferese {
         }
     }
 
-    pub fn new(
-        event_loop: &mut EventLoop<'static, Self>,
-        display: Display<Self>,
-        config: RuntimeConfig,
-    ) -> Result<Self, Box<dyn Error>> {
-        let display_handle = display.handle();
-        crate::handlers::screencopy::init_global(&display_handle);
-        crate::effects::init_global(&display_handle);
-        crate::shell_control::init_global(&display_handle);
-        let alpha_modifier_state = AlphaModifierState::new::<Self>(&display_handle);
-        let compositor_state = CompositorState::new::<Self>(&display_handle);
-        let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
-        let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
-        let decoration_state = XdgDecorationState::new::<Self>(&display_handle);
-        let dmabuf_state = DmabufState::new();
-        let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&display_handle);
-        let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&display_handle);
-        let idle_notifier_state = IdleNotifierState::new(&display_handle, event_loop.handle());
-        let session_lock_state = smithay::wayland::session_lock::SessionLockManagerState::new::<
-            Self,
-            _,
-        >(&display_handle, |_| true);
-        let input_method_enabled =
-            std::env::var_os("FERESE_ENABLE_INPUT_METHOD").is_some_and(|value| value == "1");
-        let input_method_manager_state =
-            InputMethodManagerState::new::<Self, _>(&display_handle, move |_| input_method_enabled);
-        let keyboard_shortcuts_inhibit_state =
-            KeyboardShortcutsInhibitState::new::<Self>(&display_handle);
-        let shortcut_inhibit_enabled =
-            std::env::var_os("FERESE_ENABLE_SHORTCUT_INHIBIT").is_some_and(|value| value == "1");
-        if !shortcut_inhibit_enabled {
-            display_handle.disable_global::<Self>(keyboard_shortcuts_inhibit_state.global());
-        }
-        let shm_state = ShmState::new::<Self>(&display_handle, Vec::new());
-        let single_pixel_buffer_state = SinglePixelBufferState::new::<Self>(&display_handle);
-        let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
-        let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
-        let pointer_constraints_state = PointerConstraintsState::new::<Self>(&display_handle);
-        let presentation_state =
-            PresentationState::new::<Self>(&display_handle, libc::CLOCK_MONOTONIC as u32);
-        let data_device_state = DataDeviceState::new::<Self>(&display_handle);
-        let primary_selection_state = PrimarySelectionState::new::<Self>(&display_handle);
-        let relative_pointer_state = RelativePointerManagerState::new::<Self>(&display_handle);
-        let viewporter_state = ViewporterState::new::<Self>(&display_handle);
-        let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
-        let xdg_activation_state = XdgActivationState::new::<Self>(&display_handle);
-        let xdg_foreign_state = XdgForeignState::new::<Self>(&display_handle);
-        let xdg_toplevel_icon_manager = XdgToplevelIconManager::new::<Self>(&display_handle);
-        let mut seat_state = SeatState::new();
-        let mut seat = seat_state.new_wl_seat(&display_handle, "ferese-winit");
-        let xkb_options = (!config.input_settings.xkb_options.is_empty())
-            .then(|| config.input_settings.xkb_options.join(","));
-        seat.add_keyboard(
-            XkbConfig {
-                layout: &config.input_settings.xkb_layout,
-                variant: &config.input_settings.xkb_variant,
-                options: xkb_options,
-                ..XkbConfig::default()
-            },
-            config.input_settings.repeat_delay_ms,
-            config.input_settings.repeat_rate,
-        )?;
-        seat.add_pointer();
-        seat.add_touch();
-        let socket_name = Self::init_wayland_listener(display, event_loop)?;
-
-        let start_time = Instant::now();
-        let cursor_theme = crate::cursor::cursor_theme();
-        let default_cursor = crate::cursor::load_named_cursor(&cursor_theme, CursorIcon::Default);
-        let named_cursors = HashMap::from([(CursorIcon::Default, default_cursor)]);
-
-        let mut state = Self {
-            session_lock_state,
-            session_lock: crate::session_lock::Lock::default(),
-            config_source: None,
-            start_time,
-            socket_name,
-            display_handle,
-            loop_signal: event_loop.get_signal(),
-            space: Space::default(),
-            workspaces: WorkspaceSet::new(
-                config.layout_mode,
-                config.default_column_width,
-                config.scrolling_focus_strategy,
-            ),
-            output_workspaces: OutputWorkspaceMap::default(),
-            output_ids: HashMap::new(),
-            output_identity_ids: HashMap::new(),
-            window_ids: HashMap::new(),
-            window_geometry: HashMap::new(),
-            resize_transactions: HashMap::new(),
-            resize_snapshots: HashMap::new(),
-            nested_backend: None,
-            wallpaper: crate::wallpaper::WallpaperState::with_wakeup(
-                config.wallpaper,
-                Some(event_loop.get_signal()),
-            ),
-            maximized_windows: HashSet::new(),
-            maximized_column_widths: HashMap::new(),
-            window_stack: crate::stacking::WindowStack::default(),
-            natural_floating_pending: HashSet::new(),
-            window_borders: HashMap::new(),
-            window_dims: HashMap::new(),
-            window_resize_fills: HashMap::new(),
-            window_dimming: HashMap::new(),
-            window_focus: HashMap::new(),
-            window_shadows: HashMap::new(),
-            rounded_clip_programs: HashMap::new(),
-            overview_scrims: HashMap::new(),
-            material_programs: HashMap::new(),
-            material_buffers: HashMap::new(),
-            blur_programs: HashMap::new(),
-            backdrop_generation: 0,
-            closing_windows: HashMap::new(),
-            viewport_animations: HashMap::new(),
-            scrolling_world_x: HashMap::new(),
-            viewport_coupled_widths: HashMap::new(),
-            pending_column_width_cycles: HashSet::new(),
-            focused_window: None,
-            column_width_presets: config.column_width_presets,
-            gap_config: config.gap_config,
-            input_settings: config.input_settings,
-            bindings: config.bindings,
-            window_rules: config.window_rules,
-            window_rules_applied: HashSet::new(),
-            theme_settings: config.theme_settings,
-            animations_enabled: config.animations_enabled,
-            animation_speed: config.animation_speed,
-            spring_config: config.spring_config,
-            viewport_spring_config: config.viewport_spring_config,
-            output_profiles: config.output_profiles,
-            autostart: config.autostart,
-            cursor_status: CursorImageStatus::default_named(),
-            cursor_redraw_pending: false,
-            cursor_theme,
-            named_cursors,
-            intercepted_keys: HashSet::new(),
-            swipe: crate::gestures::Swipe::default(),
-            idle_inhibitors: HashMap::new(),
-            active_shortcuts_inhibitor: None,
-            direct_backend: None,
-            _ipc_socket: None,
-            pending_dmabuf_imports: Vec::new(),
-            pending_screencopies: Vec::new(),
-            shell_resources: Vec::new(),
-            shell_snapshot_serial: 0,
-            last_shell_snapshot: None,
-            overview: crate::overview::OverviewState::with_font_family(config.overview_font_family),
-            next_window_id: 1,
-            next_output_id: 1,
-            last_animation_tick: start_time,
-            popups: PopupManager::default(),
-            dismissing_popups: Vec::new(),
-            seat,
-            alpha_modifier_state,
-            compositor_state,
-            cursor_shape_state,
-            data_device_state,
-            decoration_state,
-            dmabuf_state,
-            fractional_scale_state,
-            idle_inhibit_state,
-            idle_notifier_state,
-            input_method_manager_state,
-            keyboard_shortcuts_inhibit_state,
-            output_manager_state,
-            pointer_constraints_state,
-            presentation_state,
-            primary_selection_state,
-            relative_pointer_state,
-            seat_state,
-            shm_state,
-            single_pixel_buffer_state,
-            text_input_manager_state,
-            viewporter_state,
-            layer_shell_state,
-            xdg_activation_state,
-            xdg_foreign_state,
-            xdg_shell_state,
-            xdg_toplevel_icon_manager,
-        };
-        state._ipc_socket = Some(crate::ipc::init(event_loop)?);
-        Ok(state)
-    }
-
     fn init_wayland_listener(
         display: Display<Self>,
         event_loop: &mut EventLoop<'static, Self>,
@@ -836,35 +847,38 @@ impl Ferese {
     }
 
     pub fn window_under_visual(&self, position: Point<f64, Logical>) -> Option<Window> {
+        let overview_active = self.overview.is_active();
         let workspace = self.workspace_under_pointer(position)?;
-        let mut candidates = if self.overview.is_active() {
-            self.window_ids.keys().cloned().collect::<Vec<_>>()
-        } else {
-            self.space.elements().rev().cloned().collect::<Vec<_>>()
-        };
-        if self.overview.is_active() {
-            // Match Overview's front-to-back render order during overlapping motion.
-            candidates.sort_by_key(|window| {
-                std::cmp::Reverse(self.window_ids.get(window).map_or(0, |id| id.0))
-            });
-        }
-        candidates.iter().find_map(|window| {
+
+        let hit = |window: &Window| -> Option<Window> {
             if !self.window_content_ready(window) {
                 return None;
             }
+
             let id = self.window_ids.get(window)?;
             if self.workspaces.workspace_for_window(*id) != Some(workspace) {
                 return None;
             }
-            let visual = self.presented_window_rect(*id)?;
 
-            let caption_height = if self.overview.is_active() { 34.0 } else { 0.0 };
+            let visual = self.presented_window_rect(*id)?;
+            let caption_height = if overview_active { 34.0 } else { 0.0 };
             (position.x >= visual.x
                 && position.y >= visual.y
                 && position.x < visual.x + visual.width
                 && position.y < visual.y + visual.height + caption_height)
-                .then(|| window.clone())
-        })
+                .then_some(window.clone())
+        };
+
+        if overview_active {
+            let mut candidates = self.window_ids.keys().cloned().collect::<Vec<_>>();
+            // Match Overview's front-to-back render order during overlapping motion.
+            candidates.sort_by_key(|window| {
+                std::cmp::Reverse(self.window_ids.get(window).map_or(0, |id| id.0))
+            });
+            candidates.iter().find_map(hit)
+        } else {
+            self.space.elements().rev().find_map(hit)
+        }
     }
 
     fn workspace_under_pointer(&self, position: Point<f64, Logical>) -> Option<WorkspaceId> {
@@ -909,6 +923,9 @@ impl Ferese {
                 id.map_or(usize::MAX, |id| self.window_stack.rank(id)),
             )
         });
+        if stacking_order_settled(self.space.elements(), &windows, |window| window.z_index()) {
+            return;
+        }
         for window in windows {
             self.space.raise_element(&window, false);
         }
@@ -1571,18 +1588,17 @@ impl Ferese {
                     fullscreen_changed || maximized_changed || tiled_changed || decoration_changed
                 });
 
-                if natural_pending || requested_size.is_some() || state_changed {
-                    if let Some(serial) = toplevel.send_pending_configure()
-                        && requested_size.is_some()
-                        && had_geometry
-                        && self.animations_enabled
-                    {
-                        self.resize_transactions.insert(
-                            id,
-                            crate::resize_transaction::ResizeTransaction::new(serial, now)
-                                .with_source_geometry(window.geometry()),
-                        );
-                    }
+                if (natural_pending || requested_size.is_some() || state_changed)
+                    && let Some(serial) = toplevel.send_pending_configure()
+                    && requested_size.is_some()
+                    && had_geometry
+                    && self.animations_enabled
+                {
+                    self.resize_transactions.insert(
+                        id,
+                        crate::resize_transaction::ResizeTransaction::new(serial, now)
+                            .with_source_geometry(window.geometry()),
+                    );
                 }
             }
         }
@@ -2341,22 +2357,22 @@ impl Ferese {
         }
         if self.workspaces.placement(window) == Some(WindowPlacement::Tiled) {
             let workspace_id = self.workspaces.workspace_for_window(window).unwrap();
-            if let Some(workspace) = self.workspaces.workspace_mut(workspace_id) {
-                if let WorkspaceLayout::Scrolling(layout) = &mut workspace.layout {
-                    if enabled {
-                        if let Some(column) = layout
-                            .columns()
-                            .iter()
-                            .find(|column| column.windows.contains(&window))
-                        {
-                            self.maximized_column_widths
-                                .entry(window)
-                                .or_insert(column.width);
-                        }
-                        let _ = layout.set_column_width(window, ColumnWidth::Proportion(1.0));
-                    } else if let Some(width) = self.maximized_column_widths.remove(&window) {
-                        let _ = layout.set_column_width(window, width);
+            if let Some(workspace) = self.workspaces.workspace_mut(workspace_id)
+                && let WorkspaceLayout::Scrolling(layout) = &mut workspace.layout
+            {
+                if enabled {
+                    if let Some(column) = layout
+                        .columns()
+                        .iter()
+                        .find(|column| column.windows.contains(&window))
+                    {
+                        self.maximized_column_widths
+                            .entry(window)
+                            .or_insert(column.width);
                     }
+                    let _ = layout.set_column_width(window, ColumnWidth::Proportion(1.0));
+                } else if let Some(width) = self.maximized_column_widths.remove(&window) {
+                    let _ = layout.set_column_width(window, width);
                 }
             }
         }
@@ -2870,6 +2886,18 @@ fn window_has_buffer(window: &Window) -> bool {
     })
 }
 
+fn stacking_order_settled<'a, T, I>(current: I, target: &'a [T], z_index: impl Fn(&T) -> u8) -> bool
+where
+    I: IntoIterator<Item = &'a T>,
+    T: PartialEq,
+{
+    let Some((first, rest)) = target.split_first() else {
+        return current.into_iter().next().is_none();
+    };
+    let expected = z_index(first);
+    rest.iter().all(|window| z_index(window) == expected) && current.into_iter().eq(target)
+}
+
 #[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
@@ -3015,5 +3043,50 @@ mod tests {
             restored_scrolling_world_x(false, 10.0, 495.0, 1_000.0),
             1_000.0
         );
+    }
+
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    struct StackedWindow {
+        id: u32,
+        z_index: u8,
+    }
+
+    fn stacked(id: u32, z_index: u8) -> StackedWindow {
+        StackedWindow { id, z_index }
+    }
+
+    #[test]
+    fn stacking_is_settled_when_order_matches_and_z_index_is_uniform() {
+        let current = [stacked(1, 30), stacked(2, 30), stacked(3, 30)];
+        assert!(stacking_order_settled(current.iter(), &current, |window| {
+            window.z_index
+        }));
+    }
+
+    #[test]
+    fn stacking_is_not_settled_when_order_differs() {
+        let current = [stacked(2, 30), stacked(1, 30)];
+        let target = [stacked(1, 30), stacked(2, 30)];
+        assert!(!stacking_order_settled(current.iter(), &target, |window| {
+            window.z_index
+        }));
+    }
+
+    #[test]
+    fn stacking_is_not_settled_when_z_index_is_mixed_even_with_matching_order() {
+        let current = [stacked(1, 30), stacked(2, 40)];
+        assert!(!stacking_order_settled(
+            current.iter(),
+            &current,
+            |window| window.z_index
+        ));
+    }
+
+    #[test]
+    fn stacking_is_settled_for_an_empty_space() {
+        let empty: [StackedWindow; 0] = [];
+        assert!(stacking_order_settled(empty.iter(), &empty, |window| {
+            window.z_index
+        }));
     }
 }

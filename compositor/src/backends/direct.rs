@@ -1101,7 +1101,7 @@ fn select_outputs(drm: &DrmDevice, profiles: &[OutputProfile]) -> io::Result<Out
             enabled: settings.enabled,
             profile: active_profile.map(|profile| profile.name.clone()),
             physical_size: connector.size(),
-            current_mode: selected_mode.map(|mode| connected_mode_info(mode)),
+            current_mode: selected_mode.map(connected_mode_info),
             available_modes: connector
                 .modes()
                 .iter()

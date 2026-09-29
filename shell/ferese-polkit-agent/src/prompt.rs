@@ -82,13 +82,14 @@ impl Appearance {
         } else {
             ThemeBuilder::dark()
         };
-
-        let mut corners = cosmic::cosmic_theme::CornerRadii::default();
-        corners.radius_xs = [self.radius.min(4.); 4];
-        corners.radius_s = [self.radius.min(8.); 4];
-        corners.radius_m = [self.radius; 4];
-        corners.radius_l = [self.radius; 4];
-        corners.radius_xl = [self.radius; 4];
+        let corners = cosmic::cosmic_theme::CornerRadii {
+            radius_xs: [self.radius.min(4.); 4],
+            radius_s: [self.radius.min(8.); 4],
+            radius_m: [self.radius; 4],
+            radius_l: [self.radius; 4],
+            radius_xl: [self.radius; 4],
+            radius_0: Default::default(),
+        };
 
         let mut native = builder
             .corner_radii(corners)

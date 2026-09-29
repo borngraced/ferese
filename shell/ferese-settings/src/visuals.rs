@@ -451,7 +451,12 @@ pub fn preview(snapshot: &Snapshot) -> Element<'static, Message> {
     let bar_height = snapshot.number("theme.geometry.top_bar_height", 30.) * 0.65;
     let bar_radius = snapshot.number("theme.geometry.shell_radius", 14.) * 0.65;
     let opacity = if snapshot.string("theme.material.style", "solid") == "translucent" {
-        snapshot.number("theme.material.opacity", ferese_config::DEFAULT_MATERIAL_OPACITY).clamp(0., 1.)
+        snapshot
+            .number(
+                "theme.material.opacity",
+                ferese_config::DEFAULT_MATERIAL_OPACITY,
+            )
+            .clamp(0., 1.)
     } else {
         1.
     };
@@ -556,11 +561,12 @@ mod tests {
     fn default_uses_logo_blue_and_native_controls_follow_lightness() {
         let logo = include_str!("../../../packaging/icons/ferese.svg").to_ascii_uppercase();
         assert!(logo.contains(PRESETS[0].accent));
-        for index in 0..PRESETS.len() {
+
+        for (index, item) in PRESETS.iter().enumerate() {
             let snapshot = configured_preset(index);
             assert_eq!(
                 native_theme(Some(&snapshot)).cosmic().is_dark,
-                PRESETS[index].name != "Ayu Light"
+                item.name != "Ayu Light"
             );
         }
     }

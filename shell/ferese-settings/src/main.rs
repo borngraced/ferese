@@ -274,10 +274,8 @@ impl cosmic::Application for App {
                     |result| cosmic::Action::App(Message::LockPreviewStarted(result)),
                 );
             }
-            Message::LockPreviewStarted(result) => {
-                if let Err(error) = result {
-                    self.error = Some(error);
-                }
+            Message::LockPreviewStarted(Err(error)) => {
+                self.error = Some(error);
             }
             Message::Page(page) => {
                 self.page = page;
@@ -1286,16 +1284,16 @@ impl App {
                 // When a gradient exists, changing Accent also changes its
                 // leading stop; otherwise the visible focus border would stay
                 // on the old palette despite the control saying it changed.
-                if let Edit::Set(path, value) = &edit {
-                    if path == "theme.colors.accent"
-                        && self.draft.item("theme.focus_ring.gradient").is_some()
-                    {
-                        let gradient = set("theme.focus_ring.gradient.from", value.clone());
-                        if self.draft.edit(&gradient).is_ok() {
-                            self.pending.push(gradient);
-                        }
+                if let Edit::Set(path, value) = &edit
+                    && path == "theme.colors.accent"
+                    && self.draft.item("theme.focus_ring.gradient").is_some()
+                {
+                    let gradient = set("theme.focus_ring.gradient.from", value.clone());
+                    if self.draft.edit(&gradient).is_ok() {
+                        self.pending.push(gradient);
                     }
                 }
+
                 self.pending.push(edit);
                 self.error = None;
                 self.flush()

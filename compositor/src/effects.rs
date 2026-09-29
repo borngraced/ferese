@@ -127,21 +127,21 @@ pub(crate) fn surface_regions(surface: &WlSurface) -> Option<Vec<[i32; 5]>> {
 }
 
 fn decode_regions(bytes: &[u8]) -> Option<Vec<[i32; 5]>> {
-    if bytes.len() % 20 != 0 || bytes.len() > 32 * 20 {
+    if !bytes.len().is_multiple_of(20) || bytes.len() > 32 * 20 {
         return None;
     }
     bytes
-        .chunks_exact(20)
+        .as_chunks::<20>()
+        .0
+        .iter()
         .map(|tuple| {
-            let values: Vec<_> = tuple
-                .chunks_exact(4)
-                .map(|v| i32::from_ne_bytes(v.try_into().unwrap()))
-                .collect();
+            let values: [i32; 5] =
+                std::array::from_fn(|index| i32::from_ne_bytes(tuple.as_chunks::<4>().0[index]));
             (values[2] > 0
                 && values[3] > 0
                 && values[4] >= 0
                 && values.iter().all(|v| v.abs_diff(0) <= 32768))
-            .then(|| [values[0], values[1], values[2], values[3], values[4]])
+            .then_some(values)
         })
         .collect()
 }

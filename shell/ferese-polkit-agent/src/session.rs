@@ -53,6 +53,7 @@ impl Api {
             let cancel = *agent
                 .get(b"polkit_agent_session_cancel\0")
                 .map_err(|e| e.to_string())?;
+
             Ok(Self {
                 _agent: agent,
                 _polkit: polkit,
@@ -199,7 +200,10 @@ fn run_session(
         connect(
             session,
             c"request",
-            Some(std::mem::transmute(
+            Some(std::mem::transmute::<
+                unsafe extern "C" fn(Object, *const c_char, c_int, *mut c_void),
+                unsafe extern "C" fn(),
+            >(
                 request as unsafe extern "C" fn(Object, *const c_char, c_int, *mut c_void),
             )),
             signal_data,
@@ -207,7 +211,10 @@ fn run_session(
         connect(
             session,
             c"show-info",
-            Some(std::mem::transmute(
+            Some(std::mem::transmute::<
+                unsafe extern "C" fn(Object, *const c_char, *mut c_void),
+                unsafe extern "C" fn(),
+            >(
                 info as unsafe extern "C" fn(Object, *const c_char, *mut c_void),
             )),
             signal_data,
@@ -215,7 +222,10 @@ fn run_session(
         connect(
             session,
             c"show-error",
-            Some(std::mem::transmute(
+            Some(std::mem::transmute::<
+                unsafe extern "C" fn(Object, *const c_char, *mut c_void),
+                unsafe extern "C" fn(),
+            >(
                 error as unsafe extern "C" fn(Object, *const c_char, *mut c_void),
             )),
             signal_data,
@@ -223,11 +233,15 @@ fn run_session(
         connect(
             session,
             c"completed",
-            Some(std::mem::transmute(
+            Some(std::mem::transmute::<
+                unsafe extern "C" fn(Object, c_int, *mut c_void),
+                unsafe extern "C" fn(),
+            >(
                 completed as unsafe extern "C" fn(Object, c_int, *mut c_void),
             )),
             signal_data,
         );
+
         (api.initiate)(session);
     }
 

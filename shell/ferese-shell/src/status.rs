@@ -158,13 +158,10 @@ impl Service {
             let mut network = dbus_cache::Cache::new("org.freedesktop.NetworkManager");
             let mut bluetooth = dbus_cache::Cache::new("org.bluez");
 
-            loop {
-                // A poll overlapping a write is discarded below. Wait for the
-                // write to finish before retrying instead of launching commands
-                // repeatedly while a slow control operation is still running.
-                let Some(before) = wait_for_poll(&polling) else {
-                    break;
-                };
+            // A poll overlapping a write is discarded below. Wait for the
+            // write to finish before retrying instead of launching commands
+            // repeatedly while a slow control operation is still running.
+            while let Some(before) = wait_for_poll(&polling) {
                 let mut snapshot = poll(&mut system_bus, &mut session_bus);
                 snapshot.network = network.read(before, network::read);
                 snapshot.bluetooth = bluetooth.read(before, bluetooth::read);
@@ -186,16 +183,14 @@ impl Service {
         });
 
         thread::spawn(move || {
-            loop {
-                let first = match commands.recv() {
-                    Ok(command) => command,
-                    Err(_) => break,
-                };
+            while let Ok(first) = commands.recv() {
                 let mut pending = vec![first];
+
                 for command in commands.try_iter() {
                     pending.retain(|(_, action)| action.key() != command.1.key());
                     pending.push(command);
                 }
+
                 for (id, action) in pending {
                     {
                         let mut state = shared.0.lock().unwrap();
@@ -210,6 +205,7 @@ impl Service {
                     shared.1.notify_one();
                 }
             }
+
             shared.0.lock().unwrap().3 = true;
             shared.1.notify_one();
         });

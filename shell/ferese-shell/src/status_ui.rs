@@ -89,24 +89,29 @@ impl OpenMenu {
 impl FereseShell {
     pub fn open_menu(&mut self, kind: Menu, anchor: Rectangle<i32>) -> Task<Message> {
         if self.menu.as_ref().is_some_and(|menu| menu.kind == kind) {
-            if let Some(menu) = &mut self.menu {
-                if menu.motion.closing() {
-                    menu.motion.retarget(1.0, Instant::now());
-                    return Task::none();
-                }
+            if let Some(menu) = &mut self.menu
+                && menu.motion.closing()
+            {
+                menu.motion.retarget(1.0, Instant::now());
+                return Task::none();
             }
+
             return self.close_menu();
         }
+
         if kind == Menu::Calendar {
             self.calendar_offset = 0;
         }
+
         let destroy = self.destroy_menu();
         if !kind.available(&self.status) {
             return destroy;
         }
+
         if kind == Menu::Notifications && self.notifications.ready {
             self.notifications.toggle_history();
         }
+
         let notifications = self.sync_notification_surface();
         let id = window::Id::unique();
         self.menu = Some(OpenMenu {
@@ -303,6 +308,7 @@ impl FereseShell {
             )]
             .spacing(4)
             .align_y(Alignment::Center);
+
             if kind == Menu::Recording
                 && let Some(elapsed) = self.recorder.elapsed()
             {
@@ -312,14 +318,16 @@ impl FereseShell {
                         .class(theme::Text::Color(foreground)),
                 );
             }
-            if kind == Menu::Battery && self.config.status.battery_percentage {
-                if let Some(battery) = &self.status.battery {
-                    content = content.push(
-                        text(format!("{}%", battery.percent))
-                            .size(metrics.text_size)
-                            .class(theme::Text::Color(foreground)),
-                    );
-                }
+
+            if kind == Menu::Battery
+                && self.config.status.battery_percentage
+                && let Some(battery) = &self.status.battery
+            {
+                content = content.push(
+                    text(format!("{}%", battery.percent))
+                        .size(metrics.text_size)
+                        .class(theme::Text::Color(foreground)),
+                );
             }
             if kind == Menu::Notifications
                 && self
@@ -492,6 +500,7 @@ impl FereseShell {
             let combined = menu.kind == Menu::System;
             if combined {
                 let mut connections = row::with_capacity(3).spacing(8).width(Length::Fill);
+
                 if let Some(n) = &self.status.network {
                     connections = connections.push(connection_control(
                         "Wi-Fi",
@@ -507,6 +516,7 @@ impl FereseShell {
                         p,
                     ));
                 }
+
                 if let Some(b) = &self.status.bluetooth {
                     connections = connections.push(connection_control(
                         "Bluetooth",
@@ -522,6 +532,7 @@ impl FereseShell {
                         p,
                     ));
                 }
+
                 if let Some(b) = &self.status.battery {
                     connections = connections.push(connection_control(
                         "Battery",
@@ -533,6 +544,7 @@ impl FereseShell {
                         p,
                     ));
                 }
+
                 if self.status.network.is_some()
                     || self.status.bluetooth.is_some()
                     || self.status.battery.is_some()
@@ -540,97 +552,102 @@ impl FereseShell {
                     rows = rows.push(control_card(connections.into(), primary, p));
                 }
             }
-            if menu.kind == Menu::Network {
-                if let Some(n) = &self.status.network {
-                    let connected = n.enabled && n.connection.is_some();
-                    rows = rows.push(status_summary(
-                        status_icon(Menu::Network, &self.status).0,
-                        if !n.enabled {
-                            "Wi-Fi is off"
-                        } else {
-                            n.connection.as_deref().unwrap_or("Not connected")
-                        },
-                        if connected {
-                            "Connected"
-                        } else if n.enabled {
-                            "No active wireless connection"
-                        } else {
-                            "Wireless connections are paused"
-                        },
-                        primary,
-                        muted,
-                        color_with_opacity(theme.accent, p),
-                        p,
-                        Some((n.enabled, Action::Wifi(!n.enabled))),
-                    ));
+
+            if menu.kind == Menu::Network
+                && let Some(n) = &self.status.network
+            {
+                let connected = n.enabled && n.connection.is_some();
+                rows = rows.push(status_summary(
+                    status_icon(Menu::Network, &self.status).0,
+                    if !n.enabled {
+                        "Wi-Fi is off"
+                    } else {
+                        n.connection.as_deref().unwrap_or("Not connected")
+                    },
                     if connected {
-                        let strength = match n.signal {
-                            75.. => "Excellent",
-                            50..=74 => "Good",
-                            25..=49 => "Fair",
-                            _ => "Weak",
-                        };
-                        rows = rows.push(
+                        "Connected"
+                    } else if n.enabled {
+                        "No active wireless connection"
+                    } else {
+                        "Wireless connections are paused"
+                    },
+                    primary,
+                    muted,
+                    color_with_opacity(theme.accent, p),
+                    p,
+                    Some((n.enabled, Action::Wifi(!n.enabled))),
+                ));
+                if connected {
+                    let strength = match n.signal {
+                        75.. => "Excellent",
+                        50..=74 => "Good",
+                        25..=49 => "Fair",
+                        _ => "Weak",
+                    };
+                    rows = rows.push(
+                        column![
+                            row![
+                                text("Signal strength").size(12).width(Length::Fill),
+                                text(strength).size(12)
+                            ],
+                            level_meter(n.signal, primary, p),
+                        ]
+                        .spacing(8),
+                    );
+                }
+            }
+
+            if menu.kind == Menu::Bluetooth
+                && let Some(b) = &self.status.bluetooth
+            {
+                rows = rows.push(status_summary(
+                    status_icon(Menu::Bluetooth, &self.status).0,
+                    if b.enabled {
+                        "Bluetooth is on"
+                    } else {
+                        "Bluetooth is off"
+                    },
+                    if !b.enabled {
+                        "Device connections are paused"
+                    } else if b.devices.is_empty() {
+                        "No devices connected"
+                    } else {
+                        "Your connected devices"
+                    },
+                    primary,
+                    muted,
+                    color_with_opacity(theme.accent, p),
+                    p,
+                    Some((b.enabled, Action::Bluetooth(!b.enabled))),
+                ));
+
+                if b.enabled && !b.devices.is_empty() {
+                    let mut devices = column::with_capacity(b.devices.len()).spacing(8);
+                    for device in &b.devices {
+                        devices = devices.push(
                             column![
-                                row![
-                                    text("Signal strength").size(12).width(Length::Fill),
-                                    text(strength).size(12)
-                                ],
-                                level_meter(n.signal, primary, p),
+                                text(device).size(14),
+                                text("Connected").size(12).class(theme::Text::Color(muted)),
                             ]
-                            .spacing(8),
+                            .spacing(3),
                         );
                     }
-                }
-            }
-            if menu.kind == Menu::Bluetooth {
-                if let Some(b) = &self.status.bluetooth {
-                    rows = rows.push(status_summary(
-                        status_icon(Menu::Bluetooth, &self.status).0,
-                        if b.enabled {
-                            "Bluetooth is on"
+
+                    let list: Element<'_, cosmic::Action<Message>> =
+                        if let Some(height) = device_list_height(b.devices.len()) {
+                            cosmic::iced::widget::scrollable(devices)
+                                .height(height)
+                                .width(Length::Fill)
+                                .into()
                         } else {
-                            "Bluetooth is off"
-                        },
-                        if !b.enabled {
-                            "Device connections are paused"
-                        } else if b.devices.is_empty() {
-                            "No devices connected"
-                        } else {
-                            "Your connected devices"
-                        },
-                        primary,
-                        muted,
-                        color_with_opacity(theme.accent, p),
-                        p,
-                        Some((b.enabled, Action::Bluetooth(!b.enabled))),
-                    ));
-                    if b.enabled && !b.devices.is_empty() {
-                        let mut devices = column::with_capacity(b.devices.len()).spacing(8);
-                        for device in &b.devices {
-                            devices = devices.push(
-                                column![
-                                    text(device).size(14),
-                                    text("Connected").size(12).class(theme::Text::Color(muted)),
-                                ]
-                                .spacing(3),
-                            );
-                        }
-                        let list: Element<'_, cosmic::Action<Message>> =
-                            if let Some(height) = device_list_height(b.devices.len()) {
-                                cosmic::iced::widget::scrollable(devices)
-                                    .height(height)
-                                    .width(Length::Fill)
-                                    .into()
-                            } else {
-                                devices.into()
-                            };
-                        rows = rows.push(list);
-                    }
+                            devices.into()
+                        };
+                    rows = rows.push(list);
                 }
-            }
-            if combined || menu.kind == Menu::Audio {
-                if let Some(a) = &self.status.audio {
+
+                if (combined || menu.kind == Menu::Audio)
+                    && let Some(a) = &self.status.audio
+                {
                     let audio = column![
                         row![
                             text("Volume").size(13).width(Length::Fill),
@@ -661,55 +678,57 @@ impl FereseShell {
                     rows = rows.push(audio);
                 }
             }
-            if combined {
-                if let Some(value) = self.status.brightness {
-                    let brightness = column![
-                        text("Brightness").size(13),
-                        slider_row(
-                            include_bytes!("../assets/icons/status/brightness.svg"),
-                            value,
-                            true,
-                            primary,
-                            color_with_opacity(theme.accent, p),
-                            p,
+
+            if combined && let Some(value) = self.status.brightness {
+                let brightness = column![
+                    text("Brightness").size(13),
+                    slider_row(
+                        include_bytes!("../assets/icons/status/brightness.svg"),
+                        value,
+                        true,
+                        primary,
+                        color_with_opacity(theme.accent, p),
+                        p,
+                    )
+                ]
+                .spacing(6);
+                rows = rows.push(control_card(brightness.into(), primary, p));
+            }
+
+            if (combined || menu.kind == Menu::Notifications)
+                && let Some(n) = &self.status.notifications
+            {
+                let toggle = toggle_row("Do Not Disturb", n.dnd, Action::Dnd(!n.dnd), theme, p);
+                rows = rows.push(if combined {
+                    control_card(toggle, primary, p)
+                } else {
+                    toggle
+                });
+
+                if menu.kind == Menu::Notifications {
+                    rows = rows
+                        .push(
+                            text(if n.count == 0 {
+                                "No notifications".to_owned()
+                            } else if n.count == 1 {
+                                "1 notification".to_owned()
+                            } else {
+                                format!("{} notifications", n.count)
+                            })
+                            .size(13)
+                            .class(theme::Text::Color(muted)),
                         )
-                    ]
-                    .spacing(6);
-                    rows = rows.push(control_card(brightness.into(), primary, p));
+                        .push(menu_button(
+                            "Open notification center",
+                            Message::Control(Action::Notifications),
+                            primary,
+                            p,
+                        ));
                 }
-            }
-            if combined || menu.kind == Menu::Notifications {
-                if let Some(n) = &self.status.notifications {
-                    let toggle = toggle_row("Do Not Disturb", n.dnd, Action::Dnd(!n.dnd), theme, p);
-                    rows = rows.push(if combined {
-                        control_card(toggle, primary, p)
-                    } else {
-                        toggle
-                    });
-                    if menu.kind == Menu::Notifications {
-                        rows = rows
-                            .push(
-                                text(if n.count == 0 {
-                                    "No notifications".to_owned()
-                                } else if n.count == 1 {
-                                    "1 notification".to_owned()
-                                } else {
-                                    format!("{} notifications", n.count)
-                                })
-                                .size(13)
-                                .class(theme::Text::Color(muted)),
-                            )
-                            .push(menu_button(
-                                "Open notification center",
-                                Message::Control(Action::Notifications),
-                                primary,
-                                p,
-                            ));
-                    }
-                }
-            }
-            if menu.kind == Menu::Battery {
-                if let Some(b) = &self.status.battery {
+
+                if menu.kind == Menu::Battery
+                    && let Some(b) = &self.status.battery
+                {
                     let battery_color = if b.percent < self.config.status.low_battery_threshold
                         && b.status != "Charging"
                     {
@@ -752,95 +771,103 @@ impl FereseShell {
                         .class(theme::Text::Color(muted)),
                     );
                 }
-            }
-            if menu.kind == Menu::Battery {
-                rows = rows.push(text("Power mode").size(13).class(theme::Text::Color(muted)));
-                if let Some(profiles) = &self.status.power_profiles {
-                    let mut modes = row::with_capacity(3).spacing(6).width(Length::Fill);
-                    for (index, (label, icon, profile)) in [
+
+                if menu.kind == Menu::Battery {
+                    rows = rows.push(text("Power mode").size(13).class(theme::Text::Color(muted)));
+                    if let Some(profiles) = &self.status.power_profiles {
+                        let mut modes = row::with_capacity(3).spacing(6).width(Length::Fill);
+                        for (index, (label, icon, profile)) in [
+                            (
+                                "Power saver",
+                                include_bytes!("../assets/icons/status/power-saver.svg").as_slice(),
+                                "power-saver",
+                            ),
+                            (
+                                "Balanced",
+                                include_bytes!("../assets/icons/status/power-balanced.svg")
+                                    .as_slice(),
+                                "balanced",
+                            ),
+                            (
+                                "Performance",
+                                include_bytes!("../assets/icons/status/power-performance.svg")
+                                    .as_slice(),
+                                "performance",
+                            ),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            if profiles.available[index] {
+                                modes = modes.push(power_tile(
+                                    label,
+                                    icon,
+                                    profile,
+                                    profiles.active == profile,
+                                    theme,
+                                    p,
+                                ));
+                            }
+                        }
+                        // TODO: confirm column align fix
+                        rows = rows.push(modes.width(Length::Fill).align_y(Alignment::Center));
+                    } else {
+                        rows = rows.push(
+                            text("Power Profiles service unavailable")
+                                .size(12)
+                                .class(theme::Text::Color(muted)),
+                        );
+                    }
+
+                    let mut power = row::with_capacity(3).spacing(6).width(Length::Fill);
+                    for (enabled, label, icon, action) in [
                         (
-                            "Battery saver",
-                            include_bytes!("../assets/icons/status/power-saver.svg").as_slice(),
-                            "power-saver",
+                            self.status.reboot,
+                            "Restart",
+                            include_bytes!("../assets/icons/status/restart.svg").as_slice(),
+                            Action::Reboot,
                         ),
                         (
-                            "Balanced",
-                            include_bytes!("../assets/icons/status/power-balanced.svg").as_slice(),
-                            "balanced",
+                            self.status.poweroff,
+                            "Power off",
+                            include_bytes!("../assets/icons/status/power-off.svg").as_slice(),
+                            Action::Poweroff,
                         ),
                         (
-                            "Performance",
-                            include_bytes!("../assets/icons/status/power-performance.svg")
-                                .as_slice(),
-                            "performance",
+                            self.status.suspend,
+                            "Suspend",
+                            include_bytes!("../assets/icons/status/suspend.svg").as_slice(),
+                            Action::Suspend,
                         ),
-                    ]
-                    .into_iter()
-                    .enumerate()
-                    {
-                        if profiles.available[index] {
-                            modes = modes.push(power_tile(
-                                label,
-                                icon,
-                                profile,
-                                profiles.active == profile,
-                                theme,
-                                p,
-                            ));
+                    ] {
+                        if enabled {
+                            power = power.push(power_tile_action(label, icon, action, theme, p));
                         }
                     }
-                    rows = rows.push(modes);
-                } else {
+
+                    if self.status.reboot || self.status.poweroff || self.status.suspend {
+                        rows = rows.push(text("Power").size(13).class(theme::Text::Color(muted)));
+                        rows = rows.push(power.align_y(Alignment::Center).width(Length::Fill));
+                    }
+                }
+
+                if !menu.kind.available(&self.status) {
                     rows = rows.push(
-                        text("Power Profiles service unavailable")
-                            .size(12)
+                        text("Service unavailable")
+                            .size(13)
                             .class(theme::Text::Color(muted)),
                     );
                 }
-                let mut power = row::with_capacity(3).spacing(6).width(Length::Fill);
-                for (enabled, label, icon, action) in [
-                    (
-                        self.status.reboot,
-                        "Restart",
-                        include_bytes!("../assets/icons/status/restart.svg").as_slice(),
-                        Action::Reboot,
-                    ),
-                    (
-                        self.status.poweroff,
-                        "Power off",
-                        include_bytes!("../assets/icons/status/power-off.svg").as_slice(),
-                        Action::Poweroff,
-                    ),
-                    (
-                        self.status.suspend,
-                        "Suspend",
-                        include_bytes!("../assets/icons/status/suspend.svg").as_slice(),
-                        Action::Suspend,
-                    ),
-                ] {
-                    if enabled {
-                        power = power.push(power_tile_action(label, icon, action, theme, p));
-                    }
-                }
-                if self.status.reboot || self.status.poweroff || self.status.suspend {
-                    rows = rows.push(text("Power").size(13).class(theme::Text::Color(muted)));
-                    rows = rows.push(power);
-                }
-            }
-            if !menu.kind.available(&self.status) {
-                rows = rows.push(
-                    text("Service unavailable")
-                        .size(13)
-                        .class(theme::Text::Color(muted)),
-                );
             }
         }
+
         if let Some(error) = &self.status_error {
             rows = rows.push(text(error).size(12).class(theme::Text::Color(Color {
                 a: p,
                 ..Color::from_rgb8(230, 172, 90)
             })));
         }
+
         let compositor_material = menu.effects.is_some();
         let panel = container(rows)
             .id("ferese-blur-card")
@@ -856,10 +883,10 @@ impl FereseShell {
                     color: color_with_opacity(theme.text_muted, 0.18 * p),
                     width: 1.0,
                     radius: theme.material_radius.into(),
-                    ..Default::default()
                 },
                 ..Default::default()
             }));
+
         cosmic::widget::autosize::autosize(
             super::motion::animated(
                 panel.into(),
@@ -1111,20 +1138,20 @@ fn power_tile<'a>(
         },
         opacity,
     );
-    let tile = column![bar_icon(icon, 19, foreground), text(label).size(11)]
-        .spacing(3)
-        .align_x(Alignment::Center);
-    motion::button(
-        button::custom(tile)
-            .width(Length::FillPortion(1))
-            .padding([8, 2])
-            .on_press(cosmic::Action::App(Message::Control(Action::PowerProfile(
-                profile,
-            )))),
-        foreground,
-        selected,
-        opacity,
-    )
+    let tile = column![
+        bar_icon(icon, 19, foreground),
+        text(label).size(11).align_x(Alignment::Center)
+    ]
+    .spacing(3)
+    .align_x(Alignment::Center);
+    let btn = button::custom(tile.align_x(Alignment::Center))
+        .width(Length::FillPortion(1))
+        .padding([8, 2])
+        .on_press(cosmic::Action::App(Message::Control(Action::PowerProfile(
+            profile,
+        ))));
+
+    motion::button(btn, foreground, selected, opacity)
 }
 
 fn power_tile_action<'a>(
@@ -1135,6 +1162,7 @@ fn power_tile_action<'a>(
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
     let foreground = color_with_opacity(theme.text_primary, opacity);
+    // TODO: confirm column align fix
     motion::button(
         button::custom(
             column![bar_icon(icon, 19, foreground), text(label).size(11)]
@@ -1623,12 +1651,14 @@ mod tests {
 
     #[test]
     fn icons_follow_real_states() {
-        let mut s = Snapshot::default();
-        s.audio = Some(status::Audio {
-            volume: 80,
-            muted: true,
-            output: String::new(),
-        });
+        let mut s = Snapshot {
+            audio: Some(status::Audio {
+                volume: 80,
+                muted: true,
+                output: String::new(),
+            }),
+            ..Default::default()
+        };
         assert_eq!(
             status_icon(Menu::Audio, &s),
             (
@@ -1636,6 +1666,7 @@ mod tests {
                 false
             )
         );
+
         s.battery = Some(status::Battery {
             percent: 2,
             status: "Charging".into(),
@@ -1644,6 +1675,7 @@ mod tests {
             status_icon(Menu::Battery, &s).0,
             include_bytes!("../assets/icons/status/battery-charging.svg")
         );
+
         s.notifications = Some(status::Notifications {
             count: 3,
             dnd: true,
@@ -1656,6 +1688,7 @@ mod tests {
             status_label(Menu::Notifications, &s),
             "Notifications: do not disturb"
         );
+
         s.bluetooth = Some(status::Bluetooth {
             enabled: false,
             devices: vec!["Headphones".into()],

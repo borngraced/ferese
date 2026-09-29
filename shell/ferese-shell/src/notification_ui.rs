@@ -520,7 +520,6 @@ impl FereseShell {
                     color: color_with_opacity(palette.text_muted, 0.18 * opacity),
                     width: if history { 0.0 } else { 1.0 },
                     radius: palette.material_radius.into(),
-                    ..Default::default()
                 },
                 ..Default::default()
             }));

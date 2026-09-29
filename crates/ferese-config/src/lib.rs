@@ -39,6 +39,7 @@ pub fn default_wallpaper() -> &'static str {
             .unwrap_or_else(|| {
                 PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/wallpapers/ferese.png")
             });
+
         path.canonicalize()
             .unwrap_or(path)
             .to_string_lossy()
@@ -50,6 +51,7 @@ fn field(name: &str, parent: &str) -> String {
     if parent == "commands" {
         return name.to_owned();
     }
+
     match name {
         "binding" => "bindings".into(),
         "window-rule" => "window_rules".into(),
@@ -61,11 +63,14 @@ fn field(name: &str, parent: &str) -> String {
 }
 
 fn is_records(key: &str, parent: &str) -> bool {
-    match (parent, key) {
-        ("", "bindings" | "window_rules" | "output_profiles" | "autostart") => true,
-        ("output_profiles", "outputs") | ("desktop_widgets", "notes") => true,
-        _ => false,
-    }
+    matches!(
+        (parent, key),
+        (
+            "",
+            "bindings" | "window_rules" | "output_profiles" | "autostart"
+        ) | ("output_profiles", "outputs")
+            | ("desktop_widgets", "notes")
+    )
 }
 
 fn is_array(key: &str, parent: &str) -> bool {
@@ -365,11 +370,11 @@ fn restore_node_formats(doc: &mut KdlDocument, formats: &mut impl Iterator<Item 
                     entry.set_format(format);
                 }
             }
-            if let Some(terminator) = terminator {
-                if let Some(format) = node.format_mut() {
-                    format.before_terminator = " ".into();
-                    format.terminator = terminator;
-                }
+            if let Some(terminator) = terminator
+                && let Some(format) = node.format_mut()
+            {
+                format.before_terminator = " ".into();
+                format.terminator = terminator;
             }
         }
         if let Some(children) = node.children_mut() {
@@ -519,15 +524,14 @@ fn set_in(doc: &mut KdlDocument, parts: &[&str], parent: &str, value: Value) -> 
     }
     let node = &mut doc.nodes_mut()[i];
 
-    if parts.len() == 2 {
-        if let Some(entry) = node
+    if parts.len() == 2
+        && let Some(entry) = node
             .entries_mut()
             .iter_mut()
             .find(|e| e.name().is_some_and(|n| field(n.value(), key) == parts[1]))
-        {
-            set_entry_value(entry, kdl_value(&value)?);
-            return Ok(());
-        }
+    {
+        set_entry_value(entry, kdl_value(&value)?);
+        return Ok(());
     }
 
     set_in(

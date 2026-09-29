@@ -148,7 +148,7 @@ mod tests {
             Duration::from_millis(2),
             &[Rectangle::new((0, 0).into(), (100, 50).into())],
             0,
-            FrameEffectMetrics::default(),
+            FrameEffectMetrics,
         );
 
         assert_eq!(metrics.rendered_frames, 0);

@@ -129,7 +129,9 @@ impl Server {
             title: limited(summary, 160),
             body: limited(body, 500),
             actions: actions
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .take(8)
                 .map(|pair| (limited(&pair[0], 128), limited(&pair[1], 40)))
                 .collect(),

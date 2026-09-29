@@ -92,6 +92,14 @@ pub(crate) fn init_font_loader(
     Ok(())
 }
 
+type OverviewStateLabel = HashMap<
+    (String, u64, [u32; 4]),
+    (
+        MemoryRenderBuffer,
+        smithay::utils::Size<i32, smithay::utils::Buffer>,
+    ),
+>;
+
 #[derive(Debug)]
 pub(crate) struct OverviewState {
     active: bool,
@@ -103,13 +111,7 @@ pub(crate) struct OverviewState {
     font_family: String,
     font_requests: Option<FontRequests>,
     font: Option<FontArc>,
-    labels: HashMap<
-        (String, u64, [u32; 4]),
-        (
-            MemoryRenderBuffer,
-            smithay::utils::Size<i32, smithay::utils::Buffer>,
-        ),
-    >,
+    labels: OverviewStateLabel,
 }
 
 impl Default for OverviewState {
@@ -480,6 +482,7 @@ impl Ferese {
         let selected = self
             .window_under_visual(point)
             .and_then(|w| self.window_ids.get(&w).copied());
+
         if selected.is_some() && self.overview.selected != selected {
             self.overview.selected = selected;
             crate::backends::direct::render_all(self);
@@ -655,8 +658,7 @@ impl Ferese {
         let card_width =
             ((strip.width - 24.0 - WORKSPACE_CARD_GAP * capacity.saturating_sub(1) as f64)
                 / capacity as f64)
-                .min(160.0)
-                .max(1.0);
+                .clamp(1.0, 160.0);
         let visible_count = workspaces.len().saturating_sub(offset).min(capacity);
         let start_x = centered_row_start(strip, visible_count, card_width);
         workspaces

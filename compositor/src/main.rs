@@ -107,10 +107,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let reload_handle = event_loop.handle();
     let result = event_loop.run(None, &mut state, |state| {
         if let Some(monitor) = &mut monitor {
-            if let Some(result) = monitor.poll(std::time::Instant::now()) {
-                if let Err(error) = result.and_then(|source| state.reload_config_source(source)) {
-                    warn!(%error, "config reload rejected; retaining last working config");
-                }
+            if let Some(result) = monitor.poll(std::time::Instant::now())
+                && let Err(error) = result.and_then(|source| state.reload_config_source(source))
+            {
+                warn!(%error, "config reload rejected; retaining last working config");
             }
             // At most one timer exists. Edits arriving during debounce move the
             // deadline; the old timer wakes once and is replaced if necessary.

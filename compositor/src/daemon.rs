@@ -47,6 +47,7 @@ impl Runner {
                 });
             }
         }
+
         // TERM/grace/reaping must not pause the compositor's event loop.
         for mut removed in previous {
             if let Some(mut child) = removed.child.take() {

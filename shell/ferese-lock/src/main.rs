@@ -1,3 +1,5 @@
+#![feature(box_patterns)]
+
 mod appearance;
 mod auth;
 mod runtime;
@@ -36,19 +38,23 @@ fn main() -> iced::Result {
     } else {
         ferese_config::config_path()
     };
+
     if !args.is_empty() && !preview && args != ["--foreground"] {
         eprintln!("Usage: ferese-lock [--preview | --foreground]");
         std::process::exit(2);
     }
+
     if !preview && !auth::available() {
         eprintln!("ferese-lock: install the ferese-lock PAM policy before locking");
         std::process::exit(1);
     }
+
     if !preview {
         if let Err(error) = runtime::check_protocol() {
             eprintln!("ferese-lock: {error}");
             std::process::exit(1);
         }
+
         if args.is_empty() {
             if let Err(error) = runtime::daemonize() {
                 eprintln!("ferese-lock: {error}");
@@ -57,14 +63,17 @@ fn main() -> iced::Result {
             return Ok(());
         }
     }
+
     let user = auth::username().unwrap_or_else(|error| {
         eprintln!("ferese-lock: {error}");
         std::process::exit(1)
     });
+
     // Password-bearing UI processes must not create core dumps.
     unsafe {
         libc::prctl(libc::PR_SET_DUMPABLE, 0);
     }
+
     let appearance = appearance::Appearance::load(&user, config.as_deref());
     cosmic::app::run::<Locker>(
         Settings::default()
@@ -81,18 +90,20 @@ fn main() -> iced::Result {
 
 #[derive(Clone)]
 enum Message {
-    Event(Event),
+    Event(Box<Event>),
     Input(String),
     Submit,
     Authenticated(bool),
     Tick,
 }
+
 // Never derive Debug for password-bearing messages.
 impl std::fmt::Debug for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("LockerMessage")
     }
 }
+
 #[derive(Default, Debug, PartialEq)]
 enum AuthState {
     #[default]
@@ -101,10 +112,12 @@ enum AuthState {
     Rejected(Instant),
     Unlocking,
 }
+
 impl AuthState {
     fn may_submit(&self) -> bool {
         matches!(self, Self::Ready)
     }
+
     fn complete(&mut self, success: bool) -> bool {
         if *self != Self::Checking {
             return false;
@@ -117,6 +130,7 @@ impl AuthState {
         success
     }
 }
+
 struct Locker {
     core: Core,
     preview: bool,
@@ -132,17 +146,22 @@ struct Locker {
     confirmation: runtime::Confirmation,
     caps_lock: bool,
 }
+
 impl cosmic::Application for Locker {
     type Executor = cosmic::executor::Default;
     type Flags = (bool, String, appearance::Appearance);
     type Message = Message;
+
     const APP_ID: &'static str = "dev.ferese.Lock";
+
     fn core(&self) -> &Core {
         &self.core
     }
+
     fn core_mut(&mut self) -> &mut Core {
         &mut self.core
     }
+
     fn init(mut core: Core, (preview, user, appearance): Self::Flags) -> (Self, Task<Message>) {
         core.window.show_headerbar = false;
         let now = jiff::Zoned::now();
@@ -174,6 +193,7 @@ impl cosmic::Application for Locker {
             },
         )
     }
+
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             event::listen_with(|event, _, _| match event {
@@ -182,22 +202,26 @@ impl cosmic::Application for Locker {
                 ))
                 | Event::Window(window::Event::Opened { .. })
                 | Event::Keyboard(iced::keyboard::Event::ModifiersChanged(_)) => {
-                    Some(Message::Event(event))
+                    Some(Message::Event(Box::new(event)))
                 }
                 _ => None,
             }),
             iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick),
         ])
     }
+
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Event(Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers))) => {
+            Message::Event(box Event::Keyboard(iced::keyboard::Event::ModifiersChanged(
+                modifiers,
+            ))) => {
                 self.caps_lock = modifiers.contains(iced::keyboard::Modifiers::CAPS_LOCK);
             }
             Message::Tick => {
                 let now = jiff::Zoned::now();
                 self.clock = now.strftime(self.appearance.clock_format()).to_string();
                 self.date = now.strftime("%A, %B %-d").to_string();
+
                 if matches!(self.state, AuthState::Rejected(at) if at.elapsed() >= Duration::from_secs(2))
                 {
                     self.state = AuthState::Ready;
@@ -217,12 +241,14 @@ impl cosmic::Application for Locker {
                     self.status = "Preview only · your session is not locked";
                     return focus();
                 }
+
                 if !self.confirmation.confirmed()
                     || !self.state.may_submit()
                     || self.password.is_empty()
                 {
                     return Task::none();
                 }
+
                 self.state = AuthState::Checking;
                 self.status = "Checking password…";
                 let password = Zeroizing::new(std::mem::take(&mut *self.password));
@@ -243,7 +269,7 @@ impl cosmic::Application for Locker {
                 self.status = "Password not accepted. Try again.";
                 return focus();
             }
-            Message::Event(Event::PlatformSpecific(PlatformSpecific::Wayland(
+            Message::Event(box Event::PlatformSpecific(PlatformSpecific::Wayland(
                 wayland::Event::Output(event, output),
             ))) if !self.preview => {
                 if matches!(event, wayland::OutputEvent::Removed) {
@@ -258,7 +284,7 @@ impl cosmic::Application for Locker {
                     }
                 }
             }
-            Message::Event(Event::PlatformSpecific(PlatformSpecific::Wayland(
+            Message::Event(box Event::PlatformSpecific(PlatformSpecific::Wayland(
                 wayland::Event::SessionLock(event),
             ))) if !self.preview => match event {
                 wayland::SessionLockEvent::Locked => {
@@ -285,25 +311,32 @@ impl cosmic::Application for Locker {
                 }
                 _ => {}
             },
-            Message::Event(Event::Window(window::Event::Opened { .. })) => return focus(),
+            Message::Event(box Event::Window(window::Event::Opened { .. })) => {
+                return focus();
+            }
             _ => {}
         }
         Task::none()
     }
+
     fn on_escape(&mut self) -> Task<Message> {
         self.password.zeroize();
         focus()
     }
+
     fn view(&self) -> Element<'_, Message> {
         self.screen()
     }
+
     fn view_window(&self, _: window::Id) -> Element<'_, Message> {
         self.screen()
     }
 }
+
 fn focus() -> Task<Message> {
     widget::text_input::focus(widget::Id::new("password"))
 }
+
 impl Locker {
     fn label<'a>(
         &self,
@@ -312,9 +345,11 @@ impl Locker {
     ) -> widget::Text<'a, cosmic::Theme, cosmic::Renderer> {
         widget::text(label).font(self.appearance.font).size(size)
     }
+
     fn screen(&self) -> Element<'_, Message> {
         iced::widget::responsive(move |size| self.screen_content(size)).into()
     }
+
     fn screen_content(&self, size: iced::Size) -> Element<'_, Message> {
         let avatar_size = (size.height * 0.09).clamp(64., 112.);
         let clock_size = (size.height * 0.165)
@@ -336,12 +371,14 @@ impl Locker {
             .style(password_style(a.radius, a.accent, a.panel))
             .font(a.font)
             .id(widget::Id::new("password"));
+
         if self.state.may_submit() {
             input = input.on_input(Message::Input).on_submit(|mut value| {
                 value.zeroize();
                 Message::Submit
             });
         }
+
         let submit = widget::button::custom(widget::icon::from_name("go-next-symbolic").size(20))
             .class(theme::Button::Icon)
             .padding(6)
@@ -401,6 +438,7 @@ impl Locker {
                 .min((size.width - margin * 2.).max(160.)),
         );
         let mut clock = column([]).spacing(0).align_x(iced::Alignment::Center);
+
         if a.show_clock {
             clock = clock.push(
                 self.label(&self.clock, clock_size)
@@ -411,12 +449,14 @@ impl Locker {
                     .class(iced::Color::WHITE),
             );
         }
+
         if a.show_date {
             clock = clock.push(
                 self.label(&self.date, 18)
                     .class(iced::Color::WHITE.scale_alpha(0.72)),
             );
         }
+
         let clock_height = if a.show_clock {
             clock_size as f32 * 1.3
         } else {
@@ -472,26 +512,6 @@ impl Locker {
         iced::widget::stack![background, foreground].into()
     }
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn only_an_active_successful_attempt_unlocks() {
-        let mut state = AuthState::Ready;
-        assert!(!state.complete(true));
-        state = AuthState::Checking;
-        assert!(!state.complete(false));
-        assert!(!state.may_submit());
-        assert!(!state.complete(true));
-        state = AuthState::Checking;
-        assert!(state.complete(true));
-        assert!(!state.complete(true));
-    }
-    #[test]
-    fn password_messages_are_redacted() {
-        assert!(!format!("{:?}", Message::Input("secret".into())).contains("secret"));
-    }
-}
 
 fn line_icon(path: &str, size: u16) -> widget::icon::Icon {
     let svg = format!(
@@ -499,6 +519,7 @@ fn line_icon(path: &str, size: u16) -> widget::icon::Icon {
     );
     widget::icon(widget::icon::from_svg_bytes(svg.into_bytes()).symbolic(true)).size(size)
 }
+
 fn ferese_symbol() -> widget::icon::Icon {
     widget::icon(
         widget::icon::from_svg_bytes(
@@ -533,11 +554,33 @@ fn password_style(radius: f32, accent: iced::Color, surface: iced::Color) -> the
         selected_fill: accent.scale_alpha(0.5),
         label_color: iced::Color::WHITE,
     };
+
     theme::TextInput::Custom {
         active: Box::new(move |_| appearance(false)),
         hovered: Box::new(move |_| appearance(true)),
         focused: Box::new(move |_| appearance(true)),
         error: Box::new(move |_| appearance(false)),
         disabled: Box::new(move |_| appearance(false)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn only_an_active_successful_attempt_unlocks() {
+        let mut state = AuthState::Ready;
+        assert!(!state.complete(true));
+        state = AuthState::Checking;
+        assert!(!state.complete(false));
+        assert!(!state.may_submit());
+        assert!(!state.complete(true));
+        state = AuthState::Checking;
+        assert!(state.complete(true));
+        assert!(!state.complete(true));
+    }
+    #[test]
+    fn password_messages_are_redacted() {
+        assert!(!format!("{:?}", Message::Input("secret".into())).contains("secret"));
     }
 }

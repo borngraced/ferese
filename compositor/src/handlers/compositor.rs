@@ -110,19 +110,6 @@ impl CompositorHandler for Ferese {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use smithay::wayland::shell::wlr_layer::Layer;
-    #[test]
-    fn panel_commits_do_not_invalidate_their_own_backdrop() {
-        assert!(!layer_affects_backdrop(Layer::Top));
-        assert!(!layer_affects_backdrop(Layer::Overlay));
-        assert!(layer_affects_backdrop(Layer::Bottom));
-        assert!(layer_affects_backdrop(Layer::Background));
-    }
-}
-
 impl BufferHandler for Ferese {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
 }
@@ -146,5 +133,18 @@ impl DmabufHandler for Ferese {
 impl ShmHandler for Ferese {
     fn shm_state(&self) -> &ShmState {
         &self.shm_state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smithay::wayland::shell::wlr_layer::Layer;
+    #[test]
+    fn panel_commits_do_not_invalidate_their_own_backdrop() {
+        assert!(!layer_affects_backdrop(Layer::Top));
+        assert!(!layer_affects_backdrop(Layer::Overlay));
+        assert!(layer_affects_backdrop(Layer::Bottom));
+        assert!(layer_affects_backdrop(Layer::Background));
     }
 }

@@ -1017,7 +1017,7 @@ pub(crate) fn frame_effect_metrics(
     _elements: &[AnimatedWindowRenderElement],
     _scale: f64,
 ) -> FrameEffectMetrics {
-    FrameEffectMetrics::default()
+    FrameEffectMetrics
 }
 
 fn output_elements(
@@ -1220,45 +1220,44 @@ fn output_elements(
                 output,
                 &programs,
             );
-            if !scale_content {
-                if let Some(snapshot) = state.resize_snapshots.get(&id)
-                    && snapshot.context == renderer.context_id().erased()
-                    && (snapshot.scale - scale).abs() < 0.001
-                {
-                    let size = snapshot.texture.size();
-                    let visible =
-                        Rectangle::new(pixels.loc, (size.w, size.h).into()).intersection(pixels);
-                    if let Some(visible) = visible {
-                        let clip = framebuffer_clip_rect(
-                            pixels,
-                            output.current_mode().unwrap().size,
-                            output.current_transform().invert(),
-                        );
-                        elements.push(
-                            NativeTextureElement {
-                                id: snapshot.id.clone(),
-                                commit: snapshot.commit,
-                                texture: snapshot.texture.clone(),
-                                geometry: visible,
-                                source: Rectangle::from_size(Size::from((
-                                    f64::from(visible.size.w),
-                                    f64::from(visible.size.h),
-                                ))),
-                                alpha: crate::presentation::handoff_alpha(snapshot.elapsed)
-                                    * close_alpha,
-                                program: Some(programs.texture.clone()),
-                                uniforms: vec![
-                                    Uniform::new("clip_rect", clip).into_owned(),
-                                    Uniform::new(
-                                        "radius",
-                                        scaled_effect_value(window_radius, constrain, scale),
-                                    )
-                                    .into_owned(),
-                                ],
-                            }
-                            .into(),
-                        );
-                    }
+            if !scale_content
+                && let Some(snapshot) = state.resize_snapshots.get(&id)
+                && snapshot.context == renderer.context_id().erased()
+                && (snapshot.scale - scale).abs() < 0.001
+            {
+                let size = snapshot.texture.size();
+                let visible =
+                    Rectangle::new(pixels.loc, (size.w, size.h).into()).intersection(pixels);
+                if let Some(visible) = visible {
+                    let clip = framebuffer_clip_rect(
+                        pixels,
+                        output.current_mode().unwrap().size,
+                        output.current_transform().invert(),
+                    );
+                    elements.push(
+                        NativeTextureElement {
+                            id: snapshot.id.clone(),
+                            commit: snapshot.commit,
+                            texture: snapshot.texture.clone(),
+                            geometry: visible,
+                            source: Rectangle::from_size(Size::from((
+                                f64::from(visible.size.w),
+                                f64::from(visible.size.h),
+                            ))),
+                            alpha: crate::presentation::handoff_alpha(snapshot.elapsed)
+                                * close_alpha,
+                            program: Some(programs.texture.clone()),
+                            uniforms: vec![
+                                Uniform::new("clip_rect", clip).into_owned(),
+                                Uniform::new(
+                                    "radius",
+                                    scaled_effect_value(window_radius, constrain, scale),
+                                )
+                                .into_owned(),
+                            ],
+                        }
+                        .into(),
+                    );
                 }
             }
             elements.extend(rounded_window_elements(
