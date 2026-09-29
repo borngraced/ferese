@@ -396,6 +396,13 @@ impl WindowGeometry {
         self.mode == PresentationMode::Fullscreen
     }
 
+    pub fn settle_presentation(&mut self) {
+        self.visual.snap();
+        self.zoom = None;
+        self.decorations = if self.is_fullscreen() { 0.0 } else { 1.0 };
+        self.presentation_changed = true;
+    }
+
     pub fn follow_pointer(&mut self, rect: Rect, now: Duration) -> Option<ClientSize> {
         self.zoom = None;
         let requested_size = self.set_logical_target(rect, now);
@@ -572,6 +579,23 @@ fn finite_or(value: f64, fallback: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn returning_fullscreen_window_does_not_resume_hidden_zoom() {
+        let normal = Rect::new(100.0, 50.0, 900.0, 700.0);
+        let fullscreen = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let mut geometry = WindowGeometry::new(normal, None);
+        geometry.set_presentation_mode(fullscreen, PresentationMode::Fullscreen, Duration::ZERO);
+        geometry.advance(Duration::from_millis(16), SpringConfig::default(), true);
+        assert!(geometry.is_zooming());
+
+        geometry.settle_presentation();
+
+        assert_eq!(geometry.visual.current, fullscreen);
+        assert_eq!(geometry.decorations, 0.0);
+        assert!(!geometry.is_zooming());
+        assert!(!geometry.advance(Duration::from_millis(16), SpringConfig::default(), true));
+    }
 
     #[test]
     fn maximized_zoom_keeps_decorations_and_restores_through_fullscreen() {

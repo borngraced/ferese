@@ -1473,6 +1473,7 @@ impl Ferese {
         for (window, id, rect, is_fullscreen, is_maximized, is_floating, scrolling, couple_width) in
             placements
         {
+            let was_mapped = self.space.element_location(&window).is_some();
             // A viewport-coupled width must never override fullscreen/floating geometry.
             if scrolling.is_none() {
                 self.viewport_coupled_widths.remove(&id);
@@ -1493,6 +1494,9 @@ impl Ferese {
             };
             layout_changed |= !had_geometry || geometry.logical != rect;
             let mut requested_size = geometry.set_presentation_mode(rect, mode, now);
+            if !was_mapped && (had_geometry || is_fullscreen) {
+                geometry.settle_presentation();
+            }
             if !self.animations_enabled {
                 geometry.advance(Duration::ZERO, self.spring_config, false);
                 requested_size = geometry.presentation_size_request(now).or(requested_size);
