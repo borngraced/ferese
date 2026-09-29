@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::SyncSender as ReplySender;
+use std::time::{Duration, Instant};
 
 use ferese_ipc::Response;
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Size, Transform};
@@ -345,7 +346,7 @@ pub(crate) struct CaptureBuffer {
 }
 
 // A capture part completes exactly once, with either pixels or an error. The
-// The compositor thread sends it over a channel that never fills while it is
+// compositor thread sends it over a channel that never fills while it is
 // rendering; a dropped part would leave its request waiting indefinitely.
 #[derive(Debug)]
 pub(crate) struct PartOutcome {
@@ -386,6 +387,7 @@ struct Request {
     state: RequestState,
     parts: Vec<(PartSpec, PartState)>,
     received: usize,
+    deadline: Instant,
 }
 
 pub(crate) enum Action {
@@ -402,6 +404,11 @@ pub(crate) enum Action {
 
 const MAX_OUTSTANDING: usize = 8;
 const MAX_PENDING_BYTES: usize = 256 * 1024 * 1024;
+// A request is answered or abandoned this long after it is admitted. Parts are
+// produced by the render path, so an output that is never repainted would
+// otherwise leave the request in Collecting forever, holding one of the few
+// outstanding slots against every later request.
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub(crate) struct Coordinator {
@@ -457,6 +464,7 @@ impl Coordinator {
                     .map(|spec| (spec, PartState::Pending))
                     .collect(),
                 received: 0,
+                deadline: Instant::now() + REQUEST_TIMEOUT,
             },
         );
         Ok(id)
@@ -570,6 +578,35 @@ impl Coordinator {
 
     pub(crate) fn reject(&mut self, request: u64, error: &str) {
         self.reject_inner(request, error);
+    }
+
+    // Answers every request that outlived its deadline. The returned ids let the
+    // caller drop readbacks that would otherwise publish into a request that no
+    // longer exists.
+    pub(crate) fn expire(&mut self) -> Vec<u64> {
+        let now = Instant::now();
+        let expired: Vec<u64> = self
+            .requests
+            .iter()
+            .filter(|(_, entry)| now >= entry.deadline)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in &expired {
+            self.reject_inner(
+                *id,
+                "Screenshot timed out: an output was not redrawn in time",
+            );
+        }
+        expired
+    }
+
+    // The remaining time before the earliest deadline, so the caller can sleep
+    // exactly that long instead of polling on a fixed tick.
+    pub(crate) fn next_deadline(&self) -> Option<Duration> {
+        self.requests
+            .values()
+            .map(|entry| entry.deadline.saturating_duration_since(Instant::now()))
+            .min()
     }
 
     pub(crate) fn terminate_all(&mut self) -> Vec<u64> {
@@ -709,6 +746,11 @@ pub(crate) fn plan(
         let Some(clipped) = requested.intersection(output_rect) else {
             continue;
         };
+        // Smithay's intersection already excludes a merely adjacent output, but
+        // a degenerate clip must never reach the hard failure below.
+        if clipped.size.w <= 0 || clipped.size.h <= 0 {
+            continue;
+        }
         // capture_region_for_geometry works in output-local logical space.
         let local = Rectangle {
             loc: (
@@ -718,13 +760,19 @@ pub(crate) fn plan(
                 .into(),
             size: clipped.size,
         };
+        // The clip above already intersected against this same logical rect, so
+        // a failure here means the two paths disagree. Report it rather than
+        // quietly returning a smaller image than was asked for.
         let Some(buffer) = crate::handlers::screencopy::capture_region_for_geometry(
             output.mode_size,
             output.scale,
             output.transform,
             Some(local),
         ) else {
-            continue;
+            return Err(format!(
+                "Could not compute a capture region for the output at {}x{}",
+                output.location.x, output.location.y
+            ));
         };
         parts.push(PlannedPart {
             index,
@@ -853,6 +901,24 @@ mod planning {
         ];
         let parts = plan(&region(4000, 0, 100, 100), &outputs);
         assert!(parts.is_err(), "a region off the desktop is reported");
+    }
+
+    #[test]
+    fn an_output_adjacent_to_the_region_is_skipped_not_fatal() {
+        // The second output starts exactly where the region ends. It contributes
+        // nothing, so the capture must still succeed with just the first output
+        // rather than failing on a region it does not overlap.
+        let outputs = [
+            output(0, 0, 1920, 1080, 1.0),
+            output(1920, 0, 1920, 1080, 1.0),
+        ];
+        let parts = plan(&region(100, 100, 1820, 980), &outputs).expect("captures the overlap");
+        assert_eq!(parts.len(), 1, "only the overlapping output is read");
+        assert_eq!(parts[0].index, 0);
+        assert_eq!(
+            (parts[0].logical.size.w, parts[0].logical.size.h),
+            (1820, 980)
+        );
     }
 
     #[test]
@@ -1125,6 +1191,76 @@ mod completion {
         let response = harness.response().expect("failure is answered");
         assert_eq!(response.error.unwrap().message, "encoding failed");
         assert!(!harness.coordinator.is_live(id));
+    }
+
+    #[test]
+    fn a_request_whose_output_is_never_redrawn_is_abandoned() {
+        // Nothing ever calls on_part, which is what an unrendered output does.
+        // Without a deadline the request would hold its slot forever and the
+        // client would never be answered.
+        let mut harness = Harness::new(2);
+        let id = harness.coordinator.next_id;
+        harness
+            .coordinator
+            .requests
+            .get_mut(&id)
+            .expect("tracked")
+            .deadline = Instant::now() - Duration::from_secs(1);
+
+        assert_eq!(harness.coordinator.expire(), vec![id]);
+        let response = harness.response().expect("the caller is answered");
+        assert_eq!(response.error.as_ref().unwrap().code, "screenshot_failed");
+        assert!(
+            response
+                .error
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("timed out"),
+            "the failure explains itself: {:?}",
+            response.error.as_ref().unwrap().message
+        );
+        assert!(!harness.coordinator.is_live(id));
+        // A late part for the abandoned request is discarded, not revived.
+        assert!(matches!(
+            harness.coordinator.on_part(id, 0, Ok(buffer(2, 2))),
+            Action::None
+        ));
+        assert!(harness.response().is_none());
+    }
+
+    #[test]
+    fn a_live_request_is_not_expired_early() {
+        let mut harness = Harness::new(1);
+        let id = harness.coordinator.next_id;
+        assert!(harness.coordinator.expire().is_empty(), "not yet due");
+        assert!(harness.coordinator.is_live(id));
+        assert!(harness.response().is_none(), "still unanswered, not failed");
+        let remaining = harness.coordinator.next_deadline().expect("still armed");
+        assert!(
+            remaining <= REQUEST_TIMEOUT && remaining > REQUEST_TIMEOUT - Duration::from_secs(1),
+            "the timer re-arms to roughly the full timeout, got {remaining:?}"
+        );
+    }
+
+    #[test]
+    fn expiring_frees_the_outstanding_slot() {
+        let (reply, _received) = sync_channel(1);
+        let mut coordinator = Coordinator::new();
+        for _ in 0..MAX_OUTSTANDING {
+            coordinator
+                .admit(42, reply.clone(), vec![spec(2, 2)])
+                .expect("within the request cap");
+        }
+        for entry in coordinator.requests.values_mut() {
+            entry.deadline = Instant::now() - Duration::from_secs(1);
+        }
+        assert_eq!(coordinator.expire().len(), MAX_OUTSTANDING);
+        assert_eq!(coordinator.next_deadline(), None);
+        // The cap is usable again rather than permanently degraded.
+        coordinator
+            .admit(42, reply, vec![spec(2, 2)])
+            .expect("a slot was released");
     }
 
     #[test]

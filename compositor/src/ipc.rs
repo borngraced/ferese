@@ -31,7 +31,19 @@ use smithay::output::Output;
 const REQUEST_QUEUE_CAPACITY: usize = 128;
 const MAX_CONNECTIONS: usize = 64;
 const RESULT_QUEUE_CAPACITY: usize = 8;
+// The encode thread pushes one result per job, and at most QUEUE_CAPACITY jobs
+// can be queued while a further one is in flight. Keeping the result queue
+// larger than that is what stops the worker's send from ever blocking, which
+// would otherwise wedge it whenever the event loop is busy.
+const _: () = assert!(
+    RESULT_QUEUE_CAPACITY > crate::handlers::screenshot_worker::QUEUE_CAPACITY + 1,
+    "the result queue must outsize the job queue plus the in-flight job"
+);
 const SWEEP_INTERVAL: Duration = crate::handlers::screenshot_worker::SWEEP_INTERVAL;
+// Only consulted when no request is outstanding, so it bounds how late a newly
+// admitted request can be noticed. With a request pending the timer re-arms to
+// the exact remaining time instead.
+const DEADLINE_IDLE: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 struct IpcCall {
@@ -135,6 +147,25 @@ pub(crate) fn init(
             screenshot_worker::sweep_stale_files();
             timer::TimeoutAction::ToDuration(SWEEP_INTERVAL)
         })?;
+
+    // Readbacks are published by the render path, so a request whose outputs
+    // are not redrawn would otherwise wait forever. This re-arms to the exact
+    // remaining time whenever a request is outstanding, and idles otherwise.
+    event_loop.handle().insert_source(
+        timer::Timer::from_duration(DEADLINE_IDLE),
+        |_, _, state| {
+            // Abandoned requests have already been answered, so their
+            // readbacks are simply dropped: they are not failed, because
+            // that would publish into a request that no longer exists.
+            for request in state.screenshot.expire() {
+                state
+                    .pending_screencopies
+                    .retain(|capture| capture.request_id() != Some(request));
+            }
+            let next = state.screenshot.next_deadline().unwrap_or(DEADLINE_IDLE);
+            timer::TimeoutAction::ToDuration(next)
+        },
+    )?;
 
     tracing::info!(path = %path.display(), "Ferese IPC is accepting connections");
 

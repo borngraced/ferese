@@ -10,7 +10,7 @@ use smithay::reexports::calloop::channel;
 
 use super::screenshot::{Canvas, OutputFrame, compose};
 
-const QUEUE_CAPACITY: usize = 4;
+pub(crate) const QUEUE_CAPACITY: usize = 4;
 /// A client normally opens and unlinks its screenshot immediately. If it dies
 /// first, the file is left behind, so staged files are swept well after any
 /// realistic request could still be reading one.
@@ -56,7 +56,10 @@ impl Worker {
 fn run(receiver: Receiver<Job>, results: channel::SyncSender<Encoded>) {
     while let Ok(job) = receiver.recv() {
         let result = encode(&job);
-        // The loop drains this channel, so a full queue only delays the worker.
+        // This send cannot block. Each request produces exactly one Encode, so at
+        // most QUEUE_CAPACITY jobs can be queued while one more is being encoded,
+        // and RESULT_QUEUE_CAPACITY is asserted to exceed that. Blocking here
+        // would stall the worker with no way for the loop to recover it.
         if results
             .send(Encoded {
                 request: job.request,

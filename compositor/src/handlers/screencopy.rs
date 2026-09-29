@@ -136,6 +136,15 @@ impl PendingScreencopy {
     pub(crate) fn fail(&self) {
         self.sink.fail();
     }
+
+    // The compositor-owned request this readback belongs to, if any. Used to
+    // drop readbacks whose request was already abandoned.
+    pub(crate) fn request_id(&self) -> Option<u64> {
+        match &self.sink {
+            CaptureSink::Shm { .. } => None,
+            CaptureSink::Owned { request, .. } => Some(*request),
+        }
+    }
 }
 
 pub(crate) fn capture_allowed() -> bool {
