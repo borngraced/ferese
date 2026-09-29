@@ -1788,7 +1788,11 @@ dependencies = [
 name = "ferese-theme"
 version = "0.1.0"
 dependencies = [
+ "ferese-config",
+ "ferese-protocols",
+ "jiff",
  "libcosmic",
+ "wayland-client",
 ]
 
 [[package]]

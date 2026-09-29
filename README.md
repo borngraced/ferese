@@ -24,6 +24,7 @@ cohesive experience—beautiful by default and unmistakably yours.
   workspace overview.
 - **A native shell:** menu bar, control center, settings, notifications and
   desktop widgets designed to belong together, including themed authentication prompts.
+  Native apps share the [Ferese theme components](crates/ferese-theme/README.md).
 - **Personal by design:** themes, wallpapers, accent colors, blur, borders and
   motion that update without restarting your session.
 - **Ready for real setups:** gestures, multi-monitor support, fractional

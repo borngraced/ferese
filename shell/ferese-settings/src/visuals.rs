@@ -5,83 +5,17 @@ use crate::{
 };
 use cosmic::{
     Element,
-    iced::{Background, Border, Color, Length, Vector},
-    theme,
-    widget::{button, container, icon as svg_icon},
+    iced::{Color, Length},
+    widget::icon as svg_icon,
 };
 
-#[derive(Clone, Copy, PartialEq)]
-pub struct Palette {
-    pub background: Color,
-    pub sidebar: Color,
-    pub card: Color,
-    pub accent: Color,
-    pub text: Color,
-    pub muted: Color,
-    pub error: Color,
-}
+pub use ferese_theme::controls::{
+    button_style, navigation_style, settings_input as input_style, surface,
+};
+pub use ferese_theme::{Palette, mix, surface_shade};
 
 pub fn color(value: &str, fallback: Color) -> Color {
-    let Some(value) = value.strip_prefix('#') else {
-        return fallback;
-    };
-
-    if value.len() != 6 {
-        return fallback;
-    }
-
-    u32::from_str_radix(value, 16)
-        .map(|rgb| Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8))
-        .unwrap_or(fallback)
-}
-
-impl Palette {
-    pub fn from(snapshot: &Snapshot) -> Self {
-        let base = color(
-            &snapshot.string("theme.colors.surface_base", "#111821"),
-            Color::from_rgb8(15, 16, 20),
-        );
-        Self {
-            background: mix(base, surface_shade(base), 0.025),
-            sidebar: base,
-            card: mix(base, surface_shade(base), 0.055),
-            accent: color(
-                &snapshot.string("theme.colors.accent", "#3D7BE6"),
-                Color::from_rgb8(61, 123, 230),
-            ),
-            text: color(
-                &snapshot.string("theme.colors.text_primary", "#F4F7FB"),
-                Color::WHITE,
-            ),
-            muted: color(
-                &snapshot.string("theme.colors.text_muted", "#8793A2"),
-                Color::from_rgb8(150, 149, 159),
-            ),
-            error: mix(base, Color::from_rgb8(210, 80, 80), 0.2),
-        }
-    }
-}
-
-use ferese_theme::luminance;
-
-fn surface_shade(base: Color) -> Color {
-    if luminance(base) > 0.5 {
-        Color::BLACK
-    } else {
-        Color::WHITE
-    }
-}
-
-fn cosmic_color(color: Color) -> cosmic::theme::CosmicColor {
-    cosmic::theme::CosmicColor::new(color.r, color.g, color.b, 1.)
-}
-
-fn mix(a: Color, b: Color, t: f32) -> Color {
-    Color::from_rgb(
-        a.r + (b.r - a.r) * t,
-        a.g + (b.g - a.g) * t,
-        a.b + (b.b - a.b) * t,
-    )
+    ferese_theme::parse_color(value).unwrap_or(fallback)
 }
 
 fn hex(c: Color) -> String {
@@ -93,245 +27,32 @@ fn hex(c: Color) -> String {
     )
 }
 
-pub fn surface(background: Color, radius: f32) -> theme::Container<'static> {
-    theme::Container::custom(move |_| container::Style {
-        background: Some(Background::Color(background)),
-        border: Border {
-            radius: radius.into(),
-            ..Default::default()
-        },
-        ..Default::default()
-    })
-}
-
-pub fn button_style(p: Palette, selected: bool) -> theme::Button {
-    styled_button(p, selected, false)
-}
-
-pub fn navigation_style(p: Palette, selected: bool) -> theme::Button {
-    styled_button(p, selected, true)
-}
-
-pub fn input_style(p: Palette) -> theme::TextInput {
-    let appearance = move |focused: bool, hovered: bool| cosmic::widget::text_input::Appearance {
-        background: mix(p.sidebar, p.card, if hovered { 0.65 } else { 0.4 }).into(),
-        border_radius: 7.into(),
-        border_width: if focused { 1. } else { 0. },
-        border_offset: None,
-        border_color: p.accent,
-        icon_color: Some(p.muted),
-        text_color: Some(p.text),
-        placeholder_color: p.muted,
-        selected_text_color: p.sidebar,
-        selected_fill: p.accent,
-        label_color: p.muted,
-    };
-    theme::TextInput::Custom {
-        active: Box::new(move |_| appearance(false, false)),
-        hovered: Box::new(move |_| appearance(false, true)),
-        focused: Box::new(move |_| appearance(true, true)),
-        error: Box::new(move |_| appearance(true, false)),
-        disabled: Box::new(move |_| appearance(false, false)),
-    }
-}
-
-fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button {
-    let style = move |hover: bool| {
-        let background = if selected {
-            mix(p.sidebar, p.accent, if hover { 0.24 } else { 0.17 })
-        } else if hover {
-            mix(p.card, surface_shade(p.sidebar), 0.06)
-        } else if navigation {
-            p.sidebar
-        } else {
-            p.card
-        };
-        let (background, on) = if selected {
-            ferese_theme::accent_pair(background, p.text)
-        } else {
-            (background, p.text)
-        };
-
-        button::Style {
-            background: Some(Background::Color(background)),
-            text_color: Some(on),
-            icon_color: Some(on),
-            border_radius: 9.into(),
-            border_width: if selected { 1. } else { 0. },
-            border_color: if selected {
-                p.accent
-            } else {
-                Color::TRANSPARENT
-            },
-            outline_width: 0.,
-            outline_color: Color::TRANSPARENT,
-            overlay: None,
-            shadow_offset: Vector::ZERO,
-        }
-    };
-
-    theme::Button::Custom {
-        active: Box::new(move |_, _| style(false)),
-        hovered: Box::new(move |_, _| style(true)),
-        pressed: Box::new(move |_, _| style(true)),
-        disabled: Box::new(move |_| style(false)),
-    }
-}
-
 pub fn native_theme(snapshot: Option<&Snapshot>) -> cosmic::Theme {
-    let Some(snapshot) = snapshot else {
-        let mut native = cosmic::theme::COSMIC_DARK.clone();
-        let preferred = native.background(false).on.into();
-        ferese_theme::apply(&mut native, preferred);
-        return cosmic::Theme::custom(std::sync::Arc::new(native));
-    };
-    let palette = Palette::from(snapshot);
-    let builder = if luminance(palette.sidebar) > 0.5 {
-        cosmic::cosmic_theme::ThemeBuilder::light()
-    } else {
-        cosmic::cosmic_theme::ThemeBuilder::dark()
-    };
-    let mut theme = builder
-        .bg_color(cosmic_color(palette.background))
-        .primary_container_bg(cosmic_color(palette.card))
-        .text_tint(cosmic_color(palette.text).color)
-        .accent(ferese_theme::accent_color(palette.accent, palette.card))
-        .build();
-
-    ferese_theme::apply(&mut theme, palette.text);
-    cosmic::Theme::custom(std::sync::Arc::new(theme))
+    Palette::from_document(snapshot.map(|snapshot| &snapshot.doc)).native_theme()
 }
 
 pub fn configured_font(snapshot: &Snapshot) -> cosmic::font::Font {
-    static FONTS: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<String, cosmic::font::Font>>,
-    > = std::sync::OnceLock::new();
-
-    let family = snapshot.string("theme.typography.font_family", "Inter");
-    let mut fonts = FONTS.get_or_init(Default::default).lock().unwrap();
-    if let Some(font) = fonts.get(&family) {
-        return *font;
-    }
-
-    if fonts.len() >= 32 {
-        return cosmic::font::default();
-    }
-
-    let font = cosmic::font::Font::with_name(Box::leak(family.clone().into_boxed_str()));
-    fonts.insert(family, font);
-
-    font
+    ferese_theme::font(Some(
+        &snapshot.string("theme.typography.font_family", "Inter"),
+    ))
 }
 
 pub fn icon(page: Page, tint: Color) -> svg_icon::Icon {
-    let svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-    <path d="{}" fill="none" stroke="{}" stroke-width="1.6"
-        stroke-linecap="round" stroke-linejoin="round"/>
-</svg>"##,
-        page.icon(),
-        hex(tint),
-    );
-    svg_icon::from_svg_bytes(svg.into_bytes())
-        .symbolic(false)
-        .icon()
-        .size(19)
+    ferese_theme::icons::outline(page.icon(), tint, 19)
 }
 
 pub fn brand_icon() -> svg_icon::Icon {
-    svg_icon::from_svg_bytes(include_bytes!("../../../packaging/icons/ferese.svg").as_slice())
+    cosmic::widget::icon::from_svg_bytes(ferese_theme::icons::APPLICATION)
         .symbolic(false)
         .icon()
         .size(32)
 }
 
 pub fn action_icon(path: &str, tint: Color) -> svg_icon::Icon {
-    let svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-    <path d="{path}" fill="none" stroke="{}" stroke-width="1.6"
-        stroke-linecap="round" stroke-linejoin="round"/>
-</svg>"##,
-        hex(tint),
-    );
-    svg_icon::from_svg_bytes(svg.into_bytes())
-        .symbolic(false)
-        .icon()
-        .size(16)
+    ferese_theme::icons::outline(path, tint, 16)
 }
 
-pub struct Preset {
-    pub name: &'static str,
-    pub description: &'static str,
-    accent: &'static str,
-    base: &'static str,
-    text: &'static str,
-    muted: &'static str,
-    border: &'static str,
-    gradient_end: &'static str,
-}
-
-pub const PRESETS: [Preset; 6] = [
-    Preset {
-        name: "Ferese Blue",
-        description: "Default · logo blue",
-        accent: "#3D7BE6",
-        base: "#111821",
-        text: "#F4F7FB",
-        muted: "#8793A2",
-        border: "#FFFFFF18",
-        gradient_end: "#3D7BE6",
-    },
-    Preset {
-        name: "Monochrome",
-        description: "Dark · grayscale",
-        accent: "#E5E5E5",
-        base: "#101012",
-        text: "#EDEDF0",
-        muted: "#97979F",
-        border: "#FFFFFF18",
-        gradient_end: "#696973",
-    },
-    Preset {
-        name: "Gruvbox",
-        description: "Dark · warm orange",
-        accent: "#FE8019",
-        base: "#282828",
-        text: "#EBDBB2",
-        muted: "#BDAE93",
-        border: "#504945",
-        gradient_end: "#FABD2F",
-    },
-    Preset {
-        name: "Dracula",
-        description: "Dark · purple",
-        accent: "#BD93F9",
-        base: "#282A36",
-        text: "#F8F8F2",
-        muted: "#A4ADCD",
-        border: "#44475A",
-        gradient_end: "#FF79C6",
-    },
-    Preset {
-        name: "Ayu Light",
-        description: "Light · paper",
-        accent: "#8F5300",
-        base: "#F8F9FA",
-        text: "#5C6166",
-        muted: "#596574",
-        border: "#C8CDD3",
-        gradient_end: "#996000",
-    },
-    Preset {
-        name: "Monokai",
-        description: "Dark · warm green",
-        accent: "#A6E22E",
-        base: "#272822",
-        text: "#F8F8F2",
-        muted: "#B2B29F",
-        border: "#414339",
-        gradient_end: "#E6DB74",
-    },
-];
+pub use ferese_theme::{PRESETS, Preset};
 
 pub fn preset(index: usize) -> Vec<Edit> {
     let Some(preset) = PRESETS.get(index) else {
@@ -437,7 +158,7 @@ pub fn preset_preview(index: usize) -> Element<'static, Message> {
 }
 
 pub fn preview(snapshot: &Snapshot) -> Element<'static, Message> {
-    let p = Palette::from(snapshot);
+    let p = Palette::from_document(Some(&snapshot.doc));
     let base = hex(p.sidebar);
     let card = hex(p.card);
     let accent = hex(p.accent);
@@ -505,16 +226,14 @@ mod tests {
     }
 
     fn contrast(a: Color, b: Color) -> f32 {
-        let a = luminance(a);
-        let b = luminance(b);
-        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+        ferese_theme::contrast(a, b)
     }
 
     #[test]
     fn presets_are_distinct_and_readable_on_settings_surfaces() {
         for (index, preset) in PRESETS.iter().enumerate() {
             let snapshot = configured_preset(index);
-            let palette = Palette::from(&snapshot);
+            let palette = Palette::from_document(Some(&snapshot.doc));
             for background in [palette.background, palette.sidebar, palette.card] {
                 assert!(
                     contrast(palette.text, background) >= 4.5,

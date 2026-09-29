@@ -39,6 +39,9 @@ use wayland_client::{
 
 use crate::config::{ShellConfig, ShellTheme, WallpaperMode};
 use crate::control::{ShellControl, ShellSnapshot};
+use ferese_theme::calendar::format_bar_time;
+use ferese_theme::calendar::stacked_digits as stacked_clock_digits;
+use ferese_theme::icons::{accented as accented_icon, tinted as bar_icon};
 
 const APP_ID: &str = "dev.ferese.Shell";
 
@@ -50,40 +53,20 @@ static SHELL_FONT: std::sync::OnceLock<std::sync::RwLock<cosmic::font::Font>> =
     std::sync::OnceLock::new();
 
 fn configured_font(family: Option<&str>) -> cosmic::font::Font {
-    family.map_or_else(cosmic::font::default, |family| {
-        // Font names require static storage. Intern repeated families and cap
-        // the cache so live theme edits cannot leak unlimited strings.
-        static FONTS: std::sync::OnceLock<
-            std::sync::Mutex<std::collections::HashMap<String, cosmic::font::Font>>,
-        > = std::sync::OnceLock::new();
-        let mut fonts = FONTS.get_or_init(Default::default).lock().unwrap();
-
-        if let Some(font) = fonts.get(family) {
-            return *font;
-        }
-
-        if fonts.len() >= 64 {
-            return cosmic::font::default();
-        }
-
-        let family = Box::leak(family.to_owned().into_boxed_str());
-        let font = cosmic::font::Font::with_name(family);
-        fonts.insert(family.to_owned(), font);
-        font
-    })
+    ferese_theme::font(family)
 }
 
-// COSMIC's text helper explicitly selects its interface font, overriding
-// Settings::default_font. Use this helper for every bar and menu label.
+fn shell_font() -> cosmic::font::Font {
+    *SHELL_FONT
+        .get_or_init(|| std::sync::RwLock::new(cosmic::font::default()))
+        .read()
+        .unwrap()
+}
+
 fn text<'a>(
     content: impl Into<std::borrow::Cow<'a, str>> + 'a,
 ) -> cosmic::widget::Text<'a, cosmic::Theme, cosmic::Renderer> {
-    cosmic::widget::text(content).font(
-        *SHELL_FONT
-            .get_or_init(|| std::sync::RwLock::new(cosmic::font::default()))
-            .read()
-            .unwrap(),
-    )
+    ferese_theme::text(content, shell_font())
 }
 
 #[derive(Clone, Copy)]
@@ -109,35 +92,6 @@ impl From<ShellTheme> for BarMetrics {
             control_height: (height - 4.0).max(21.0).min(height),
         }
     }
-}
-
-fn stacked_clock_digits(label: &str) -> Option<[String; 2]> {
-    let mut parts = label.split_whitespace();
-    let time = parts.next()?;
-
-    if let Some(period) = parts.next()
-        && !period.eq_ignore_ascii_case("am")
-        && !period.eq_ignore_ascii_case("pm")
-    {
-        return None;
-    }
-
-    if parts.next().is_some() {
-        return None;
-    }
-
-    let (hour, minute) = time.split_once(':')?;
-    if !(1..=2).contains(&hour.len())
-        || minute.len() != 2
-        || !hour
-            .bytes()
-            .chain(minute.bytes())
-            .all(|digit| digit.is_ascii_digit())
-    {
-        return None;
-    }
-
-    Some([format!("{hour:0>2}"), minute.to_owned()])
 }
 
 fn main() -> cosmic::iced::Result {
@@ -191,7 +145,9 @@ fn main() -> cosmic::iced::Result {
         .client_decorations(false)
         .transparent(true)
         .is_daemon(true);
-    settings = settings.default_font(shell_font);
+    settings = settings
+        .default_font(shell_font)
+        .theme(config.theme.palette().native_theme());
 
     cosmic::app::run::<FereseShell>(settings, (config, wallpaper))
 }
@@ -883,6 +839,10 @@ impl FereseShell {
         } else {
             Task::none()
         }];
+
+        if old.palette() != theme.palette() {
+            tasks.push(cosmic::command::set_theme(theme.palette().native_theme()));
+        }
 
         if clock_changed
             && self
@@ -2287,55 +2247,12 @@ impl FereseShell {
     }
 }
 
-fn bar_icon(source: &'static [u8], size: u16, foreground: Color) -> icon::Icon {
-    accented_icon(source, size, foreground, foreground)
-}
-
-fn accented_icon(source: &'static [u8], size: u16, foreground: Color, accent: Color) -> icon::Icon {
-    let svg = std::str::from_utf8(source).expect("embedded SVG must be UTF-8");
-    // Battery canvases are wider; reserve that space instead of stretching
-    // or clipping them into the square slot used by the other status icons.
-    let aspect = if svg.contains("viewBox=\"0 0 32 24\"") {
-        4.0 / 3.0
-    } else {
-        1.0
-    };
-    icon::from_svg_bytes(tinted_svg(source, foreground, accent))
-        .symbolic(false)
-        .icon()
-        .size(size)
-        .width(Length::Fixed(f32::from(size) * aspect))
-        .content_fit(ContentFit::Contain)
-        .class(theme::Svg::custom(move |_| {
-            cosmic::iced::widget::svg::Style { color: None }
-        }))
-}
-
-fn tinted_svg(source: &[u8], foreground: Color, accent: Color) -> Vec<u8> {
-    let rgba = |foreground: Color| {
-        format!(
-            "rgba({},{},{},{})",
-            (foreground.r * 255.0).round() as u8,
-            (foreground.g * 255.0).round() as u8,
-            (foreground.b * 255.0).round() as u8,
-            foreground.a,
-        )
-    };
-    std::str::from_utf8(source)
-        .expect("embedded icons must be UTF-8 SVG")
-        .replace("currentColor", &rgba(foreground))
-        // The source artwork's blue swatch is the semantic theme accent.
-        // Battery warning/success swatches remain status colors.
-        .replace("#3d7be6", &rgba(accent))
-        .into_bytes()
-}
-
 fn overview_control(
     bar: BarMetrics,
     foreground: Color,
 ) -> Element<'static, cosmic::Action<Message>> {
     container(bar_icon(
-        include_bytes!("../assets/icons/ferese.svg"),
+        ferese_theme::icons::FERESE,
         bar.overview_icon_size,
         foreground,
     ))
@@ -2587,48 +2504,20 @@ fn current_time() -> String {
     format_bar_time(&Zoned::now())
 }
 
-fn format_bar_time(now: &Zoned) -> String {
-    let months = [
-        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sept", "oct", "nov", "dec",
-    ];
-    let hour = now.hour();
-    let hour12 = if hour % 12 == 0 { 12 } else { hour % 12 };
-    format!(
-        "{} {}, {}:{:02} {}",
-        now.day(),
-        months[(now.month() - 1) as usize],
-        hour12,
-        now.minute(),
-        if hour < 12 { "am" } else { "pm" }
-    )
-}
-
 fn shell_surface_style(theme: ShellTheme) -> cosmic::iced::theme::Style {
-    cosmic::iced::theme::Style {
-        background_color: Color::TRANSPARENT,
-        text_color: color(theme.text_primary),
-        icon_color: color(theme.text_primary),
-    }
+    theme.palette().application_style(Color::TRANSPARENT)
 }
 
 fn bar_style(theme: ShellTheme, compositor_material: bool) -> container::Style {
-    container::Style {
-        icon_color: Some(color(theme.text_primary)),
-        text_color: Some(color(theme.text_primary)),
-        // The compositor paints the selected panel material behind this surface.
-        // A client-side fill would cover its blur and tint; use it only as fallback.
-        background: if compositor_material {
-            None
-        } else {
-            Some(Background::Color(color(theme.bar_background)))
-        },
-        border: Border {
-            radius: theme.bar_radius.into(),
-            ..Border::default()
-        },
-        snap: true,
-        ..container::Style::default()
+    let mut style =
+        ferese_theme::controls::surface_appearance(color(theme.bar_background), theme.bar_radius);
+    if compositor_material {
+        style.background = None;
     }
+    style.text_color = Some(color(theme.text_primary));
+    style.icon_color = style.text_color;
+    style.snap = true;
+    style
 }
 
 fn bar_group_style(theme: ShellTheme) -> container::Style {
@@ -2818,6 +2707,8 @@ delegate_noop!(EffectsState: ignore FereseSurfaceEffectsV1);
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::control::{OutputSnapshot, WindowSnapshot};
     #[test]
     fn widget_drag_stops_at_edges_without_tunnelling_and_slides() {
         use cosmic::iced::{Point, Rectangle};
@@ -2875,21 +2766,6 @@ mod tests {
     }
 
     #[test]
-    fn pixel_clock_stacks_only_hour_and_minute_formats() {
-        assert_eq!(
-            super::stacked_clock_digits("2:45 pm"),
-            Some(["02".into(), "45".into()])
-        );
-        assert_eq!(
-            super::stacked_clock_digits("14:45"),
-            Some(["14".into(), "45".into()])
-        );
-        assert!(super::stacked_clock_digits("14:45:30").is_none());
-        assert!(super::stacked_clock_digits("Today 14:45").is_none());
-        assert!(super::stacked_clock_digits("14:45 pm extra").is_none());
-    }
-
-    #[test]
     fn note_drag_origin_and_bounds_use_logical_output_coordinates() {
         use cosmic::iced::Point;
         let mut note = ferese_core::desktop::StickyNote::default();
@@ -2939,75 +2815,12 @@ mod tests {
     }
 
     #[test]
-    fn clock_uses_lowercase_date_and_twelve_hour_time() {
-        for (stamp, expected) in [
-            (
-                "2026-09-28T21:32:00+01:00[Africa/Lagos]",
-                "28 sept, 9:32 pm",
-            ),
-            (
-                "2026-09-28T00:05:00+01:00[Africa/Lagos]",
-                "28 sept, 12:05 am",
-            ),
-            (
-                "2026-09-28T12:00:00+01:00[Africa/Lagos]",
-                "28 sept, 12:00 pm",
-            ),
-        ] {
-            assert_eq!(super::format_bar_time(&stamp.parse().unwrap()), expected);
-        }
-    }
-    use super::*;
-    use crate::control::{OutputSnapshot, WindowSnapshot};
-
-    #[test]
     fn shell_font_respects_configured_family() {
         assert_eq!(
             configured_font(Some("JetBrainsMono Nerd Font")),
             cosmic::font::Font::with_name("JetBrainsMono Nerd Font")
         );
         assert_eq!(configured_font(None), cosmic::font::default());
-    }
-
-    #[test]
-    fn icons_use_theme_accent_and_preserve_battery_status_colors() {
-        for (source, accent) in [
-            (
-                include_bytes!("../assets/icons/status/battery-full.svg").as_slice(),
-                "#63c168",
-            ),
-            (
-                include_bytes!("../assets/icons/status/battery-50.svg").as_slice(),
-                "#3d7be6",
-            ),
-            (
-                include_bytes!("../assets/icons/status/battery-25.svg").as_slice(),
-                "#e0654f",
-            ),
-            (
-                include_bytes!("../assets/icons/status/wifi-full.svg").as_slice(),
-                "#3d7be6",
-            ),
-            (
-                include_bytes!("../assets/icons/status/control-center.svg").as_slice(),
-                "#3d7be6",
-            ),
-        ] {
-            let svg = String::from_utf8(tinted_svg(
-                source,
-                Color::from_rgb8(205, 214, 244),
-                Color::from_rgb8(203, 166, 247),
-            ))
-            .unwrap();
-            assert!(!svg.contains("currentColor"));
-            assert!(svg.contains("rgba(205,214,244,1)"));
-            assert!(!svg.contains("#3d7be6"));
-            assert!(svg.contains(if accent == "#3d7be6" {
-                "rgba(203,166,247,1)"
-            } else {
-                accent
-            }));
-        }
     }
 
     #[test]

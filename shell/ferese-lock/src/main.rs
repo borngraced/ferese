@@ -343,7 +343,7 @@ impl Locker {
         label: impl Into<std::borrow::Cow<'a, str>> + 'a,
         size: u16,
     ) -> widget::Text<'a, cosmic::Theme, cosmic::Renderer> {
-        widget::text(label).font(self.appearance.font).size(size)
+        ferese_theme::text(label, self.appearance.font).size(size)
     }
 
     fn screen(&self) -> Element<'_, Message> {
@@ -368,7 +368,9 @@ impl Locker {
         let mut input = widget::text_input("Password", self.password.as_str())
             .password()
             .padding([8, 18])
-            .style(password_style(a.radius, a.accent, a.panel))
+            .style(ferese_theme::controls::lock_input(
+                a.radius, a.accent, a.panel,
+            ))
             .font(a.font)
             .id(widget::Id::new("password"));
 
@@ -528,40 +530,6 @@ fn ferese_symbol() -> widget::icon::Icon {
         .symbolic(true),
     )
     .size(30)
-}
-
-fn password_style(radius: f32, accent: iced::Color, surface: iced::Color) -> theme::TextInput {
-    let appearance = move |focused: bool| widget::text_input::Appearance {
-        background: iced::Color::from_rgba(
-            (surface.r + 1.) * 0.5,
-            (surface.g + 1.) * 0.5,
-            (surface.b + 1.) * 0.5,
-            0.24,
-        )
-        .into(),
-        border_radius: (radius * 2.).min(26.).into(),
-        border_width: 1.,
-        border_offset: None,
-        border_color: if focused {
-            accent.scale_alpha(0.7)
-        } else {
-            iced::Color::WHITE.scale_alpha(0.15)
-        },
-        icon_color: Some(iced::Color::WHITE.scale_alpha(0.8)),
-        text_color: Some(iced::Color::WHITE),
-        placeholder_color: iced::Color::WHITE.scale_alpha(0.55),
-        selected_text_color: iced::Color::WHITE,
-        selected_fill: accent.scale_alpha(0.5),
-        label_color: iced::Color::WHITE,
-    };
-
-    theme::TextInput::Custom {
-        active: Box::new(move |_| appearance(false)),
-        hovered: Box::new(move |_| appearance(true)),
-        focused: Box::new(move |_| appearance(true)),
-        error: Box::new(move |_| appearance(false)),
-        disabled: Box::new(move |_| appearance(false)),
-    }
 }
 
 #[cfg(test)]

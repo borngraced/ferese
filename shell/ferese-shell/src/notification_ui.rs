@@ -82,24 +82,17 @@ fn card_button<'a>(
     round: bool,
     accessible_name: String,
 ) -> Element<'a, cosmic::Action<Message>> {
-    let style = move |active: bool| button::Style {
-        text_color: Some(foreground),
-        icon_color: Some(foreground),
-        background: (active || round).then_some(Background::Color(hover)),
-        border_radius: (if round { motion::radius(11.0) } else { 0.0 }).into(),
-        ..Default::default()
-    };
     button::custom(content)
         .name(accessible_name)
         .width(if round { Length::Shrink } else { Length::Fill })
         .padding(0)
         .on_press(cosmic::Action::App(message))
-        .class(theme::Button::Custom {
-            active: Box::new(move |_, _| style(false)),
-            hovered: Box::new(move |_, _| style(true)),
-            pressed: Box::new(move |_, _| style(true)),
-            disabled: Box::new(move |_| style(false)),
-        })
+        .class(ferese_theme::controls::notification_button(
+            foreground,
+            hover,
+            if round { motion::radius(11.) } else { 0. },
+            round,
+        ))
         .into()
 }
 
@@ -308,12 +301,7 @@ impl FereseShell {
         bold.weight = cosmic::iced::font::Weight::Bold;
         let app_icon = if notice.app.to_lowercase().starts_with("ferese") || notice.icon.is_empty()
         {
-            accented_icon(
-                include_bytes!("../assets/icons/ferese.svg"),
-                18,
-                accent,
-                accent,
-            )
+            accented_icon(ferese_theme::icons::FERESE, 18, accent, accent)
         } else if notice.icon.starts_with('/') {
             icon::icon(icon::from_path(notice.icon.clone().into())).size(18)
         } else {
@@ -403,7 +391,7 @@ impl FereseShell {
                     .class(theme::Text::Color(muted)),
             )
             .push(icon_control(
-                include_bytes!("../assets/icons/status/close.svg"),
+                ferese_theme::icons::CLOSE,
                 "Dismiss notification",
                 if history && count > 1 {
                     Message::RemoveNotificationGroup(notice.app.clone())
@@ -624,7 +612,7 @@ impl FereseShell {
                 .align_y(alignment::Vertical::Center)
                 .push(container(heading).width(Length::Fill))
                 .push(icon_control(
-                    include_bytes!("../assets/icons/status/close.svg"),
+                    ferese_theme::icons::CLOSE,
                     "Close notification center",
                     Message::ToggleNotificationHistory,
                     muted,
@@ -637,9 +625,9 @@ impl FereseShell {
                 muted
             };
             let dnd_icon = if self.notifications.dnd {
-                include_bytes!("../assets/icons/status/notifications-off.svg").as_slice()
+                ferese_theme::icons::NOTIFICATIONS_OFF
             } else {
-                include_bytes!("../assets/icons/status/notifications.svg").as_slice()
+                ferese_theme::icons::NOTIFICATIONS
             };
             let dnd = row([])
                 .spacing(10)
@@ -705,7 +693,7 @@ impl FereseShell {
                     .align_x(alignment::Horizontal::Center)
                     .push(
                         container(accented_icon(
-                            include_bytes!("../assets/icons/status/notifications.svg"),
+                            ferese_theme::icons::NOTIFICATIONS,
                             26,
                             muted,
                             accent,
@@ -749,7 +737,7 @@ impl FereseShell {
                                 .width(Length::Fill),
                         )
                         .push(icon_control(
-                            include_bytes!("../assets/icons/status/trash.svg"),
+                            ferese_theme::icons::TRASH,
                             "Clear all notifications",
                             Message::ClearNotifications,
                             muted,
@@ -777,7 +765,7 @@ impl FereseShell {
                                     .width(Length::Fill),
                             )
                             .push(icon_control(
-                                include_bytes!("../assets/icons/status/chevron-up.svg"),
+                                ferese_theme::icons::CHEVRON_UP,
                                 "Collapse group",
                                 Message::ToggleNotificationGroup(latest.app.clone()),
                                 muted,
@@ -785,7 +773,7 @@ impl FereseShell {
                                 24,
                             ))
                             .push(icon_control(
-                                include_bytes!("../assets/icons/status/trash.svg"),
+                                ferese_theme::icons::TRASH,
                                 "Clear group",
                                 Message::RemoveNotificationGroup(latest.app.clone()),
                                 muted,

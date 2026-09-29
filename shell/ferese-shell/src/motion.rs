@@ -144,21 +144,15 @@ pub(crate) fn button<'a, M: Clone + 'a>(
     let progress = std::rc::Rc::new(std::cell::Cell::new(0.0));
     let active = progress.clone();
     let hovered = progress.clone();
-    let paint = move |progress: f32, pressed: bool| cosmic::widget::button::Style {
-        text_color: Some(foreground),
-        icon_color: Some(foreground),
-        border_radius: radius(14.0).into(),
-        background: Some(cosmic::iced::Background::Color(cosmic::iced::Color {
-            a: if pressed {
-                0.20 * opacity
-            } else {
-                ((if selected { 0.14 } else { 0.0 })
-                    + progress * if selected { 0.02 } else { 0.08 })
-                    * opacity
-            },
-            ..foreground
-        })),
-        ..Default::default()
+    let paint = move |progress: f32, pressed: bool| {
+        ferese_theme::controls::shell_button(
+            foreground,
+            selected,
+            opacity,
+            radius(14.),
+            progress,
+            pressed,
+        )
     };
     let content = button
         .class(cosmic::theme::Button::Custom {

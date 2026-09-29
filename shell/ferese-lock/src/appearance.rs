@@ -1,5 +1,6 @@
 use cosmic::{iced::Color, widget::image};
 use ferese_config::Document;
+
 #[derive(Clone)]
 pub struct Appearance {
     pub dim: f32,
@@ -14,6 +15,7 @@ pub struct Appearance {
     pub wallpaper: image::Handle,
     pub avatar: Option<image::Handle>,
 }
+
 impl Appearance {
     pub fn load(user: &str, path: Option<&std::path::Path>) -> Self {
         let doc = path
@@ -26,9 +28,7 @@ impl Appearance {
                 .unwrap_or(fallback)
                 .to_owned()
         };
-        let color = |key, fallback| {
-            parse_color(&string(key, fallback)).unwrap_or_else(|| parse_color(fallback).unwrap())
-        };
+        let palette = ferese_theme::Palette::from_document(doc.as_ref());
         let font = string("theme.typography.font_family", "Inter");
         let path = string("theme.background.path", ferese_config::default_wallpaper());
         let path = if let Some(tail) = path.strip_prefix("~/") {
@@ -77,23 +77,16 @@ impl Appearance {
             show_clock: boolean("lock_screen.show_clock", true),
             show_date: boolean("lock_screen.show_date", true),
             twelve_hour: string("lock_screen.clock_format", "24h") == "12h",
-            panel: color("theme.colors.surface_base", "#111821"),
-            text: color("theme.colors.text_primary", "#F4F7FB"),
-            accent: color("theme.colors.accent", "#3D7BE6"),
-            radius: doc
-                .as_ref()
-                .and_then(|d| {
-                    d.get("theme.geometry.shell_radius")
-                        .or_else(|| d.get("appearance.corner_radius"))
-                })
-                .and_then(|v| v.as_f64())
-                .unwrap_or(14.)
-                .clamp(0., 64.) as f32,
-            font: cosmic::font::Font::with_name(Box::leak(font.into_boxed_str())),
+            panel: palette.sidebar,
+            text: palette.text,
+            accent: palette.accent,
+            radius: palette.radius,
+            font: ferese_theme::font(Some(&font)),
             wallpaper,
             avatar: account_picture(user),
         }
     }
+
     pub fn clock_format(&self) -> &'static str {
         if self.twelve_hour {
             "%I:%M %p"
@@ -101,48 +94,20 @@ impl Appearance {
             "%H:%M"
         }
     }
-    pub fn theme(&self) -> cosmic::Theme {
-        use cosmic::cosmic_theme::{ThemeBuilder, palette::Srgba};
-        let color = |c: Color| Srgba::new(c.r, c.g, c.b, c.a);
-        let builder = if self.panel.r + self.panel.g + self.panel.b > 1.5 {
-            ThemeBuilder::light()
-        } else {
-            ThemeBuilder::dark()
-        };
-        let corners = cosmic::cosmic_theme::CornerRadii {
-            radius_0: Default::default(),
-            radius_xs: [self.radius.min(4.); 4],
-            radius_s: [self.radius.min(8.); 4],
-            radius_m: [self.radius; 4],
-            radius_l: [self.radius; 4],
-            radius_xl: [self.radius; 4],
-        };
-        let mut native = builder
-            .corner_radii(corners)
-            .bg_color(color(self.panel))
-            .primary_container_bg(color(self.panel))
-            .text_tint(color(self.text).color)
-            .accent(ferese_theme::accent_color(self.accent, self.panel))
-            .build();
-        ferese_theme::apply(&mut native, self.text);
-        cosmic::Theme::custom(std::sync::Arc::new(native))
-    }
-}
 
-fn parse_color(value: &str) -> Option<Color> {
-    let hex = value.strip_prefix('#')?;
-    let packed = u32::from_str_radix(hex, 16).ok()?;
-    let rgba = match hex.len() {
-        6 => (packed << 8) | 255,
-        8 => packed,
-        _ => return None,
-    };
-    Some(Color::from_rgba8(
-        (rgba >> 24) as u8,
-        (rgba >> 16) as u8,
-        (rgba >> 8) as u8,
-        (rgba & 255) as f32 / 255.,
-    ))
+    pub fn theme(&self) -> cosmic::Theme {
+        ferese_theme::Palette {
+            background: self.panel,
+            sidebar: self.panel,
+            card: self.panel,
+            text: self.text,
+            muted: self.text.scale_alpha(0.55),
+            accent: self.accent,
+            radius: self.radius,
+            error: Color::from_rgb8(235, 98, 98),
+        }
+        .native_theme()
+    }
 }
 
 fn account_picture(user: &str) -> Option<image::Handle> {

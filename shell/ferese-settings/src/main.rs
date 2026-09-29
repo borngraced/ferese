@@ -128,7 +128,7 @@ impl cosmic::Application for App {
         let error = initial.as_ref().err().cloned();
         let current = initial.unwrap_or_else(|_| Snapshot::parse(String::new()).unwrap());
         let font = visuals::configured_font(&current);
-        let native_palette = visuals::Palette::from(&current);
+        let native_palette = visuals::Palette::from_document(Some(&current.doc));
         let mut app = Self {
             note_editors: HashMap::new(),
             core,
@@ -517,7 +517,7 @@ impl cosmic::Application for App {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let palette = visuals::Palette::from(&self.draft);
+        let palette = visuals::Palette::from_document(Some(&self.draft.doc));
         let mut sidebar = column([])
             .spacing(3)
             .push(
@@ -1013,7 +1013,7 @@ impl cosmic::Application for App {
 
 impl App {
     fn update_theme(&mut self) -> Task<Message> {
-        let palette = visuals::Palette::from(&self.draft);
+        let palette = visuals::Palette::from_document(Some(&self.draft.doc));
         if palette == self.native_palette {
             return Task::none();
         }
@@ -1109,18 +1109,18 @@ impl App {
         text: impl Into<std::borrow::Cow<'a, str>> + 'a,
         size: f32,
     ) -> widget::Text<'a, cosmic::Theme, cosmic::Renderer> {
-        widget::text(text).size(size).font(self.font)
+        ferese_theme::text(text, self.font).size(size)
     }
 
     fn note(&self, text: &str) -> Element<'static, Message> {
-        let palette = visuals::Palette::from(&self.draft);
+        let palette = visuals::Palette::from_document(Some(&self.draft.doc));
         self.label(text.to_owned(), 12.)
             .class(cosmic::theme::Text::Color(palette.muted))
             .into()
     }
 
     fn field(&self, field: Field) -> Element<'static, Message> {
-        let palette = visuals::Palette::from(&self.draft);
+        let palette = visuals::Palette::from_document(Some(&self.draft.doc));
         let mut labels = column([])
             .spacing(3)
             .push(self.label(field.label.clone(), 13.));

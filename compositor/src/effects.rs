@@ -7,6 +7,10 @@ use ferese_protocols::effects::v1::server::{
     ferese_effects_manager_v1::{self, FereseEffectsManagerV1},
     ferese_surface_effects_v1::{self, FereseSurfaceEffectsV1},
 };
+use ferese_protocols::material::v1::server::{
+    ferese_material_manager_v1::{self, FereseMaterialManagerV1},
+    ferese_surface_material_v1::{self, FereseSurfaceMaterialV1},
+};
 use smithay::{
     reexports::wayland_server::{
         Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum, Weak,
@@ -112,6 +116,87 @@ impl SurfaceEffectsUserData {
 
 pub(crate) fn init_global(display: &DisplayHandle) {
     display.create_global::<Ferese, FereseEffectsManagerV1, _>(3, ());
+    display.create_global::<Ferese, FereseMaterialManagerV1, _>(1, ());
+}
+
+impl GlobalDispatch<FereseMaterialManagerV1, ()> for Ferese {
+    fn bind(
+        _state: &mut Self,
+        _display: &DisplayHandle,
+        _client: &Client,
+        resource: New<FereseMaterialManagerV1>,
+        _global_data: &(),
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        data_init.init(resource, ());
+    }
+}
+
+impl Dispatch<FereseMaterialManagerV1, ()> for Ferese {
+    fn request(
+        state: &mut Self,
+        _client: &Client,
+        manager: &FereseMaterialManagerV1,
+        request: ferese_material_manager_v1::Request,
+        _data: &(),
+        _display: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        match request {
+            ferese_material_manager_v1::Request::GetSurfaceMaterial { id, surface } => {
+                let attached = with_states(&surface, |states| {
+                    states
+                        .data_map
+                        .insert_if_missing_threadsafe(SurfaceEffectsState::new);
+                    let effects = states.data_map.get::<SurfaceEffectsState>().unwrap();
+                    effects.attached.swap(true, Ordering::AcqRel)
+                });
+                if attached {
+                    manager.post_error(
+                        ferese_material_manager_v1::Error::AlreadyConstructed,
+                        "surface already has material or effects",
+                    );
+                    return;
+                }
+                let material = data_init.init(id, SurfaceEffectsUserData::new(surface.clone()));
+                set_surface_role(&surface, Some(SemanticRole::Modal));
+                material.ready();
+                crate::backends::direct::render_all(state);
+            }
+            ferese_material_manager_v1::Request::Destroy => {}
+            _ => unreachable!(),
+        }
+    }
+}
+
+impl Dispatch<FereseSurfaceMaterialV1, SurfaceEffectsUserData> for Ferese {
+    fn request(
+        state: &mut Self,
+        _client: &Client,
+        _material: &FereseSurfaceMaterialV1,
+        request: ferese_surface_material_v1::Request,
+        data: &SurfaceEffectsUserData,
+        _display: &DisplayHandle,
+        _data_init: &mut DataInit<'_, Self>,
+    ) {
+        if matches!(request, ferese_surface_material_v1::Request::Destroy)
+            && let Some(surface) = data.surface()
+            && detach(&surface)
+        {
+            crate::backends::direct::render_all(state);
+        }
+    }
+
+    fn destroyed(
+        _state: &mut Self,
+        _client: ClientId,
+        _material: &FereseSurfaceMaterialV1,
+        data: &SurfaceEffectsUserData,
+    ) {
+        if let Some(surface) = data.surface() {
+            detach(&surface);
+        }
+    }
 }
 
 pub(crate) fn surface_regions(surface: &WlSurface) -> Option<Vec<[i32; 5]>> {

@@ -134,7 +134,7 @@ these six visually distinct.
 | `theme.background.path` | string | bundled Ferese wallpaper | Wallpaper image path; an existing selection overrides the default |
 | `theme.background.mode` | `"fill"`, `"fit"` | `"fill"` | Crop or letterbox |
 | `theme.material.style` | `"solid"`, `"translucent"` | `"solid"` | Shell background material |
-| `theme.material.opacity` | number 0–1 | `0.78` | Shared shell background opacity for bars, menus, popovers, notifications and the sharing dialog. Text/icons stay opaque; 0 and 1 skip blur. Solid mode is always opaque |
+| `theme.material.opacity` | number 0–1 | `0.78` | Shared shell background opacity for bars, menus, popovers, notifications and themed dialogs. Text/icons stay opaque; 0 hides the material. Solid mode is always opaque |
 | `theme.material.blur_radius` | number ≥ 0 | `12` | Translucent backdrop blur, capped at 32; 0 disables |
 
 | `theme.colors` key | Default | Meaning |

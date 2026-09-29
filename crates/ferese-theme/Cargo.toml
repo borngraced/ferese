@@ -6,4 +6,8 @@ license.workspace = true
 rust-version = "1.95"
 
 [dependencies]
+jiff.workspace = true
+ferese-config = { path = "../ferese-config" }
 libcosmic.workspace = true
+ferese-protocols = { path = "../ferese-protocols", default-features = false, features = ["client"] }
+wayland-client.workspace = true

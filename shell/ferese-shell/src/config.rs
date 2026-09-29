@@ -90,6 +90,22 @@ impl Default for ShellTheme {
 }
 
 impl ShellTheme {
+    pub(crate) fn palette(self) -> ferese_theme::Palette {
+        let color =
+            |[r, g, b, a]: [u8; 4]| cosmic::iced::Color::from_rgba8(r, g, b, f32::from(a) / 255.);
+        let surface = color(self.surface_base);
+        ferese_theme::Palette {
+            background: surface,
+            sidebar: surface,
+            card: surface,
+            text: color(self.text_primary),
+            muted: color(self.text_muted),
+            accent: color(self.accent),
+            radius: self.material_radius,
+            error: cosmic::iced::Color::from_rgb8(235, 98, 98),
+        }
+    }
+
     // The bar has its own foreground tokens, matched to its surface.
     pub(crate) fn for_bar(mut self) -> Self {
         self.text_primary = self.bar_text_primary;

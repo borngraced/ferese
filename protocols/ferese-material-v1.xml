@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="ferese_material_v1">
+  <interface name="ferese_material_manager_v1" version="1">
+    <description summary="compositor-owned material for application dialogs">
+      Clients can request the desktop's standard modal material behind their
+      own surface. The compositor chooses the color, opacity, radius and blur.
+      This grants no access to backdrop pixels or privileged shell roles.
+      Clients should leave their surface background transparent after attachment.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <request name="get_surface_material">
+      <arg name="id" type="new_id" interface="ferese_surface_material_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+    <enum name="error">
+      <entry name="already_constructed" value="0" summary="surface already has material or effects"/>
+    </enum>
+  </interface>
+  <interface name="ferese_surface_material_v1" version="1">
+    <description summary="standard material behind one surface">
+      The material changes only rendering, never focus, input, geometry or stacking.
+      Destroying this object restores the surface's ordinary rendering.
+    </description>
+    <request name="destroy" type="destructor"/>
+    <event name="ready">
+      <description summary="material attachment is active"/>
+    </event>
+  </interface>
+</protocol>

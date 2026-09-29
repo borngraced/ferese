@@ -29,93 +29,47 @@ impl Appearance {
         let document = ferese_config::config_path()
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|source| ferese_config::Document::parse(&source).ok());
-        let setting = |key: &str, fallback: &str| {
-            document
-                .as_ref()
-                .and_then(|doc| doc.get(key))
-                .and_then(|value| value.as_str())
-                .unwrap_or(fallback)
-                .to_owned()
-        };
-        let color = |key, fallback| parse_color(&setting(key, fallback), fallback);
-        let family: &'static str =
-            Box::leak(setting("theme.typography.font_family", "Inter").into_boxed_str());
-        let translucent = setting("theme.material.style", "solid") == "translucent";
-        let shell_opacity = document
+        let palette = ferese_theme::Palette::from_document(document.as_ref()).flat();
+        let family = document
             .as_ref()
-            .and_then(|doc| doc.get("theme.material.opacity"))
-            .and_then(|value| value.as_f64())
-            .unwrap_or(ferese_config::DEFAULT_MATERIAL_OPACITY)
-            .clamp(0., 1.) as f32;
-
-        let mut surface = color("theme.colors.surface_base", "#111821");
-        surface.a = if translucent { shell_opacity } else { 1. };
-
+            .and_then(|document| document.get("theme.typography.font_family"))
+            .and_then(|value| value.as_str())
+            .unwrap_or("Inter");
         Self {
-            surface,
-            text: color("theme.colors.text_primary", "#F4F7FB"),
-            muted: color("theme.colors.text_muted", "#8793A2"),
-            accent: color("theme.colors.accent", "#3D7BE6"),
-            radius: document
-                .as_ref()
-                .and_then(|doc| doc.get("theme.geometry.shell_radius"))
-                .and_then(|value| value.as_f64())
-                .unwrap_or(14.)
-                .clamp(8., 36.) as f32,
-            font: cosmic::font::Font {
-                family: cosmic::iced::font::Family::Name(family),
-                ..cosmic::font::default()
+            surface: Color {
+                a: ferese_theme::material_opacity(document.as_ref()),
+                ..palette.sidebar
             },
+            text: palette.text,
+            muted: palette.muted,
+            accent: palette.accent,
+            radius: palette.radius,
+            font: ferese_theme::font(Some(family)),
+        }
+    }
+
+    fn palette(&self) -> ferese_theme::Palette {
+        ferese_theme::Palette {
+            background: self.surface,
+            sidebar: self.surface,
+            card: self.surface,
+            text: self.text,
+            muted: self.muted,
+            accent: self.accent,
+            radius: self.radius,
+            error: Color::from_rgb8(235, 98, 98),
         }
     }
 
     fn theme(&self) -> cosmic::Theme {
-        use cosmic::cosmic_theme::{ThemeBuilder, palette::Srgba};
-
-        let rgba = |color: Color| Srgba::new(color.r, color.g, color.b, color.a);
-        let opaque_surface = Color {
-            a: 1.,
-            ..self.surface
-        };
-        let builder = if self.surface.r + self.surface.g + self.surface.b > 1.5 {
-            ThemeBuilder::light()
-        } else {
-            ThemeBuilder::dark()
-        };
-        let corners = cosmic::cosmic_theme::CornerRadii {
-            radius_xs: [self.radius.min(4.); 4],
-            radius_s: [self.radius.min(8.); 4],
-            radius_m: [self.radius; 4],
-            radius_l: [self.radius; 4],
-            radius_xl: [self.radius; 4],
-            radius_0: Default::default(),
-        };
-
-        let mut native = builder
-            .corner_radii(corners)
-            .bg_color(rgba(opaque_surface))
-            .primary_container_bg(rgba(opaque_surface))
-            .text_tint(rgba(self.text).color)
-            .accent(ferese_theme::accent_color(self.accent, opaque_surface))
-            .build();
-        ferese_theme::apply(&mut native, self.text);
-        cosmic::Theme::custom(Arc::new(native))
+        self.palette().native_theme()
     }
-}
-
-fn parse_color(input: &str, fallback: &str) -> Color {
-    let parse = |source: &str| {
-        let value = u32::from_str_radix(source.strip_prefix('#')?, 16).ok()?;
-        (source.len() == 7)
-            .then(|| Color::from_rgb8((value >> 16) as u8, (value >> 8) as u8, value as u8))
-    };
-    parse(input)
-        .or_else(|| parse(fallback))
-        .unwrap_or(Color::BLACK)
 }
 
 #[derive(Clone)]
 enum Message {
+    WindowOpened(cosmic::iced::window::Id),
+    MaterialAttached(Result<ferese_theme::material::ModalMaterial, String>),
     Tick,
     Input(String),
     Submit,
@@ -130,6 +84,7 @@ impl std::fmt::Debug for Message {
 
 struct Prompt {
     core: Core,
+    material: Option<ferese_theme::material::ModalMaterial>,
     appearance: Appearance,
     incoming: Arc<Mutex<VecDeque<PromptEvent>>>,
     description: String,
@@ -152,37 +107,6 @@ fn content_height(description: &str, status: Option<&str>) -> f32 {
         14 + 18 * message.chars().count().div_ceil(48).clamp(1, 3)
     });
     (214 + 18 * lines.saturating_sub(1) + status_height).min(360) as f32
-}
-
-fn input_style(palette: &Appearance) -> theme::TextInput {
-    let text = palette.text;
-    let muted = palette.muted;
-    let accent = palette.accent;
-    let radius = palette.radius.min(10.);
-    let appearance = move |focused: bool| widget::text_input::Appearance {
-        background: Color::from_rgba(text.r, text.g, text.b, 0.045).into(),
-        border_radius: radius.into(),
-        border_width: 1.,
-        border_offset: None,
-        border_color: if focused {
-            accent.scale_alpha(0.82)
-        } else {
-            muted.scale_alpha(0.26)
-        },
-        icon_color: Some(muted),
-        text_color: Some(text),
-        placeholder_color: muted,
-        selected_text_color: text,
-        selected_fill: accent.scale_alpha(0.35),
-        label_color: text,
-    };
-    theme::TextInput::Custom {
-        active: Box::new(move |_| appearance(false)),
-        hovered: Box::new(move |_| appearance(true)),
-        focused: Box::new(move |_| appearance(true)),
-        error: Box::new(move |_| appearance(false)),
-        disabled: Box::new(move |_| appearance(false)),
-    }
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -275,7 +199,11 @@ impl cosmic::Application for Prompt {
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
         Some(cosmic::iced::theme::Style {
-            background_color: self.appearance.surface,
+            background_color: if self.material.is_some() {
+                cosmic::iced::Color::TRANSPARENT
+            } else {
+                self.appearance.surface
+            },
             text_color: self.appearance.text,
             icon_color: self.appearance.text,
         })
@@ -296,6 +224,7 @@ impl cosmic::Application for Prompt {
         (
             Self {
                 core,
+                material: None,
                 appearance,
                 incoming,
                 description,
@@ -313,11 +242,29 @@ impl cosmic::Application for Prompt {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        cosmic::iced::time::every(Duration::from_millis(30)).map(|_| Message::Tick)
+        Subscription::batch([
+            cosmic::iced::time::every(Duration::from_millis(30)).map(|_| Message::Tick),
+            cosmic::iced::event::listen_with(|event, _, id| match event {
+                cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => {
+                    Some(Message::WindowOpened(id))
+                }
+                _ => None,
+            }),
+        ])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::WindowOpened(id) => {
+                return cosmic::iced::window::run(
+                    id,
+                    ferese_theme::material::ModalMaterial::attach,
+                )
+                .map(|result| cosmic::Action::App(Message::MaterialAttached(result)));
+            }
+            Message::MaterialAttached(result) => {
+                self.material = result.ok();
+            }
             Message::Tick => {
                 let events: Vec<_> = self.incoming.lock().unwrap().drain(..).collect();
                 let mut refocus = false;
@@ -375,7 +322,9 @@ impl cosmic::Application for Prompt {
             .id(widget::Id::new("auth-response"))
             .font(palette.font)
             .padding([7, 12])
-            .style(input_style(palette));
+            .style(ferese_theme::controls::authentication_input(
+                palette.palette(),
+            ));
         if !self.echo {
             input = input.password();
         }
@@ -390,23 +339,7 @@ impl cosmic::Application for Prompt {
             .height(Length::Fixed(36.))
             .padding([8, 16])
             .on_press_maybe((!self.waiting && !self.answer.is_empty()).then_some(Message::Submit));
-        let lock_svg = std::str::from_utf8(include_bytes!(
-            "../../ferese-shell/assets/icons/status/lock.svg"
-        ))
-        .expect("embedded lock icon is valid UTF-8")
-        .replace(
-            "currentColor",
-            &format!(
-                "#{:02x}{:02x}{:02x}",
-                (palette.accent.r * 255.) as u8,
-                (palette.accent.g * 255.) as u8,
-                (palette.accent.b * 255.) as u8,
-            ),
-        );
-        let lock_icon = widget::icon::from_svg_bytes(lock_svg.into_bytes())
-            .symbolic(false)
-            .icon()
-            .size(20);
+        let lock_icon = ferese_theme::icons::tinted(ferese_theme::icons::LOCK, 20, palette.accent);
         let heading = row![
             container(lock_icon)
                 .width(40)

@@ -275,16 +275,10 @@ impl FereseShell {
             }
             let (source, enabled) = if kind == Menu::Recording {
                 let source: &'static [u8] = match self.recorder.state {
-                    recording::State::Selecting => {
-                        include_bytes!("../assets/icons/status/record-cancel.svg")
-                    }
-                    recording::State::Recording(_) => {
-                        include_bytes!("../assets/icons/status/record-stop.svg")
-                    }
-                    recording::State::Saving => {
-                        include_bytes!("../assets/icons/status/record-saving.svg")
-                    }
-                    _ => include_bytes!("../assets/icons/status/record.svg"),
+                    recording::State::Selecting => ferese_theme::icons::RECORD_CANCEL,
+                    recording::State::Recording(_) => ferese_theme::icons::RECORD_STOP,
+                    recording::State::Saving => ferese_theme::icons::RECORD_SAVING,
+                    _ => ferese_theme::icons::RECORD,
                 };
                 (source, true)
             } else {
@@ -420,33 +414,20 @@ impl FereseShell {
         let kind = menu.kind;
         let primary = color_with_opacity(theme.text_primary, p);
         let muted = color_with_opacity(theme.text_muted, p);
-        let badge = container(
+        let badge = ferese_theme::menus::badge(
             accented_icon(
                 status_icon(kind, &self.status).0,
                 22,
                 primary,
                 color_with_opacity(theme.accent, p),
             )
-            .width(Length::Fixed(22.0)),
-        )
-        .width(36)
-        .height(36)
-        .center_x(36)
-        .center_y(36)
-        .class(theme::Container::custom(move |_| container::Style {
-            background: Some(Background::Color(color_with_opacity(
-                theme.accent,
-                0.12 * p,
-            ))),
-            border: Border {
-                radius: motion::radius(20.0).into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        }));
-        let mut heading = row![badge, text(kind.title()).size(18).width(Length::Fill)]
-            .spacing(10)
-            .align_y(Alignment::Center);
+            .width(Length::Fixed(22.))
+            .into(),
+            color(theme.accent),
+            p,
+            motion::radius(20.),
+        );
+        let mut heading = ferese_theme::menus::heading(badge, kind.title(), shell_font());
         if kind == Menu::System
             && self
                 .config
@@ -458,7 +439,7 @@ impl FereseShell {
         {
             heading = heading.push(motion::button(
                 button::custom(accented_icon(
-                    include_bytes!("../assets/icons/status/settings.svg"),
+                    ferese_theme::icons::SETTINGS,
                     20,
                     primary,
                     color_with_opacity(theme.accent, p),
@@ -687,7 +668,7 @@ impl FereseShell {
                 let brightness = column![
                     text("Brightness").size(13),
                     slider_row(
-                        include_bytes!("../assets/icons/status/brightness.svg"),
+                        ferese_theme::icons::BRIGHTNESS,
                         value,
                         true,
                         primary,
@@ -778,24 +759,23 @@ impl FereseShell {
             }
 
             if menu.kind == Menu::Battery {
-                rows = rows.push(text("Power mode").size(13).class(theme::Text::Color(muted)));
+                rows = rows.push(ferese_theme::menus::section_label(
+                    "Power mode",
+                    shell_font(),
+                    muted,
+                ));
                 if let Some(profiles) = &self.status.power_profiles {
                     let mut modes = row::with_capacity(3).spacing(6).width(Length::Fill);
                     for (index, (label, icon, profile)) in [
                         (
                             "Power saver",
-                            include_bytes!("../assets/icons/status/power-saver.svg").as_slice(),
+                            ferese_theme::icons::POWER_SAVER,
                             "power-saver",
                         ),
-                        (
-                            "Balanced",
-                            include_bytes!("../assets/icons/status/power-balanced.svg").as_slice(),
-                            "balanced",
-                        ),
+                        ("Balanced", ferese_theme::icons::POWER_BALANCED, "balanced"),
                         (
                             "Performance",
-                            include_bytes!("../assets/icons/status/power-performance.svg")
-                                .as_slice(),
+                            ferese_theme::icons::POWER_PERFORMANCE,
                             "performance",
                         ),
                     ]
@@ -827,19 +807,19 @@ impl FereseShell {
                     (
                         self.status.reboot,
                         "Restart",
-                        include_bytes!("../assets/icons/status/restart.svg").as_slice(),
+                        ferese_theme::icons::RESTART,
                         Action::Reboot,
                     ),
                     (
                         self.status.poweroff,
                         "Power off",
-                        include_bytes!("../assets/icons/status/power-off.svg").as_slice(),
+                        ferese_theme::icons::POWER_OFF,
                         Action::Poweroff,
                     ),
                     (
                         self.status.suspend,
                         "Suspend",
-                        include_bytes!("../assets/icons/status/suspend.svg").as_slice(),
+                        ferese_theme::icons::SUSPEND,
                         Action::Suspend,
                     ),
                 ] {
@@ -849,7 +829,11 @@ impl FereseShell {
                 }
 
                 if self.status.reboot || self.status.poweroff || self.status.suspend {
-                    rows = rows.push(text("Power").size(13).class(theme::Text::Color(muted)));
+                    rows = rows.push(ferese_theme::menus::section_label(
+                        "Power",
+                        shell_font(),
+                        muted,
+                    ));
                     rows = rows.push(power);
                 }
             }
@@ -1008,21 +992,7 @@ fn control_card<'a>(
     foreground: Color,
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
-    container(content)
-        .padding(10)
-        .width(Length::Fill)
-        .class(theme::Container::custom(move |_| container::Style {
-            background: Some(Background::Color(Color {
-                a: 0.045 * opacity,
-                ..foreground
-            })),
-            border: Border {
-                radius: motion::radius(22.0).into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        }))
-        .into()
+    ferese_theme::menus::section(content, foreground, opacity, motion::radius(22.))
 }
 
 fn connection_caption(detail: &str) -> String {
@@ -1101,22 +1071,13 @@ fn connection_control<'a>(
         ))
         .on_press(cosmic::Action::App(Message::Control(action)));
     let tile: Element<'_, cosmic::Action<Message>> = if selected {
-        let paint = move |outline| cosmic::widget::button::Style {
-            background: Some(Color { a: opacity, ..fill }.into()),
-            text_color: Some(foreground),
-            icon_color: Some(foreground),
-            border_radius: motion::radius(14.).into(),
-            outline_width: outline,
-            outline_color: foreground,
-            ..Default::default()
-        };
         button
-            .class(theme::Button::Custom {
-                active: Box::new(move |focused, _| paint(if focused { 1. } else { 0. })),
-                hovered: Box::new(move |_, _| paint(1.)),
-                pressed: Box::new(move |_, _| paint(2.)),
-                disabled: Box::new(move |_| paint(0.)),
-            })
+            .class(ferese_theme::controls::filled_button(
+                fill,
+                foreground,
+                motion::radius(14.),
+                opacity,
+            ))
             .into()
     } else {
         motion::button(button, foreground, false, opacity)
@@ -1180,98 +1141,24 @@ fn power_tile_action<'a>(
     motion::button(btn, foreground, false, opacity)
 }
 
-fn calendar_month(today: jiff::civil::Date, offset: i32) -> (jiff::civil::Date, usize, usize) {
-    let month_index = i32::from(today.year()) * 12 + i32::from(today.month()) - 1 + offset;
-    let year = month_index.div_euclid(12) as i16;
-    let month = (month_index.rem_euclid(12) + 1) as i8;
-    let first = jiff::civil::Date::new(year, month, 1).expect("calendar month is in range");
-    let start = usize::try_from(first.weekday().since(jiff::civil::Weekday::Monday)).unwrap_or(0);
-    let days = usize::try_from(first.days_in_month()).unwrap_or(31);
-    (first, start, days)
-}
-
 fn calendar_grid<'a>(
     offset: i32,
     theme: ShellTheme,
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
-    let today = Zoned::now().date();
-    let months = [
-        "January",
-        "February",
-        "March",
-        "April",
-        "May",
-        "June",
-        "July",
-        "August",
-        "September",
-        "October",
-        "November",
-        "December",
-    ];
-    let (first, start, days) = calendar_month(today, offset);
-    let year = first.year();
-    let month = first.month();
     let primary = color_with_opacity(theme.text_primary, opacity);
-    let muted = color_with_opacity(theme.text_muted, opacity);
-    let header = row![
-        text(format!("{} {year}", months[(month - 1) as usize]))
-            .size(15)
-            .width(Length::Fill),
-        menu_button("‹", Message::CalendarMonth(-1), primary, opacity),
-        menu_button("Today", Message::CalendarToday, primary, opacity),
-        menu_button("›", Message::CalendarMonth(1), primary, opacity),
-    ]
-    .align_y(Alignment::Center)
-    .spacing(2);
-    let mut grid = column::with_capacity(8).spacing(3).push(header);
-    let mut weekdays = row::with_capacity(7).spacing(3);
-    for label in ["M", "T", "W", "T", "F", "S", "S"] {
-        weekdays = weekdays.push(
-            container(text(label).size(11).class(theme::Text::Color(muted)))
-                .width(30)
-                .center_x(30),
-        );
-    }
-    grid = grid.push(weekdays);
-    for week in 0..(start + days).div_ceil(7) {
-        let mut dates = row::with_capacity(7).spacing(3);
-        for weekday in 0..7 {
-            let cell = week * 7 + weekday;
-            let day = cell
-                .checked_sub(start)
-                .map(|day| day + 1)
-                .filter(|day| *day <= days);
-            let is_today =
-                year == today.year() && month == today.month() && day == Some(today.day() as usize);
-            let label = day.map_or(String::new(), |day| day.to_string());
-            dates = dates.push(
-                container(text(label).size(12).class(theme::Text::Color(if is_today {
-                    primary
-                } else {
-                    muted
-                })))
-                .width(30)
-                .height(25)
-                .center_x(30)
-                .center_y(25)
-                .class(theme::Container::custom(move |_| container::Style {
-                    background: is_today.then_some(Background::Color(color_with_opacity(
-                        theme.accent,
-                        0.2 * opacity,
-                    ))),
-                    border: Border {
-                        radius: motion::radius(12.0).into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                })),
-            );
-        }
-        grid = grid.push(dates);
-    }
-    grid.into()
+    ferese_theme::calendar::grid(
+        Zoned::now().date(),
+        offset,
+        theme.palette(),
+        shell_font(),
+        opacity,
+        [
+            menu_button("‹", Message::CalendarMonth(-1), primary, opacity),
+            menu_button("Today", Message::CalendarToday, primary, opacity),
+            menu_button("›", Message::CalendarMonth(1), primary, opacity),
+        ],
+    )
 }
 
 fn menu_button<'a>(
@@ -1281,9 +1168,7 @@ fn menu_button<'a>(
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
     motion::button(
-        button::custom(text(label).size(13))
-            .padding([6, 8])
-            .on_press(cosmic::Action::App(message)),
+        ferese_theme::menus::button(label, cosmic::Action::App(message), shell_font()),
         foreground,
         false,
         opacity,
@@ -1297,59 +1182,7 @@ fn shell_switch<'a>(
     palette: ShellTheme,
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
-    let track = if enabled {
-        color(palette.accent)
-    } else {
-        Color {
-            a: 0.22,
-            ..color(palette.text_primary)
-        }
-    };
-    let thumb = if enabled {
-        ferese_theme::foreground(track, color(palette.text_primary))
-    } else {
-        color(palette.text_primary)
-    };
-    let knob = container(text(""))
-        .width(16)
-        .height(16)
-        .class(theme::Container::custom(move |_| container::Style {
-            background: Some(
-                Color {
-                    a: opacity,
-                    ..thumb
-                }
-                .into(),
-            ),
-            border: Border {
-                radius: motion::radius(8.).into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        }));
-    let toggle = container(knob)
-        .width(36)
-        .height(20)
-        .padding(2)
-        .align_x(if enabled {
-            alignment::Horizontal::Right
-        } else {
-            alignment::Horizontal::Left
-        })
-        .class(theme::Container::custom(move |_| container::Style {
-            background: Some(
-                Color {
-                    a: track.a * opacity,
-                    ..track
-                }
-                .into(),
-            ),
-            border: Border {
-                radius: motion::radius(10.).into(),
-                ..Default::default()
-            },
-            ..Default::default()
-        }));
+    let toggle = ferese_theme::menus::switch(enabled, palette.palette(), opacity);
     motion::button(
         button::custom(toggle)
             .padding(4)
@@ -1368,12 +1201,11 @@ fn toggle_row<'a>(
     palette: ShellTheme,
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
-    row![
-        text(label).width(Length::Fill).size(14),
-        shell_switch(label, on, action, palette, opacity)
-    ]
-    .align_y(Alignment::Center)
-    .into()
+    ferese_theme::menus::row(
+        label,
+        shell_switch(label, on, action, palette, opacity),
+        shell_font(),
+    )
 }
 
 fn slider_row(
@@ -1384,39 +1216,6 @@ fn slider_row(
     icon_accent: Color,
     opacity: f32,
 ) -> Element<'static, cosmic::Action<Message>> {
-    let style = std::rc::Rc::new(move |_: &cosmic::Theme| {
-        use cosmic::iced::widget::slider::{Breakpoint, Handle, HandleShape, Rail, Style};
-        Style {
-            rail: Rail {
-                backgrounds: (
-                    foreground.into(),
-                    Color {
-                        a: 0.16 * opacity,
-                        ..foreground
-                    }
-                    .into(),
-                ),
-                width: 4.0,
-                border: Border {
-                    radius: motion::radius(2.0).into(),
-                    ..Default::default()
-                },
-            },
-            handle: Handle {
-                shape: HandleShape::Rectangle {
-                    width: 10,
-                    height: 10,
-                    border_radius: motion::radius(5.0).into(),
-                },
-                background: foreground.into(),
-                border_width: 0.0,
-                border_color: Color::TRANSPARENT,
-            },
-            breakpoint: Breakpoint {
-                color: Color::TRANSPARENT,
-            },
-        }
-    });
     let control = slider(
         if brightness { 1..=100 } else { 0..=100 },
         value,
@@ -1430,11 +1229,11 @@ fn slider_row(
     )
     .width(Length::Fill)
     .height(24)
-    .class(theme::iced::Slider::Custom {
-        active: style.clone(),
-        hovered: style.clone(),
-        dragging: style,
-    });
+    .class(ferese_theme::menus::slider(
+        foreground,
+        opacity,
+        motion::radius(5.),
+    ));
     row![
         accented_icon(source, 18, foreground, icon_accent),
         control,
@@ -1479,13 +1278,13 @@ fn status_label(kind: Menu, s: &Snapshot) -> String {
 
 fn audio_icon(volume: u8, muted: bool) -> &'static [u8] {
     if muted || volume == 0 {
-        include_bytes!("../assets/icons/status/volume-mute.svg")
+        ferese_theme::icons::VOLUME_MUTE
     } else if volume <= 33 {
-        include_bytes!("../assets/icons/status/volume-low.svg")
+        ferese_theme::icons::VOLUME_LOW
     } else if volume <= 66 {
-        include_bytes!("../assets/icons/status/volume-medium.svg")
+        ferese_theme::icons::VOLUME_MEDIUM
     } else {
-        include_bytes!("../assets/icons/status/volume-high.svg")
+        ferese_theme::icons::VOLUME_HIGH
     }
 }
 
@@ -1493,79 +1292,57 @@ fn status_icon(kind: Menu, s: &Snapshot) -> (&'static [u8], bool) {
     match kind {
         Menu::Network => {
             let Some(n) = &s.network else {
-                return (include_bytes!("../assets/icons/status/wifi-off.svg"), false);
+                return (ferese_theme::icons::WIFI_OFF, false);
             };
             if !n.enabled || n.connection.is_none() {
-                (include_bytes!("../assets/icons/status/wifi-off.svg"), false)
+                (ferese_theme::icons::WIFI_OFF, false)
             } else if n.signal <= 33 {
-                (include_bytes!("../assets/icons/status/wifi-low.svg"), true)
+                (ferese_theme::icons::WIFI_LOW, true)
             } else if n.signal <= 66 {
-                (
-                    include_bytes!("../assets/icons/status/wifi-medium.svg"),
-                    true,
-                )
+                (ferese_theme::icons::WIFI_MEDIUM, true)
             } else {
-                (include_bytes!("../assets/icons/status/wifi-full.svg"), true)
+                (ferese_theme::icons::WIFI_FULL, true)
             }
         }
         Menu::Bluetooth => match &s.bluetooth {
-            Some(b) if b.enabled && !b.devices.is_empty() => (
-                include_bytes!("../assets/icons/status/bluetooth-connected.svg"),
-                true,
-            ),
-            Some(b) if b.enabled => (
-                include_bytes!("../assets/icons/status/bluetooth-on.svg"),
-                true,
-            ),
-            _ => (
-                include_bytes!("../assets/icons/status/bluetooth-off.svg"),
-                false,
-            ),
+            Some(b) if b.enabled && !b.devices.is_empty() => {
+                (ferese_theme::icons::BLUETOOTH_CONNECTED, true)
+            }
+            Some(b) if b.enabled => (ferese_theme::icons::BLUETOOTH_ON, true),
+            _ => (ferese_theme::icons::BLUETOOTH_OFF, false),
         },
         Menu::Audio => s.audio.as_ref().map_or((audio_icon(0, true), false), |a| {
             (audio_icon(a.volume, a.muted), !a.muted && a.volume > 0)
         }),
-        Menu::Calendar => (include_bytes!("../assets/icons/status/calendar.svg"), true),
-        Menu::Recording => (include_bytes!("../assets/icons/status/record.svg"), true),
+        Menu::Calendar => (ferese_theme::icons::CALENDAR, true),
+        Menu::Recording => (ferese_theme::icons::RECORD, true),
         Menu::Battery => {
             let Some(b) = &s.battery else {
-                return (
-                    include_bytes!("../assets/icons/status/battery-empty.svg"),
-                    false,
-                );
+                return (ferese_theme::icons::BATTERY_EMPTY, false);
             };
             let icon: &'static [u8] = if b.status == "Charging" {
-                include_bytes!("../assets/icons/status/battery-charging.svg")
+                ferese_theme::icons::BATTERY_CHARGING
             } else if b.percent >= 80 {
-                include_bytes!("../assets/icons/status/battery-full.svg")
+                ferese_theme::icons::BATTERY_FULL
             } else if b.percent >= 50 {
-                include_bytes!("../assets/icons/status/battery-75.svg")
+                ferese_theme::icons::BATTERY_75
             } else if b.percent >= 20 {
-                include_bytes!("../assets/icons/status/battery-50.svg")
+                ferese_theme::icons::BATTERY_50
             } else if b.percent > 0 {
-                include_bytes!("../assets/icons/status/battery-25.svg")
+                ferese_theme::icons::BATTERY_25
             } else {
-                include_bytes!("../assets/icons/status/battery-empty.svg")
+                ferese_theme::icons::BATTERY_EMPTY
             };
             (icon, true)
         }
         Menu::Notifications => {
             if s.notifications.as_ref().is_some_and(|n| n.dnd) {
-                (
-                    include_bytes!("../assets/icons/status/notifications-off.svg"),
-                    false,
-                )
+                (ferese_theme::icons::NOTIFICATIONS_OFF, false)
             } else {
-                (
-                    include_bytes!("../assets/icons/status/notifications.svg"),
-                    true,
-                )
+                (ferese_theme::icons::NOTIFICATIONS, true)
             }
         }
-        Menu::System => (
-            include_bytes!("../assets/icons/status/control-center.svg"),
-            true,
-        ),
+        Menu::System => (ferese_theme::icons::CONTROL_CENTER, true),
     }
 }
 
@@ -1587,21 +1364,6 @@ mod tests {
         let caption = super::connection_caption("耳機耳機耳機耳機耳機耳機耳機");
         assert_eq!(caption.chars().count(), 12);
         assert!(caption.ends_with('…'));
-    }
-
-    #[test]
-    fn calendar_aligns_leap_months_and_year_boundaries() {
-        let february = jiff::civil::Date::new(2024, 2, 15).unwrap();
-        let (first, start, days) = calendar_month(february, 0);
-        assert_eq!((first.year(), first.month(), start, days), (2024, 2, 3, 29));
-        let (first, start, days) = calendar_month(february, -2);
-        assert_eq!(
-            (first.year(), first.month(), start, days),
-            (2023, 12, 4, 31)
-        );
-        let june = jiff::civil::Date::new(2025, 6, 1).unwrap();
-        let (_, start, days) = calendar_month(june, 0);
-        assert_eq!((start, days), (6, 30));
     }
 
     #[test]
@@ -1663,10 +1425,7 @@ mod tests {
         };
         assert_eq!(
             status_icon(Menu::Audio, &s),
-            (
-                include_bytes!("../assets/icons/status/volume-mute.svg").as_slice(),
-                false
-            )
+            (ferese_theme::icons::VOLUME_MUTE, false)
         );
 
         s.battery = Some(status::Battery {
@@ -1675,7 +1434,7 @@ mod tests {
         });
         assert_eq!(
             status_icon(Menu::Battery, &s).0,
-            include_bytes!("../assets/icons/status/battery-charging.svg")
+            ferese_theme::icons::BATTERY_CHARGING
         );
 
         s.notifications = Some(status::Notifications {
@@ -1684,7 +1443,7 @@ mod tests {
         });
         assert_eq!(
             status_icon(Menu::Notifications, &s).0,
-            include_bytes!("../assets/icons/status/notifications-off.svg")
+            ferese_theme::icons::NOTIFICATIONS_OFF
         );
         assert_eq!(
             status_label(Menu::Notifications, &s),
@@ -1697,7 +1456,7 @@ mod tests {
         });
         assert_eq!(
             status_icon(Menu::Bluetooth, &s).0,
-            include_bytes!("../assets/icons/status/bluetooth-off.svg")
+            ferese_theme::icons::BLUETOOTH_OFF
         );
     }
 
@@ -1705,26 +1464,11 @@ mod tests {
     fn battery_bands_and_live_label_follow_charge_state() {
         let mut s = Snapshot::default();
         for (percent, expected) in [
-            (
-                0,
-                include_bytes!("../assets/icons/status/battery-empty.svg").as_slice(),
-            ),
-            (
-                19,
-                include_bytes!("../assets/icons/status/battery-25.svg").as_slice(),
-            ),
-            (
-                20,
-                include_bytes!("../assets/icons/status/battery-50.svg").as_slice(),
-            ),
-            (
-                50,
-                include_bytes!("../assets/icons/status/battery-75.svg").as_slice(),
-            ),
-            (
-                80,
-                include_bytes!("../assets/icons/status/battery-full.svg").as_slice(),
-            ),
+            (0, ferese_theme::icons::BATTERY_EMPTY),
+            (19, ferese_theme::icons::BATTERY_25),
+            (20, ferese_theme::icons::BATTERY_50),
+            (50, ferese_theme::icons::BATTERY_75),
+            (80, ferese_theme::icons::BATTERY_FULL),
         ] {
             s.battery = Some(status::Battery {
                 percent,

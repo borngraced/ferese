@@ -370,6 +370,7 @@ uniform float alpha;
 uniform vec4 visible_rect;
 uniform float material_radius;
 uniform vec2 texture_size;
+uniform vec2 capture_origin;
 uniform float blur_radius;
 uniform float presentation_alpha;
 uniform float background_opacity;
@@ -381,22 +382,24 @@ void main() {
     float sdf = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - material_radius;
     float coverage = alpha * presentation_alpha * background_opacity * (1.0 - smoothstep(-0.5, 0.5, sdf));
     if (coverage <= 0.0) { gl_FragColor = vec4(0.0); return; }
-    // Denser Gaussian sampling preserves the same radius and softness without
-    // the visible grid left by widely spaced taps on detailed wallpapers.
-    vec2 step_size = vec2(blur_radius / 6.0) / max(texture_size, vec2(1.0));
+    vec2 coords = (gl_FragCoord.xy - capture_origin) / texture_size;
     vec4 color = vec4(0.0);
     float weights = 0.0;
-    for (int y=-6; y<=6; y++) {
-        for (int x=-6; x<=6; x++) {
-            float weight = exp(-float(x*x+y*y) / 18.0);
-            color += texture2D(tex, v_coords + vec2(float(x),float(y))*step_size) * weight;
-            weights += weight;
-        }
+    // A spiral avoids aligning the sampling lattice with wallpaper patterns.
+    for (int i = 0; i < 256; i++) {
+        float radius = sqrt((float(i) + 0.5) / 256.0);
+        float angle = float(i) * 2.39996323;
+        vec2 offset = vec2(cos(angle), sin(angle)) * radius * blur_radius / texture_size;
+        float weight = exp(-4.5 * radius * radius);
+        color += texture2D(tex, coords + offset) * weight;
+        weights += weight;
     }
     vec3 background = color.rgb / weights;
     gl_FragColor = vec4(mix(background, tint.rgb, tint.a) * coverage, coverage);
 }
 "#;
+
+const BLURRED_MATERIAL_TINT: f32 = 0.5;
 
 #[derive(Clone, Debug)]
 pub(crate) struct BlurProgram(GlesTexProgram);
@@ -516,7 +519,23 @@ impl RenderElement<GlesRenderer> for BlurRenderElement {
         // clean captured scene. Recapturing a partly repainted framebuffer
         // would feed previous blurred pixels back into the blur.
         if self.capture_dirty.load(Ordering::Relaxed) {
-            frame.with_context(|gl| unsafe {
+            let error = frame.with_context(|gl| unsafe {
+                gl.GetError();
+                let mut framebuffer = 0;
+                let mut previous_read_buffer = 0;
+                gl.GetIntegerv(
+                    smithay::backend::renderer::gles::ffi::READ_FRAMEBUFFER_BINDING,
+                    &mut framebuffer,
+                );
+                gl.GetIntegerv(
+                    smithay::backend::renderer::gles::ffi::READ_BUFFER,
+                    &mut previous_read_buffer,
+                );
+                gl.ReadBuffer(if framebuffer == 0 {
+                    smithay::backend::renderer::gles::ffi::BACK
+                } else {
+                    smithay::backend::renderer::gles::ffi::COLOR_ATTACHMENT0
+                });
                 gl.BindTexture(smithay::backend::renderer::gles::ffi::TEXTURE_2D, texture);
                 gl.TexParameteri(
                     smithay::backend::renderer::gles::ffi::TEXTURE_2D,
@@ -539,7 +558,13 @@ impl RenderElement<GlesRenderer> for BlurRenderElement {
                     height,
                 );
                 gl.BindTexture(smithay::backend::renderer::gles::ffi::TEXTURE_2D, 0);
+                let error = gl.GetError();
+                gl.ReadBuffer(previous_read_buffer as u32);
+                error
             })?;
+            if error != smithay::backend::renderer::gles::ffi::NO_ERROR {
+                tracing::warn!(error, "backdrop framebuffer capture failed");
+            }
             self.capture_dirty.store(false, Ordering::Relaxed);
         }
 
@@ -1144,6 +1169,18 @@ fn output_elements(
     for (window, id, visual, decoration_progress, close_alpha) in windows {
         let constrain = rounded_visual_rect(visual, output_geometry.loc);
         let pixels = physical_rect(visual, output_geometry.loc, scale);
+        let material_surface = window
+            .toplevel()
+            .map(|toplevel| toplevel.wl_surface())
+            .filter(|surface| {
+                crate::effects::surface_role(surface)
+                    .is_some_and(|(role, _)| role == crate::effects::SemanticRole::Modal)
+            });
+        let window_radius = if material_surface.is_some() {
+            state.theme_settings.material_radius
+        } else {
+            state.theme_settings.window_radius
+        } * decoration_progress;
         // Only overview/close intentionally scale the complete application.
         let scale_content = state.overview.is_presenting() || state.closing_visual(id).0 != 1.0;
         let behavior = resize_content_behavior(scale_content);
@@ -1156,7 +1193,7 @@ fn output_elements(
             constrain,
             pixels,
             scale,
-            state.theme_settings.window_radius * decoration_progress,
+            window_radius,
             [0.0, 0.0, 0.0, dim as f32 * close_alpha],
             false,
             output,
@@ -1167,7 +1204,6 @@ fn output_elements(
         }
 
         if let Some(programs) = rounded_clip_program.clone() {
-            let window_radius = state.theme_settings.window_radius * decoration_progress;
             let shadow_offset_y = state.theme_settings.shadow_offset_y;
             let shadow_blur = state.theme_settings.shadow_blur;
             let shadow_opacity = state.theme_settings.shadow_opacity;
@@ -1298,6 +1334,21 @@ fn output_elements(
                 }
             } else {
                 state.window_resize_fills.remove(&id);
+            }
+            if let Some(surface) = material_surface
+                && let Some((background, _)) = material_element(
+                    state,
+                    renderer,
+                    output,
+                    surface,
+                    constrain,
+                    window_radius as f32,
+                    0,
+                    constrain,
+                    close_alpha,
+                )
+            {
+                elements.push(background);
             }
             if let Some(shadow) = shadow {
                 elements.push(shadow.into());
@@ -2349,7 +2400,7 @@ fn append_material_surface(
         .enumerate()
         .filter_map(|(index, (rect, radius))| {
             material_element(
-                state, renderer, output, surface, *rect, *radius, index, geometry,
+                state, renderer, output, surface, *rect, *radius, index, geometry, 1.0,
             )
         })
         .collect();
@@ -2416,6 +2467,7 @@ fn material_element(
     radius: f32,
     index: usize,
     capture_geometry: Rectangle<i32, Logical>,
+    alpha: f32,
 ) -> Option<(AnimatedWindowRenderElement, AnimatedWindowRenderElement)> {
     let (role, generation) = crate::effects::surface_role(surface)?;
     let material = crate::effects::resolve_material(
@@ -2423,7 +2475,7 @@ fn material_element(
         state.theme_settings.material_style,
         state.theme_settings.shell_opacity as f32,
     );
-    let presentation_alpha = crate::effects::surface_opacity(surface);
+    let presentation_alpha = crate::effects::surface_opacity(surface) * alpha;
     let mode = output.current_mode()?;
     let scale = output.current_scale().fractional_scale();
     let transform = output.current_transform().invert();
@@ -2455,7 +2507,7 @@ fn material_element(
         .to_i32_ceil();
     let sample_geometry = expanded_blur_region(capture_geometry, blur.ceil() as i32, output_size);
     let sample_physical = sample_geometry.to_physical_precise_round(scale);
-    let parameters = MaterialParameters {
+    let mut parameters = MaterialParameters {
         presentation_alpha,
         background_opacity,
         blur: (blur * scale) as f32,
@@ -2476,12 +2528,7 @@ fn material_element(
         shadow_values: [(shadow_blur * scale) as f32, shadow_opacity as f32],
         shadow_bounds: shadow_bounds(geometry, offset_y, shadow_blur),
         geometry,
-        tint: [
-            red,
-            green,
-            blue,
-            material.opacity * if blur > 0.0 { 1.0 } else { presentation_alpha },
-        ],
+        tint: [red, green, blue, material.opacity * presentation_alpha],
         generation,
         opaque: material.opacity == 1.0 && presentation_alpha == 1.0 && radius == 0.0,
         visible_framebuffer: framebuffer_clip_rect(
@@ -2495,17 +2542,24 @@ fn material_element(
     let blur_program = (blur > 0.0)
         .then(|| blur_program(state, renderer))
         .flatten();
+    let capture_rect = framebuffer_capture_rect(parameters.sample_framebuffer);
+    let capture_size = Size::from((capture_rect[2], capture_rect[3]));
     let buffers = state.material_buffers.entry(surface.clone()).or_default();
     let capture = if let Some(blur_program) = blur_program {
-        if buffers.captures.get(&context).is_none_or(|c| {
-            c.geometry != sample_geometry
-                || c.texture.size() != Size::from((sample_physical.size.w, sample_physical.size.h))
-        }) {
+        if buffers
+            .captures
+            .get(&context)
+            .is_none_or(|c| c.geometry != sample_geometry || c.texture.size() != capture_size)
+        {
             let texture = Offscreen::<GlesTexture>::create_buffer(
                 renderer,
                 Fourcc::Abgr8888,
-                (sample_physical.size.w, sample_physical.size.h).into(),
+                capture_size,
             )
+            .map_err(|error| {
+                tracing::warn!(%error, ?sample_physical, "backdrop capture allocation failed");
+                error
+            })
             .ok();
             if let Some(texture) = texture {
                 buffers.captures.insert(
@@ -2529,6 +2583,9 @@ fn material_element(
         buffers.captures.remove(&context);
         None
     };
+    if capture.is_some() {
+        parameters.tint[3] = BLURRED_MATERIAL_TINT;
+    }
     let make_element = || {
         if let Some((capture, program)) = &capture {
             MaterialElement::Blur(BlurRenderElement::new(
@@ -2601,7 +2658,7 @@ fn material_element(
 }
 
 fn material_blur_radius(style: crate::config::MaterialStyle, opacity: f32, radius: f64) -> f64 {
-    if style == crate::config::MaterialStyle::Translucent && opacity > 0.0 && opacity < 1.0 {
+    if style == crate::config::MaterialStyle::Translucent && opacity > 0.0 {
         radius
     } else {
         0.0
@@ -2617,6 +2674,7 @@ fn blur_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<BlurP
         UniformName::new("visible_rect", UniformType::_4f),
         UniformName::new("material_radius", UniformType::_1f),
         UniformName::new("texture_size", UniformType::_2f),
+        UniformName::new("capture_origin", UniformType::_2f),
         UniformName::new("blur_radius", UniformType::_1f),
         UniformName::new("presentation_alpha", UniformType::_1f),
         UniformName::new("background_opacity", UniformType::_1f),
@@ -2641,10 +2699,12 @@ fn blur_uniforms(p: &MaterialParameters) -> Vec<Uniform<'static>> {
         Uniform::new("material_radius", p.radius).into_owned(),
         Uniform::new(
             "texture_size",
-            [
-                p.sample_physical.size.w as f32,
-                p.sample_physical.size.h as f32,
-            ],
+            [p.sample_framebuffer[2], p.sample_framebuffer[3]],
+        )
+        .into_owned(),
+        Uniform::new(
+            "capture_origin",
+            [p.sample_framebuffer[0], p.sample_framebuffer[1]],
         )
         .into_owned(),
         Uniform::new("blur_radius", p.blur).into_owned(),
@@ -3101,7 +3161,7 @@ mod tests {
     }
 
     #[test]
-    fn fully_transparent_and_opaque_materials_skip_blur() {
+    fn translucent_materials_blur_at_full_opacity() {
         use crate::config::MaterialStyle;
         assert_eq!(
             super::material_blur_radius(MaterialStyle::Translucent, 0.0, 18.0),
@@ -3109,7 +3169,7 @@ mod tests {
         );
         assert_eq!(
             super::material_blur_radius(MaterialStyle::Translucent, 1.0, 18.0),
-            0.0
+            18.0
         );
         assert_eq!(
             super::material_blur_radius(MaterialStyle::Translucent, 0.79, 18.0),

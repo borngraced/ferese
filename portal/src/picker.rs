@@ -3,8 +3,9 @@ use cosmic::{
     ApplicationExt, Element,
     app::{Core, Settings, Task},
     iced::{Alignment, Length},
-    widget::{button, column, container, icon, row, scrollable, text},
+    widget::{button, column, container, row, scrollable},
 };
+use ferese_theme::icons::symbolic as glyph;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
@@ -17,6 +18,8 @@ pub struct Prompt {
 
 #[derive(Clone, Debug)]
 enum Message {
+    WindowOpened(cosmic::iced::window::Id),
+    MaterialAttached(Result<ferese_theme::material::ModalMaterial, String>),
     Select(usize),
     Share,
     Cancel,
@@ -24,10 +27,12 @@ enum Message {
 
 struct Picker {
     core: Core,
+    material: Option<ferese_theme::material::ModalMaterial>,
     prompt: Prompt,
     selected: Vec<usize>,
     background: cosmic::iced::Color,
     foreground: cosmic::iced::Color,
+    font: cosmic::font::Font,
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -42,15 +47,17 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (theme, font, background, foreground) = appearance();
-    let height = 156. + (prompt.sources.len().min(4) as f32 * 56.);
+    let height = 180. + (prompt.sources.len().min(4) as f32 * 56.);
     cosmic::app::run::<Picker>(
         Settings::default()
             .size(cosmic::iced::Size::new(400., height))
+            .client_decorations(false)
+            .transparent(true)
             .theme(theme)
             .default_font(font)
             .default_text_size(14.)
             .is_daemon(false),
-        (prompt, background, foreground),
+        (prompt, background, foreground, font),
     )?;
 
     Ok(())
@@ -58,7 +65,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 impl cosmic::Application for Picker {
     type Executor = cosmic::executor::Default;
-    type Flags = (Prompt, cosmic::iced::Color, cosmic::iced::Color);
+    type Flags = (
+        Prompt,
+        cosmic::iced::Color,
+        cosmic::iced::Color,
+        cosmic::font::Font,
+    );
     type Message = Message;
     const APP_ID: &'static str = "dev.ferese.ScreenShare";
 
@@ -72,7 +84,7 @@ impl cosmic::Application for Picker {
 
     fn init(
         mut core: Core,
-        (prompt, background, foreground): Self::Flags,
+        (prompt, background, foreground, font): Self::Flags,
     ) -> (Self, Task<Message>) {
         core.window.show_headerbar = false;
         core.window.border_padding = Some(0);
@@ -80,10 +92,12 @@ impl cosmic::Application for Picker {
         // No preselected source: clicking Share must be a deliberate choice.
         let mut app = Self {
             core,
+            material: None,
             prompt,
             selected: Vec::new(),
             background,
             foreground,
+            font,
         };
         let task = app
             .core
@@ -94,8 +108,27 @@ impl cosmic::Application for Picker {
         (app, task)
     }
 
+    fn subscription(&self) -> cosmic::iced::Subscription<Message> {
+        cosmic::iced::event::listen_with(|event, _, id| match event {
+            cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => {
+                Some(Message::WindowOpened(id))
+            }
+            _ => None,
+        })
+    }
+
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::WindowOpened(id) => {
+                return cosmic::iced::window::run(
+                    id,
+                    ferese_theme::material::ModalMaterial::attach,
+                )
+                .map(|result| cosmic::Action::App(Message::MaterialAttached(result)));
+            }
+            Message::MaterialAttached(result) => {
+                self.material = result.ok();
+            }
             Message::Select(index) if index < self.prompt.sources.len() => {
                 if self.selected.contains(&index) {
                     self.selected.retain(|i| *i != index);
@@ -126,7 +159,11 @@ impl cosmic::Application for Picker {
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
         Some(cosmic::iced::theme::Style {
-            background_color: self.background,
+            background_color: if self.material.is_some() {
+                cosmic::iced::Color::TRANSPARENT
+            } else {
+                self.background
+            },
             text_color: self.foreground,
             icon_color: self.foreground,
         })
@@ -140,10 +177,10 @@ impl cosmic::Application for Picker {
         };
         let mut content = column([]).width(Length::Fill).spacing(10).push(
             row![
-                glyph(include_bytes!("../assets/display.svg"), 24),
+                glyph(ferese_theme::icons::DISPLAY, 24),
                 column![
-                    text("Choose a display").size(18),
-                    text(format!("Share with {app}")).size(12),
+                    self.text("Choose a display").size(18),
+                    self.text(format!("Share with {app}")).size(12),
                 ]
                 .spacing(2)
                 .width(Length::Fill),
@@ -155,10 +192,11 @@ impl cosmic::Application for Picker {
         for (index, source) in self.prompt.sources.iter().enumerate() {
             let selected = self.selected.contains(&index);
             let mut entry = row![
-                glyph(include_bytes!("../assets/display.svg"), 24),
+                glyph(ferese_theme::icons::DISPLAY, 24),
                 column![
-                    text(&source.name).size(14),
-                    text(format!("{} × {}", source.width, source.height)).size(12)
+                    self.text(&source.name).size(14),
+                    self.text(format!("{} × {}", source.width, source.height))
+                        .size(12)
                 ]
                 .spacing(3)
                 .width(Length::Fill),
@@ -166,7 +204,7 @@ impl cosmic::Application for Picker {
             .spacing(12)
             .align_y(Alignment::Center);
             if selected {
-                entry = entry.push(glyph(include_bytes!("../assets/check.svg"), 20));
+                entry = entry.push(glyph(ferese_theme::icons::CHECK, 20));
             }
             sources = sources.push(
                 button::custom(entry)
@@ -184,34 +222,40 @@ impl cosmic::Application for Picker {
             (self.prompt.sources.len().min(4) * 56) as f32,
         )));
         content = content.push(
-            text("Everything on this display, including notifications, is visible.")
+            self.text("Everything on this display, including notifications, is visible.")
                 .size(12)
                 .width(Length::Fill),
         );
         let mut share = button::custom(
-            row![
-                text("Share"),
-                glyph(include_bytes!("../assets/arrow.svg"), 16)
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
+            row![self.text("Share"), glyph(ferese_theme::icons::ARROW, 16)]
+                .spacing(8)
+                .align_y(Alignment::Center),
         )
         .class(ferese_theme::accent_button())
         .padding([6, 16]);
         if !self.selected.is_empty() {
             share = share.on_press(Message::Share);
         }
-        content =
-            content.push(row![button::text("Cancel").on_press(Message::Cancel), share].spacing(8));
+        content = content.push(
+            row![
+                button::custom(self.text("Cancel"))
+                    .class(cosmic::theme::Button::Text)
+                    .on_press(Message::Cancel),
+                share
+            ]
+            .spacing(8),
+        );
         container(content).padding(14).width(Length::Fill).into()
     }
 }
 
-fn glyph(source: &'static [u8], size: u16) -> icon::Icon {
-    icon::from_svg_bytes(source)
-        .symbolic(true)
-        .icon()
-        .size(size)
+impl Picker {
+    fn text<'a>(
+        &self,
+        content: impl Into<std::borrow::Cow<'a, str>> + 'a,
+    ) -> cosmic::widget::Text<'a, cosmic::Theme, cosmic::Renderer> {
+        ferese_theme::text(content, self.font)
+    }
 }
 
 fn appearance() -> (
@@ -221,110 +265,21 @@ fn appearance() -> (
     cosmic::iced::Color,
 ) {
     let document = ferese_config::config_path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| ferese_config::Document::parse(&s).ok());
-    let string = |key: &str, fallback: &str| {
-        document
-            .as_ref()
-            .and_then(|d| d.get(key))
-            .and_then(|v| v.as_str())
-            .unwrap_or(fallback)
-            .to_owned()
-    };
-    let rgba = |key, fallback| {
-        let s = string(key, fallback);
-        let parse = |s: &str| {
-            let hex = s.strip_prefix('#')?;
-            let n = u32::from_str_radix(hex, 16).ok()?;
-            Some(match hex.len() {
-                6 => (n << 8) | 255,
-                8 => n,
-                _ => return None,
-            })
-        };
-        let n = parse(&s).unwrap_or_else(|| parse(fallback).unwrap());
-        cosmic::cosmic_theme::palette::Srgba::new(
-            ((n >> 24) & 255) as f32 / 255.,
-            ((n >> 16) & 255) as f32 / 255.,
-            ((n >> 8) & 255) as f32 / 255.,
-            (n & 255) as f32 / 255.,
-        )
-    };
-    let background = rgba("theme.colors.surface_base", "#111821");
-    let foreground = rgba("theme.colors.text_primary", "#F4F7FB");
-    let accent = rgba("theme.colors.accent", "#3D7BE6");
-    let radius = document
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|source| ferese_config::Document::parse(&source).ok());
+    let palette = ferese_theme::Palette::from_document(document.as_ref()).flat();
+    let family = document
         .as_ref()
-        .and_then(|d| d.get("theme.geometry.shell_radius"))
-        .and_then(|v| v.as_f64())
-        .unwrap_or(14.)
-        .clamp(0., 40.) as f32;
-    let corners = cosmic::cosmic_theme::CornerRadii {
-        radius_xs: [radius.min(4.); 4],
-        radius_s: [radius.min(8.); 4],
-        radius_m: [radius; 4],
-        radius_l: [radius; 4],
-        radius_xl: [radius; 4],
-        ..Default::default()
-    };
-
-    let builder = if background.red + background.green + background.blue > 1.8 {
-        cosmic::cosmic_theme::ThemeBuilder::light()
-    } else {
-        cosmic::cosmic_theme::ThemeBuilder::dark()
-    };
-    let mut native = builder
-        .bg_color(background)
-        .primary_container_bg(background)
-        .text_tint(foreground.color)
-        .accent(ferese_theme::accent_color(accent.into(), background.into()))
-        .corner_radii(corners)
-        .build();
-    ferese_theme::apply(&mut native, foreground.into());
-    let mut material: cosmic::iced::Color = background.into();
-    material.a = material_opacity(
-        &string("theme.material.style", "solid"),
-        document
-            .as_ref()
-            .and_then(|d| d.get("theme.material.opacity"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(ferese_config::DEFAULT_MATERIAL_OPACITY),
-    );
-    let theme = cosmic::Theme::custom(std::sync::Arc::new(native));
-    let family: &'static str =
-        Box::leak(string("theme.typography.font_family", "Inter").into_boxed_str());
-
+        .and_then(|document| document.get("theme.typography.font_family"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("Inter");
     (
-        theme,
-        cosmic::font::Font {
-            family: cosmic::iced::font::Family::Name(family),
-            ..cosmic::font::default()
-        },
-        material,
+        palette.native_theme(),
+        ferese_theme::font(Some(family)),
         cosmic::iced::Color {
-            a: 1.,
-            ..foreground.into()
+            a: ferese_theme::material_opacity(document.as_ref()),
+            ..palette.sidebar
         },
+        palette.text,
     )
-}
-
-// Only the surface tint is translucent; control fills and foregrounds stay opaque.
-fn material_opacity(style: &str, opacity: f64) -> f32 {
-    if style == "translucent" && opacity.is_finite() {
-        opacity.clamp(0., 1.) as f32
-    } else {
-        1.
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn material_preserves_solid_and_bounds_translucent_opacity() {
-        assert_eq!(super::material_opacity("solid", 0.4), 1.);
-        assert_eq!(super::material_opacity("translucent", 0.4), 0.4);
-        assert_eq!(super::material_opacity("translucent", 2.), 1.);
-        assert_eq!(super::material_opacity("translucent", -1.), 0.);
-        assert_eq!(super::material_opacity("translucent", f64::NAN), 1.);
-    }
 }

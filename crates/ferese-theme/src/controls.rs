@@ -1,0 +1,229 @@
+use crate::{Palette, mix};
+use cosmic::{
+    iced::{Background, Border, Color, Vector},
+    theme,
+    widget::{self, button, container},
+};
+
+pub fn surface(background: Color, radius: f32) -> theme::Container<'static> {
+    theme::Container::custom(move |_| surface_appearance(background, radius))
+}
+
+pub fn button_style(p: Palette, selected: bool) -> theme::Button {
+    styled_button(p, selected, false)
+}
+
+pub fn navigation_style(p: Palette, selected: bool) -> theme::Button {
+    styled_button(p, selected, true)
+}
+
+pub fn settings_input(p: Palette) -> theme::TextInput {
+    let appearance = move |focused: bool, hovered: bool| cosmic::widget::text_input::Appearance {
+        background: mix(p.sidebar, p.card, if hovered { 0.65 } else { 0.4 }).into(),
+        border_radius: p.radius.min(7.).into(),
+        border_width: if focused { 1. } else { 0. },
+        border_offset: None,
+        border_color: p.accent,
+        icon_color: Some(p.muted),
+        text_color: Some(p.text),
+        placeholder_color: p.muted,
+        selected_text_color: p.sidebar,
+        selected_fill: p.accent,
+        label_color: p.muted,
+    };
+    theme::TextInput::Custom {
+        active: Box::new(move |_| appearance(false, false)),
+        hovered: Box::new(move |_| appearance(false, true)),
+        focused: Box::new(move |_| appearance(true, true)),
+        error: Box::new(move |_| appearance(true, false)),
+        disabled: Box::new(move |_| appearance(false, false)),
+    }
+}
+
+fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button {
+    let style = move |hover: bool| {
+        let background = if selected {
+            mix(p.sidebar, p.accent, if hover { 0.24 } else { 0.17 })
+        } else if hover {
+            mix(p.card, crate::surface_shade(p.sidebar), 0.06)
+        } else if navigation {
+            p.sidebar
+        } else {
+            p.card
+        };
+        let (background, on) = if selected {
+            crate::accent_pair(background, p.text)
+        } else {
+            (background, p.text)
+        };
+
+        button::Style {
+            background: Some(Background::Color(background)),
+            text_color: Some(on),
+            icon_color: Some(on),
+            border_radius: p.radius.min(9.).into(),
+            border_width: if selected { 1. } else { 0. },
+            border_color: if selected {
+                p.accent
+            } else {
+                Color::TRANSPARENT
+            },
+            outline_width: 0.,
+            outline_color: Color::TRANSPARENT,
+            overlay: None,
+            shadow_offset: Vector::ZERO,
+        }
+    };
+
+    theme::Button::Custom {
+        active: Box::new(move |_, _| style(false)),
+        hovered: Box::new(move |_, _| style(true)),
+        pressed: Box::new(move |_, _| style(true)),
+        disabled: Box::new(move |_| style(false)),
+    }
+}
+
+pub fn authentication_input(palette: Palette) -> theme::TextInput {
+    let text = palette.text;
+    let muted = palette.muted;
+    let accent = palette.accent;
+    let radius = palette.radius.min(10.);
+    let appearance = move |focused: bool| widget::text_input::Appearance {
+        background: Color::from_rgba(text.r, text.g, text.b, 0.045).into(),
+        border_radius: radius.into(),
+        border_width: 1.,
+        border_offset: None,
+        border_color: if focused {
+            accent.scale_alpha(0.82)
+        } else {
+            muted.scale_alpha(0.26)
+        },
+        icon_color: Some(muted),
+        text_color: Some(text),
+        placeholder_color: muted,
+        selected_text_color: text,
+        selected_fill: accent.scale_alpha(0.35),
+        label_color: text,
+    };
+    theme::TextInput::Custom {
+        active: Box::new(move |_| appearance(false)),
+        hovered: Box::new(move |_| appearance(true)),
+        focused: Box::new(move |_| appearance(true)),
+        error: Box::new(move |_| appearance(false)),
+        disabled: Box::new(move |_| appearance(false)),
+    }
+}
+
+pub fn lock_input(
+    radius: f32,
+    accent: cosmic::iced::Color,
+    surface: cosmic::iced::Color,
+) -> theme::TextInput {
+    let appearance = move |focused: bool| widget::text_input::Appearance {
+        background: cosmic::iced::Color::from_rgba(
+            (surface.r + 1.) * 0.5,
+            (surface.g + 1.) * 0.5,
+            (surface.b + 1.) * 0.5,
+            0.24,
+        )
+        .into(),
+        border_radius: (radius * 2.).min(26.).into(),
+        border_width: 1.,
+        border_offset: None,
+        border_color: if focused {
+            accent.scale_alpha(0.7)
+        } else {
+            cosmic::iced::Color::WHITE.scale_alpha(0.15)
+        },
+        icon_color: Some(cosmic::iced::Color::WHITE.scale_alpha(0.8)),
+        text_color: Some(cosmic::iced::Color::WHITE),
+        placeholder_color: cosmic::iced::Color::WHITE.scale_alpha(0.55),
+        selected_text_color: cosmic::iced::Color::WHITE,
+        selected_fill: accent.scale_alpha(0.5),
+        label_color: cosmic::iced::Color::WHITE,
+    };
+
+    theme::TextInput::Custom {
+        active: Box::new(move |_| appearance(false)),
+        hovered: Box::new(move |_| appearance(true)),
+        focused: Box::new(move |_| appearance(true)),
+        error: Box::new(move |_| appearance(false)),
+        disabled: Box::new(move |_| appearance(false)),
+    }
+}
+
+pub fn shell_button(
+    foreground: Color,
+    selected: bool,
+    opacity: f32,
+    radius: f32,
+    progress: f32,
+    pressed: bool,
+) -> button::Style {
+    button::Style {
+        text_color: Some(foreground),
+        icon_color: Some(foreground),
+        border_radius: radius.into(),
+        background: Some(Background::Color(Color {
+            a: if pressed {
+                0.20 * opacity
+            } else {
+                ((if selected { 0.14 } else { 0.0 })
+                    + progress * if selected { 0.02 } else { 0.08 })
+                    * opacity
+            },
+            ..foreground
+        })),
+        ..Default::default()
+    }
+}
+
+pub fn surface_appearance(background: Color, radius: f32) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(background)),
+        border: Border {
+            radius: radius.into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+pub fn notification_button(
+    foreground: Color,
+    hover: Color,
+    radius: f32,
+    filled: bool,
+) -> theme::Button {
+    let style = move |active: bool| button::Style {
+        text_color: Some(foreground),
+        icon_color: Some(foreground),
+        background: (active || filled).then_some(Background::Color(hover)),
+        border_radius: radius.into(),
+        ..Default::default()
+    };
+    theme::Button::Custom {
+        active: Box::new(move |_, _| style(false)),
+        hovered: Box::new(move |_, _| style(true)),
+        pressed: Box::new(move |_, _| style(true)),
+        disabled: Box::new(move |_| style(false)),
+    }
+}
+
+pub fn filled_button(fill: Color, foreground: Color, radius: f32, opacity: f32) -> theme::Button {
+    let paint = move |outline| button::Style {
+        background: Some(Color { a: opacity, ..fill }.into()),
+        text_color: Some(foreground),
+        icon_color: Some(foreground),
+        border_radius: radius.into(),
+        outline_width: outline,
+        outline_color: foreground,
+        ..Default::default()
+    };
+    theme::Button::Custom {
+        active: Box::new(move |focused, _| paint(if focused { 1. } else { 0. })),
+        hovered: Box::new(move |_, _| paint(1.)),
+        pressed: Box::new(move |_, _| paint(2.)),
+        disabled: Box::new(move |_| paint(0.)),
+    }
+}
