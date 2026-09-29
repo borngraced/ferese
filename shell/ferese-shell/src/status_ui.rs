@@ -348,11 +348,12 @@ impl FereseShell {
                 ));
             }
             // A fixed button height does not center its child in libcosmic.
-            // Keep the visual content centered inside the entire click target.
+            // center_y/center_x wrap the content in a centering layout, so use
+            // those rather than align_y/align_x on a fixed-size container.
             let content = container(content)
                 .align_x(alignment::Horizontal::Center)
                 .height(metrics.control_height)
-                .align_y(alignment::Vertical::Center);
+                .center_y(metrics.control_height);
             let recording_busy = kind == Menu::Recording && self.recorder.busy();
             let control = button::custom(content)
                 .name(if recording_busy {
@@ -419,16 +420,19 @@ impl FereseShell {
         let kind = menu.kind;
         let primary = color_with_opacity(theme.text_primary, p);
         let muted = color_with_opacity(theme.text_muted, p);
-        let badge = container(accented_icon(
-            status_icon(kind, &self.status).0,
-            22,
-            primary,
-            color_with_opacity(theme.accent, p),
-        ))
+        let badge = container(
+            accented_icon(
+                status_icon(kind, &self.status).0,
+                22,
+                primary,
+                color_with_opacity(theme.accent, p),
+            )
+            .width(Length::Fixed(22.0)),
+        )
         .width(36)
         .height(36)
-        .align_x(alignment::Horizontal::Center)
-        .align_y(alignment::Vertical::Center)
+        .center_x(36)
+        .center_y(36)
         .class(theme::Container::custom(move |_| container::Style {
             background: Some(Background::Color(color_with_opacity(
                 theme.accent,
@@ -725,139 +729,137 @@ impl FereseShell {
                             p,
                         ));
                 }
+            }
 
-                if menu.kind == Menu::Battery
-                    && let Some(b) = &self.status.battery
+            if menu.kind == Menu::Battery
+                && let Some(b) = &self.status.battery
+            {
+                let battery_color = if b.percent < self.config.status.low_battery_threshold
+                    && b.status != "Charging"
                 {
-                    let battery_color = if b.percent < self.config.status.low_battery_threshold
-                        && b.status != "Charging"
-                    {
-                        Color {
-                            a: p,
-                            ..Color::from_rgb8(230, 172, 90)
-                        }
-                    } else {
-                        primary
-                    };
-                    rows = rows.push(
-                        container(
-                            row![
-                                text(format!("{}%", b.percent)).size(24).width(Length::Fill),
-                                accented_icon(
-                                    status_icon(Menu::Battery, &self.status).0,
-                                    24,
-                                    battery_color,
-                                    color_with_opacity(theme.accent, p),
-                                ),
-                            ]
-                            .align_y(Alignment::Center),
-                        )
-                        .padding([2, 0])
-                        .class(theme::Container::custom(move |_| container::Style {
-                            text_color: Some(battery_color),
-                            icon_color: Some(battery_color),
-                            ..Default::default()
-                        })),
-                    );
-                    rows = rows.push(level_meter(b.percent, battery_color, p));
-                    rows = rows.push(
-                        text(match b.status.as_str() {
-                            "Charging" => "Connected to power",
-                            "Discharging" => "Running on battery power",
-                            "Full" => "Battery fully charged",
-                            _ => "Battery status reported by the system",
-                        })
-                        .size(12)
-                        .class(theme::Text::Color(muted)),
-                    );
-                }
-
-                if menu.kind == Menu::Battery {
-                    rows = rows.push(text("Power mode").size(13).class(theme::Text::Color(muted)));
-                    if let Some(profiles) = &self.status.power_profiles {
-                        let mut modes = row::with_capacity(3).spacing(6).width(Length::Fill);
-                        for (index, (label, icon, profile)) in [
-                            (
-                                "Power saver",
-                                include_bytes!("../assets/icons/status/power-saver.svg").as_slice(),
-                                "power-saver",
-                            ),
-                            (
-                                "Balanced",
-                                include_bytes!("../assets/icons/status/power-balanced.svg")
-                                    .as_slice(),
-                                "balanced",
-                            ),
-                            (
-                                "Performance",
-                                include_bytes!("../assets/icons/status/power-performance.svg")
-                                    .as_slice(),
-                                "performance",
+                    Color {
+                        a: p,
+                        ..Color::from_rgb8(230, 172, 90)
+                    }
+                } else {
+                    primary
+                };
+                rows = rows.push(
+                    container(
+                        row![
+                            text(format!("{}%", b.percent)).size(24).width(Length::Fill),
+                            accented_icon(
+                                status_icon(Menu::Battery, &self.status).0,
+                                24,
+                                battery_color,
+                                color_with_opacity(theme.accent, p),
                             ),
                         ]
-                        .into_iter()
-                        .enumerate()
-                        {
-                            if profiles.available[index] {
-                                modes = modes.push(power_tile(
-                                    label,
-                                    icon,
-                                    profile,
-                                    profiles.active == profile,
-                                    theme,
-                                    p,
-                                ));
-                            }
+                        .align_y(Alignment::Center),
+                    )
+                    .padding([2, 0])
+                    .class(theme::Container::custom(move |_| container::Style {
+                        text_color: Some(battery_color),
+                        icon_color: Some(battery_color),
+                        ..Default::default()
+                    })),
+                );
+                rows = rows.push(level_meter(b.percent, battery_color, p));
+                rows = rows.push(
+                    text(match b.status.as_str() {
+                        "Charging" => "Connected to power",
+                        "Discharging" => "Running on battery power",
+                        "Full" => "Battery fully charged",
+                        _ => "Battery status reported by the system",
+                    })
+                    .size(12)
+                    .class(theme::Text::Color(muted)),
+                );
+            }
+
+            if menu.kind == Menu::Battery {
+                rows = rows.push(text("Power mode").size(13).class(theme::Text::Color(muted)));
+                if let Some(profiles) = &self.status.power_profiles {
+                    let mut modes = row::with_capacity(3).spacing(6).width(Length::Fill);
+                    for (index, (label, icon, profile)) in [
+                        (
+                            "Power saver",
+                            include_bytes!("../assets/icons/status/power-saver.svg").as_slice(),
+                            "power-saver",
+                        ),
+                        (
+                            "Balanced",
+                            include_bytes!("../assets/icons/status/power-balanced.svg").as_slice(),
+                            "balanced",
+                        ),
+                        (
+                            "Performance",
+                            include_bytes!("../assets/icons/status/power-performance.svg")
+                                .as_slice(),
+                            "performance",
+                        ),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        if profiles.available[index] {
+                            modes = modes.push(power_tile(
+                                label,
+                                icon,
+                                profile,
+                                profiles.active == profile,
+                                theme,
+                                p,
+                            ));
                         }
-                        // TODO: confirm column align fix
-                        rows = rows.push(modes.width(Length::Fill).align_y(Alignment::Center));
-                    } else {
-                        rows = rows.push(
-                            text("Power Profiles service unavailable")
-                                .size(12)
-                                .class(theme::Text::Color(muted)),
-                        );
                     }
-
-                    let mut power = row::with_capacity(3).spacing(6).width(Length::Fill);
-                    for (enabled, label, icon, action) in [
-                        (
-                            self.status.reboot,
-                            "Restart",
-                            include_bytes!("../assets/icons/status/restart.svg").as_slice(),
-                            Action::Reboot,
-                        ),
-                        (
-                            self.status.poweroff,
-                            "Power off",
-                            include_bytes!("../assets/icons/status/power-off.svg").as_slice(),
-                            Action::Poweroff,
-                        ),
-                        (
-                            self.status.suspend,
-                            "Suspend",
-                            include_bytes!("../assets/icons/status/suspend.svg").as_slice(),
-                            Action::Suspend,
-                        ),
-                    ] {
-                        if enabled {
-                            power = power.push(power_tile_action(label, icon, action, theme, p));
-                        }
-                    }
-
-                    if self.status.reboot || self.status.poweroff || self.status.suspend {
-                        rows = rows.push(text("Power").size(13).class(theme::Text::Color(muted)));
-                        rows = rows.push(power.align_y(Alignment::Center).width(Length::Fill));
-                    }
-                }
-
-                if !menu.kind.available(&self.status) {
+                    rows = rows.push(modes);
+                } else {
                     rows = rows.push(
-                        text("Service unavailable")
-                            .size(13)
+                        text("Power Profiles service unavailable")
+                            .size(12)
                             .class(theme::Text::Color(muted)),
                     );
                 }
+
+                let mut power = row::with_capacity(3).spacing(6).width(Length::Fill);
+                for (enabled, label, icon, action) in [
+                    (
+                        self.status.reboot,
+                        "Restart",
+                        include_bytes!("../assets/icons/status/restart.svg").as_slice(),
+                        Action::Reboot,
+                    ),
+                    (
+                        self.status.poweroff,
+                        "Power off",
+                        include_bytes!("../assets/icons/status/power-off.svg").as_slice(),
+                        Action::Poweroff,
+                    ),
+                    (
+                        self.status.suspend,
+                        "Suspend",
+                        include_bytes!("../assets/icons/status/suspend.svg").as_slice(),
+                        Action::Suspend,
+                    ),
+                ] {
+                    if enabled {
+                        power = power.push(power_tile_action(label, icon, action, theme, p));
+                    }
+                }
+
+                if self.status.reboot || self.status.poweroff || self.status.suspend {
+                    rows = rows.push(text("Power").size(13).class(theme::Text::Color(muted)));
+                    rows = rows.push(power);
+                }
+            }
+
+            if !menu.kind.available(&self.status) {
+                rows = rows.push(
+                    text("Service unavailable")
+                        .size(13)
+                        .class(theme::Text::Color(muted)),
+                );
             }
         }
 
@@ -921,8 +923,8 @@ fn status_summary<'a>(
     let badge = container(accented_icon(source, 22, primary, accent))
         .width(32)
         .height(32)
-        .align_x(alignment::Horizontal::Center)
-        .align_y(alignment::Vertical::Center)
+        .center_x(32)
+        .center_y(32)
         .class(theme::Container::custom(move |_| container::Style {
             background: Some(Background::Color(Color {
                 a: if enabled {
@@ -1138,13 +1140,14 @@ fn power_tile<'a>(
         },
         opacity,
     );
-    let tile = column![
-        bar_icon(icon, 19, foreground),
-        text(label).size(11).align_x(Alignment::Center)
-    ]
-    .spacing(3)
-    .align_x(Alignment::Center);
-    let btn = button::custom(tile.align_x(Alignment::Center))
+    let tile = container(
+        column![bar_icon(icon, 19, foreground), text(label).size(11)]
+            .spacing(3)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .center_x(Length::Fill);
+    let btn = button::custom(tile)
         .width(Length::FillPortion(1))
         .padding([8, 2])
         .on_press(cosmic::Action::App(Message::Control(Action::PowerProfile(
@@ -1162,20 +1165,19 @@ fn power_tile_action<'a>(
     opacity: f32,
 ) -> Element<'a, cosmic::Action<Message>> {
     let foreground = color_with_opacity(theme.text_primary, opacity);
-    // TODO: confirm column align fix
-    motion::button(
-        button::custom(
-            column![bar_icon(icon, 19, foreground), text(label).size(11)]
-                .spacing(3)
-                .align_x(Alignment::Center),
-        )
+    let tile = container(
+        column![bar_icon(icon, 19, foreground), text(label).size(11)]
+            .spacing(3)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .center_x(Length::Fill);
+    let btn = button::custom(tile)
         .width(Length::FillPortion(1))
         .padding([8, 2])
-        .on_press(cosmic::Action::App(Message::ConfirmPower(action))),
-        foreground,
-        false,
-        opacity,
-    )
+        .on_press(cosmic::Action::App(Message::ConfirmPower(action)));
+
+    motion::button(btn, foreground, false, opacity)
 }
 
 fn calendar_month(today: jiff::civil::Date, offset: i32) -> (jiff::civil::Date, usize, usize) {
