@@ -507,9 +507,10 @@ impl Ferese {
 
     fn workspaces_json(&self) -> Value {
         let active = self.workspaces.active_id();
-        let mut workspaces = self
+        let workspaces = self
             .workspaces
-            .iter()
+            .ordered()
+            .into_iter()
             .map(|workspace| {
                 let mode = match workspace.layout.mode() {
                     LayoutMode::Scrolling => "scrolling",
@@ -525,7 +526,6 @@ impl Ferese {
                 })
             })
             .collect::<Vec<_>>();
-        workspaces.sort_by_key(|workspace| workspace["id"].as_u64());
         Value::Array(workspaces)
     }
 

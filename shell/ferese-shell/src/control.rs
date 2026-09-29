@@ -272,6 +272,12 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
             ferese_shell_v1::Event::SnapshotEnd { serial }
                 if state.serial.take() == Some(serial) =>
             {
+                state.pending.workspaces.sort_unstable_by_key(|workspace| {
+                    ferese_core::workspace_order_key(
+                        &workspace.name,
+                        ferese_core::WorkspaceId(workspace.id),
+                    )
+                });
                 let _ = state
                     .sender
                     .send(ControlUpdate::Snapshot(state.pending.clone()));

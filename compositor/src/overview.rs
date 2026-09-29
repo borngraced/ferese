@@ -650,8 +650,7 @@ impl Ferese {
         let selected = self.output_workspaces.active_workspace(output_id);
         let strip = workspace_strip(bounds);
         let capacity = strip_capacity(strip);
-        let mut workspaces = self.workspaces.iter().collect::<Vec<_>>();
-        workspaces.sort_by_key(|workspace| workspace.name.parse::<u64>().unwrap_or(workspace.id.0));
+        let workspaces = self.workspaces.ordered();
         let selected_index = workspaces
             .iter()
             .position(|workspace| Some(workspace.id) == selected)
@@ -770,8 +769,7 @@ impl Ferese {
         };
         let capacity = strip_capacity(workspace_strip(bounds));
         let cards = self.overview_workspace_cards(&output);
-        let mut ordered = self.workspaces.iter().collect::<Vec<_>>();
-        ordered.sort_by_key(|workspace| workspace.name.parse::<u64>().unwrap_or(workspace.id.0));
+        let ordered = self.workspaces.ordered();
         let current = cards
             .first()
             .and_then(|card| {

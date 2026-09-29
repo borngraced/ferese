@@ -10,6 +10,10 @@ use ferese_layout::{
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct WorkspaceId(pub u64);
 
+pub fn workspace_order_key(name: &str, id: WorkspaceId) -> (u64, u64) {
+    (name.parse::<u64>().unwrap_or(u64::MAX), id.0)
+}
+
 #[derive(Debug)]
 pub struct Workspace {
     pub id: WorkspaceId,
@@ -535,6 +539,13 @@ impl WorkspaceSet {
 
     pub fn iter(&self) -> impl Iterator<Item = &Workspace> {
         self.workspaces.values()
+    }
+
+    pub fn ordered(&self) -> Vec<&Workspace> {
+        let mut workspaces = self.iter().collect::<Vec<_>>();
+        workspaces
+            .sort_unstable_by_key(|workspace| workspace_order_key(&workspace.name, workspace.id));
+        workspaces
     }
 
     pub fn prune_empty(&mut self, protected: &HashSet<WorkspaceId>) -> Vec<WorkspaceId> {
@@ -1134,6 +1145,33 @@ fn finite_or_zero(value: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn numeric_order_survives_pruning_and_recreation() {
+        let mut set = super::WorkspaceSet::default();
+        let original_first = set.active_id();
+        let second = set.ensure_numeric(2).unwrap();
+        set.activate(second).unwrap();
+        assert_eq!(
+            set.prune_empty(&std::collections::HashSet::new()),
+            vec![original_first]
+        );
+
+        let tenth = set.ensure_numeric(10).unwrap();
+        let first = set.ensure_numeric(1).unwrap();
+        assert_ne!(first, original_first);
+        assert!(first.0 > tenth.0);
+        assert_eq!(
+            set.ordered()
+                .into_iter()
+                .map(|workspace| (workspace.name.as_str(), workspace.id))
+                .collect::<Vec<_>>(),
+            vec![("1", first), ("2", second), ("10", tenth)]
+        );
+        set.activate(first).unwrap();
+        assert_eq!(set.active().name, "1");
+        assert!(set.validate().is_ok());
+    }
+
     #[test]
     fn pruning_keeps_windows_and_one_empty_workspace() {
         let mut set = super::WorkspaceSet::default();

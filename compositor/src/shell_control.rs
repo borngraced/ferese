@@ -215,9 +215,9 @@ impl Ferese {
     }
 
     fn workspace_snapshots(&self) -> Vec<WorkspaceSnapshot> {
-        let mut workspaces = self
-            .workspaces
-            .iter()
+        self.workspaces
+            .ordered()
+            .into_iter()
             .map(|workspace| {
                 let output = self.output_workspaces.output_for_workspace(workspace.id);
                 let active = output.is_some_and(|output| {
@@ -231,10 +231,7 @@ impl Ferese {
                     active,
                 }
             })
-            .collect::<Vec<_>>();
-
-        workspaces.sort_by_key(|workspace| workspace.id.0);
-        workspaces
+            .collect()
     }
 
     fn managed_window_snapshots(&self) -> Vec<ManagedWindowSnapshot> {

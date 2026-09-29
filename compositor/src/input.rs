@@ -602,20 +602,11 @@ impl Ferese {
         let Some(current) = self.output_workspaces.active_workspace(output) else {
             return;
         };
-        let mut candidates = self
-            .workspaces
-            .iter()
-            .filter(|workspace| {
-                self.output_workspaces
-                    .output_for_workspace(workspace.id)
-                    .is_none_or(|owner| owner == output)
-            })
-            .collect::<Vec<_>>();
-        candidates.sort_by_key(|workspace| {
-            (
-                workspace.name.parse::<u32>().unwrap_or(u32::MAX),
-                workspace.id.0,
-            )
+        let mut candidates = self.workspaces.ordered();
+        candidates.retain(|workspace| {
+            self.output_workspaces
+                .output_for_workspace(workspace.id)
+                .is_none_or(|owner| owner == output)
         });
         let Some(index) = candidates
             .iter()
