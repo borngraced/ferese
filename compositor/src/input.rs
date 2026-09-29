@@ -624,6 +624,9 @@ impl Ferese {
         {
             return;
         }
+        if self.layer_under(position).is_some() {
+            return;
+        }
 
         let Some(window) = self.window_under_visual(position) else {
             return;

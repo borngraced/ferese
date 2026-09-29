@@ -862,11 +862,23 @@ impl Ferese {
 
             let visual = self.presented_window_rect(*id)?;
             let caption_height = if overview_active { 34.0 } else { 0.0 };
-            (position.x >= visual.x
+            let inside_visual = position.x >= visual.x
                 && position.y >= visual.y
                 && position.x < visual.x + visual.width
-                && position.y < visual.y + visual.height + caption_height)
-                .then_some(window.clone())
+                && position.y < visual.y + visual.height + caption_height;
+            if !inside_visual {
+                return None;
+            }
+
+            if !overview_active {
+                let (source_x, source_y) =
+                    self.inverse_presented_window_point(*id, position.x, position.y)?;
+                let source_point =
+                    Point::from((source_x, source_y)) + window.geometry().loc.to_f64();
+                window.surface_under(source_point, WindowSurfaceType::ALL)?;
+            }
+
+            Some(window.clone())
         };
 
         if overview_active {
