@@ -77,10 +77,16 @@ impl CompositorHandler for Ferese {
             };
 
             if let Some(window) = window {
-                if surface == &root {
-                    xdg_shell::apply_initial_window_rules(self, &window);
-                }
                 window.on_commit();
+                if surface == &root {
+                    if crate::state::window_has_buffer(&window) {
+                        xdg_shell::apply_initial_window_rules(self, &window);
+                    } else if self.window_ids.contains_key(&window) {
+                        self.remove_tiled_window(&window);
+                        self.space.map_element(window.clone(), (0, 0), false);
+                        self.restore_keyboard_focus();
+                    }
+                }
                 self.record_client_commit(&window);
             }
         }

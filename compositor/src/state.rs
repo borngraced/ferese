@@ -2876,7 +2876,7 @@ fn client_size(window: &Window) -> Option<ClientSize> {
     })
 }
 
-fn window_has_buffer(window: &Window) -> bool {
+pub(crate) fn window_has_buffer(window: &Window) -> bool {
     window.toplevel().is_some_and(|toplevel| {
         smithay::backend::renderer::utils::with_renderer_surface_state(
             toplevel.wl_surface(),
