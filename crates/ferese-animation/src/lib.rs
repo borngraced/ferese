@@ -598,6 +598,22 @@ mod tests {
     }
 
     #[test]
+    fn hiding_maximized_window_finishes_resize_without_hiding_decorations() {
+        let normal = Rect::new(100.0, 50.0, 900.0, 700.0);
+        let maximized = Rect::new(0.0, 40.0, 1920.0, 1040.0);
+        let mut geometry = WindowGeometry::new(normal, None);
+        geometry.set_presentation_mode(maximized, PresentationMode::Maximized, Duration::ZERO);
+        geometry.advance(Duration::from_millis(16), SpringConfig::default(), true);
+        assert!(geometry.is_zooming());
+
+        geometry.settle_presentation();
+
+        assert_eq!(geometry.visual.current, maximized);
+        assert_eq!(geometry.decorations, 1.0);
+        assert!(!geometry.is_zooming());
+    }
+
+    #[test]
     fn maximized_zoom_keeps_decorations_and_restores_through_fullscreen() {
         let normal = Rect::new(800.0, 50.0, 600.0, 700.0);
         let maximized = Rect::new(10.0, 50.0, 1580.0, 740.0);

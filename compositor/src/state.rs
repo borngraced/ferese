@@ -1460,7 +1460,11 @@ impl Ferese {
             if visible.contains(id) {
                 continue;
             }
-            layout_changed |= space.element_location(window).is_some();
+            let was_mapped = space.element_location(window).is_some();
+            layout_changed |= was_mapped;
+            if was_mapped && let Some(geometry) = self.window_geometry.get_mut(id) {
+                geometry.settle_presentation();
+            }
             space.unmap_elem(window);
         }
         self.space = space;
