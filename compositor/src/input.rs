@@ -150,13 +150,15 @@ impl Ferese {
                     SERIAL_COUNTER.next_serial(),
                     Event::time(&event) as u32,
                     |data, modifiers, keysym| {
+                        if state == KeyState::Released {
+                            data.portal_shortcuts.release(keycode, Event::time(&event));
+                            if data.intercepted_keys.remove(&keycode) {
+                                return FilterResult::Intercept(());
+                            }
+                        }
                         if data.session_lock.active {
                             return FilterResult::Forward;
                         }
-                        if state == KeyState::Released && data.intercepted_keys.remove(&keycode) {
-                            return FilterResult::Intercept(());
-                        }
-
                         let symbol = keysym.modified_sym().raw();
                         if data.overview.is_active()
                             && matches!(symbol, keysyms::KEY_Return | keysyms::KEY_KP_Enter)
@@ -225,6 +227,17 @@ impl Ferese {
                                 .then(|| binding.action.clone())
                         });
                         let Some(action) = action else {
+                            if state == KeyState::Pressed
+                                && data.portal_shortcuts.press(
+                                    keycode,
+                                    &raw_symbols,
+                                    modifiers,
+                                    Event::time(&event),
+                                )
+                            {
+                                data.intercepted_keys.insert(keycode);
+                                return FilterResult::Intercept(());
+                            }
                             return FilterResult::Forward;
                         };
 

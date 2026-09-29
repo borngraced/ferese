@@ -485,6 +485,64 @@ pub enum BindingAction {
 }
 
 impl Binding {
+    pub(crate) fn portal_trigger(chord: &str) -> Result<Self, ConfigError> {
+        if chord.len() > 256 {
+            return Err(ConfigError::InvalidBinding("Shortcut is too long".into()));
+        }
+        let parts = chord.split('+').collect::<Vec<_>>();
+        if parts
+            .iter()
+            .filter(|part| part.trim().eq_ignore_ascii_case("num"))
+            .count()
+            > 1
+        {
+            return Err(ConfigError::InvalidBinding("Duplicate NUM modifier".into()));
+        }
+        let chord = parts
+            .into_iter()
+            .filter(|part| !part.trim().eq_ignore_ascii_case("num"))
+            .collect::<Vec<_>>()
+            .join("+");
+        let (modifiers, key) = parse_chord(&chord)?;
+        let symbol = parse_keysym(&key)?;
+        if (modifiers.ctrl
+            && modifiers.alt
+            && matches!(
+                symbol,
+                keysyms::KEY_Escape | keysyms::KEY_F1..=keysyms::KEY_F12
+            ))
+            || (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&symbol)
+        {
+            return Err(ConfigError::InvalidBinding(
+                "Reserved system shortcut".into(),
+            ));
+        }
+        Ok(Self {
+            modifiers,
+            trigger: BindingTrigger::Keysym(symbol),
+            action: BindingAction::None,
+        })
+    }
+
+    pub(crate) fn conflicts(&self, other: &Self, map: &xkb::Keymap) -> bool {
+        if self.modifiers != other.modifiers {
+            return false;
+        }
+        match (&self.trigger, &other.trigger) {
+            (BindingTrigger::Keysym(left), BindingTrigger::Keysym(right)) => left == right,
+            (BindingTrigger::Keysym(symbol), BindingTrigger::Physical(code))
+            | (BindingTrigger::Physical(code), BindingTrigger::Keysym(symbol)) => {
+                (0..map.num_layouts_for_key(*code)).any(|layout| {
+                    map.key_get_syms_by_level(*code, layout, 0)
+                        .iter()
+                        .any(|key| key.raw() == *symbol)
+                })
+            }
+            (BindingTrigger::Physical(left), BindingTrigger::Physical(right)) => left == right,
+            _ => false,
+        }
+    }
+
     pub fn matches(
         &self,
         keycode: Keycode,
@@ -1197,7 +1255,7 @@ fn validate_commands(commands: &HashMap<String, Vec<String>>) -> Result<(), Conf
     Ok(())
 }
 
-fn physical_keymap(input: &InputSettings) -> Result<xkb::Keymap, ConfigError> {
+pub(crate) fn physical_keymap(input: &InputSettings) -> Result<xkb::Keymap, ConfigError> {
     let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
     let options = (!input.xkb_options.is_empty()).then(|| input.xkb_options.join(","));
 

@@ -2,7 +2,7 @@ use cosmic::{
     Element,
     app::{Core, Settings, Task},
     iced::{Alignment, Length},
-    widget::{button, column, container, image, row, scrollable},
+    widget::{button, column, container, image, row, scrollable, text_input},
 };
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -14,6 +14,15 @@ pub(crate) struct Prompt {
     pub accept: String,
     pub parent: String,
     pub image: Option<std::path::PathBuf>,
+    #[serde(default)]
+    pub shortcuts: Vec<ShortcutField>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) struct ShortcutField {
+    pub id: String,
+    pub description: String,
+    pub trigger: String,
 }
 
 #[derive(Clone, Debug)]
@@ -30,6 +39,7 @@ enum Message {
     ),
     Accept,
     Cancel,
+    Shortcut(usize, String),
 }
 
 struct Consent {
@@ -45,11 +55,18 @@ struct Consent {
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();
     std::io::stdin()
-        .take(64 * 1024)
+        .take(256 * 1024 + 1)
         .read_to_string(&mut input)?;
+    if input.len() > 256 * 1024 {
+        return Err("Consent request is too large".into());
+    }
     let prompt: Prompt = serde_json::from_str(&input)?;
     let (theme, font, background, _) = crate::picker::appearance();
-    let height = if prompt.image.is_some() { 430. } else { 220. };
+    let height = if prompt.image.is_some() || !prompt.shortcuts.is_empty() {
+        430.
+    } else {
+        220.
+    };
     cosmic::app::run::<Consent>(
         Settings::default()
             .size(cosmic::iced::Size::new(440., height))
@@ -73,6 +90,7 @@ impl cosmic::Application for Consent {
     fn core(&self) -> &Core {
         &self.core
     }
+
     fn core_mut(&mut self) -> &mut Core {
         &mut self.core
     }
@@ -134,11 +152,20 @@ impl cosmic::Application for Consent {
                 return cosmic::iced::exit();
             }
             Message::Accept => {
-                println!("true");
+                if self.prompt.shortcuts.is_empty() {
+                    println!("true");
+                } else {
+                    println!("{}", serde_json::to_string(&self.prompt.shortcuts).unwrap());
+                }
                 let _ = std::io::stdout().flush();
                 return cosmic::iced::exit();
             }
             Message::Cancel => return cosmic::iced::exit(),
+            Message::Shortcut(index, value) => {
+                if let Some(shortcut) = self.prompt.shortcuts.get_mut(index) {
+                    shortcut.trigger = value;
+                }
+            }
         }
         Task::none()
     }
@@ -153,9 +180,22 @@ impl cosmic::Application for Consent {
 
     fn view(&self) -> Element<'_, Message> {
         let text = |value: String| ferese_theme::text(value, self.font);
+        let mut details = column![text(self.prompt.description.clone())].spacing(12);
+        for (index, shortcut) in self.prompt.shortcuts.iter().enumerate() {
+            details = details.push(
+                column![
+                    text(shortcut.description.clone()),
+                    text_input("Ctrl+Alt+k (leave empty to disable)", &shortcut.trigger)
+                        .font(self.font)
+                        .style(ferese_theme::controls::settings_input(self.palette))
+                        .on_input(move |value| Message::Shortcut(index, value))
+                ]
+                .spacing(6),
+            );
+        }
         let mut content = column![
             text(self.prompt.title.clone()).size(22),
-            scrollable(text(self.prompt.description.clone())).height(Length::Fill)
+            scrollable(details).height(Length::Fill)
         ]
         .spacing(16);
         if let Some(path) = &self.prompt.image {

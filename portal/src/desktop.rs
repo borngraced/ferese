@@ -192,6 +192,7 @@ pub(crate) async fn consent(
         },
         accept: accept.into(),
         image,
+        shortcuts: Vec::new(),
     };
     let mut child = crate::backend::child_command()?
         .arg("--consent")

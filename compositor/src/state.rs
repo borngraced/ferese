@@ -257,6 +257,7 @@ pub struct Ferese {
     pub(crate) overview_scrims: HashMap<OutputId, crate::winit::OverviewScrim>,
     pub(crate) material_programs: HashMap<ErasedContextId, crate::winit::MaterialProgram>,
     pub(crate) material_buffers: HashMap<WlSurface, crate::winit::MaterialBuffers>,
+    pub(crate) portal_shortcuts: crate::portal_shortcuts::PortalShortcuts,
     pub(crate) pending_logout: Option<u32>,
     pub(crate) logout_owner: Option<smithay::reexports::wayland_server::backend::ObjectId>,
     pub(crate) blur_programs: HashMap<ErasedContextId, crate::winit::BlurProgram>,
@@ -480,6 +481,7 @@ impl Ferese {
             overview_scrims: HashMap::new(),
             material_programs: HashMap::new(),
             material_buffers: HashMap::new(),
+            portal_shortcuts: crate::portal_shortcuts::PortalShortcuts::default(),
             pending_logout: None,
             logout_owner: None,
             blur_programs: HashMap::new(),
@@ -626,6 +628,8 @@ impl Ferese {
         self.gap_config = config.gap_config;
         self.input_settings = config.input_settings;
         self.bindings = config.bindings;
+        self.portal_shortcuts
+            .reconcile(&self.bindings, &self.input_settings);
         let old_rules = std::mem::replace(&mut self.window_rules, config.window_rules);
         self.theme_settings = config.theme_settings;
         self.column_width_presets = config.column_width_presets;

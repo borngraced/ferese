@@ -54,7 +54,7 @@ def private_bus_checks():
                         raise AssertionError((root / "backend.log").read_text())
                     time.sleep(0.05)
             node = ET.fromstring(xml)
-            for name in ("ScreenCast", "Settings", "Screenshot", "Wallpaper", "Background", "Usb", "Lockdown"):
+            for name in ("ScreenCast", "Settings", "Screenshot", "Wallpaper", "Background", "Usb", "Lockdown", "GlobalShortcuts"):
                 interface = node.find(f"interface[@name='org.freedesktop.impl.portal.{name}']")
                 assert interface is not None, name
                 expected = ET.parse(f"/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.{name}.xml").getroot().find("interface")
@@ -90,6 +90,14 @@ def private_bus_checks():
                 raise AssertionError("Untrusted backend caller succeeded")
             except GLib.Error:
                 pass
+            shortcut_session = PATH + "/session/test/shortcuts"
+            shortcut_handle = PATH + "/request/test/shortcuts"
+            create_shortcuts = GLib.Variant("(oosa{sv})", (shortcut_handle, shortcut_session, "org.test.Shortcuts", {}))
+            try:
+                call("org.freedesktop.impl.portal.GlobalShortcuts", "CreateSession", create_shortcuts)
+                raise AssertionError("Untrusted shortcuts creator succeeded")
+            except GLib.Error as error:
+                assert "AccessDenied" in str(error), error
             original_config = config.read_text()
             try:
                 call("org.freedesktop.DBus.Properties", "Set", GLib.Variant("(ssv)", ("org.freedesktop.impl.portal.Lockdown", "disable-printing", GLib.Variant("b", True))))
@@ -128,6 +136,24 @@ def private_bus_checks():
                 assert printing is True, invalid_policy
             config.write_text(valid_policy)
             bus.signal_unsubscribe(subscription)
+
+            response, values = call("org.freedesktop.impl.portal.GlobalShortcuts", "CreateSession", create_shortcuts, "(ua{sv})")
+            assert response == 0 and values == {}
+            response, values = call("org.freedesktop.impl.portal.GlobalShortcuts", "ListShortcuts", GLib.Variant("(oo)", (shortcut_handle, shortcut_session)), "(ua{sv})")
+            assert response == 0 and values == {"shortcuts": []}, values
+            duplicate = [("record", {"description": GLib.Variant("s", "Record screen")})] * 2
+            try:
+                call("org.freedesktop.impl.portal.GlobalShortcuts", "BindShortcuts", GLib.Variant("(ooa(sa{sv})sa{sv})", (shortcut_handle, shortcut_session, duplicate, "", {})))
+                raise AssertionError("Duplicate shortcut IDs accepted")
+            except GLib.Error as error:
+                assert "InvalidArgs" in str(error), error
+            bus.call_sync(NAME, shortcut_session, "org.freedesktop.impl.portal.Session", "Close", None, None,
+                          Gio.DBusCallFlags.NO_AUTO_START, 5000, None)
+            try:
+                call("org.freedesktop.impl.portal.GlobalShortcuts", "ListShortcuts", GLib.Variant("(oo)", (shortcut_handle, shortcut_session)))
+                raise AssertionError("Closed shortcut session remains accessible")
+            except GLib.Error as error:
+                assert "AccessDenied" in str(error), error
 
             usb_params = GLib.Variant("(oss a(sa{sv}a{sv}) a{sv})".replace(" ", ""),
                 (PATH + "/request/test/usb", "", "org.test.App", [], {}))

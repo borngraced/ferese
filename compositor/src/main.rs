@@ -13,6 +13,7 @@ mod input;
 mod ipc;
 mod metrics;
 mod overview;
+mod portal_shortcuts;
 mod presentation;
 mod private_client;
 mod reload;

@@ -668,6 +668,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let requests = crate::desktop::Requests::default();
     let background = crate::permissions::Background::new(requests.clone());
     let lockdown = crate::lockdown::Lockdown::new();
+    let shortcuts = crate::shortcuts::GlobalShortcuts::new(requests.clone());
     let connection = zbus::connection::Builder::session()?
         .name("org.freedesktop.impl.portal.desktop.ferese")?
         .serve_at(PATH, backend.clone())?
@@ -677,6 +678,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .serve_at(PATH, crate::permissions::Usb(requests.clone()))?
         .serve_at(PATH, background.clone())?
         .serve_at(PATH, lockdown.clone())?
+        .serve_at(PATH, shortcuts.clone())?
         .serve_at(
             "/org/ferese/ScreenRecorder",
             RecorderControl(backend.clone()),
@@ -698,6 +700,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
             Err(_) => None,
         };
         requests.revoke_stale(owner.as_deref()).await;
+        shortcuts.revoke_stale(&connection, owner.as_deref()).await;
         let stale: Vec<_> = backend
             .sessions
             .lock()

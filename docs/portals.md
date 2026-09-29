@@ -31,6 +31,12 @@ standard file, print and application dialogs. Install both backends.
   policy. Only the portal frontend may write backend policy properties.
 - **USB:** native confirmation showing device vendor/model and requested read-only
   or read/write access. The portal frontend handles device enumeration and opening.
+- **GlobalShortcuts:** session-scoped keyboard shortcuts with native trigger
+  selection, conflict checking, activation/release signals and reconfiguration.
+  Applications cannot replace Ferese bindings or reserved escape/VT shortcuts.
+  Closing a session or losing its compositor connection releases its shortcuts;
+  shortcuts do not activate on the lock screen. Saved choices are offered for
+  future sessions, with explicit approval before registering them.
 - **ScreenCast:** monitor sharing with a native picker and PipeWire streams.
   See [screen sharing](screen-sharing.md) for lifetime and recording details.
 
@@ -59,7 +65,7 @@ Matching D-Bus signatures does not establish complete feature parity.
 | Access, Account, AppChooser, DynamicLauncher, FileChooser, Notification, Print | Delegated to GTK |
 | Background | Native application state, per-instance consent and XDG autostart |
 | Usb | Native consent; standard frontend handles enumeration and device descriptors |
-| GlobalShortcuts | Missing session-scoped compositor registration and activation signals |
+| GlobalShortcuts | Native sessions, configurable keyboard triggers, conflict checks and activation/release signals |
 | RemoteDesktop | Missing authorized input injection and EIS transport |
 | Clipboard | Missing remote-session clipboard transfer |
 | InputCapture | Missing zones, pointer barriers and EIS transport |
@@ -83,6 +89,13 @@ Build the backend and run unit tests, then check its contracts on a private bus:
 cargo build --locked -p xdg-desktop-portal-ferese
 cargo test --locked -p xdg-desktop-portal-ferese
 python3 scripts/tests/test_portal_contracts.py
+```
+
+With a Wayland host and a built compositor, check shortcut connection cleanup
+and configuration conflicts in an isolated nested compositor:
+
+```sh
+FERESE_TEST_SHORTCUTS=1 python3 scripts/tests/test_shortcuts_isolated.py
 ```
 
 The contract test compares introspection against the installed official backend

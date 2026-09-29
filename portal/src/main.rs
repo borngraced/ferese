@@ -7,6 +7,7 @@ mod parent;
 mod permissions;
 mod picker;
 mod settings;
+mod shortcuts;
 mod stream;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

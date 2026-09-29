@@ -5,7 +5,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{
     Arc,
     mpsc::{SyncSender, sync_channel},
@@ -47,8 +47,26 @@ const DEADLINE_IDLE: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 struct IpcCall {
+    owner: u64,
     request: Request,
     response: SyncSender<Response>,
+}
+
+#[derive(Debug)]
+enum IpcEvent {
+    Call(IpcCall),
+    Closed(u64),
+}
+
+struct IpcConnection {
+    owner: u64,
+    sender: channel::SyncSender<IpcEvent>,
+}
+
+impl Drop for IpcConnection {
+    fn drop(&mut self) {
+        let _ = self.sender.send(IpcEvent::Closed(self.owner));
+    }
 }
 
 struct ConnectionPermit {
@@ -94,18 +112,25 @@ pub(crate) fn init(
         inode: metadata.ino(),
     };
 
-    let (sender, receiver): (channel::SyncSender<IpcCall>, channel::Channel<IpcCall>) =
+    let (sender, receiver): (channel::SyncSender<IpcEvent>, channel::Channel<IpcEvent>) =
         channel::sync_channel(REQUEST_QUEUE_CAPACITY);
     event_loop
         .handle()
         .insert_source(receiver, |event, _, state| {
-            if let channel::Event::Msg(call) = event {
+            if let channel::Event::Msg(event) = event {
+                let call = match event {
+                    IpcEvent::Call(call) => call,
+                    IpcEvent::Closed(owner) => {
+                        state.portal_shortcuts.remove(owner);
+                        return;
+                    }
+                };
                 if call.request.command == "screenshot" {
                     // Deferred: this path answers the caller itself, exactly
                     // once, whenever the request finishes or is terminated.
                     state.start_screenshot(call.request, call.response);
                 } else {
-                    let response = state.handle_ipc_request(call.request);
+                    let response = state.handle_ipc_request(call.owner, call.request);
                     let _ = call.response.send(response);
                 }
             }
@@ -187,10 +212,11 @@ pub(crate) struct ScreenshotInit {
 
 fn accept_connections(
     listener: UnixListener,
-    sender: channel::SyncSender<IpcCall>,
+    sender: channel::SyncSender<IpcEvent>,
     signal: LoopSignal,
 ) {
     let active_connections = Arc::new(AtomicUsize::new(0));
+    let connection_ids = AtomicU64::new(1);
 
     loop {
         let (stream, _) = match listener.accept() {
@@ -222,12 +248,13 @@ fn accept_connections(
             continue;
         };
         let sender = sender.clone();
+        let owner = connection_ids.fetch_add(1, Ordering::Relaxed);
         let signal = signal.clone();
         if let Err(error) = thread::Builder::new()
             .name("ferese-ipc-client".to_owned())
             .spawn(move || {
                 let _permit = permit;
-                serve_connection(stream, sender, signal);
+                serve_connection(stream, sender, signal, owner);
             })
         {
             tracing::warn!(%error, "could not start IPC connection worker");
@@ -254,9 +281,14 @@ fn try_acquire_connection(active: &Arc<AtomicUsize>) -> Option<ConnectionPermit>
 
 fn serve_connection(
     mut stream: UnixStream,
-    sender: channel::SyncSender<IpcCall>,
+    sender: channel::SyncSender<IpcEvent>,
     signal: LoopSignal,
+    owner: u64,
 ) {
+    let _connection = IpcConnection {
+        owner,
+        sender: sender.clone(),
+    };
     loop {
         let request: Request = match read_frame(&mut stream) {
             Ok(request) => request,
@@ -277,7 +309,11 @@ fn serve_connection(
         };
         let (response, receiver) = sync_channel(1);
         let exit_requested = request.command == "exit";
-        let call = IpcCall { request, response };
+        let call = IpcEvent::Call(IpcCall {
+            owner,
+            request,
+            response,
+        });
         if sender.try_send(call).is_err() {
             tracing::warn!("disconnecting IPC client because the request queue is full");
             return;
@@ -300,8 +336,8 @@ fn serve_connection(
 }
 
 impl Ferese {
-    fn handle_ipc_request(&mut self, request: Request) -> Response {
-        if self.session_lock.active {
+    fn handle_ipc_request(&mut self, owner: u64, request: Request) -> Response {
+        if self.session_lock.active && request.command != "portal-shortcuts-poll" {
             return Response::error(
                 request.id,
                 "session_locked",
@@ -312,14 +348,30 @@ impl Ferese {
             return Response::error(request.id, error.code, error.message);
         }
 
-        match self.dispatch_ipc_command(&request.command, &request.args) {
+        match self.dispatch_ipc_command(owner, &request.command, &request.args) {
             Ok(result) => Response::success(request.id, result),
             Err(error) => Response::error(request.id, error.code, error.message),
         }
     }
 
-    fn dispatch_ipc_command(&mut self, command: &str, args: &Value) -> Result<Value, CommandError> {
+    fn dispatch_ipc_command(
+        &mut self,
+        owner: u64,
+        command: &str,
+        args: &Value,
+    ) -> Result<Value, CommandError> {
         match command {
+            "portal-shortcuts-register" => {
+                let shortcuts = serde_json::from_value(args.clone())
+                    .map_err(|error| CommandError::new("invalid_argument", error.to_string()))?;
+                self.portal_shortcuts
+                    .register(owner, shortcuts, &self.bindings, &self.input_settings)
+                    .map_err(|error| CommandError::new("shortcut_conflict", error))?;
+                return Ok(json!({}));
+            }
+            "portal-shortcuts-poll" => {
+                return Ok(self.portal_shortcuts.poll(owner, self.session_lock.active));
+            }
             "exit" => {} // The IPC worker stops the loop after writing the response.
             "request-logout" => self.request_logout_confirmation(),
             "reload-config" => self
@@ -961,7 +1013,7 @@ mod tests {
         let (sender, _receiver) = channel::sync_channel(1);
         let event_loop = EventLoop::<()>::try_new().unwrap();
         let signal = event_loop.get_signal();
-        let worker = thread::spawn(move || serve_connection(server, sender, signal));
+        let worker = thread::spawn(move || serve_connection(server, sender, signal, 1));
         let invalid = b"not-json";
 
         client
