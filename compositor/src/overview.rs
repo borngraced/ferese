@@ -544,6 +544,9 @@ impl Ferese {
         self.advance_animations(std::time::Instant::now());
 
         if active {
+            if self.cancel_workspace_slides() {
+                self.relayout();
+            }
             let targets = self.overview_targets();
             self.overview
                 .enter(targets, self.focused_window, self.animations_enabled());
@@ -596,8 +599,13 @@ impl Ferese {
 
     pub(crate) fn presented_window_rect(&self, id: WindowId) -> Option<Rect> {
         let normal = self.window_geometry.get(&id)?.visual.current;
-
-        Some(self.overview.presented_rect(id, normal))
+        let mut presented = self.overview.presented_rect(id, normal);
+        if !self.overview.is_presenting() {
+            let (x, y) = self.workspace_slide_offset(id);
+            presented.x += x;
+            presented.y += y;
+        }
+        Some(presented)
     }
 
     pub(crate) fn inverse_presented_window_point(
@@ -608,7 +616,8 @@ impl Ferese {
     ) -> Option<(f64, f64)> {
         let geometry = self.window_geometry.get(&id)?;
         if !self.overview.is_presenting() {
-            return Some((x - geometry.visual.current.x, y - geometry.visual.current.y));
+            let presented = self.presented_window_rect(id)?;
+            return Some((x - presented.x, y - presented.y));
         }
         let source = geometry.client.committed_size?;
         let presented = self.overview.presented_rect(id, geometry.visual.current);

@@ -1,6 +1,7 @@
 use smithay::reexports::wayland_server::Resource;
 use std::process::Command;
 
+use ferese_layout::Direction;
 use smithay::{
     backend::input::{
         AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
@@ -31,6 +32,7 @@ use smithay::{
 use crate::{
     Ferese,
     config::BindingAction,
+    gestures::SwipeDirection,
     grabs::{MoveSurfaceGrab, ResizeEdge, ResizeSurfaceGrab},
 };
 
@@ -108,7 +110,17 @@ impl Ferese {
                             .find(|binding| binding.matches_swipe(fingers, direction))
                             .map(|binding| binding.action.clone())
                     {
-                        self.execute_binding(action);
+                        match action {
+                            BindingAction::Focus(
+                                direction @ (Direction::Left | Direction::Right),
+                            ) => {
+                                self.focus_direction_from_swipe(direction);
+                            }
+                            BindingAction::SwitchRelativeWorkspace(next) => {
+                                self.switch_relative_workspace(next, Some(direction));
+                            }
+                            action => self.execute_binding(action),
+                        }
                     }
                 } else {
                     seat.get_pointer()
@@ -583,7 +595,7 @@ impl Ferese {
                 .is_some_and(|keyboard| keyboard.is_grabbed())
     }
 
-    fn switch_relative_workspace(&mut self, next: bool) {
+    fn switch_relative_workspace(&mut self, next: bool, slide: Option<SwipeDirection>) {
         let Some(output) = self.output_workspaces.focused_output() else {
             return;
         };
@@ -620,7 +632,11 @@ impl Ferese {
             .and_then(|index| candidates.get(index))
             .map(|workspace| workspace.id)
         {
-            self.activate_managed_workspace(workspace);
+            if let Some(direction) = slide {
+                self.activate_managed_workspace_from_swipe(workspace, direction);
+            } else {
+                self.activate_managed_workspace(workspace);
+            }
         } else if next
             && self.workspaces.workspace(current).is_some_and(|workspace| {
                 workspace.layout.window_ids().next().is_some() || !workspace.floating.is_empty()
@@ -634,7 +650,11 @@ impl Ferese {
                 .unwrap_or(1)
                 .checked_add(1);
             if let Some(number) = next_number {
-                self.switch_workspace(number);
+                if let Some(direction) = slide {
+                    self.switch_workspace_from_swipe(number, direction);
+                } else {
+                    self.switch_workspace(number);
+                }
             }
         }
     }
@@ -857,7 +877,9 @@ impl Ferese {
             BindingAction::Focus(direction) => self.focus_direction(direction),
             BindingAction::Move(direction) => self.move_direction(direction),
             BindingAction::Resize(direction) => self.resize_direction(direction),
-            BindingAction::SwitchRelativeWorkspace(next) => self.switch_relative_workspace(next),
+            BindingAction::SwitchRelativeWorkspace(next) => {
+                self.switch_relative_workspace(next, None)
+            }
             BindingAction::SwitchWorkspace(workspace) => {
                 self.switch_workspace(u32::from(workspace));
             }

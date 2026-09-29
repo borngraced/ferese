@@ -79,6 +79,7 @@ pub struct ScrollingLayout {
     default_width: ColumnWidth,
     focus_strategy: ViewportFocusStrategy,
     reveal_pending: Option<WindowId>,
+    swipe_focus_pending: Option<(WindowId, WindowId)>,
     width_cycle_pending: bool,
     last_viewport_width: Option<f64>,
 }
@@ -93,6 +94,7 @@ impl Default for ScrollingLayout {
             default_width: ColumnWidth::default(),
             focus_strategy: ViewportFocusStrategy::Minimal,
             reveal_pending: None,
+            swipe_focus_pending: None,
             width_cycle_pending: false,
             last_viewport_width: None,
         }
@@ -114,6 +116,7 @@ impl ScrollingLayout {
     pub fn set_focus_strategy(&mut self, strategy: ViewportFocusStrategy) {
         self.focus_strategy = strategy;
         self.reveal_pending = self.active_window();
+        self.swipe_focus_pending = None;
     }
 
     pub fn default_width(&self) -> ColumnWidth {
@@ -230,6 +233,20 @@ impl ScrollingLayout {
     pub fn focus_and_reveal(&mut self, window: WindowId) -> Result<(), LayoutError> {
         self.focus_without_reveal(window)?;
         self.reveal_pending = Some(window);
+        self.swipe_focus_pending = None;
+        Ok(())
+    }
+
+    pub fn slide_focus_from(
+        &mut self,
+        previous: WindowId,
+        focused: WindowId,
+    ) -> Result<(), LayoutError> {
+        self.window_location(previous)
+            .ok_or(LayoutError::UnknownWindow(previous))?;
+        self.focus_without_reveal(focused)?;
+        self.reveal_pending = None;
+        self.swipe_focus_pending = Some((previous, focused));
         Ok(())
     }
 
@@ -506,6 +523,22 @@ impl ScrollingLayout {
         if self.width_cycle_pending {
             self.retarget_after_width_cycle(&column_positions, viewport_width);
             self.width_cycle_pending = false;
+            self.reveal_pending = None;
+            self.swipe_focus_pending = None;
+        } else if let Some((previous, focused)) = self.swipe_focus_pending.take() {
+            if let (Some((from, _)), Some((to, _))) = (
+                self.window_location(previous),
+                self.window_location(focused),
+            ) {
+                let last_end = column_positions
+                    .last()
+                    .map(|(start, width)| start + width)
+                    .unwrap_or(0.0);
+                let max_offset = (last_end - viewport_width).max(0.0);
+                self.viewport_x = (self.viewport_x + column_positions[to].0
+                    - column_positions[from].0)
+                    .clamp(0.0, max_offset);
+            }
             self.reveal_pending = None;
         } else {
             let reveal = self.reveal_pending.take().or_else(|| {
@@ -993,6 +1026,30 @@ mod tests {
                 geometry[&window(first + 1)].x + geometry[&window(first + 1)].width,
                 990.0
             );
+        }
+    }
+
+    #[test]
+    fn swipe_focus_slides_one_column_at_a_time_in_paged_layout() {
+        let (mut layout, bounds, gaps) = paged_layout(5);
+        layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(1)))
+            .unwrap();
+        assert_eq!(layout.viewport_x(), 0.0);
+
+        for (previous, focused, expected) in
+            [(1, 2, 495.0), (2, 3, 990.0), (3, 2, 495.0), (2, 1, 0.0)]
+        {
+            layout.focus_and_reveal(window(focused)).unwrap();
+            layout
+                .slide_focus_from(window(previous), window(focused))
+                .unwrap();
+            let result = layout
+                .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(focused)))
+                .unwrap();
+
+            assert_eq!(layout.viewport_x(), expected);
+            assert_eq!(result.geometry[&window(focused)].x, 10.0);
         }
     }
 

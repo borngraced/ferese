@@ -78,10 +78,127 @@ use smithay::{
 
 use crate::{
     config::{Binding, InputSettings, OutputProfile, ThemeSettings},
+    gestures::SwipeDirection,
     window_rules::{WindowRule, resolve as resolve_window_rules},
 };
 
 const CLOSE_ANIMATION_DURATION: Duration = Duration::from_millis(140);
+const WORKSPACE_SLIDE_DURATION: Duration = Duration::from_millis(220);
+const WORKSPACE_SLIDE_FIRST_FRAME: Duration = Duration::from_millis(8);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct SlideOffset {
+    x: f64,
+    y: f64,
+}
+
+impl SlideOffset {
+    fn for_swipe(direction: SwipeDirection) -> Self {
+        match direction {
+            SwipeDirection::Left => Self { x: -1.0, y: 0.0 },
+            SwipeDirection::Right => Self { x: 1.0, y: 0.0 },
+            SwipeDirection::Up => Self { x: 0.0, y: -1.0 },
+            SwipeDirection::Down => Self { x: 0.0, y: 1.0 },
+        }
+    }
+
+    fn opposite(self) -> Self {
+        Self {
+            x: -self.x,
+            y: -self.y,
+        }
+    }
+
+    fn between(self, target: Self, progress: f64) -> Self {
+        Self {
+            x: self.x + (target.x - self.x) * progress,
+            y: self.y + (target.y - self.y) * progress,
+        }
+    }
+}
+
+struct WorkspaceSlideItem {
+    workspace: WorkspaceId,
+    start: SlideOffset,
+    target: SlideOffset,
+}
+
+struct WorkspaceSlide {
+    items: Vec<WorkspaceSlideItem>,
+    elapsed: Duration,
+}
+
+impl WorkspaceSlide {
+    fn new(
+        previous: Option<Self>,
+        from: WorkspaceId,
+        to: WorkspaceId,
+        direction: SwipeDirection,
+    ) -> Self {
+        let movement = SlideOffset::for_swipe(direction);
+        let mut items = previous
+            .map(|slide| {
+                let progress = slide.progress();
+                slide
+                    .items
+                    .into_iter()
+                    .map(|mut item| {
+                        item.start = item.start.between(item.target, progress);
+                        item
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        if let Some(item) = items.iter_mut().find(|item| item.workspace == from) {
+            item.target = movement;
+        } else {
+            items.push(WorkspaceSlideItem {
+                workspace: from,
+                start: SlideOffset::default(),
+                target: movement,
+            });
+        }
+        if let Some(item) = items.iter_mut().find(|item| item.workspace == to) {
+            item.target = SlideOffset::default();
+        } else {
+            items.push(WorkspaceSlideItem {
+                workspace: to,
+                start: movement.opposite(),
+                target: SlideOffset::default(),
+            });
+        }
+
+        Self {
+            items,
+            elapsed: WORKSPACE_SLIDE_FIRST_FRAME,
+        }
+    }
+
+    fn progress(&self) -> f64 {
+        smoothstep((self.elapsed.as_secs_f64() / WORKSPACE_SLIDE_DURATION.as_secs_f64()).min(1.0))
+    }
+
+    fn advance(&mut self, delta: Duration) -> bool {
+        self.elapsed = (self.elapsed + delta).min(WORKSPACE_SLIDE_DURATION);
+        self.elapsed < WORKSPACE_SLIDE_DURATION
+    }
+
+    fn contains(&self, workspace: WorkspaceId) -> bool {
+        self.items.iter().any(|item| item.workspace == workspace)
+    }
+
+    fn offset(&self, workspace: WorkspaceId, width: f64, height: f64) -> (f64, f64) {
+        let progress = self.progress();
+        let position = self
+            .items
+            .iter()
+            .find(|item| item.workspace == workspace)
+            .map(|item| item.start.between(item.target, progress))
+            .unwrap_or_default();
+        (position.x * width, position.y * height)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 struct ClosingAnimation {
@@ -144,6 +261,7 @@ pub struct Ferese {
     pub(crate) backdrop_generation: u64,
     closing_windows: HashMap<WindowId, ClosingAnimation>,
     viewport_animations: HashMap<WorkspaceId, AnimatedValue>,
+    workspace_slides: HashMap<OutputId, WorkspaceSlide>,
     scrolling_world_x: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
     viewport_coupled_widths: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
     pending_column_width_cycles: HashSet<WindowId>,
@@ -364,6 +482,7 @@ impl Ferese {
             backdrop_generation: 0,
             closing_windows: HashMap::new(),
             viewport_animations: HashMap::new(),
+            workspace_slides: HashMap::new(),
             scrolling_world_x: HashMap::new(),
             viewport_coupled_widths: HashMap::new(),
             pending_column_width_cycles: HashSet::new(),
@@ -507,6 +626,9 @@ impl Ferese {
         self.theme_settings = config.theme_settings;
         self.column_width_presets = config.column_width_presets;
         self.animations_enabled = config.animations_enabled;
+        if !self.animations_enabled {
+            self.workspace_slides.clear();
+        }
         self.animation_speed = config.animation_speed;
         self.spring_config = config.spring_config;
         self.viewport_spring_config = config.viewport_spring_config;
@@ -583,6 +705,7 @@ impl Ferese {
             return;
         };
 
+        self.workspace_slides.remove(&output_id);
         self.overview_scrims.remove(&output_id);
         self.pending_screencopies.retain(|capture| {
             if capture.output == *output {
@@ -932,10 +1055,43 @@ impl Ferese {
     }
 
     pub(crate) fn window_belongs_to_output(&self, window: WindowId, output: &Output) -> bool {
-        let workspace = self
-            .output_id(output)
-            .and_then(|output| self.output_workspaces.active_workspace(output));
-        workspace.is_some() && self.workspaces.workspace_for_window(window) == workspace
+        let Some(output_id) = self.output_id(output) else {
+            return false;
+        };
+        let workspace = self.workspaces.workspace_for_window(window);
+        workspace == self.output_workspaces.active_workspace(output_id)
+            || self
+                .workspace_slides
+                .get(&output_id)
+                .is_some_and(|slide| workspace.is_some_and(|workspace| slide.contains(workspace)))
+    }
+
+    pub(crate) fn workspace_slide_offset(&self, window: WindowId) -> (f64, f64) {
+        let Some(workspace) = self.workspaces.workspace_for_window(window) else {
+            return (0.0, 0.0);
+        };
+        let Some(output_id) = self.output_workspaces.output_for_workspace(workspace) else {
+            return (0.0, 0.0);
+        };
+        let Some(slide) = self.workspace_slides.get(&output_id) else {
+            return (0.0, 0.0);
+        };
+        let Some(size) = self
+            .output_ids
+            .iter()
+            .find(|(_, id)| **id == output_id)
+            .and_then(|(output, _)| self.space.output_geometry(output))
+            .map(|geometry| geometry.size)
+        else {
+            return (0.0, 0.0);
+        };
+        slide.offset(workspace, f64::from(size.w), f64::from(size.h))
+    }
+
+    pub(crate) fn cancel_workspace_slides(&mut self) -> bool {
+        let active = !self.workspace_slides.is_empty();
+        self.workspace_slides.clear();
+        active
     }
 
     pub(crate) fn raise_window(&mut self, window: &Window, activate: bool) {
@@ -1381,11 +1537,16 @@ impl Ferese {
     }
 
     pub fn relayout(&mut self) {
-        let protected = self
+        let mut protected = self
             .output_workspaces
             .connected_outputs()
             .filter_map(|output| self.output_workspaces.active_workspace(output))
             .collect::<HashSet<_>>();
+        protected.extend(
+            self.workspace_slides
+                .values()
+                .flat_map(|slide| slide.items.iter().map(|item| item.workspace)),
+        );
         for workspace in self.workspaces.prune_empty(&protected) {
             self.output_workspaces.forget_workspace(workspace);
             self.viewport_animations.remove(&workspace);
@@ -1403,14 +1564,26 @@ impl Ferese {
         let constraints = self.window_constraints();
         let mut visible = HashSet::new();
         let mut placements = Vec::new();
+        let mut output_workspaces = Vec::new();
 
         for output in outputs {
             let Some(output_id) = self.output_ids.get(&output).copied() else {
                 continue;
             };
-            let Some(workspace_id) = self.output_workspaces.active_workspace(output_id) else {
+            let Some(active_workspace) = self.output_workspaces.active_workspace(output_id) else {
                 continue;
             };
+            output_workspaces.push((output.clone(), active_workspace));
+            if let Some(slide) = self.workspace_slides.get(&output_id) {
+                for item in &slide.items {
+                    if item.workspace != active_workspace {
+                        output_workspaces.push((output.clone(), item.workspace));
+                    }
+                }
+            }
+        }
+
+        for (output, workspace_id) in output_workspaces {
             let Some(bounds) = self.output_bounds_for(&output) else {
                 continue;
             };
@@ -1756,6 +1929,14 @@ impl Ferese {
             })
             .collect::<Vec<_>>();
         let mut active_animation = false;
+        let mut completed_slides = Vec::new();
+        for (output, slide) in &mut self.workspace_slides {
+            if slide.advance(delta) {
+                active_animation = true;
+            } else {
+                completed_slides.push(*output);
+            }
+        }
         self.dismissing_popups.retain_mut(|(root, popup, motion)| {
             if !smithay::utils::IsAlive::alive(popup.wl_surface()) {
                 return false;
@@ -1980,6 +2161,39 @@ impl Ferese {
         for id in settled_coupled_widths {
             self.viewport_coupled_widths.remove(&id);
         }
+        if !completed_slides.is_empty() {
+            for output in completed_slides {
+                self.workspace_slides.remove(&output);
+            }
+            let mut visible = visible_workspaces;
+            visible.extend(
+                self.workspace_slides
+                    .values()
+                    .flat_map(|slide| slide.items.iter().map(|item| item.workspace)),
+            );
+            let mapped = self
+                .space
+                .elements()
+                .filter_map(|window| self.window_ids.get(window).map(|id| (window.clone(), *id)))
+                .collect::<Vec<_>>();
+            for (window, id) in mapped {
+                if self
+                    .workspaces
+                    .workspace_for_window(id)
+                    .is_some_and(|workspace| !visible.contains(&workspace))
+                {
+                    self.space.unmap_elem(&window);
+                    if let Some(geometry) = self.window_geometry.get_mut(&id) {
+                        geometry.settle_presentation();
+                    }
+                }
+            }
+            for workspace in self.workspaces.prune_empty(&visible) {
+                self.output_workspaces.forget_workspace(workspace);
+                self.viewport_animations.remove(&workspace);
+            }
+            self.send_shell_snapshots();
+        }
         active_animation |=
             self.overview
                 .advance(delta, self.spring_config, self.animations_enabled);
@@ -2187,6 +2401,14 @@ impl Ferese {
     }
 
     pub fn focus_direction(&mut self, direction: Direction) {
+        self.focus_direction_with_slide(direction, false);
+    }
+
+    pub(crate) fn focus_direction_from_swipe(&mut self, direction: Direction) {
+        self.focus_direction_with_slide(direction, true);
+    }
+
+    fn focus_direction_with_slide(&mut self, direction: Direction, slide: bool) {
         if self.focus_overview_direction(direction) {
             return;
         }
@@ -2209,6 +2431,12 @@ impl Ferese {
         if let Err(error) = self.workspaces.focus_window(next) {
             tracing::error!(%error, ?next, "failed to update workspace focus");
             return;
+        }
+        if slide
+            && let WorkspaceLayout::Scrolling(layout) = &mut self.workspaces.active_mut().layout
+            && let Err(error) = layout.slide_focus_from(current, next)
+        {
+            tracing::warn!(%error, ?current, ?next, "failed to slide swipe focus");
         }
         let Some(window) = self
             .window_ids
@@ -2548,6 +2776,9 @@ impl Ferese {
             return false;
         }
 
+        if let Some(output) = self.output_workspaces.output_for_workspace(workspace) {
+            self.workspace_slides.remove(&output);
+        }
         self.focused_window = Some(id);
         self.raise_window(&window, true);
         self.relayout();
@@ -2556,6 +2787,22 @@ impl Ferese {
     }
 
     pub(crate) fn activate_managed_workspace(&mut self, workspace: WorkspaceId) -> bool {
+        self.activate_managed_workspace_internal(workspace, None)
+    }
+
+    pub(crate) fn activate_managed_workspace_from_swipe(
+        &mut self,
+        workspace: WorkspaceId,
+        direction: SwipeDirection,
+    ) -> bool {
+        self.activate_managed_workspace_internal(workspace, Some(direction))
+    }
+
+    fn activate_managed_workspace_internal(
+        &mut self,
+        workspace: WorkspaceId,
+        slide_direction: Option<SwipeDirection>,
+    ) -> bool {
         if self.workspaces.workspace(workspace).is_none() {
             return false;
         }
@@ -2567,13 +2814,14 @@ impl Ferese {
         let Some(output) = output else {
             return false;
         };
-
+        let previous = self.output_workspaces.active_workspace(output);
         let owner = match self.output_workspaces.switch_workspace(output, workspace) {
             Ok(ferese_core::WorkspaceSwitch::Activated(output))
             | Ok(ferese_core::WorkspaceSwitch::FocusedExisting(output)) => output,
             Err(_) => return false,
         };
 
+        self.update_workspace_slide(output, owner, previous, workspace, slide_direction);
         self.activate_output_workspace(owner, workspace);
         self.relayout();
         self.restore_keyboard_focus();
@@ -2664,6 +2912,14 @@ impl Ferese {
     }
 
     pub fn switch_workspace(&mut self, index: u32) {
+        self.switch_workspace_internal(index, None);
+    }
+
+    pub(crate) fn switch_workspace_from_swipe(&mut self, index: u32, direction: SwipeDirection) {
+        self.switch_workspace_internal(index, Some(direction));
+    }
+
+    fn switch_workspace_internal(&mut self, index: u32, slide_direction: Option<SwipeDirection>) {
         let workspace = match self.workspaces.ensure_numeric(index) {
             Ok(workspace) => workspace,
             Err(error) => {
@@ -2674,6 +2930,7 @@ impl Ferese {
         let Some(output) = self.output_workspaces.focused_output() else {
             return;
         };
+        let previous = self.output_workspaces.active_workspace(output);
         let owner = match self.output_workspaces.switch_workspace(output, workspace) {
             Ok(ferese_core::WorkspaceSwitch::Activated(output))
             | Ok(ferese_core::WorkspaceSwitch::FocusedExisting(output)) => output,
@@ -2682,10 +2939,33 @@ impl Ferese {
                 return;
             }
         };
+        self.update_workspace_slide(output, owner, previous, workspace, slide_direction);
         self.activate_output_workspace(owner, workspace);
 
         self.relayout();
         self.restore_keyboard_focus();
+    }
+
+    fn update_workspace_slide(
+        &mut self,
+        requested_output: OutputId,
+        owner: OutputId,
+        previous: Option<WorkspaceId>,
+        workspace: WorkspaceId,
+        slide_direction: Option<SwipeDirection>,
+    ) {
+        let previous_slide = self.workspace_slides.remove(&owner);
+        if owner == requested_output
+            && let (Some(from), Some(direction)) = (previous, slide_direction)
+            && from != workspace
+            && self.animations_enabled
+        {
+            self.last_animation_tick = Instant::now();
+            self.workspace_slides.insert(
+                owner,
+                WorkspaceSlide::new(previous_slide, from, workspace, direction),
+            );
+        }
     }
 
     pub fn move_focused_to_workspace(&mut self, index: u32) {
@@ -3011,6 +3291,82 @@ impl ClientData for ClientState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn workspace_slide_moves_both_workspaces_without_a_gap() {
+        let width = 1600.0;
+        let height = 900.0;
+        for (direction, outgoing_target) in [
+            (SwipeDirection::Left, (-width, 0.0)),
+            (SwipeDirection::Right, (width, 0.0)),
+            (SwipeDirection::Up, (0.0, -height)),
+            (SwipeDirection::Down, (0.0, height)),
+        ] {
+            let from = WorkspaceId(1);
+            let to = WorkspaceId(2);
+            let mut slide = WorkspaceSlide::new(None, from, to, direction);
+            assert!(slide.contains(from));
+            assert!(slide.contains(to));
+            assert!(slide.advance(WORKSPACE_SLIDE_DURATION / 2));
+            let outgoing = slide.offset(from, width, height);
+            let incoming = slide.offset(to, width, height);
+            assert!((incoming.0 - outgoing.0).abs() == outgoing_target.0.abs());
+            assert!((incoming.1 - outgoing.1).abs() == outgoing_target.1.abs());
+
+            assert!(!slide.advance(WORKSPACE_SLIDE_DURATION));
+            assert_eq!(slide.offset(from, width, height), outgoing_target);
+            assert_eq!(slide.offset(to, width, height), (0.0, 0.0));
+        }
+    }
+
+    #[test]
+    fn chained_workspace_slides_keep_all_visible_workspaces() {
+        let first = WorkspaceId(1);
+        let second = WorkspaceId(2);
+        let third = WorkspaceId(3);
+        let mut slide = WorkspaceSlide::new(None, first, second, SwipeDirection::Up);
+        slide.advance(WORKSPACE_SLIDE_DURATION / 3);
+        let first_position = slide.offset(first, 1600.0, 900.0);
+        let second_position = slide.offset(second, 1600.0, 900.0);
+
+        let chained = WorkspaceSlide::new(Some(slide), second, third, SwipeDirection::Left);
+        assert!(chained.contains(first));
+        assert!(chained.contains(second));
+        assert!(chained.contains(third));
+        let first_start = chained
+            .items
+            .iter()
+            .find(|item| item.workspace == first)
+            .unwrap()
+            .start;
+        let second_start = chained
+            .items
+            .iter()
+            .find(|item| item.workspace == second)
+            .unwrap()
+            .start;
+        assert_eq!(
+            (first_start.x * 1600.0, first_start.y * 900.0),
+            first_position
+        );
+        assert_eq!(
+            (second_start.x * 1600.0, second_start.y * 900.0),
+            second_position
+        );
+
+        let reversed = WorkspaceSlide::new(Some(chained), third, first, SwipeDirection::Down);
+        assert_eq!(reversed.items.len(), 3);
+        assert!(reversed.contains(second));
+        assert_eq!(
+            reversed
+                .items
+                .iter()
+                .find(|item| item.workspace == first)
+                .unwrap()
+                .target,
+            SlideOffset::default()
+        );
+    }
+
     #[test]
     fn floating_sizes_respect_client_limits_without_moving_the_window() {
         let rect = Rect::new(40., 60., 300., 200.);
