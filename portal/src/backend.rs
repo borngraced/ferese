@@ -174,7 +174,7 @@ fn source_options(options: &Options) -> zbus::fdo::Result<(bool, bool)> {
     };
     let types = number("types", 1)?;
     let cursor = number("cursor_mode", 1)?;
-    if types == 0 || types & !1 != 0 {
+    if types & 1 == 0 {
         return Err(error("Only monitor sharing is supported"));
     }
     if cursor != 1 && cursor != 2 {
@@ -664,8 +664,14 @@ mod tests {
     #[test]
     fn rejects_unimplemented_sources_and_cursor_modes() {
         assert_eq!(source_options(&Options::new()).unwrap(), (false, false));
-        for bits in [0u32, 2, 3, 4] {
+        for bits in [0u32, 2, 4, 6] {
             assert!(source_options(&HashMap::from([("types".into(), bits.into())])).is_err());
+        }
+        for bits in [1u32, 3, 5, 7] {
+            assert_eq!(
+                source_options(&HashMap::from([("types".into(), bits.into())])).unwrap(),
+                (false, false)
+            );
         }
         assert!(source_options(&HashMap::from([("cursor_mode".into(), 4u32.into())])).is_err());
     }
