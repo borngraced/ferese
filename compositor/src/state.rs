@@ -147,7 +147,6 @@ pub struct Ferese {
     viewport_coupled_widths: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
     pending_column_width_cycles: HashSet<WindowId>,
     pub focused_window: Option<WindowId>,
-    pub(crate) hover_focus_blocked: Option<WindowId>,
     column_width_presets: Vec<ColumnWidth>,
     gap_config: GapConfig,
     pub(crate) input_settings: InputSettings,
@@ -361,7 +360,6 @@ impl Ferese {
             viewport_coupled_widths: HashMap::new(),
             pending_column_width_cycles: HashSet::new(),
             focused_window: None,
-            hover_focus_blocked: None,
             column_width_presets: config.column_width_presets,
             gap_config: config.gap_config,
             input_settings: config.input_settings,
@@ -864,23 +862,11 @@ impl Ferese {
 
             let visual = self.presented_window_rect(*id)?;
             let caption_height = if overview_active { 34.0 } else { 0.0 };
-            let inside_visual = position.x >= visual.x
+            (position.x >= visual.x
                 && position.y >= visual.y
                 && position.x < visual.x + visual.width
-                && position.y < visual.y + visual.height + caption_height;
-            if !inside_visual {
-                return None;
-            }
-
-            if !overview_active {
-                let (source_x, source_y) =
-                    self.inverse_presented_window_point(*id, position.x, position.y)?;
-                let source_point =
-                    Point::from((source_x, source_y)) + window.geometry().loc.to_f64();
-                window.surface_under(source_point, WindowSurfaceType::ALL)?;
-            }
-
-            Some(window.clone())
+                && position.y < visual.y + visual.height + caption_height)
+                .then_some(window.clone())
         };
 
         if overview_active {
