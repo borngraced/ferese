@@ -14,12 +14,22 @@ pub struct Prompt {
     pub app: String,
     pub sources: Vec<Source>,
     pub multiple: bool,
+    #[serde(default)]
+    pub parent: String,
 }
 
 #[derive(Clone, Debug)]
 enum Message {
     WindowOpened(cosmic::iced::window::Id),
-    MaterialAttached(Result<ferese_theme::material::ModalMaterial, String>),
+    Attached(
+        Result<
+            (
+                Option<std::sync::Arc<crate::parent::Parent>>,
+                Result<ferese_theme::material::ModalMaterial, String>,
+            ),
+            String,
+        >,
+    ),
     Select(usize),
     Share,
     Cancel,
@@ -28,6 +38,7 @@ enum Message {
 struct Picker {
     core: Core,
     material: Option<ferese_theme::material::ModalMaterial>,
+    parent: Option<std::sync::Arc<crate::parent::Parent>>,
     prompt: Prompt,
     selected: Vec<usize>,
     background: cosmic::iced::Color,
@@ -93,6 +104,7 @@ impl cosmic::Application for Picker {
         let mut app = Self {
             core,
             material: None,
+            parent: None,
             prompt,
             selected: Vec::new(),
             background,
@@ -120,14 +132,24 @@ impl cosmic::Application for Picker {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::WindowOpened(id) => {
-                return cosmic::iced::window::run(
-                    id,
-                    ferese_theme::material::ModalMaterial::attach,
-                )
-                .map(|result| cosmic::Action::App(Message::MaterialAttached(result)));
+                let parent = self.prompt.parent.clone();
+                return cosmic::iced::window::run(id, move |window| {
+                    let parent =
+                        crate::parent::Parent::attach(window, &parent)?.map(std::sync::Arc::new);
+                    Ok((
+                        parent,
+                        ferese_theme::material::ModalMaterial::attach(window),
+                    ))
+                })
+                .map(|result| cosmic::Action::App(Message::Attached(result)));
             }
-            Message::MaterialAttached(result) => {
-                self.material = result.ok();
+            Message::Attached(Ok((parent, material))) => {
+                self.parent = parent;
+                self.material = material.ok();
+            }
+            Message::Attached(Err(error)) => {
+                eprintln!("ferese portal: {error}");
+                return cosmic::iced::exit();
             }
             Message::Select(index) if index < self.prompt.sources.len() => {
                 if self.selected.contains(&index) {
@@ -136,9 +158,7 @@ impl cosmic::Application for Picker {
                     if !self.prompt.multiple {
                         self.selected.clear();
                     }
-                    if self.selected.len() < 4 {
-                        self.selected.push(index);
-                    }
+                    self.selected.push(index);
                 }
             }
             Message::Share if !self.selected.is_empty() => {

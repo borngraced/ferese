@@ -301,7 +301,7 @@ async fn select_geometry(point: bool, windows: Option<String>) -> Result<Option<
     Ok(Some(geometry))
 }
 
-async fn wait_for_surface_removal(pid: u32) -> Result<(), String> {
+pub(crate) async fn wait_for_surface_removal(pid: u32) -> Result<(), String> {
     for _ in 0..100 {
         if ipc("has-client-surfaces", serde_json::json!({"pid": pid})).await? == false {
             return Ok(());

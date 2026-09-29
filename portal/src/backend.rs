@@ -316,7 +316,7 @@ impl Backend {
         handle: OwnedObjectPath,
         session_handle: OwnedObjectPath,
         app_id: String,
-        _parent_window: String,
+        parent_window: String,
         _options: Options,
         #[zbus(connection)] connection: &Connection,
         #[zbus(header)] header: Header<'_>,
@@ -366,7 +366,7 @@ impl Backend {
         }
         let result = tokio::select! {
             _ = cancel.wait() => Err(StartError::Cancelled),
-            result = tokio::time::timeout(Duration::from_secs(120), start_streams(if bar_controlled { "Ferese" } else { &app_id }, multiple, cursor)) => result.unwrap_or_else(|_| Err(StartError::Failed("Sharing request timed out".into()))),
+            result = tokio::time::timeout(Duration::from_secs(120), start_streams(if bar_controlled { "Ferese" } else { &app_id }, &parent_window, multiple, cursor)) => result.unwrap_or_else(|_| Err(StartError::Failed("Sharing request timed out".into()))),
         };
         let _ = connection
             .object_server()
@@ -384,15 +384,6 @@ impl Backend {
                     supervise(children, cancel).await;
                     backend.end(&connection, &path).await;
                 });
-                let streams: Vec<(u32, Options)> = streams
-                    .into_iter()
-                    .map(|ready| {
-                        (
-                            ready.node,
-                            HashMap::from([("source_type".into(), OwnedValue::from(1u32))]),
-                        )
-                    })
-                    .collect();
                 let mut reply = Options::new();
                 reply.insert(
                     "streams".into(),
@@ -492,9 +483,10 @@ async fn picker(prompt: &Prompt) -> Result<Child, String> {
 }
 async fn start_streams(
     app: &str,
+    parent: &str,
     multiple: bool,
     cursor: bool,
-) -> Result<(Vec<Child>, Vec<Ready>), StartError> {
+) -> Result<(Vec<Child>, Vec<(u32, Options)>), StartError> {
     let sources = tokio::task::spawn_blocking(|| {
         Capture::connect(&AtomicBool::new(false)).map(|capture| capture.sources())
     })
@@ -504,18 +496,18 @@ async fn start_streams(
         app: app.to_owned(),
         sources,
         multiple,
+        parent: parent.into(),
     };
-    let selection = picker(&prompt)
-        .await?
-        .wait_with_output()
-        .await
-        .map_err(|e| e.to_string())?;
+    let picker = picker(&prompt).await?;
+    let picker_pid = picker.id().ok_or("Missing picker process ID")?;
+    let selection = picker.wait_with_output().await.map_err(|e| e.to_string())?;
     if !selection.status.success() {
         return Err(StartError::Cancelled);
     }
     let names: Vec<String> =
         serde_json::from_slice(&selection.stdout).map_err(|_| StartError::Cancelled)?;
     let selected = validate_selection(&prompt.sources, &names, multiple)?;
+    crate::desktop::wait_for_surface_removal(picker_pid).await?;
     let mut children = Vec::new();
     let mut streams = Vec::new();
     for source in &selected {
@@ -545,17 +537,92 @@ async fn start_streams(
         if ready.node == u32::MAX {
             return Err("Invalid PipeWire node".into());
         }
-        streams.push(ready);
+        streams.push((source.name.clone(), ready));
         children.push(child);
     }
+    let outputs = crate::desktop::ipc("get-outputs", serde_json::json!({})).await?;
+    if children
+        .iter_mut()
+        .any(|child| !matches!(child.try_wait(), Ok(None)))
+    {
+        return Err("A selected stream ended during startup".into());
+    }
+    let streams = streams
+        .into_iter()
+        .map(|(name, ready)| {
+            monitor_metadata(&outputs, &name, &ready).map(|metadata| (ready.node, metadata))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok((children, streams))
 }
+
+fn monitor_metadata(
+    outputs: &serde_json::Value,
+    name: &str,
+    ready: &Ready,
+) -> Result<Options, String> {
+    let output = outputs
+        .as_array()
+        .and_then(|outputs| {
+            outputs
+                .iter()
+                .find(|output| output["name"].as_str() == Some(name))
+        })
+        .ok_or("Selected monitor is unavailable")?;
+    let integer = |key: &str| {
+        output[key]
+            .as_i64()
+            .and_then(|value| i32::try_from(value).ok())
+            .ok_or_else(|| format!("Invalid output {key}"))
+    };
+    let position = (integer("x")?, integer("y")?);
+    let size = (integer("width")?, integer("height")?);
+    if size.0 <= 0 || size.1 <= 0 || output["enabled"] != true {
+        return Err("Selected monitor is disabled".into());
+    }
+    let mode = &output["current_mode"];
+    let mut physical = (
+        mode["width"]
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or("Invalid physical output width")?,
+        mode["height"]
+            .as_u64()
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or("Invalid physical output height")?,
+    );
+    if matches!(
+        output["transform"].as_str(),
+        Some("rotate_90" | "rotate_270" | "flipped_90" | "flipped_270")
+    ) {
+        physical = (physical.1, physical.0);
+    }
+    if (ready.width, ready.height) != physical {
+        return Err("Selected monitor changed mode during startup".into());
+    }
+    Ok(HashMap::from([
+        ("source_type".into(), 1u32.into()),
+        (
+            "position".into(),
+            Value::from(position)
+                .try_to_owned()
+                .map_err(|error| error.to_string())?,
+        ),
+        (
+            "size".into(),
+            Value::from(size)
+                .try_to_owned()
+                .map_err(|error| error.to_string())?,
+        ),
+    ]))
+}
+
 fn validate_selection(
     sources: &[Source],
     names: &[String],
     multiple: bool,
 ) -> Result<Vec<Source>, String> {
-    if names.is_empty() || names.len() > 4 || (!multiple && names.len() != 1) {
+    if names.is_empty() || names.len() > sources.len() || (!multiple && names.len() != 1) {
         return Err("Invalid display selection".into());
     }
     let mut selected = Vec::new();
@@ -668,6 +735,62 @@ mod tests {
         }
         assert!(source_options(&HashMap::from([("cursor_mode".into(), 4u32.into())])).is_err());
     }
+    #[test]
+    fn monitor_metadata_uses_logical_fractional_scale_geometry() {
+        let outputs = serde_json::json!([{"name":"display","enabled":true,"x":-1440,"y":20,"width":2560,"height":1440,"scale":1.5,"current_mode":{"width":3840,"height":2160}}]);
+        let metadata = monitor_metadata(
+            &outputs,
+            "display",
+            &Ready {
+                node: 1,
+                width: 3840,
+                height: 2160,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            <(i32, i32)>::try_from(metadata["position"].try_clone().unwrap()).unwrap(),
+            (-1440, 20)
+        );
+        assert_eq!(
+            <(i32, i32)>::try_from(metadata["size"].try_clone().unwrap()).unwrap(),
+            (2560, 1440)
+        );
+        assert!(
+            monitor_metadata(
+                &outputs,
+                "missing",
+                &Ready {
+                    node: 1,
+                    width: 3840,
+                    height: 2160
+                }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn multiple_selection_can_include_more_than_four_displays() {
+        let sources = (0..6)
+            .map(|index| Source {
+                name: format!("display{index}"),
+                label: String::new(),
+                width: 100,
+                height: 100,
+                x: 0,
+                y: 0,
+                scale: 1,
+            })
+            .collect::<Vec<_>>();
+        let names = sources
+            .iter()
+            .map(|source| source.name.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(validate_selection(&sources, &names, true).unwrap().len(), 6);
+        assert!(validate_selection(&sources, &names, false).is_err());
+    }
+
     #[test]
     fn rejects_empty_unknown_duplicate_and_excess_selections() {
         let source = Source {

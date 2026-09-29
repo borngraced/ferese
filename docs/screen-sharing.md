@@ -26,7 +26,7 @@ may remain at the path shown in the error.
 
 Use a Wayland screen-sharing or recording source in your application. Ferese
 opens a display picker. Select a display and press **Share**. Nothing is selected
-by default. Applications that request multiple displays can share up to four.
+by default. Applications that request multiple displays can select multiple available displays.
 The picker uses your Ferese theme colors, font, and shell corner radius. Its
 background uses the same compositor material as popovers and authentication
 prompts: opaque in solid mode, or blurred and translucent using the shared
@@ -71,6 +71,8 @@ configuration is preserved during installation.
 
 - Monitor capture, one PipeWire stream per selected display, at up to 30 fps.
 - Hidden or embedded pointer, as requested by the application.
+- Logical stream position and size, including fractional output scales.
+- Wayland parent-window relationships for the consent picker.
 - Bounded frame storage and reusable shared-memory buffers.
 - Cancellation during selection, an explicit stop control, and process cleanup.
 - ScreenCast backend version 3, without persistent or automatic consent.

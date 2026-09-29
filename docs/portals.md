@@ -30,7 +30,7 @@ standard file, print and application dialogs. Install both backends.
   See [screen sharing](screen-sharing.md) for lifetime and recording details.
 
 Native request dialogs use Ferese's theme and are floating windows. Screenshot,
-PickColor, Wallpaper and USB consent dialogs use Wayland parent identifiers to establish
+PickColor, Wallpaper, USB and ScreenCast consent dialogs use Wayland parent identifiers to establish
 a transient relationship with the requesting window.
 Cancelling a request or losing the portal frontend terminates its pending helper.
 
@@ -50,7 +50,7 @@ Matching D-Bus signatures does not establish complete feature parity.
 | Settings | Native, including appearance change signals |
 | Screenshot | Native screen/area capture and PickColor; true window capture remains missing |
 | Wallpaper | Native desktop, lock-screen and combined targets |
-| ScreenCast | Native monitors; window sources, persistence and richer metadata remain missing |
+| ScreenCast | Native monitors with logical geometry metadata; window sources and persistence remain missing |
 | Access, Account, AppChooser, DynamicLauncher, FileChooser, Notification, Print | Delegated to GTK |
 | Background | Native application state, per-instance consent and XDG autostart |
 | Usb | Native consent; standard frontend handles enumeration and device descriptors |
