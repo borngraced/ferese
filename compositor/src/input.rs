@@ -11,12 +11,16 @@ use smithay::{
     input::{
         keyboard::{FilterResult, keysyms},
         pointer::{
-            AxisFrame, ButtonEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
-            GestureSwipeUpdateEvent, MotionEvent, PointerHandle, RelativeMotionEvent,
+            AxisFrame, ButtonEvent, Focus, GestureSwipeBeginEvent, GestureSwipeEndEvent,
+            GestureSwipeUpdateEvent, GrabStartData, MotionEvent, PointerHandle,
+            RelativeMotionEvent,
         },
         touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent},
     },
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
+    reexports::{
+        wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge as XdgResizeEdge,
+        wayland_server::protocol::wl_surface::WlSurface,
+    },
     utils::{Logical, Point, SERIAL_COUNTER, Serial},
     wayland::{
         keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat,
@@ -24,7 +28,14 @@ use smithay::{
     },
 };
 
-use crate::{Ferese, config::BindingAction};
+use crate::{
+    Ferese,
+    config::BindingAction,
+    grabs::{MoveSurfaceGrab, ResizeEdge, ResizeSurfaceGrab},
+};
+
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
 
 impl Ferese {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
@@ -336,6 +347,22 @@ impl Ferese {
                     return;
                 }
 
+                if event.state() == ButtonState::Pressed
+                    && self.start_floating_pointer_grab(&pointer, event.button_code(), serial)
+                {
+                    pointer.button(
+                        self,
+                        &ButtonEvent {
+                            button: event.button_code(),
+                            state: event.state(),
+                            serial,
+                            time: event.time() as u32,
+                        },
+                    );
+                    pointer.frame(self);
+                    return;
+                }
+
                 if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
                     self.focus_window_at(pointer.current_location(), serial, true);
                 }
@@ -455,6 +482,79 @@ impl Ferese {
             }
             _ => {}
         }
+    }
+
+    fn start_floating_pointer_grab(
+        &mut self,
+        pointer: &PointerHandle<Self>,
+        button: u32,
+        serial: Serial,
+    ) -> bool {
+        if self.session_lock.active
+            || pointer.is_grabbed()
+            || !matches!(button, BTN_LEFT | BTN_RIGHT)
+            || !self
+                .seat
+                .get_keyboard()
+                .is_some_and(|keyboard| keyboard.modifier_state().logo)
+        {
+            return false;
+        }
+
+        let location = pointer.current_location();
+        if self.layer_under(location).is_some() {
+            return false;
+        }
+        let Some(window) = self.window_under_visual(location) else {
+            return false;
+        };
+        if !self.is_floating_window(&window) {
+            return false;
+        }
+        let Some(rect) = self.visual_rect_for_window(&window) else {
+            return false;
+        };
+
+        self.focus_window_at(location, serial, true);
+        let start_data = GrabStartData {
+            focus: None,
+            button,
+            location,
+        };
+
+        if button == BTN_LEFT {
+            pointer.set_grab(
+                self,
+                MoveSurfaceGrab {
+                    start_data,
+                    window,
+                    initial_location: rect.loc,
+                    initial_size: rect.size,
+                    finished: false,
+                },
+                serial,
+                Focus::Clear,
+            );
+        } else {
+            let horizontal_right =
+                location.x >= f64::from(rect.loc.x) + f64::from(rect.size.w) / 2.0;
+            let vertical_bottom =
+                location.y >= f64::from(rect.loc.y) + f64::from(rect.size.h) / 2.0;
+            let edge = match (horizontal_right, vertical_bottom) {
+                (false, false) => XdgResizeEdge::TopLeft,
+                (true, false) => XdgResizeEdge::TopRight,
+                (false, true) => XdgResizeEdge::BottomLeft,
+                (true, true) => XdgResizeEdge::BottomRight,
+            };
+            pointer.set_grab(
+                self,
+                ResizeSurfaceGrab::new(start_data, window, ResizeEdge::from(edge), rect),
+                serial,
+                Focus::Clear,
+            );
+        }
+
+        true
     }
 
     fn absolute_event_position<I, E>(&self, event: &E) -> Option<Point<f64, Logical>>
