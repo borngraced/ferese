@@ -1536,21 +1536,46 @@ impl Ferese {
         self.relayout();
     }
 
-    pub fn relayout(&mut self) {
-        let mut protected = self
+    fn visible_workspace_ids(&self) -> HashSet<WorkspaceId> {
+        let mut visible = self
             .output_workspaces
             .connected_outputs()
             .filter_map(|output| self.output_workspaces.active_workspace(output))
             .collect::<HashSet<_>>();
-        protected.extend(
+        visible.extend(
             self.workspace_slides
                 .values()
                 .flat_map(|slide| slide.items.iter().map(|item| item.workspace)),
         );
-        for workspace in self.workspaces.prune_empty(&protected) {
+        visible
+    }
+
+    fn prune_empty_workspaces(&mut self, visible: &HashSet<WorkspaceId>) {
+        for workspace in self.workspaces.prune_empty(visible) {
             self.output_workspaces.forget_workspace(workspace);
             self.viewport_animations.remove(&workspace);
         }
+    }
+
+    fn unmap_invisible_windows(&mut self, visible: &HashSet<WindowId>) -> bool {
+        let mut changed = false;
+        for (window, id) in &self.window_ids {
+            if visible.contains(id) {
+                continue;
+            }
+            let was_mapped = self.space.element_location(window).is_some();
+            changed |= was_mapped;
+            if was_mapped && let Some(geometry) = self.window_geometry.get_mut(id) {
+                geometry.settle_presentation();
+            }
+            self.space.unmap_elem(window);
+        }
+        changed
+    }
+
+    pub fn relayout(&mut self) {
+        let visible_workspaces = self.visible_workspace_ids();
+        self.prune_empty_workspaces(&visible_workspaces);
         if self.session_lock.active {
             self.configure_lock_surfaces();
         }
@@ -1564,7 +1589,7 @@ impl Ferese {
         let constraints = self.window_constraints();
         let mut visible = HashSet::new();
         let mut placements = Vec::new();
-        let mut output_workspaces = Vec::new();
+        let mut visible_workspace_pairs = Vec::new();
 
         for output in outputs {
             let Some(output_id) = self.output_ids.get(&output).copied() else {
@@ -1573,17 +1598,17 @@ impl Ferese {
             let Some(active_workspace) = self.output_workspaces.active_workspace(output_id) else {
                 continue;
             };
-            output_workspaces.push((output.clone(), active_workspace));
+            visible_workspace_pairs.push((output.clone(), active_workspace));
             if let Some(slide) = self.workspace_slides.get(&output_id) {
                 for item in &slide.items {
                     if item.workspace != active_workspace {
-                        output_workspaces.push((output.clone(), item.workspace));
+                        visible_workspace_pairs.push((output.clone(), item.workspace));
                     }
                 }
             }
         }
 
-        for (output, workspace_id) in output_workspaces {
+        for (output, workspace_id) in visible_workspace_pairs {
             let Some(bounds) = self.output_bounds_for(&output) else {
                 continue;
             };
@@ -1709,20 +1734,7 @@ impl Ferese {
             }
         }
 
-        let mut space = std::mem::take(&mut self.space);
-        let mut layout_changed = false;
-        for (window, id) in &self.window_ids {
-            if visible.contains(id) {
-                continue;
-            }
-            let was_mapped = space.element_location(window).is_some();
-            layout_changed |= was_mapped;
-            if was_mapped && let Some(geometry) = self.window_geometry.get_mut(id) {
-                geometry.settle_presentation();
-            }
-            space.unmap_elem(window);
-        }
-        self.space = space;
+        let mut layout_changed = self.unmap_invisible_windows(&visible);
 
         let now = self.start_time.elapsed();
 
@@ -2165,34 +2177,21 @@ impl Ferese {
             for output in completed_slides {
                 self.workspace_slides.remove(&output);
             }
-            let mut visible = visible_workspaces;
-            visible.extend(
-                self.workspace_slides
-                    .values()
-                    .flat_map(|slide| slide.items.iter().map(|item| item.workspace)),
-            );
-            let mapped = self
-                .space
-                .elements()
-                .filter_map(|window| self.window_ids.get(window).map(|id| (window.clone(), *id)))
-                .collect::<Vec<_>>();
-            for (window, id) in mapped {
-                if self
-                    .workspaces
-                    .workspace_for_window(id)
-                    .is_some_and(|workspace| !visible.contains(&workspace))
-                {
-                    self.space.unmap_elem(&window);
-                    if let Some(geometry) = self.window_geometry.get_mut(&id) {
-                        geometry.settle_presentation();
-                    }
-                }
-            }
-            for workspace in self.workspaces.prune_empty(&visible) {
-                self.output_workspaces.forget_workspace(workspace);
-                self.viewport_animations.remove(&workspace);
-            }
+            let visible = self.visible_workspace_ids();
+            let visible_windows = self
+                .window_ids
+                .values()
+                .copied()
+                .filter(|id| {
+                    self.workspaces
+                        .workspace_for_window(*id)
+                        .is_none_or(|workspace| visible.contains(&workspace))
+                })
+                .collect::<HashSet<_>>();
+            self.unmap_invisible_windows(&visible_windows);
+            self.prune_empty_workspaces(&visible);
             self.send_shell_snapshots();
+            active_animation = true;
         }
         active_animation |=
             self.overview
