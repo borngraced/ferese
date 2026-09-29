@@ -24,6 +24,11 @@ standard file, print and application dialogs. Install both backends.
   current frontends manage those files themselves. Direct sessions launch standard
   XDG autostart entries after importing the display environment. User overrides,
   Hidden, OnlyShowIn, NotShowIn and TryExec are respected; previews skip autostart.
+- **Lockdown:** standard printing, save-to-disk, application-handler, location,
+  camera, microphone and sound-output restrictions. All default to unrestricted.
+  Configure boolean `disable-*` fields under `portals { lockdown { ... } }`;
+  changes are signalled to the frontend. Invalid policy types retain the current
+  policy. Only the portal frontend may write backend policy properties.
 - **USB:** native confirmation showing device vendor/model and requested read-only
   or read/write access. The portal frontend handles device enumeration and opening.
 - **ScreenCast:** monitor sharing with a native picker and PipeWire streams.
@@ -58,7 +63,7 @@ Matching D-Bus signatures does not establish complete feature parity.
 | RemoteDesktop | Missing authorized input injection and EIS transport |
 | Clipboard | Missing remote-session clipboard transfer |
 | InputCapture | Missing zones, pointer barriers and EIS transport |
-| Lockdown | GTK availability depends on the installed build; no native policy provider |
+| Lockdown | Native seven-property policy provider with persisted configuration and change signals |
 | Inhibit | GTK's GNOME-session/ScreenSaver integration does not provide complete Ferese session inhibition |
 
 The frontend supplies additional APIs such as OpenURI, network monitoring,

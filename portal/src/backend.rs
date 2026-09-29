@@ -26,6 +26,9 @@ use zbus::{
     zvariant::{OwnedObjectPath, OwnedValue, Value},
 };
 pub(crate) type Options = HashMap<String, OwnedValue>;
+
+pub(crate) static CONFIG_TRANSACTION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Debug)]
 enum StartError {
     Cancelled,
@@ -154,7 +157,10 @@ pub(crate) async fn authorize(
         .sender()
         .ok_or_else(|| zbus::fdo::Error::AccessDenied("Missing caller".into()))?;
     let dbus = zbus::fdo::DBusProxy::new(connection).await?;
-    let owner = dbus.get_name_owner(FRONTEND.try_into().unwrap()).await?;
+    let owner = dbus
+        .get_name_owner(FRONTEND.try_into().unwrap())
+        .await
+        .map_err(|_| zbus::fdo::Error::AccessDenied("Desktop portal is unavailable".into()))?;
     if sender.as_str() != owner.as_str() {
         return Err(zbus::fdo::Error::AccessDenied(
             "Use the desktop portal".into(),
@@ -661,6 +667,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let settings = crate::settings::Settings::new();
     let requests = crate::desktop::Requests::default();
     let background = crate::permissions::Background::new(requests.clone());
+    let lockdown = crate::lockdown::Lockdown::new();
     let connection = zbus::connection::Builder::session()?
         .name("org.freedesktop.impl.portal.desktop.ferese")?
         .serve_at(PATH, backend.clone())?
@@ -669,6 +676,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .serve_at(PATH, crate::desktop::Wallpaper(requests.clone()))?
         .serve_at(PATH, crate::permissions::Usb(requests.clone()))?
         .serve_at(PATH, background.clone())?
+        .serve_at(PATH, lockdown.clone())?
         .serve_at(
             "/org/ferese/ScreenRecorder",
             RecorderControl(backend.clone()),
@@ -677,6 +685,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     tokio::spawn(settings.watch(connection.clone()));
     tokio::spawn(background.watch(connection.clone()));
+    tokio::spawn(lockdown.watch(connection.clone()));
     // Frontend death must revoke every stream, even if Session.Close never arrives.
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;

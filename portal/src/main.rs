@@ -2,6 +2,7 @@ mod backend;
 mod capture;
 mod consent;
 mod desktop;
+mod lockdown;
 mod parent;
 mod permissions;
 mod picker;

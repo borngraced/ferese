@@ -580,6 +580,9 @@ fn prepare_wallpaper(input: &Path, cancel: &Cancel) -> Result<tempfile::NamedTem
 }
 
 fn update_wallpaper(image: &Path, target: &str) -> Result<(), String> {
+    let _transaction = crate::backend::CONFIG_TRANSACTION
+        .lock()
+        .map_err(|_| "Configuration transaction failed")?;
     let path = ferese_config::config_path().ok_or("Missing config path")?;
     edit_wallpaper(&path, image, target)
 }

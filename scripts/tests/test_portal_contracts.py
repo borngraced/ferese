@@ -54,7 +54,7 @@ def private_bus_checks():
                         raise AssertionError((root / "backend.log").read_text())
                     time.sleep(0.05)
             node = ET.fromstring(xml)
-            for name in ("ScreenCast", "Settings", "Screenshot", "Wallpaper", "Background", "Usb"):
+            for name in ("ScreenCast", "Settings", "Screenshot", "Wallpaper", "Background", "Usb", "Lockdown"):
                 interface = node.find(f"interface[@name='org.freedesktop.impl.portal.{name}']")
                 assert interface is not None, name
                 expected = ET.parse(f"/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.{name}.xml").getroot().find("interface")
@@ -65,6 +65,7 @@ def private_bus_checks():
                     assert actual is not None, (name, member.tag, member.attrib["name"])
                     if member.tag == "property":
                         assert actual.attrib["type"] == member.attrib["type"]
+                        assert actual.attrib["access"] == member.attrib["access"]
                     else:
                         def types(element, direction):
                             return [arg.attrib["type"] for arg in element.findall("arg")
@@ -89,12 +90,44 @@ def private_bus_checks():
                 raise AssertionError("Untrusted backend caller succeeded")
             except GLib.Error:
                 pass
+            original_config = config.read_text()
+            try:
+                call("org.freedesktop.DBus.Properties", "Set", GLib.Variant("(ssv)", ("org.freedesktop.impl.portal.Lockdown", "disable-printing", GLib.Variant("b", True))))
+                raise AssertionError("Untrusted policy writer succeeded")
+            except GLib.Error as error:
+                assert "AccessDenied" in str(error), error
+            printing, = call("org.freedesktop.DBus.Properties", "Get", GLib.Variant("(ss)", ("org.freedesktop.impl.portal.Lockdown", "disable-printing")), "(v)")
+            assert printing is False and config.read_text() == original_config
             request_name = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "RequestName",
                                          GLib.Variant("(su)", ("org.freedesktop.portal.Desktop", 0)), GLib.VariantType.new("(u)"),
                                          Gio.DBusCallFlags.NONE, 5000, None).unpack()[0]
             assert request_name == 1
             response, values = call("org.freedesktop.impl.portal.Screenshot", "Screenshot", params, "(ua{sv})")
             assert response == 2 and values == {}
+
+            call("org.freedesktop.DBus.Properties", "Set", GLib.Variant("(ssv)", ("org.freedesktop.impl.portal.Lockdown", "disable-printing", GLib.Variant("b", True))))
+            printing, = call("org.freedesktop.DBus.Properties", "Get", GLib.Variant("(ss)", ("org.freedesktop.impl.portal.Lockdown", "disable-printing")), "(v)")
+            assert printing is True
+            assert "disable-printing #true" in config.read_text()
+            call("org.freedesktop.DBus.Properties", "Set", GLib.Variant("(ssv)", ("org.freedesktop.impl.portal.Lockdown", "disable-printing", GLib.Variant("b", False))))
+
+            policy_signals = []
+            subscription = bus.signal_subscribe(NAME, "org.freedesktop.DBus.Properties", "PropertiesChanged", PATH,
+                                                None, Gio.DBusSignalFlags.NONE, lambda *args: policy_signals.append(args[-1].unpack()))
+            valid_policy = config.read_text().replace("disable-printing #false", "disable-printing #true")
+            config.write_text(valid_policy)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and not any(s[0] == "org.freedesktop.impl.portal.Lockdown" and s[1].get("disable-printing") is True for s in policy_signals):
+                GLib.MainContext.default().iteration(False)
+                time.sleep(0.02)
+            assert any(s[0] == "org.freedesktop.impl.portal.Lockdown" and s[1].get("disable-printing") is True for s in policy_signals), policy_signals
+            for invalid_policy in ('portals { lockdown { disable-printing "bad"; }; }', 'portals { lockdown "bad"; }', 'portals #false'):
+                config.write_text(original_config + "\n" + invalid_policy)
+                time.sleep(1.2)
+                printing, = call("org.freedesktop.DBus.Properties", "Get", GLib.Variant("(ss)", ("org.freedesktop.impl.portal.Lockdown", "disable-printing")), "(v)")
+                assert printing is True, invalid_policy
+            config.write_text(valid_policy)
+            bus.signal_unsubscribe(subscription)
 
             usb_params = GLib.Variant("(oss a(sa{sv}a{sv}) a{sv})".replace(" ", ""),
                 (PATH + "/request/test/usb", "", "org.test.App", [], {}))
