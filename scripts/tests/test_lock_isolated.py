@@ -1,6 +1,6 @@
 """Opt-in lock protocol smoke test. Opens a temporary nested compositor.
 Run: FERESE_TEST_LOCK=1 python3 scripts/tests/test_lock_isolated.py
-Requires release binaries, bwrap and grim. Host PAM is never modified.
+Requires release binaries and bwrap. Host PAM is never modified.
 """
 import os
 import unittest
@@ -23,6 +23,8 @@ class NativeLockTest(unittest.TestCase):
         env=dict(os.environ,XDG_RUNTIME_DIR=str(runtime),XDG_CONFIG_HOME=str(root/'config'),WAYLAND_DISPLAY=host_display,FERESE_ENABLE_SCREENCOPY='1')
         log=(root/'compositor.log').open('w')
         compositor=subprocess.Popen(['target/release/ferese','--backend','nested'],env=env,stdout=log,stderr=subprocess.STDOUT)
+        ctl=pathlib.Path('target/release/feresectl')
+        assert ctl.is_file(), f'missing {ctl}; build it with cargo build --release -p feresectl'
         locker=None
         locker_log=(root/'locker.log').open('w')
         try:
@@ -32,19 +34,25 @@ class NativeLockTest(unittest.TestCase):
                 if sockets:break
                 time.sleep(.1)
             childenv=dict(env,WAYLAND_DISPLAY=str(sockets[0]),FERESE_LOCK_READY='1')
+            def capture(destination, timeout=10):
+                with open(destination,'wb') as png:
+                    return subprocess.run([str(ctl),'screenshot'],env=childenv,stdout=png,stderr=subprocess.PIPE,timeout=timeout)
             time.sleep(.6)
-            subprocess.run(['grim',str(root/'unlocked.png')],env=childenv,check=True,timeout=10,capture_output=True)
+            result=capture(root/'unlocked.png')
+            assert result.returncode == 0, f'Capture failed while unlocked: {result.stderr.decode()}'
+            assert (root/'unlocked.png').stat().st_size > 0, 'Capture produced an empty file'
+            print('Native capture succeeded while unlocked',flush=True)
             locker=subprocess.Popen(['bwrap','--bind','/','/','--dev-bind','/dev','/dev','--ro-bind',str(pam),'/etc/pam.d','--unshare-user','--','target/release/ferese-lock'],env=childenv,stdout=subprocess.DEVNULL,stderr=locker_log,start_new_session=True)
             assert locker.wait(timeout=20) == 0, (root/'locker.log').read_text()
             print('Native locker received compositor confirmation',flush=True)
-            result=subprocess.run(['grim',str(root/'locked.png')],env=childenv,timeout=10,capture_output=True)
+            result=capture(root/'locked.png')
             assert result.returncode != 0, 'Capture unexpectedly succeeded during lock'
-            print('Screencopy denied while native locker is running',flush=True)
+            print('Capture denied while native locker is running',flush=True)
             os.killpg(locker.pid, signal.SIGKILL)
             time.sleep(.3)
-            result=subprocess.run(['grim',str(root/'after-crash.png')],env=childenv,timeout=10,capture_output=True)
+            result=capture(root/'after-crash.png')
             assert result.returncode != 0, 'Capture unexpectedly succeeded after locker crash'
-            print('Screencopy remains denied after locker crash',flush=True)
+            print('Capture remains denied after locker crash',flush=True)
         finally:
             if locker is not None:
                 try: os.killpg(locker.pid, signal.SIGKILL)

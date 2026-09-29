@@ -11,18 +11,27 @@ use std::sync::{
     mpsc::{SyncSender, sync_channel},
 };
 use std::thread;
+use std::time::Duration;
 
 use ferese_core::LayoutMode;
 use ferese_ipc::{Request, Response, VERSION, read_frame, write_frame};
 use ferese_layout::Direction;
 use serde_json::{Value, json};
-use smithay::reexports::calloop::{EventLoop, LoopSignal, channel};
+use smithay::reexports::calloop::{EventLoop, LoopSignal, channel, timer};
 use smithay::utils::Transform;
 
+use crate::handlers::screencopy;
+use crate::handlers::screenshot::{
+    Action, Geometry, OutputLayout, PartOutcome, PartSender, parse_geometry, plan,
+};
+use crate::handlers::screenshot_worker::{self, Encoded, Job, Worker};
 use crate::{Ferese, config::OutputTransform};
+use smithay::output::Output;
 
 const REQUEST_QUEUE_CAPACITY: usize = 128;
 const MAX_CONNECTIONS: usize = 64;
+const RESULT_QUEUE_CAPACITY: usize = 8;
+const SWEEP_INTERVAL: Duration = crate::handlers::screenshot_worker::SWEEP_INTERVAL;
 
 #[derive(Debug)]
 struct IpcCall {
@@ -61,7 +70,7 @@ impl Drop for IpcSocketGuard {
 
 pub(crate) fn init(
     event_loop: &mut EventLoop<'static, Ferese>,
-) -> Result<IpcSocketGuard, Box<dyn std::error::Error>> {
+) -> Result<ScreenshotInit, Box<dyn std::error::Error>> {
     let path = socket_path()?;
     prepare_parent(&path)?;
     let listener = bind_listener(&path)?;
@@ -79,18 +88,70 @@ pub(crate) fn init(
         .handle()
         .insert_source(receiver, |event, _, state| {
             if let channel::Event::Msg(call) = event {
-                let response = state.handle_ipc_request(call.request);
-                let _ = call.response.send(response);
+                if call.request.command == "screenshot" {
+                    // Deferred: this path answers the caller itself, exactly
+                    // once, whenever the request finishes or is terminated.
+                    state.start_screenshot(call.request, call.response);
+                } else {
+                    let response = state.handle_ipc_request(call.request);
+                    let _ = call.response.send(response);
+                }
             }
         })?;
+
+    // Screenshot readbacks publish parts here, so the loop wakes as soon as a
+    // readback lands, whichever backend produced it.
+    let (parts, part_events) = channel::channel::<PartOutcome>();
+    event_loop
+        .handle()
+        .insert_source(part_events, |event, _, state| {
+            if let channel::Event::Msg(outcome) = event {
+                state.on_screenshot_part(outcome);
+            }
+        })?;
+
+    let (encoded, encoded_events) = channel::sync_channel::<Encoded>(RESULT_QUEUE_CAPACITY);
+    event_loop
+        .handle()
+        .insert_source(encoded_events, |event, _, state| {
+            if let channel::Event::Msg(result) = event {
+                state.on_screenshot_encoded(result);
+            }
+        })?;
+    let worker = Worker::spawn(encoded);
 
     let signal = event_loop.get_signal();
     thread::Builder::new()
         .name("ferese-ipc-listener".to_owned())
         .spawn(move || accept_connections(listener, sender, signal))?;
 
+    // A client that dies between receiving a screenshot path and unlinking it
+    // leaves the file behind, so staged files are reclaimed at startup and then
+    // periodically. The TTL keeps this from disturbing a live request.
+    screenshot_worker::sweep_stale_files();
+    event_loop
+        .handle()
+        .insert_source(timer::Timer::from_duration(SWEEP_INTERVAL), |_, _, _| {
+            screenshot_worker::sweep_stale_files();
+            timer::TimeoutAction::ToDuration(SWEEP_INTERVAL)
+        })?;
+
     tracing::info!(path = %path.display(), "Ferese IPC is accepting connections");
-    Ok(guard)
+
+    let Some(worker) = worker else {
+        return Err("Could not start the screenshot worker".into());
+    };
+    Ok(ScreenshotInit {
+        parts,
+        worker,
+        _guard: guard,
+    })
+}
+
+pub(crate) struct ScreenshotInit {
+    pub(crate) parts: PartSender,
+    pub(crate) worker: Worker,
+    pub(crate) _guard: IpcSocketGuard,
 }
 
 fn accept_connections(
@@ -261,6 +322,152 @@ impl Ferese {
         Ok(json!({}))
     }
 
+    // Screenshot replies are deferred: this either answers the caller now, or
+    // hands the reply to the coordinator, which answers exactly once.
+    pub(crate) fn start_screenshot(&mut self, request: Request, response: SyncSender<Response>) {
+        // A macro rather than a closure: the message may be a borrowed str or an
+        // owned String, and Response::error already accepts either.
+        macro_rules! reject {
+            ($code:expr, $message:expr) => {
+                let _ = response.try_send(Response::error(request.id, $code, $message));
+            };
+        }
+        if self.session_lock.active {
+            reject!("session_locked", "IPC unavailable while session is locked");
+            return;
+        }
+        if !screencopy::capture_allowed() {
+            reject!(
+                "capture_disabled",
+                "Screen capture is disabled for this session; start it with \
+                 FERESE_ENABLE_SCREENCOPY=1 to enable screenshots"
+            );
+            return;
+        }
+        if let Err(error) = validate_request(&request) {
+            reject!(error.code, error.message);
+            return;
+        }
+        let geometry = match geometry_arg(&request.args) {
+            Ok(geometry) => geometry,
+            Err(message) => {
+                reject!("invalid_argument", &message);
+                return;
+            }
+        };
+        if self.screenshot_parts.is_none() || self.screenshot_worker.is_none() {
+            reject!("unavailable", "Screenshot capture is not available");
+            return;
+        }
+        let Some(parts) = self.screenshot_parts.clone() else {
+            reject!("unavailable", "Screenshot capture is not available");
+            return;
+        };
+
+        // Snapshot the layout, so a later move, rescale, or transform cannot
+        // change what this request captures.
+        let targets: Vec<(Output, OutputLayout)> = self
+            .space
+            .outputs()
+            .filter_map(|output| {
+                let mode = output.current_mode()?;
+                let geometry = self.space.output_geometry(output)?;
+                Some((
+                    output.clone(),
+                    OutputLayout {
+                        mode_size: mode.size,
+                        scale: output.current_scale().fractional_scale(),
+                        transform: output.current_transform(),
+                        location: geometry.loc,
+                    },
+                ))
+            })
+            .collect();
+        let layouts: Vec<OutputLayout> = targets.iter().map(|(_, layout)| layout.clone()).collect();
+        let planned = match plan(&geometry, &layouts) {
+            Ok(planned) => planned,
+            Err(message) => {
+                reject!("invalid_request", &message);
+                return;
+            }
+        };
+        let specs = planned
+            .iter()
+            .map(|part| part.spec(&layouts[part.index]))
+            .collect();
+
+        // admit stores the reply only on success, so a clone survives the
+        // rejection path and every caller is answered exactly once.
+        let fallback = response.clone();
+        let id = match self.screenshot.admit(request.id, response, specs) {
+            Ok(id) => id,
+            Err(message) => {
+                let _ =
+                    fallback.try_send(Response::error(request.id, "screenshot_rejected", message));
+                return;
+            }
+        };
+
+        for (position, part) in planned.iter().enumerate() {
+            let (output, _) = &targets[part.index];
+            self.pending_screencopies
+                .push(crate::handlers::screencopy::PendingScreencopy::owned(
+                    id,
+                    position,
+                    parts.clone(),
+                    output.clone(),
+                    part.buffer,
+                ));
+        }
+
+        // The nested backend redraws on its refresh timer; this drives the
+        // direct backend immediately and is a no-op otherwise.
+        crate::backends::direct::render_all(self);
+    }
+
+    pub(crate) fn on_screenshot_part(&mut self, outcome: PartOutcome) {
+        let action = self
+            .screenshot
+            .on_part(outcome.request, outcome.part, outcome.result);
+        self.apply_screenshot_action(action);
+    }
+
+    pub(crate) fn on_screenshot_encoded(&mut self, result: Encoded) {
+        let action = self.screenshot.on_encoded(result.request, result.result);
+        self.apply_screenshot_action(action);
+    }
+
+    fn apply_screenshot_action(&mut self, action: Action) {
+        match action {
+            Action::None => {}
+            Action::Encode { request, frames } => {
+                let submitted = self
+                    .screenshot_worker
+                    .as_ref()
+                    .is_some_and(|worker| worker.submit(Job { request, frames }).is_ok());
+                if !submitted {
+                    self.screenshot
+                        .reject(request, "Screenshot encoding queue is full");
+                }
+            }
+            Action::Delivered(path) => {
+                // The caller opens and unlinks it; the path was already sent.
+                tracing::debug!(path = %path.display(), "delivered a screenshot");
+            }
+            Action::DiscardFile(path) => {
+                if let Err(error) = fs::remove_file(&path)
+                    && error.kind() != io::ErrorKind::NotFound
+                {
+                    tracing::debug!(
+                        %error,
+                        path = %path.display(),
+                        "failed to remove a staged screenshot"
+                    );
+                }
+            }
+        }
+    }
+
     fn focused_window_json(&self) -> Value {
         self.focused_window
             .map(|window| json!({ "id": window.0 }))
@@ -410,6 +617,18 @@ impl Ferese {
             .collect::<Vec<_>>();
         outputs.sort_by_key(|output| output["id"].as_u64());
         Value::Array(outputs)
+    }
+}
+
+fn geometry_arg(args: &Value) -> Result<Geometry, String> {
+    match args.get("geometry") {
+        None | Some(Value::Null) => Ok(Geometry::All),
+        Some(value) => {
+            let text = value
+                .as_str()
+                .ok_or("geometry must be a string like \"x,y WxH\"")?;
+            parse_geometry(text)
+        }
     }
 }
 

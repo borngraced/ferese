@@ -174,6 +174,12 @@ pub struct Ferese {
     _ipc_socket: Option<crate::ipc::IpcSocketGuard>,
     pending_dmabuf_imports: Vec<(Dmabuf, ImportNotifier)>,
     pub(crate) pending_screencopies: Vec<crate::handlers::screencopy::PendingScreencopy>,
+    // Screenshot requests outlive the readback that filled them: the
+    // coordinator owns them until encoding finishes and the caller is
+    // answered, or the request is terminated.
+    pub(crate) screenshot: crate::handlers::screenshot::Coordinator,
+    pub(crate) screenshot_parts: Option<crate::handlers::screenshot::PartSender>,
+    pub(crate) screenshot_worker: Option<crate::handlers::screenshot_worker::Worker>,
     pub(crate) shell_resources: Vec<
         smithay::reexports::wayland_server::Weak<
             ferese_protocols::shell::v1::server::ferese_shell_v1::FereseShellV1,
@@ -385,6 +391,9 @@ impl Ferese {
             _ipc_socket: None,
             pending_dmabuf_imports: Vec::new(),
             pending_screencopies: Vec::new(),
+            screenshot: crate::handlers::screenshot::Coordinator::new(),
+            screenshot_parts: None,
+            screenshot_worker: None,
             shell_resources: Vec::new(),
             shell_snapshot_serial: 0,
             last_shell_snapshot: None,
@@ -422,7 +431,10 @@ impl Ferese {
             xdg_shell_state,
             xdg_toplevel_icon_manager,
         };
-        state._ipc_socket = Some(crate::ipc::init(event_loop)?);
+        let screenshot = crate::ipc::init(event_loop)?;
+        state.screenshot_parts = Some(screenshot.parts);
+        state.screenshot_worker = Some(screenshot.worker);
+        state._ipc_socket = Some(screenshot._guard);
         Ok(state)
     }
 
@@ -572,7 +584,7 @@ impl Ferese {
         self.overview_scrims.remove(&output_id);
         self.pending_screencopies.retain(|capture| {
             if capture.output == *output {
-                capture.frame.failed();
+                capture.fail();
                 false
             } else {
                 true

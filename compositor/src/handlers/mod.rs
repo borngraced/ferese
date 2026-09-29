@@ -3,6 +3,8 @@ mod compositor;
 mod input_method;
 mod layer_shell;
 pub(crate) mod screencopy;
+pub(crate) mod screenshot;
+pub(crate) mod screenshot_worker;
 mod xdg_shell;
 
 use smithay::{

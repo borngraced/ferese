@@ -1,7 +1,10 @@
 """Opt-in rendered regression test; opens only a temporary nested compositor.
 FERESE_TEST_FLOATING=1 FERESE_TEST_BINARY=target/debug/ferese python3 scripts/tests/test_floating_isolated.py
-Requires cc, pkg-config, wayland-scanner, wayland-protocols, grim, and Pillow.
+Requires cc, pkg-config, wayland-scanner, wayland-protocols, and Pillow.
+The compositor and feresectl must be built; set FERESE_TEST_BINARY to point at
+the compositor and FERESE_TEST_CTL at feresectl when they are not siblings.
 """
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -42,6 +45,9 @@ class FloatingSizeTest(unittest.TestCase):
             env = dict(os.environ, XDG_RUNTIME_DIR=str(runtime), XDG_CONFIG_HOME=str(root / "config"),
                        WAYLAND_DISPLAY=display, FERESE_ENABLE_SCREENCOPY="1")
             binary = repo / os.environ.get("FERESE_TEST_BINARY", "target/debug/ferese")
+            ctl = repo / os.environ.get("FERESE_TEST_CTL", str(binary.parent / "feresectl"))
+            if not ctl.is_file():
+                self.fail(f"missing {ctl}; build it with cargo build -p feresectl")
             with (root / "compositor.log").open("w") as log:
                 process = subprocess.Popen([str(binary), "--backend", "nested", "--", str(root / "client")],
                                            env=env, stdout=log, stderr=subprocess.STDOUT)
@@ -56,8 +62,23 @@ class FloatingSizeTest(unittest.TestCase):
                     self.assertTrue(sockets, "nested Wayland socket did not appear")
                     childenv = dict(env, WAYLAND_DISPLAY=str(sockets[0]))
                     time.sleep(2)
+                    listed = subprocess.run([str(ctl), "get-outputs"], env=childenv,
+                                            check=True, capture_output=True, timeout=10, text=True)
+                    enabled = [o for o in json.loads(listed.stdout) if o.get("enabled")]
+                    if not enabled:
+                        self.fail("compositor reported no enabled output to capture")
+                    first = enabled[0]
+                    if any(first.get(k) is None for k in ("x", "y", "width", "height")):
+                        self.fail(f"enabled output {first.get('name')!r} has no logical geometry")
+                    geometry = "%d,%d %dx%d" % (first["x"], first["y"], first["width"], first["height"])
                     screenshot = root / "frame.png"
-                    subprocess.run(["grim", "-s", "1", str(screenshot)], env=childenv, check=True, timeout=15)
+                    with screenshot.open("wb") as png:
+                        captured = subprocess.run([str(ctl), "screenshot", "-g", geometry],
+                                                  env=childenv, stdout=png, stderr=subprocess.PIPE, timeout=15)
+                    if captured.returncode != 0:
+                        self.fail(f"capture of {geometry} failed: {captured.stderr.decode()}")
+                    if screenshot.stat().st_size == 0:
+                        self.fail(f"capture of {geometry} produced an empty file")
                     with Image.open(screenshot) as frame:
                         rgb = frame.convert("RGB")
                         red, green, blue = rgb.split()

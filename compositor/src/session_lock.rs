@@ -125,7 +125,16 @@ impl SessionLockHandler for Ferese {
         self.session_lock.owner = Some(confirmation.ext_session_lock().clone());
         self.session_lock.confirmation = Some(confirmation);
         for capture in self.pending_screencopies.drain(..) {
-            capture.frame.failed();
+            capture.fail();
+        }
+        // Draining only covers requests that had not read back yet. One that is
+        // already encoding has no pending capture left, so it is terminated
+        // here and its staged file is discarded when the worker reports back.
+        for request in self.screenshot.terminate_all() {
+            tracing::debug!(
+                request,
+                "cancelled an in-flight screenshot for the session lock"
+            );
         }
         self.set_overview_active(false);
         let serial = SERIAL_COUNTER.next_serial();

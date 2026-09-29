@@ -294,16 +294,26 @@ Super+M layout; Super+Shift+Space floating; Super+Tab overview;
 Super+Shift+S area screenshot; Print Screen whole-screen screenshot;
 Super+Shift+E immediate logout.
 
+Hold Super and drag a floating window with the left mouse button to move it.
+Hold Super and drag with the right mouse button to resize it from the nearest
+corner. These work even when an app has no title bar or resize border.
+
 The screenshot shortcut runs `ferese-screenshot`: drag to select an area, or
 press Escape to cancel. Captures open in Satty for annotation. Press Enter to
 save the edited PNG under your Pictures directory in `Screenshots` and copy it
-to the clipboard; Escape discards the capture. It requires `grim`, `slurp`,
-`satty`, and `wl-copy` (from `wl-clipboard`). Override the `screenshot` command
-to use another screenshot tool.
-Print Screen runs `ferese-screenshot --full` and captures all enabled outputs
-without a selector. Fn+PrtSc works when the keyboard emits the Print Screen key;
-Fn is handled by the keyboard firmware. Override `screenshot-full` to customize
-this command. Both modes open Satty with the same save and copy workflow.
+to the clipboard; Escape discards the capture. It requires `slurp`, `satty`, and
+`wl-copy` (from `wl-clipboard`); the capture itself is done by the compositor
+through `feresectl screenshot`. Override the `screenshot` command to use another
+screenshot tool.
+Print Screen runs `ferese-screenshot --full` and captures the active monitor
+without a selector, falling back to the sole enabled output when focus is
+unavailable. It never silently captures every output. Fn+PrtSc works when the
+keyboard emits the Print Screen key; Fn is handled by the keyboard firmware.
+Override `screenshot-full` to customize this command. Both modes open Satty with
+the same save and copy workflow.
+
+`ferese-screenshot --all` captures every enabled output as one image.
+
 
 ## Window rules
 
@@ -406,7 +416,11 @@ These are launch-time environment switches, not KDL keys. Enable only for
 trusted clients: `FERESE_ENABLE_INPUT_METHOD=1`,
 `FERESE_ENABLE_SHORTCUT_INHIBIT=1`, `FERESE_ENABLE_SCREENCOPY=1`.
 The installed session launcher enables screencopy for screenshots unless
-`FERESE_ENABLE_SCREENCOPY=0` is explicitly set in its environment.
+`FERESE_ENABLE_SCREENCOPY=0` is explicitly set in its environment. Setting it
+to `0` disables every path that can read the screen, including the built-in
+screenshot command, not just the Wayland protocol. A session launched by hand
+rather than through `ferese-session` needs `FERESE_ENABLE_SCREENCOPY=1` in its
+environment for screenshots to work.
 Text input is available by default; Ctrl+Alt+Escape releases an active shortcut
 inhibitor. Use `feresectl --help` for runtime control commands.
 

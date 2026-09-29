@@ -1,7 +1,12 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use super::screenshot::{CaptureBuffer, PartOutcome, PartSender};
 use smithay::{
-    backend::{allocator::Fourcc, renderer::ExportMem},
+    backend::{
+        allocator::Fourcc,
+        renderer::{ExportMem, TextureMapping},
+    },
     output::Output,
     reexports::{
         wayland_protocols_wlr::screencopy::v1::server::{
@@ -31,18 +36,120 @@ pub(crate) struct FrameData {
 
 #[derive(Debug)]
 pub(crate) struct PendingScreencopy {
-    pub(crate) frame: ZwlrScreencopyFrameV1,
-    buffer: WlBuffer,
+    sink: CaptureSink,
     pub(crate) output: Output,
     region: Rectangle<i32, Buffer>,
     overlay_cursor: bool,
     with_damage: bool,
 }
 
-pub(crate) fn init_global(display: &DisplayHandle) {
-    let enabled = std::env::var_os("FERESE_ENABLE_SCREENCOPY").is_some_and(|value| value == "1");
+#[derive(Debug)]
+pub(crate) enum CaptureSink {
+    Shm {
+        frame: ZwlrScreencopyFrameV1,
+        buffer: WlBuffer,
+    },
+    Owned {
+        request: u64,
+        part: usize,
+        complete: PartSender,
+        published: AtomicBool,
+    },
+}
 
-    if enabled {
+impl CaptureSink {
+    pub(crate) fn owned(request: u64, part: usize, complete: PartSender) -> Self {
+        Self::Owned {
+            request,
+            part,
+            complete,
+            published: AtomicBool::new(false),
+        }
+    }
+
+    // Every part reaches exactly one terminal state: pixels or an error. A
+    // cancelled part is still answered, otherwise its request would wait
+    // forever for a part that can no longer arrive.
+    pub(crate) fn fail(&self) {
+        match self {
+            CaptureSink::Shm { frame, .. } => frame.failed(),
+            CaptureSink::Owned {
+                request,
+                part,
+                complete,
+                published,
+            } => {
+                if !published.swap(true, Ordering::AcqRel) {
+                    let _ = complete.send(PartOutcome {
+                        request: *request,
+                        part: *part,
+                        result: Err("Screenshot part failed".to_string()),
+                    });
+                }
+            }
+        }
+    }
+
+    // One-shot: a part publishes at most once, so a second completion can
+    // never overwrite pixels that were already handed off.
+    pub(crate) fn publish(&self, buffer: CaptureBuffer) -> bool {
+        let CaptureSink::Owned {
+            request,
+            part,
+            complete,
+            published,
+        } = self
+        else {
+            return false;
+        };
+        if published.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        complete
+            .send(PartOutcome {
+                request: *request,
+                part: *part,
+                result: Ok(buffer),
+            })
+            .is_ok()
+    }
+}
+
+impl PendingScreencopy {
+    pub(crate) fn owned(
+        request: u64,
+        part: usize,
+        complete: PartSender,
+        output: Output,
+        region: Rectangle<i32, Buffer>,
+    ) -> Self {
+        Self {
+            sink: CaptureSink::owned(request, part, complete),
+            output,
+            region,
+            // The compositor-owned path deliberately omits the cursor.
+            overlay_cursor: false,
+            with_damage: false,
+        }
+    }
+
+    pub(crate) fn fail(&self) {
+        self.sink.fail();
+    }
+}
+
+pub(crate) fn capture_allowed() -> bool {
+    static ALLOWED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ALLOWED
+        .get_or_init(|| capture_opted_in(std::env::var_os("FERESE_ENABLE_SCREENCOPY").as_deref()))
+}
+
+fn capture_opted_in(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
+pub(crate) fn init_global(display: &DisplayHandle) {
+    if capture_allowed() {
         display.create_global::<Ferese, ZwlrScreencopyManagerV1, ()>(3, ());
         tracing::info!("authorized screencopy is enabled for this session");
     }
@@ -161,8 +268,10 @@ impl Ferese {
         };
 
         self.pending_screencopies.push(PendingScreencopy {
-            frame: frame.clone(),
-            buffer,
+            sink: CaptureSink::Shm {
+                frame: frame.clone(),
+                buffer,
+            },
             output,
             region: data.region,
             overlay_cursor: data.overlay_cursor,
@@ -192,14 +301,16 @@ impl Ferese {
                 remaining.push(capture);
                 continue;
             }
-            if !capture.frame.is_alive() || !capture.buffer.is_alive() {
+            if let CaptureSink::Shm { frame, buffer } = &capture.sink
+                && (!frame.is_alive() || !buffer.is_alive())
+            {
                 continue;
             }
 
             framebuffer_binding_changed = true;
             if complete_capture(renderer, framebuffer, &capture, self.start_time.elapsed()).is_err()
             {
-                capture.frame.failed();
+                capture.fail();
             }
         }
 
@@ -283,17 +394,25 @@ fn capture_region(
     capture_region_for_geometry(mode.size, scale, transform, requested)
 }
 
-fn capture_region_for_geometry(
+pub(crate) fn output_logical_size(
+    mode_size: Size<i32, smithay::utils::Physical>,
+    scale: f64,
+    transform: smithay::utils::Transform,
+) -> Size<i32, Logical> {
+    transform
+        .transform_size(mode_size)
+        .to_f64()
+        .to_logical(scale)
+        .to_i32_round()
+}
+
+pub(crate) fn capture_region_for_geometry(
     mode_size: Size<i32, smithay::utils::Physical>,
     scale: f64,
     transform: smithay::utils::Transform,
     requested: Option<Rectangle<i32, Logical>>,
 ) -> Option<Rectangle<i32, Buffer>> {
-    let logical_size = transform
-        .transform_size(mode_size)
-        .to_f64()
-        .to_logical(scale)
-        .to_i32_round();
+    let logical_size = output_logical_size(mode_size, scale, transform);
     let output_region = Rectangle::from_size(logical_size);
     let logical_region = requested
         .unwrap_or(output_region)
@@ -342,50 +461,79 @@ where
         .map_err(|error| {
             tracing::warn!(?error, "failed to copy output framebuffer");
         })?;
+    if mapping.format() != Fourcc::Argb8888 {
+        return Err(());
+    }
     let source = renderer.map_texture(&mapping).map_err(|error| {
         tracing::warn!(?error, "failed to map output framebuffer copy");
     })?;
     let expected = capture.region.size;
-    let copied = with_buffer_contents_mut(&capture.buffer, |destination, length, data| {
-        let bytes = expected.w as usize * expected.h as usize * BYTES_PER_PIXEL;
-        if source.len() < bytes || data.offset < 0 || data.offset as usize + bytes > length {
-            return false;
-        }
+    let stride = (expected.w as usize)
+        .checked_mul(BYTES_PER_PIXEL)
+        .ok_or(())?;
+    let bytes = stride.checked_mul(expected.h as usize).ok_or(())?;
+    if source.len() < bytes {
+        return Err(());
+    }
+    // Smithay's output projection already accounts for OpenGL's Y axis, so these
+    // rows must not be flipped vertically again. They are in output-buffer order
+    // including the output transform, which the conversion stage normalizes.
+    let copied = match &capture.sink {
+        CaptureSink::Shm { buffer, .. } => {
+            with_buffer_contents_mut(buffer, |destination, length, data| {
+                let Ok(offset) = usize::try_from(data.offset) else {
+                    return false;
+                };
+                if offset > length || bytes > length - offset {
+                    return false;
+                }
 
-        // Smithay's output projection already accounts for OpenGL's Y axis.
-        // These rows are in output-buffer order, including its output transform.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                source.as_ptr(),
-                destination.add(data.offset as usize),
-                bytes,
-            );
+                // SAFETY: the mapped slice is at least `bytes` long, and the
+                // checks above establish `bytes` writable bytes at `offset`
+                // within the shm buffer. The regions cannot overlap: one is
+                // renderer-owned and the other client-owned.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(source.as_ptr(), destination.add(offset), bytes);
+                }
+                true
+            })
+            .unwrap_or(false)
         }
-        true
-    })
-    .map_err(|_| ())?;
+        CaptureSink::Owned { .. } => {
+            let mut pixels = Vec::new();
+            if pixels.try_reserve_exact(bytes).is_err() {
+                false
+            } else {
+                pixels.extend_from_slice(&source[..bytes]);
+                capture.sink.publish(CaptureBuffer {
+                    width: expected.w,
+                    height: expected.h,
+                    stride,
+                    pixels,
+                })
+            }
+        }
+    };
 
     if !copied {
         return Err(());
     }
 
-    if capture.with_damage {
-        capture
-            .frame
-            .damage(0, 0, expected.w as u32, expected.h as u32);
-    }
-    // TextureMapping::flipped describes importing the mapping as a texture;
-    // using it here would make clients flip the already-correct output rows.
-    capture
-        .frame
-        .flags(zwlr_screencopy_frame_v1::Flags::empty());
+    if let CaptureSink::Shm { frame, .. } = &capture.sink {
+        if capture.with_damage {
+            frame.damage(0, 0, expected.w as u32, expected.h as u32);
+        }
+        // TextureMapping::flipped describes importing the mapping as a texture;
+        // using it here would make clients flip the already-correct output rows.
+        frame.flags(zwlr_screencopy_frame_v1::Flags::empty());
 
-    let seconds = timestamp.as_secs();
-    capture.frame.ready(
-        (seconds >> 32) as u32,
-        seconds as u32,
-        timestamp.subsec_nanos(),
-    );
+        let seconds = timestamp.as_secs();
+        frame.ready(
+            (seconds >> 32) as u32,
+            seconds as u32,
+            timestamp.subsec_nanos(),
+        );
+    }
     Ok(())
 }
 
@@ -393,6 +541,19 @@ where
 mod tests {
     use super::*;
     use smithay::utils::{Physical, Transform};
+
+    #[test]
+    fn capture_is_off_unless_the_opt_in_is_exactly_one() {
+        use std::ffi::OsStr;
+
+        assert!(!capture_opted_in(None));
+        assert!(!capture_opted_in(Some(OsStr::new("0"))));
+        assert!(!capture_opted_in(Some(OsStr::new(""))));
+        assert!(!capture_opted_in(Some(OsStr::new("true"))));
+        assert!(!capture_opted_in(Some(OsStr::new("01"))));
+        assert!(!capture_opted_in(Some(OsStr::new(" 1"))));
+        assert!(capture_opted_in(Some(OsStr::new("1"))));
+    }
 
     #[test]
     fn capture_region_clips_then_scales_to_buffer_coordinates() {

@@ -1,6 +1,7 @@
 use std::env;
 use std::error::Error;
-use std::io;
+use std::fs;
+use std::io::{self, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
@@ -13,7 +14,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         version: VERSION,
         id: 1,
         kind: "command".to_owned(),
-        command,
+        command: command.clone(),
         args,
     };
     let mut stream = UnixStream::connect(socket_path()?)?;
@@ -24,10 +25,36 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err(format!("{}: {}", error.code, error.message).into());
     }
 
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&response.result.unwrap_or(Value::Null))?
-    );
+    if command == "screenshot" {
+        write_png(&response)
+    } else {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&response.result.unwrap_or(Value::Null))?
+        );
+        Ok(())
+    }
+}
+
+// The compositor stages the PNG in a private directory and replies with its
+// path. Open it before unlinking so a failure never destroys the only copy, and
+// stream the bytes with explicit writes: println! would corrupt binary output.
+fn write_png(response: &Response) -> Result<(), Box<dyn Error>> {
+    let path = response
+        .result
+        .as_ref()
+        .and_then(|result| result.get("path"))
+        .and_then(Value::as_str)
+        .ok_or("the compositor did not return a screenshot path")?;
+    let mut file = fs::File::open(path)?;
+    if let Err(error) = fs::remove_file(path) {
+        // The compositor sweeps anything left behind, so a failure here is not
+        // worth losing the capture over.
+        eprintln!("feresectl: could not remove {path}: {error}");
+    }
+    let mut stdout = io::stdout().lock();
+    io::copy(&mut file, &mut stdout)?;
+    stdout.flush()?;
     Ok(())
 }
 
@@ -47,6 +74,18 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(String, Value),
                 .map_err(|_| format!("{} requires a positive workspace index", command))?;
             json!({ "index": index })
         }
+        "screenshot" => match positional.as_slice() {
+            [] => json!({}),
+            [flag, geometry] if flag == "--geometry" || flag == "-g" => {
+                json!({ "geometry": geometry })
+            }
+            _ => {
+                return Err(format!(
+                    "{command} accepts an optional --geometry \"x,y WxH\" ({})",
+                    usage()
+                ));
+            }
+        },
         "toggle-floating" | "toggle-fullscreen" | "toggle-maximized" | "toggle-layout"
         | "toggle-overview" | "cycle-column-width" | "center-column" | "consume" | "expel"
         | "close" | "get-focused-window" | "get-workspaces" | "get-outputs" | "reload-config"
@@ -79,7 +118,7 @@ fn socket_path() -> Result<PathBuf, io::Error> {
 }
 
 fn usage() -> String {
-    "usage: feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit>\n       feresectl <get-focused-window|get-workspaces|get-outputs|reload-config>".to_owned()
+    "usage: feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit>\n       feresectl <get-focused-window|get-workspaces|get-outputs|reload-config>".to_owned()
 }
 
 #[cfg(test)]
@@ -112,6 +151,38 @@ mod tests {
         assert_eq!(
             parse_args(["cycle-column-width".to_owned()]).unwrap(),
             ("cycle-column-width".to_owned(), json!({}))
+        );
+    }
+
+    #[test]
+    fn screenshot_takes_an_optional_geometry() {
+        assert_eq!(
+            parse_args(["screenshot".into()]).unwrap(),
+            ("screenshot".into(), json!({})),
+            "no geometry captures every enabled output"
+        );
+        assert_eq!(
+            parse_args(["screenshot".into(), "-g".into(), "10,-20 300x200".into()])
+                .unwrap()
+                .1,
+            json!({ "geometry": "10,-20 300x200" }),
+            "negative origins survive argument parsing"
+        );
+        assert_eq!(
+            parse_args(["screenshot".into(), "--geometry".into(), "0,0 8x8".into()])
+                .unwrap()
+                .1,
+            json!({ "geometry": "0,0 8x8" })
+        );
+    }
+
+    #[test]
+    fn screenshot_rejects_stray_arguments() {
+        assert!(parse_args(["screenshot".into(), "extra".into()]).is_err());
+        assert!(parse_args(["screenshot".into(), "-g".into()]).is_err());
+        assert!(
+            parse_args(["screenshot".into(), "0,0 8x8".into()]).is_err(),
+            "a bare geometry is not accepted without the flag"
         );
     }
 

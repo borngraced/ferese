@@ -203,7 +203,7 @@ Install these through your distribution when you want the corresponding features
 | Feature | Tools or services |
 | --- | --- |
 | Wallpaper file picker | `zenity` |
-| Screenshots and editing | `grim`, `slurp`, `satty`, `wl-clipboard`, Python 3 |
+| Screenshots and editing | `slurp`, `satty`, `wl-clipboard`, Python 3 |
 | Idle locking | `swayidle` with the included `ferese-lock` |
 | Network controls | NetworkManager and its running service |
 | Audio controls | PipeWire, WirePlumber, and `wpctl` |
@@ -244,9 +244,16 @@ A directly launched source build writes to its terminal. Keep another desktop
 available while testing scaling, monitor hotplug, suspend, and locking.
 
 The launcher enables the screencopy protocol for screenshot tools. Set
-`FERESE_ENABLE_SCREENCOPY=0` in the session environment to disable it. When
-enabled, Wayland clients can capture the unlocked desktop. Capture remains
-blocked while the session is locked. Launcher changes take effect at next login.
+`FERESE_ENABLE_SCREENCOPY=0` in the session environment to disable it. This
+turns off every path that can read the screen, including the built-in
+screenshot command, not only the Wayland protocol. When enabled, Wayland clients
+can capture the unlocked desktop, and `feresectl screenshot` is available.
+Capture remains blocked while the session is locked. Launcher changes take
+effect at next login.
+
+Starting the compositor directly instead of through `ferese-session` leaves
+`FERESE_ENABLE_SCREENCOPY` unset, which disables screenshots. Export
+`FERESE_ENABLE_SCREENCOPY=1` to use them.
 
 ## Updating
 

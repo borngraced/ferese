@@ -73,7 +73,7 @@ pub fn resolve(
     let mut result = WindowRuleResult::default();
     if matches!(
         app_id.as_deref(),
-        Some("dev.ferese.authentication" | "dev.ferese.screenshare")
+        Some("dev.ferese.authentication" | "dev.ferese.screenshare" | "dev.ferese.screenshot")
     ) {
         result.floating = Some(true);
     }
@@ -220,6 +220,7 @@ mod tests {
             "dev.ferese.ScreenShare",
             "dev.ferese.ScreenShare.desktop",
             "dev.ferese.Authentication",
+            "dev.ferese.Screenshot",
         ] {
             assert_eq!(resolve(&[], Some(app_id), None, false).floating, Some(true));
             let rules = validate(&[WindowRuleConfig {
