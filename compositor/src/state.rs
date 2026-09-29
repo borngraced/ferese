@@ -2752,28 +2752,10 @@ impl Ferese {
         else {
             return false;
         };
-        let Some(workspace) = self.workspaces.workspace_for_window(id) else {
-            return false;
-        };
-
-        if let Some(output) = self.output_workspaces.output_for_workspace(workspace) {
-            self.activate_output_workspace(output, workspace);
-        } else if let Some(output) = self.output_workspaces.focused_output() {
-            if self
-                .output_workspaces
-                .assign_workspace(output, workspace)
-                .is_err()
-            {
-                return false;
-            }
-            self.activate_output_workspace(output, workspace);
-        } else if self.workspaces.activate(workspace).is_err() {
+        if !activate_window_workspace(&mut self.workspaces, &mut self.output_workspaces, id) {
             return false;
         }
-
-        if self.workspaces.focus_window(id).is_err() {
-            return false;
-        }
+        let workspace = self.workspaces.active_id();
 
         if let Some(output) = self.output_workspaces.output_for_workspace(workspace) {
             self.workspace_slides.remove(&output);
@@ -3265,6 +3247,36 @@ pub(crate) fn window_has_buffer(window: &Window) -> bool {
     })
 }
 
+fn activate_window_workspace(
+    workspaces: &mut WorkspaceSet,
+    outputs: &mut OutputWorkspaceMap,
+    window: WindowId,
+) -> bool {
+    let Some(workspace) = workspaces.workspace_for_window(window) else {
+        return false;
+    };
+    if let Some(output) = outputs
+        .focused_output()
+        .or_else(|| outputs.output_for_workspace(workspace))
+        && outputs.switch_workspace(output, workspace).is_err()
+    {
+        return false;
+    }
+    if workspaces.activate(workspace).is_err() {
+        return false;
+    }
+
+    if let Some(fullscreen) = workspaces.active().fullscreen
+        && fullscreen != window
+        && workspaces.placement(window) == Some(WindowPlacement::Tiled)
+        && workspaces.set_fullscreen(fullscreen, false).is_err()
+    {
+        return false;
+    }
+
+    workspaces.focus_window(window).is_ok()
+}
+
 fn stacking_order_settled<'a, T, I>(current: I, target: &'a [T], z_index: impl Fn(&T) -> u8) -> bool
 where
     I: IntoIterator<Item = &'a T>,
@@ -3290,6 +3302,87 @@ impl ClientData for ClientState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn selecting_a_window_activates_its_workspace_on_its_owner() {
+        for assignment in [None, Some(OutputId(1)), Some(OutputId(2))] {
+            let mut workspaces = WorkspaceSet::default();
+            let first = workspaces.active_id();
+            workspaces
+                .insert_window(WindowId(1), Axis::Horizontal, 0.5)
+                .unwrap();
+            let second = workspaces.ensure_numeric(2).unwrap();
+            workspaces.activate(second).unwrap();
+            workspaces
+                .insert_window(WindowId(2), Axis::Horizontal, 0.5)
+                .unwrap();
+            workspaces
+                .insert_window(WindowId(3), Axis::Horizontal, 0.5)
+                .unwrap();
+            workspaces.activate(first).unwrap();
+
+            let mut outputs = OutputWorkspaceMap::default();
+            outputs
+                .connect(OutputId(1), OutputGeometry::new(0, 0, 1920, 1080), first)
+                .unwrap();
+            let owner = if assignment == Some(OutputId(2)) {
+                let third = workspaces.ensure_numeric(3).unwrap();
+                outputs
+                    .connect(OutputId(2), OutputGeometry::new(1920, 0, 1920, 1080), third)
+                    .unwrap();
+                outputs.assign_workspace(OutputId(2), second).unwrap();
+                OutputId(2)
+            } else {
+                if let Some(output) = assignment {
+                    outputs.assign_workspace(output, second).unwrap();
+                }
+                OutputId(1)
+            };
+            outputs.focus_output(OutputId(1)).unwrap();
+
+            assert!(activate_window_workspace(
+                &mut workspaces,
+                &mut outputs,
+                WindowId(2)
+            ));
+            assert_eq!(outputs.active_workspace(owner), Some(second));
+            assert_eq!(outputs.focused_output(), Some(owner));
+            assert_eq!(outputs.output_for_workspace(second), Some(owner));
+            assert_eq!(workspaces.active_id(), second);
+            assert_eq!(workspaces.active().last_focused, Some(WindowId(2)));
+            if assignment == Some(OutputId(2)) {
+                assert_eq!(outputs.active_workspace(OutputId(1)), Some(first));
+            }
+        }
+    }
+
+    #[test]
+    fn selecting_a_tiled_window_reveals_it_past_another_fullscreen_window() {
+        let mut workspaces = WorkspaceSet::default();
+        workspaces
+            .insert_window(WindowId(1), Axis::Horizontal, 0.5)
+            .unwrap();
+        workspaces
+            .insert_window(WindowId(2), Axis::Horizontal, 0.5)
+            .unwrap();
+        workspaces.set_fullscreen(WindowId(1), true).unwrap();
+        let mut outputs = OutputWorkspaceMap::default();
+        outputs
+            .connect(
+                OutputId(1),
+                OutputGeometry::new(0, 0, 1920, 1080),
+                workspaces.active_id(),
+            )
+            .unwrap();
+
+        assert!(activate_window_workspace(
+            &mut workspaces,
+            &mut outputs,
+            WindowId(2)
+        ));
+        assert_eq!(workspaces.active().fullscreen, None);
+        assert_eq!(workspaces.active().last_focused, Some(WindowId(2)));
+    }
+
     #[test]
     fn workspace_slide_moves_both_workspaces_without_a_gap() {
         let width = 1600.0;
