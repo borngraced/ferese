@@ -13,7 +13,6 @@ pub struct Prompt {
     pub app: String,
     pub sources: Vec<Source>,
     pub multiple: bool,
-    pub indicator: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -86,15 +85,10 @@ impl cosmic::Application for Picker {
             background,
             foreground,
         };
-        let title = if app.prompt.indicator {
-            "Ferese — screen sharing"
-        } else {
-            "Ferese — share your screen"
-        };
         let task = app
             .core
             .main_window_id()
-            .map(|id| app.set_window_title(title.into(), id))
+            .map(|id| app.set_window_title("Ferese — share your screen".into(), id))
             .unwrap_or_else(Task::none);
 
         (app, task)
@@ -148,18 +142,8 @@ impl cosmic::Application for Picker {
             row![
                 glyph(include_bytes!("../assets/display.svg"), 24),
                 column![
-                    text(if self.prompt.indicator {
-                        "Screen sharing"
-                    } else {
-                        "Choose a display"
-                    })
-                    .size(18),
-                    text(if self.prompt.indicator {
-                        format!("Shared with {app}")
-                    } else {
-                        format!("Share with {app}")
-                    })
-                    .size(12),
+                    text("Choose a display").size(18),
+                    text(format!("Share with {app}")).size(12),
                 ]
                 .spacing(2)
                 .width(Length::Fill),
@@ -181,24 +165,20 @@ impl cosmic::Application for Picker {
             ]
             .spacing(12)
             .align_y(Alignment::Center);
-            if selected || self.prompt.indicator {
+            if selected {
                 entry = entry.push(glyph(include_bytes!("../assets/check.svg"), 20));
             }
-            if self.prompt.indicator {
-                sources = sources.push(container(entry).padding(8).width(Length::Fill));
-            } else {
-                sources = sources.push(
-                    button::custom(entry)
-                        .class(if selected {
-                            ferese_theme::accent_button()
-                        } else {
-                            cosmic::theme::Button::Standard
-                        })
-                        .padding(8)
-                        .width(Length::Fill)
-                        .on_press(Message::Select(index)),
-                );
-            }
+            sources = sources.push(
+                button::custom(entry)
+                    .class(if selected {
+                        ferese_theme::accent_button()
+                    } else {
+                        cosmic::theme::Button::Standard
+                    })
+                    .padding(8)
+                    .width(Length::Fill)
+                    .on_press(Message::Select(index)),
+            );
         }
         content = content.push(scrollable(sources).height(Length::Fixed(
             (self.prompt.sources.len().min(4) * 56) as f32,
@@ -208,37 +188,21 @@ impl cosmic::Application for Picker {
                 .size(12)
                 .width(Length::Fill),
         );
-        if self.prompt.indicator {
-            content = content.push(
-                button::custom(
-                    row![
-                        glyph(include_bytes!("../assets/stop.svg"), 16),
-                        text("Stop sharing")
-                    ]
-                    .spacing(8)
-                    .align_y(Alignment::Center),
-                )
-                .class(cosmic::theme::Button::Destructive)
-                .padding([6, 16])
-                .on_press(Message::Cancel),
-            );
-        } else {
-            let mut share = button::custom(
-                row![
-                    text("Share"),
-                    glyph(include_bytes!("../assets/arrow.svg"), 16)
-                ]
-                .spacing(8)
-                .align_y(Alignment::Center),
-            )
-            .class(ferese_theme::accent_button())
-            .padding([6, 16]);
-            if !self.selected.is_empty() {
-                share = share.on_press(Message::Share);
-            }
-            content = content
-                .push(row![button::text("Cancel").on_press(Message::Cancel), share].spacing(8));
+        let mut share = button::custom(
+            row![
+                text("Share"),
+                glyph(include_bytes!("../assets/arrow.svg"), 16)
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
+        )
+        .class(ferese_theme::accent_button())
+        .padding([6, 16]);
+        if !self.selected.is_empty() {
+            share = share.on_press(Message::Share);
         }
+        content =
+            content.push(row![button::text("Cancel").on_press(Message::Cancel), share].spacing(8));
         container(content).padding(14).width(Length::Fill).into()
     }
 }

@@ -364,14 +364,14 @@ impl Backend {
         }
         let result = tokio::select! {
             _ = cancel.wait() => Err(StartError::Cancelled),
-            result = tokio::time::timeout(Duration::from_secs(120), start_streams(if bar_controlled { "Ferese" } else { &app_id }, multiple, cursor, !bar_controlled)) => result.unwrap_or_else(|_| Err(StartError::Failed("Sharing request timed out".into()))),
+            result = tokio::time::timeout(Duration::from_secs(120), start_streams(if bar_controlled { "Ferese" } else { &app_id }, multiple, cursor)) => result.unwrap_or_else(|_| Err(StartError::Failed("Sharing request timed out".into()))),
         };
         let _ = connection
             .object_server()
             .remove::<Request, _>(handle)
             .await;
         match result {
-            Ok((children, indicator, streams)) if !cancel.stopped.load(Ordering::SeqCst) => {
+            Ok((children, streams)) if !cancel.stopped.load(Ordering::SeqCst) => {
                 if let Some(session) = self.sessions.lock().await.get_mut(session_handle.as_str()) {
                     session.phase = Phase::Running;
                 }
@@ -379,7 +379,7 @@ impl Backend {
                 let connection = connection.clone();
                 let path = session_handle.to_string();
                 tokio::spawn(async move {
-                    supervise(children, indicator, cancel).await;
+                    supervise(children, cancel).await;
                     backend.end(&connection, &path).await;
                 });
                 let streams: Vec<(u32, Options)> = streams
@@ -488,8 +488,7 @@ async fn start_streams(
     app: &str,
     multiple: bool,
     cursor: bool,
-    show_indicator: bool,
-) -> Result<(Vec<Child>, Option<Child>, Vec<Ready>), StartError> {
+) -> Result<(Vec<Child>, Vec<Ready>), StartError> {
     let sources = tokio::task::spawn_blocking(|| {
         Capture::connect(&AtomicBool::new(false)).map(|capture| capture.sources())
     })
@@ -499,7 +498,6 @@ async fn start_streams(
         app: app.to_owned(),
         sources,
         multiple,
-        indicator: false,
     };
     let selection = picker(&prompt)
         .await?
@@ -544,20 +542,7 @@ async fn start_streams(
         streams.push(ready);
         children.push(child);
     }
-    let indicator = if show_indicator {
-        Some(
-            picker(&Prompt {
-                app: app.to_owned(),
-                sources: selected,
-                multiple,
-                indicator: true,
-            })
-            .await?,
-        )
-    } else {
-        None
-    };
-    Ok((children, indicator, streams))
+    Ok((children, streams))
 }
 fn validate_selection(
     sources: &[Source],
@@ -582,12 +567,9 @@ fn validate_selection(
     }
     Ok(selected)
 }
-async fn supervise(mut children: Vec<Child>, mut indicator: Option<Child>, cancel: Arc<Cancel>) {
+async fn supervise(mut children: Vec<Child>, cancel: Arc<Cancel>) {
     loop {
         if cancel.stopped.load(Ordering::SeqCst)
-            || indicator
-                .as_mut()
-                .is_some_and(|child| !matches!(child.try_wait(), Ok(None)))
             || children
                 .iter_mut()
                 .any(|c| !matches!(c.try_wait(), Ok(None)))
@@ -599,9 +581,6 @@ async fn supervise(mut children: Vec<Child>, mut indicator: Option<Child>, cance
     cancel.stop();
     for child in &mut children {
         let _ = child.kill().await;
-    }
-    if let Some(indicator) = &mut indicator {
-        let _ = indicator.kill().await;
     }
 }
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
