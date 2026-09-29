@@ -1,4 +1,4 @@
 [portal]
 DBusName=org.freedesktop.impl.portal.desktop.ferese
-Interfaces=org.freedesktop.impl.portal.ScreenCast;org.freedesktop.impl.portal.Settings;org.freedesktop.impl.portal.Screenshot;org.freedesktop.impl.portal.Wallpaper;
+Interfaces=org.freedesktop.impl.portal.ScreenCast;org.freedesktop.impl.portal.Settings;org.freedesktop.impl.portal.Screenshot;org.freedesktop.impl.portal.Wallpaper;org.freedesktop.impl.portal.Background;org.freedesktop.impl.portal.Usb;
 UseIn=Ferese;

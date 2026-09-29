@@ -3,8 +3,13 @@ set -euo pipefail
 session_target_started=0
 shell_pid=
 agent_pid=
+autostart_pid=
 cleanup() {
     trap - EXIT INT TERM
+    if [[ -n $autostart_pid ]]; then
+        kill "$autostart_pid" 2>/dev/null || true
+        wait "$autostart_pid" 2>/dev/null || true
+    fi
     if [[ -n $shell_pid ]]; then kill "$shell_pid" 2>/dev/null || true; fi
     if [[ -n $agent_pid ]]; then
         kill "$agent_pid" 2>/dev/null || true
@@ -53,6 +58,11 @@ env -u WAYLAND_SOCKET WAYLAND_DISPLAY="${FERESE_PUBLIC_WAYLAND_DISPLAY:-${WAYLAN
 agent_pid=$!
 "$release_dir/ferese-shell" &
 shell_pid=$!
+if [[ ${FERESE_SESSION_IMPORT_ENV:-0} == 1 && -x $release_dir/feresectl ]]; then
+    env WAYLAND_DISPLAY="${FERESE_PUBLIC_WAYLAND_DISPLAY:-${WAYLAND_DISPLAY:-}}" \
+        "$release_dir/feresectl" autostart &
+    autostart_pid=$!
+fi
 if wait "$shell_pid"; then
     status=0
 else

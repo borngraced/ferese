@@ -1,5 +1,6 @@
 """Check native portal wire contracts on a private bus without touching the desktop."""
 import os
+import json
 from pathlib import Path
 import signal
 import subprocess
@@ -53,7 +54,7 @@ def private_bus_checks():
                         raise AssertionError((root / "backend.log").read_text())
                     time.sleep(0.05)
             node = ET.fromstring(xml)
-            for name in ("ScreenCast", "Settings", "Screenshot", "Wallpaper"):
+            for name in ("ScreenCast", "Settings", "Screenshot", "Wallpaper", "Background", "Usb"):
                 interface = node.find(f"interface[@name='org.freedesktop.impl.portal.{name}']")
                 assert interface is not None, name
                 expected = ET.parse(f"/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.{name}.xml").getroot().find("interface")
@@ -94,6 +95,38 @@ def private_bus_checks():
             assert request_name == 1
             response, values = call("org.freedesktop.impl.portal.Screenshot", "Screenshot", params, "(ua{sv})")
             assert response == 2 and values == {}
+
+            usb_params = GLib.Variant("(oss a(sa{sv}a{sv}) a{sv})".replace(" ", ""),
+                (PATH + "/request/test/usb", "", "org.test.App", [], {}))
+            response, values = call("org.freedesktop.impl.portal.Usb", "AcquireDevices", usb_params, "(ua{sv})")
+            assert response == 2 and values == {}
+            call("org.freedesktop.impl.portal.Background", "GetAppState", None, "(a{sv})")
+
+            script = root / "startup.py"
+            script.write_text("import json, os, sys\nfd = int(sys.argv[2])\ntry:\n os.fstat(fd); inherited = True\nexcept OSError:\n inherited = False\nopen(sys.argv[1], 'w').write(json.dumps({'args': sys.argv[3:], 'private_fd': inherited, 'socket_env': os.environ.get('WAYLAND_SOCKET')}))\n")
+            output = root / "startup.json"
+            read_fd, write_fd = os.pipe()
+            try:
+                arguments = ["value with spaces", "50%", '$dollar `backtick` "quotes" \\ slash']
+                argv = [sys.executable, str(script), str(output), str(write_fd)] + arguments
+                result, = call("org.freedesktop.impl.portal.Background", "EnableAutostart",
+                    GLib.Variant("(sbasu)", ("org.test.Startup", True, argv, 0)), "(b)")
+                assert result is True
+                os.mkfifo(root / "autostart/000-fifo.desktop")
+                env = dict(os.environ, XDG_CONFIG_HOME=directory, XDG_CONFIG_DIRS=str(root / "empty"), XDG_CURRENT_DESKTOP="Ferese", WAYLAND_SOCKET=str(write_fd))
+                launcher = REPO / "target/debug/feresectl"
+                subprocess.run([str(launcher), "autostart"], env=env, pass_fds=(write_fd,), check=True, timeout=20)
+                deadline = time.monotonic() + 5
+                while not output.exists() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                actual = json.loads(output.read_text())
+                assert actual == {"args": arguments, "private_fd": False, "socket_env": None}, actual
+                result, = call("org.freedesktop.impl.portal.Background", "EnableAutostart",
+                    GLib.Variant("(sbasu)", ("org.test.Startup", False, [], 0)), "(b)")
+                assert result is True and not (root / "autostart/org.test.Startup.desktop").exists()
+            finally:
+                os.close(read_fd)
+                os.close(write_fd)
 
             signals = []
             subscription = bus.signal_subscribe(NAME, "org.freedesktop.impl.portal.Settings", "SettingChanged", PATH,

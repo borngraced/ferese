@@ -1,3 +1,5 @@
+mod autostart;
+
 use std::env;
 use std::error::Error;
 use std::fs;
@@ -9,6 +11,12 @@ use ferese_ipc::{Request, Response, VERSION, read_frame, write_frame};
 use serde_json::{Value, json};
 
 fn main() -> Result<(), Box<dyn Error>> {
+    if env::args().nth(1).as_deref() == Some("autostart") {
+        if env::args().len() != 2 {
+            return Err("usage: feresectl autostart".into());
+        }
+        return autostart::run();
+    }
     let (command, args) = parse_args(env::args().skip(1))?;
     let request = Request {
         version: VERSION,
@@ -118,7 +126,7 @@ fn socket_path() -> Result<PathBuf, io::Error> {
 }
 
 fn usage() -> String {
-    "usage: feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
+    "usage: feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
 }
 
 #[cfg(test)]

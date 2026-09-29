@@ -19,11 +19,18 @@ standard file, print and application dialogs. Install both backends.
   temporary portal files can disappear safely. Image bytes and decoded dimensions
   are bounded. `theme.background.lock-path` overrides the lock-screen image;
   without it the lock screen follows `theme.background.path`.
+- **Background:** native open-window/app state, change signals and per-instance
+  background consent. Legacy autostart requests create managed XDG desktop entries;
+  current frontends manage those files themselves. Direct sessions launch standard
+  XDG autostart entries after importing the display environment. User overrides,
+  Hidden, OnlyShowIn, NotShowIn and TryExec are respected; previews skip autostart.
+- **USB:** native confirmation showing device vendor/model and requested read-only
+  or read/write access. The portal frontend handles device enumeration and opening.
 - **ScreenCast:** monitor sharing with a native picker and PipeWire streams.
   See [screen sharing](screen-sharing.md) for lifetime and recording details.
 
 Native request dialogs use Ferese's theme and are floating windows. Screenshot,
-PickColor and Wallpaper consent dialogs use Wayland parent identifiers to establish
+PickColor, Wallpaper and USB consent dialogs use Wayland parent identifiers to establish
 a transient relationship with the requesting window.
 Cancelling a request or losing the portal frontend terminates its pending helper.
 
@@ -45,8 +52,8 @@ Matching D-Bus signatures does not establish complete feature parity.
 | Wallpaper | Native desktop, lock-screen and combined targets |
 | ScreenCast | Native monitors; window sources, persistence and richer metadata remain missing |
 | Access, Account, AppChooser, DynamicLauncher, FileChooser, Notification, Print | Delegated to GTK |
-| Background | Missing native application state and background consent |
-| Usb | Missing native device consent |
+| Background | Native application state, per-instance consent and XDG autostart |
+| Usb | Native consent; standard frontend handles enumeration and device descriptors |
 | GlobalShortcuts | Missing session-scoped compositor registration and activation signals |
 | RemoteDesktop | Missing authorized input injection and EIS transport |
 | Clipboard | Missing remote-session clipboard transfer |

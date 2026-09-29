@@ -556,7 +556,7 @@ impl Ferese {
                         attributes.title.clone().unwrap_or_default(),
                     )
                 });
-                let rect = self.visual_rect_for_window(window)?;
+                let rect = self.visual_rect_for_window(window);
                 Some(json!({
                     "id": id.0,
                     "app_id": app_id,
@@ -564,10 +564,10 @@ impl Ferese {
                     "focused": self.focused_window == Some(*id),
                     "mapped": self.space.element_location(window).is_some(),
                     "workspace": self.workspaces.workspace_for_window(*id).map(|workspace| workspace.0),
-                    "x": rect.loc.x,
-                    "y": rect.loc.y,
-                    "width": rect.size.w,
-                    "height": rect.size.h,
+                    "x": rect.as_ref().map(|rect| rect.loc.x),
+                    "y": rect.as_ref().map(|rect| rect.loc.y),
+                    "width": rect.as_ref().map(|rect| rect.size.w),
+                    "height": rect.as_ref().map(|rect| rect.size.h),
                 }))
             })
             .collect::<Vec<_>>();

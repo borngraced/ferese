@@ -3,6 +3,7 @@ mod capture;
 mod consent;
 mod desktop;
 mod parent;
+mod permissions;
 mod picker;
 mod settings;
 mod stream;

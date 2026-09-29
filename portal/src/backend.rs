@@ -593,12 +593,15 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let backend = Backend::default();
     let settings = crate::settings::Settings::new();
     let requests = crate::desktop::Requests::default();
+    let background = crate::permissions::Background::new(requests.clone());
     let connection = zbus::connection::Builder::session()?
         .name("org.freedesktop.impl.portal.desktop.ferese")?
         .serve_at(PATH, backend.clone())?
         .serve_at(PATH, settings.clone())?
         .serve_at(PATH, crate::desktop::Screenshot(requests.clone()))?
         .serve_at(PATH, crate::desktop::Wallpaper(requests.clone()))?
+        .serve_at(PATH, crate::permissions::Usb(requests.clone()))?
+        .serve_at(PATH, background.clone())?
         .serve_at(
             "/org/ferese/ScreenRecorder",
             RecorderControl(backend.clone()),
@@ -606,6 +609,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .build()
         .await?;
     tokio::spawn(settings.watch(connection.clone()));
+    tokio::spawn(background.watch(connection.clone()));
     // Frontend death must revoke every stream, even if Session.Close never arrives.
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
