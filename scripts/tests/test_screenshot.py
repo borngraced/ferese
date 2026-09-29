@@ -23,7 +23,7 @@ case "$1" in
     get-outputs) cat "$TEST_ROOT/outputs.json" ;;
     screenshot)
         printf '%s\\n' "$@" >> "$TEST_ROOT/captures"
-        printf image
+        cat "$TEST_ROOT/capture.png"
         ;;
     *) printf 'unexpected feresectl command: %s\\n' "$1" >&2; exit 1 ;;
 esac
@@ -59,6 +59,7 @@ class ScreenshotTest(unittest.TestCase):
                         TEST_ROOT=str(self.root),
                         PATH=f'{self.bins}:{os.environ["PATH"]}')
         self.write_outputs(OUTPUTS)
+        self.write_capture(2560, 1440)
         for name, contents in fakes().items():
             path = self.bins / name
             path.write_text(contents)
@@ -66,6 +67,31 @@ class ScreenshotTest(unittest.TestCase):
 
     def write_outputs(self, outputs):
         (self.root / 'outputs.json').write_text(json.dumps(outputs))
+
+    def write_capture(self, width, height):
+        '''Stand in for the real readback with a PNG of known dimensions.'''
+        import struct
+        import zlib
+
+        def chunk(kind, data):
+            body = kind + data
+            return (struct.pack('>I', len(data)) + body
+                    + struct.pack('>I', zlib.crc32(body)))
+
+        rows = b''.join(b'\x00' + bytes([10, 20, 30, 255]) * width
+                        for _ in range(height))
+        png = (b'\x89PNG\r\n\x1a\n'
+               + chunk(b'IHDR', struct.pack('>IIBBBBB', width, height, 8, 6, 0, 0, 0))
+               + chunk(b'IDAT', zlib.compress(rows))
+               + chunk(b'IEND', b''))
+        (self.root / 'capture.png').write_bytes(png)
+
+    def editor_args(self):
+        return (self.root / 'satty-args').read_text().splitlines()
+
+    def editor_size(self):
+        args = self.editor_args()
+        return args[args.index('--resize') + 1]
 
     def captures(self):
         log = self.root / 'captures'
@@ -92,8 +118,8 @@ class ScreenshotTest(unittest.TestCase):
             editor_args = (self.root / 'satty-args').read_text().splitlines()
             self.assertEqual(editor_args[editor_args.index('--app-id') + 1],
                              'dev.ferese.Screenshot')
-            self.assertEqual(editor_args[editor_args.index('--resize') + 1],
-                             '1500x920')
+            # Derived from the 2560x1440 capture, not from the focused output.
+            self.assertEqual(self.editor_size(), '1500x844')
             self.assertIn('--no-window-decoration', editor_args)
             self.assertNotIn('--fullscreen', editor_args)
             self.assertFalse((self.root / 'inherited-lock').exists())
@@ -160,6 +186,27 @@ class ScreenshotTest(unittest.TestCase):
                 # The fake only records these when the compositor command runs,
                 # so a capture taken any other way leaves the log short.
                 self.assertEqual(self.captures()[before:], expected)
+    def test_the_editor_is_sized_from_the_image_not_the_output(self):
+        # The focused output is 2560x1440 throughout, so a size that tracked the
+        # output would be identical for every capture. It must follow the image.
+        (self.root / 'release').touch()
+        expected = {(1920, 1080): '1500x844',  # capped by width, aspect kept
+                    (2560, 1440): '1500x844',
+                    (640, 480): '1227x920',    # height cap binds before 2x upscale
+                    (3000, 200): '1500x360'}  # extreme aspect still bounded
+        for (width, height), size in expected.items():
+            with self.subTest(size=f'{width}x{height}'):
+                self.write_capture(width, height)
+                result = self.run_script('--all')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.editor_size(), size)
+
+    def test_an_unreadable_capture_falls_back_to_a_default_size(self):
+        (self.root / 'capture.png').write_bytes(b'not a png')
+        (self.root / 'release').touch()
+        result = self.run_script('--all')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.editor_size(), '1000x700')
 
 
 if __name__ == '__main__':

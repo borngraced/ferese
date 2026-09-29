@@ -42,6 +42,8 @@ if [[ $mode == area ]]; then
 elif [[ $mode == full ]]; then
     # Resolve the active monitor before Satty can change keyboard focus.
     # Never fall back to an all-monitor capture when IPC is unavailable.
+    # This is the only mode that needs the output list; the editor is sized
+    # from the captured image instead.
     geometry=$(feresectl get-outputs | python3 -c '
 import json, sys
 outputs = [output for output in json.load(sys.stdin) if output.get("enabled")]
@@ -61,19 +63,30 @@ input=''
 trap '[[ -z $input ]] || rm -f -- "$input"; [[ -s $file ]] || rm -f -- "$file"' EXIT
 input=$(mktemp "$XDG_RUNTIME_DIR/ferese-screenshot-XXXXXX.png") || fail 'Could not create the temporary capture.'
 feresectl screenshot "${capture_args[@]}" >"$input" || fail 'Could not capture the screen. Ferese must be running, unlocked, and reachable over its socket.'
-editor_size=$(feresectl get-outputs | python3 -c '
-import json, sys
+# Size the editor to the image that was actually captured, so a small area
+# selection does not open a huge window and a multi-monitor --all capture is not
+# sized from whichever output happened to be focused. Satty treats this as a
+# default size, and Ferese floats the window at whatever it commits.
+editor_size=$(python3 -c '
+import sys
 
-outputs = [output for output in json.load(sys.stdin) if output.get("enabled")]
-focused = [output for output in outputs if output.get("focused")]
-selected = focused if len(focused) == 1 else outputs if len(outputs) == 1 else []
-if len(selected) != 1 or any(selected[0].get(key) is None for key in ("width", "height")):
+header = open(sys.argv[1], "rb").read(24)
+if header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
+    sys.exit(1)
+width = int.from_bytes(header[16:20], "big")
+height = int.from_bytes(header[20:24], "big")
+if width <= 0 or height <= 0:
     sys.exit(1)
 
-width = max(1, min(1500, round(selected[0]["width"] * 0.8)))
-height = max(1, min(920, round(selected[0]["height"] * 0.8), round(width * 0.68)))
-print(f"{width}x{height}")
-') || editor_size=1000x700
+MAX_W, MAX_H = 1500, 920
+MIN_W, MIN_H = 480, 360
+factor = min(MAX_W / width, MAX_H / height, 2.0)
+target_w = max(MIN_W, round(width * factor))
+target_h = max(MIN_H, round(height * factor))
+# The minimums can push past the maximums for extreme aspect ratios.
+shrink = min(MAX_W / target_w, MAX_H / target_h, 1.0)
+print("%dx%d" % (max(1, round(target_w * shrink)), max(1, round(target_h * shrink))))
+' "$input") || editor_size=1000x700
 # Enter saves the annotated image and copies it; Escape discards the capture.
 # Keep the parent lock through editing. Close it only in Satty so clipboard
 # helpers cannot inherit the lock and keep later screenshots blocked.

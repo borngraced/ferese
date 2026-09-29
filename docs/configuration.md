@@ -314,6 +314,19 @@ the same save and copy workflow.
 
 `ferese-screenshot --all` captures every enabled output as one image.
 
+The editor window is sized from the captured image rather than the output, so a
+small area selection does not open a large window. Sizing is advisory: the
+compositor floats the editor at whatever size Satty requests, clamped to the
+workspace.
+
+A capture is assembled from the readback each output produces when it is next
+redrawn, so a request is abandoned if an output has not been redrawn within 30
+seconds. That is reported as an error rather than a partial or empty image, and
+the request holds no resources once it is abandoned. Nothing is left in the
+runtime directory: `feresctl screenshot` writes a private file that the caller
+opens and unlinks, and any file a dead client leaves behind is reclaimed after
+an hour.
+
 
 ## Window rules
 
