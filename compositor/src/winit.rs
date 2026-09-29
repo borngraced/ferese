@@ -380,7 +380,7 @@ void main() {
     vec2 half_size = visible_rect.zw * 0.5;
     vec2 d = abs(gl_FragCoord.xy - visible_rect.xy - half_size) - (half_size - vec2(material_radius));
     float sdf = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - material_radius;
-    float coverage = alpha * presentation_alpha * background_opacity * (1.0 - smoothstep(-0.5, 0.5, sdf));
+    float coverage = alpha * presentation_alpha * (1.0 - smoothstep(-0.5, 0.5, sdf));
     if (coverage <= 0.0) { gl_FragColor = vec4(0.0); return; }
     vec2 coords = (gl_FragCoord.xy - capture_origin) / texture_size;
     vec4 color = vec4(0.0);
@@ -395,7 +395,7 @@ void main() {
         weights += weight;
     }
     vec3 background = color.rgb / weights;
-    gl_FragColor = vec4(mix(background, tint.rgb, tint.a) * coverage, coverage);
+    gl_FragColor = vec4(mix(background, tint.rgb, tint.a * background_opacity) * coverage, coverage);
 }
 "#;
 
@@ -2670,17 +2670,7 @@ fn blur_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<BlurP
     if let Some(program) = state.blur_programs.get(&context) {
         return Some(program.clone());
     }
-    let uniforms = [
-        UniformName::new("visible_rect", UniformType::_4f),
-        UniformName::new("material_radius", UniformType::_1f),
-        UniformName::new("texture_size", UniformType::_2f),
-        UniformName::new("capture_origin", UniformType::_2f),
-        UniformName::new("blur_radius", UniformType::_1f),
-        UniformName::new("presentation_alpha", UniformType::_1f),
-        UniformName::new("background_opacity", UniformType::_1f),
-        UniformName::new("tint", UniformType::_4f),
-    ];
-    match renderer.compile_custom_texture_shader(BLUR_SHADER, &uniforms) {
+    match renderer.compile_custom_texture_shader(BLUR_SHADER, &blur_uniform_names()) {
         Ok(program) => {
             let program = BlurProgram(program);
             state.blur_programs.insert(context, program.clone());
@@ -2691,6 +2681,19 @@ fn blur_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<BlurP
             None
         }
     }
+}
+
+fn blur_uniform_names() -> [UniformName<'static>; 8] {
+    [
+        UniformName::new("visible_rect", UniformType::_4f),
+        UniformName::new("material_radius", UniformType::_1f),
+        UniformName::new("texture_size", UniformType::_2f),
+        UniformName::new("capture_origin", UniformType::_2f),
+        UniformName::new("blur_radius", UniformType::_1f),
+        UniformName::new("presentation_alpha", UniformType::_1f),
+        UniformName::new("background_opacity", UniformType::_1f),
+        UniformName::new("tint", UniformType::_4f),
+    ]
 }
 
 fn blur_uniforms(p: &MaterialParameters) -> Vec<Uniform<'static>> {
@@ -2873,6 +2876,101 @@ mod tests {
         border_gradient_line, color_with_alpha, framebuffer_clip_rect, normalized_scale,
         resize_content_behavior, rounded_visual_rect, scaled_visual_rect, shadow_bounds,
     };
+
+    #[test]
+    #[ignore = "requires an EGL rendering device"]
+    fn translucent_blur_does_not_leak_the_sharp_backdrop() {
+        use smithay::backend::{
+            allocator::Fourcc,
+            egl::{EGLContext, EGLDevice, EGLDisplay},
+            renderer::{
+                Bind, Color32F, ExportMem, Frame, ImportMem, Offscreen, Renderer,
+                gles::{GlesRenderer, GlesTexture, Uniform},
+            },
+        };
+
+        let device = EGLDevice::enumerate()
+            .unwrap()
+            .last()
+            .expect("an EGL device");
+        let display = unsafe { EGLDisplay::new(device).unwrap() };
+        let context = EGLContext::new(&display).unwrap();
+        let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
+        let program = renderer
+            .compile_custom_texture_shader(super::BLUR_SHADER, &super::blur_uniform_names())
+            .unwrap();
+        let size = (32, 32).into();
+        let mut pixels = vec![128u8; 32 * 32 * 4];
+        for pixel in pixels.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
+        let blurred = renderer
+            .import_memory(&pixels, Fourcc::Abgr8888, size, false)
+            .unwrap();
+        let mut target_texture: GlesTexture =
+            renderer.create_buffer(Fourcc::Abgr8888, size).unwrap();
+        let damage = Rectangle::<i32, Physical>::from_size((32, 32).into());
+
+        for opacity in [0.2f32, 0.71, 1.0] {
+            let uniforms = vec![
+                Uniform::new("visible_rect", [0.0f32, 0.0, 32.0, 32.0]),
+                Uniform::new("material_radius", 0.0f32),
+                Uniform::new("texture_size", [32.0f32, 32.0]),
+                Uniform::new("capture_origin", [0.0f32, 0.0]),
+                Uniform::new("blur_radius", 12.0f32),
+                Uniform::new("presentation_alpha", 1.0f32),
+                Uniform::new("background_opacity", opacity),
+                Uniform::new("tint", [0.1f32, 0.1, 0.1, super::BLURRED_MATERIAL_TINT]),
+            ];
+            let mut target = renderer.bind(&mut target_texture).unwrap();
+            {
+                let mut frame = renderer
+                    .render(&mut target, (32, 32).into(), Transform::Normal)
+                    .unwrap();
+                frame
+                    .clear(Color32F::new(0.0, 0.0, 0.0, 1.0), &[damage])
+                    .unwrap();
+                frame
+                    .draw_solid(
+                        Rectangle::new((0, 0).into(), (16, 32).into()),
+                        &[damage],
+                        Color32F::new(1.0, 1.0, 1.0, 1.0),
+                    )
+                    .unwrap();
+                frame
+                    .render_texture_from_to(
+                        &blurred,
+                        Rectangle::from_size(size.to_f64()),
+                        damage,
+                        &[damage],
+                        &[],
+                        Transform::Normal,
+                        1.0,
+                        Some(&program),
+                        &uniforms,
+                    )
+                    .unwrap();
+                let _ = frame.finish().unwrap();
+            }
+            let mapping = renderer
+                .copy_framebuffer(&target, Rectangle::from_size(size), Fourcc::Abgr8888)
+                .unwrap();
+            let rendered = renderer.map_texture(&mapping).unwrap();
+            let left = rendered[(16 * 32 + 8) * 4];
+            let right = rendered[(16 * 32 + 24) * 4];
+            assert!(
+                left.abs_diff(right) <= 2,
+                "opacity {opacity} leaked the original backdrop: {left} versus {right}"
+            );
+            let expected = (128.0 * (1.0 - super::BLURRED_MATERIAL_TINT * opacity)
+                + 25.5 * super::BLURRED_MATERIAL_TINT * opacity)
+                .round() as u8;
+            assert!(
+                left.abs_diff(expected) <= 2,
+                "opacity {opacity} failed to control tint: {left} versus {expected}"
+            );
+        }
+    }
 
     #[test]
     fn gradient_direction_survives_every_output_transform() {
