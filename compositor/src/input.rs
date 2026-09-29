@@ -864,7 +864,7 @@ impl Ferese {
                 }
             }
             BindingAction::Close => self.close_focused_window(),
-            BindingAction::Exit => self.loop_signal.stop(),
+            BindingAction::Exit => self.request_logout_confirmation(),
             BindingAction::Focus(direction) => self.focus_direction(direction),
             BindingAction::Move(direction) => self.move_direction(direction),
             BindingAction::Resize(direction) => self.resize_direction(direction),

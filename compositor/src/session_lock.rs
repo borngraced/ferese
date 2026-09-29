@@ -121,6 +121,7 @@ impl SessionLockHandler for Ferese {
         if self.session_lock.active {
             return;
         }
+        self.cancel_logout_confirmation();
         self.session_lock.active = true;
         self.session_lock.owner = Some(confirmation.ext_session_lock().clone());
         self.session_lock.confirmation = Some(confirmation);

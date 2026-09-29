@@ -7,6 +7,7 @@ mod notifications;
 mod recording;
 mod status;
 mod status_ui;
+mod system_modal;
 
 use cosmic::Element;
 use cosmic::app::{Core, Settings, Task};
@@ -174,6 +175,8 @@ struct FereseShell {
     calendar_offset: i32,
     status_error: Option<String>,
     menu: Option<status_ui::OpenMenu>,
+    power_modal: Option<system_modal::PowerModal>,
+    pending_power: Option<(window::Id, system_modal::PowerAction)>,
     note_editor: Option<DesktopNoteEditor>,
     note_drag: Option<NoteDrag>,
     note_pointer: std::collections::HashMap<window::Id, cosmic::iced::Point>,
@@ -249,6 +252,9 @@ enum Message {
     Control(status::Action),
     ConfirmPower(status::Action),
     CancelPower,
+    ExecutePower,
+    AnimatePower,
+    PowerCompleted(window::Id, Result<(), String>),
     CalendarMonth(i32),
     CalendarToday,
 }
@@ -286,6 +292,8 @@ impl cosmic::Application for FereseShell {
             calendar_offset: 0,
             status_error: None,
             menu: None,
+            power_modal: None,
+            pending_power: None,
             note_editor: None,
             note_drag: None,
             note_pointer: Default::default(),
@@ -322,6 +330,15 @@ impl cosmic::Application for FereseShell {
 
     fn subscription(&self) -> Subscription<Self::Message> {
         Subscription::batch([
+            if self
+                .power_modal
+                .as_ref()
+                .is_some_and(|modal| modal.motion.animating() || modal.motion.closing())
+            {
+                cosmic::iced::time::every(Duration::from_millis(16)).map(|_| Message::AnimatePower)
+            } else {
+                Subscription::none()
+            },
             self.notifications
                 .subscription()
                 .map(Message::NotificationEvent),
@@ -407,6 +424,8 @@ impl cosmic::Application for FereseShell {
             }
         }
 
+        self.update_power_materials();
+
         match message {
             Message::BeginNoteEdit(id) => {
                 let mut tasks = vec![self.finish_note_edit()];
@@ -490,6 +509,7 @@ impl cosmic::Application for FereseShell {
                         self.attach_effects(id, &surface)
                     }
                     Ok((_connection, surface)) => {
+                        self.attach_power_material(id, &surface);
                         if let Some(entry) = &mut self.notification_surface
                             && entry.id == id
                             && entry.effects.is_none()
@@ -609,11 +629,14 @@ impl cosmic::Application for FereseShell {
                 }
             }
             Message::ConfirmPower(action) => {
-                if let Some(menu) = &mut self.menu {
-                    menu.confirm = Some(action);
+                if let Some(action) = system_modal::PowerAction::from_status(action) {
+                    return self.open_power_modal(action, None);
                 }
                 Task::none()
             }
+            Message::ExecutePower => self.execute_power_modal(),
+            Message::AnimatePower => self.animate_power_modal(),
+            Message::PowerCompleted(id, result) => self.finish_power_action(id, result),
             Message::CalendarMonth(delta) => {
                 self.calendar_offset = (self.calendar_offset + delta).clamp(-1200, 1200);
                 Task::none()
@@ -622,13 +645,12 @@ impl cosmic::Application for FereseShell {
                 self.calendar_offset = 0;
                 Task::none()
             }
-            Message::CancelPower => {
-                if let Some(menu) = &mut self.menu {
-                    menu.confirm = None;
-                }
-                Task::none()
-            }
+            Message::CancelPower => self.close_power_modal(),
             Message::Control(action) => {
+                if let Some(action) = system_modal::PowerAction::from_status(action.clone()) {
+                    return self.open_power_modal(action, None);
+                }
+
                 if let status::Action::PowerProfile(profile) = action {
                     self.status_error = self
                         .status_service
@@ -738,7 +760,19 @@ impl cosmic::Application for FereseShell {
                         if self.bar_hidden(self.bar_surface_id) {
                             tasks.push(self.destroy_menu());
                         }
-                        return Task::batch(tasks);
+                        reload_task = Task::batch(tasks);
+                    }
+                    for serial in poll.logout_cancelled {
+                        reload_task = Task::batch([reload_task, self.cancel_logout_modal(serial)]);
+                    }
+                    if let Some((serial, output)) = poll.logout {
+                        reload_task = Task::batch([
+                            reload_task,
+                            self.open_power_modal(
+                                system_modal::PowerAction::Logout(serial),
+                                Some(&output),
+                            ),
+                        ]);
                     }
                 }
                 reload_task
@@ -904,7 +938,11 @@ impl FereseShell {
                     Task::none()
                 };
 
-                let mut tasks = vec![destroy_layer_surface(entry.bar), menu];
+                let mut tasks = vec![
+                    destroy_layer_surface(entry.bar),
+                    menu,
+                    self.destroy_power_modal(true),
+                ];
                 if self.note_drag.as_ref().is_some_and(|drag| {
                     entry.clock == Some(drag.source)
                         || entry.notes.iter().any(|(_, id)| *id == drag.source)
@@ -1046,6 +1084,7 @@ impl FereseShell {
             Task::batch(tasks),
             self.rebuild_clocks(false),
             self.rebuild_notes(false),
+            self.destroy_power_modal(true),
         ])
     }
 
@@ -1836,6 +1875,9 @@ impl FereseShell {
                 ..
             })
         ) {
+            if self.power_modal.is_some() {
+                return self.close_power_modal();
+            }
             if self.note_drag.is_some() {
                 return self.finish_note_drag(false);
             }
@@ -1857,6 +1899,10 @@ impl FereseShell {
             Event::Window(window::Event::Opened { .. })
                 if self.outputs.iter().any(|entry| entry.bar == id)
                     || self.menu.as_ref().is_some_and(|menu| menu.id == id)
+                    || self
+                        .power_modal
+                        .as_ref()
+                        .is_some_and(|modal| modal.contains(id))
                     || self
                         .notification_surface
                         .as_ref()
@@ -1944,6 +1990,14 @@ impl FereseShell {
                 EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
                 Task::none()
             }
+            Event::Window(window::Event::Closed)
+                if self
+                    .power_modal
+                    .as_ref()
+                    .is_some_and(|modal| modal.contains(id)) =>
+            {
+                self.close_power_modal()
+            }
             Event::Window(window::Event::Closed) => Task::none(),
             Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(
                 _,
@@ -2002,6 +2056,7 @@ impl FereseShell {
                 layer_id,
             ))) if self.outputs.iter().any(|entry| entry.bar == layer_id) => {
                 self.attach_effects(layer_id, &surface);
+                self.attach_power_material(layer_id, &surface);
                 Task::none()
             }
             _ => Task::none(),
@@ -2644,6 +2699,14 @@ impl EffectsBinding {
     }
 
     fn set_regions(&self, regions: &[[i32; 5]]) -> Result<(), Box<dyn std::error::Error>> {
+        self.set_material_regions(regions, ferese_surface_effects_v1::Role::Popover)
+    }
+
+    fn set_material_regions(
+        &self,
+        regions: &[[i32; 5]],
+        role: ferese_surface_effects_v1::Role,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         if self.surface.version() < 2 || self.regions.borrow().as_deref() == Some(regions) {
             return Ok(());
         }
@@ -2656,8 +2719,7 @@ impl EffectsBinding {
         if regions.is_empty() {
             self.surface.clear_role();
         } else {
-            self.surface
-                .set_role(ferese_surface_effects_v1::Role::Popover);
+            self.surface.set_role(role);
         }
         self.connection.flush()?;
         *self.regions.borrow_mut() = Some(regions.to_vec());

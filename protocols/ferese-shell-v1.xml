@@ -22,7 +22,7 @@
     DEALINGS IN THE SOFTWARE.
   </copyright>
 
-  <interface name="ferese_shell_manager_v1" version="2">
+  <interface name="ferese_shell_manager_v1" version="3">
     <description summary="create a capability-scoped Ferese shell controller">
       This private global is visible only to clients granted the shell-control
       capability. It does not assign a Wayland surface role.
@@ -35,7 +35,7 @@
     <request name="destroy" type="destructor"/>
   </interface>
 
-  <interface name="ferese_shell_v1" version="2">
+  <interface name="ferese_shell_v1" version="3">
     <description summary="managed-window metadata and shell control">
       Window, workspace, and output identifiers are unsigned 64-bit values
       encoded as high and low 32-bit words. Each snapshot atomically replaces
@@ -143,5 +143,18 @@
       <arg name="source" type="string"/>
     </event>
     <event name="config_end" since="2"/>
+    <request name="confirm_logout" since="3">
+      <arg name="serial" type="uint"/>
+    </request>
+    <request name="cancel_logout" since="3">
+      <arg name="serial" type="uint"/>
+    </request>
+    <event name="logout_cancelled" since="3">
+      <arg name="serial" type="uint"/>
+    </event>
+    <event name="logout_requested" since="3">
+      <arg name="serial" type="uint"/>
+      <arg name="output_name" type="string"/>
+    </event>
   </interface>
 </protocol>

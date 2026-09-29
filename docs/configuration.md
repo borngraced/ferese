@@ -454,3 +454,5 @@ Settings → Windows. `theme.geometry.shell_radius` takes precedence over the ol
 `appearance.corner_radius` and then `theme.geometry.top_bar_radius` keys; when
 none are set, the shell uses 14 px. Legacy clock/note radius fields no longer
 override shell rounding.
+
+Power actions use a centered system confirmation. The `exit` key binding (Super+Shift+E by default) requests logout confirmation; `feresectl request-logout` does the same. `feresectl exit` remains an immediate administrative exit.

@@ -14,7 +14,7 @@ use smithay::{
 use crate::{Ferese, private_client::ClientCapabilities, state::ClientState};
 
 pub(crate) fn init_global(display: &DisplayHandle) {
-    display.create_global::<Ferese, FereseShellManagerV1, _>(2, ());
+    display.create_global::<Ferese, FereseShellManagerV1, _>(3, ());
 }
 
 pub(crate) fn config_chunks(source: &str) -> Vec<&str> {
@@ -136,6 +136,21 @@ impl Dispatch<FereseShellV1, ()> for Ferese {
                     );
                 }
             }
+            ferese_shell_v1::Request::ConfirmLogout { serial } => {
+                if state.logout_owner.as_ref() == Some(&shell.id())
+                    && consume_logout_confirmation(&mut state.pending_logout, serial)
+                {
+                    state.logout_owner = None;
+                    state.loop_signal.stop();
+                }
+            }
+            ferese_shell_v1::Request::CancelLogout { serial } => {
+                if state.logout_owner.as_ref() == Some(&shell.id())
+                    && state.pending_logout == Some(serial)
+                {
+                    state.cancel_logout_confirmation();
+                }
+            }
             ferese_shell_v1::Request::EnterOverview => state.set_overview_active(true),
             ferese_shell_v1::Request::ExitOverview => state.set_overview_active(false),
             ferese_shell_v1::Request::SelectOverviewWindow {
@@ -152,13 +167,78 @@ impl Dispatch<FereseShellV1, ()> for Ferese {
                     );
                 }
             }
-            ferese_shell_v1::Request::Destroy => {}
+            ferese_shell_v1::Request::Destroy => {
+                if state.logout_owner.as_ref() == Some(&shell.id()) {
+                    state.cancel_logout_confirmation();
+                }
+            }
             _ => unreachable!(),
+        }
+    }
+
+    fn destroyed(
+        state: &mut Self,
+        _client: smithay::reexports::wayland_server::backend::ClientId,
+        shell: &FereseShellV1,
+        _data: &(),
+    ) {
+        if state.logout_owner.as_ref() == Some(&shell.id()) {
+            state.pending_logout = None;
+            state.logout_owner = None;
         }
     }
 }
 
+fn consume_logout_confirmation(pending: &mut Option<u32>, serial: u32) -> bool {
+    if *pending == Some(serial) {
+        *pending = None;
+        true
+    } else {
+        false
+    }
+}
+
 impl Ferese {
+    pub(crate) fn request_logout_confirmation(&mut self) {
+        if self.session_lock.active {
+            return;
+        }
+        let shells = self
+            .shell_resources
+            .iter()
+            .filter_map(|shell| shell.upgrade().ok())
+            .filter(|shell| shell.version() >= 3)
+            .collect::<Vec<_>>();
+        if shells.is_empty() {
+            tracing::warn!("logout confirmation requires the updated Ferese shell");
+            return;
+        }
+        self.cancel_logout_confirmation();
+        let serial = u32::from(smithay::utils::SERIAL_COUNTER.next_serial());
+        let shell = &shells[0];
+        self.pending_logout = Some(serial);
+        self.logout_owner = Some(shell.id());
+        let output_name = self
+            .focused_output()
+            .map_or_else(String::new, |output| output.name());
+        shell.logout_requested(serial, output_name);
+    }
+
+    pub(crate) fn cancel_logout_confirmation(&mut self) {
+        if let Some(serial) = self.pending_logout.take() {
+            for shell in self
+                .shell_resources
+                .iter()
+                .filter_map(|shell| shell.upgrade().ok())
+            {
+                if self.logout_owner.as_ref() == Some(&shell.id()) && shell.version() >= 3 {
+                    shell.logout_cancelled(serial);
+                }
+            }
+        }
+        self.logout_owner = None;
+    }
+
     pub(crate) fn send_shell_snapshots(&mut self) {
         self.shell_resources
             .retain(|resource| resource.upgrade().is_ok());
@@ -427,6 +507,16 @@ fn send_request_failed(shell: &FereseShellV1, request: ferese_shell_v1::FailedRe
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn logout_requires_the_current_confirmation_and_can_be_cancelled() {
+        let mut pending = Some(42);
+        assert!(!super::consume_logout_confirmation(&mut pending, 41));
+        assert_eq!(pending, Some(42));
+        assert!(super::consume_logout_confirmation(&mut pending, 42));
+        assert_eq!(pending, None);
+        assert!(!super::consume_logout_confirmation(&mut pending, 42));
+    }
+
     use super::*;
 
     #[test]

@@ -13,7 +13,7 @@ use ferese_protocols::shell::v1::client::{
     ferese_shell_v1::{self, FereseShellV1},
 };
 use wayland_client::{
-    Connection, Dispatch, QueueHandle, WEnum, delegate_noop,
+    Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop,
     globals::{GlobalListContents, registry_queue_init},
     protocol::wl_registry,
 };
@@ -63,6 +63,8 @@ pub(crate) struct ControlPoll {
     pub(crate) snapshot: Option<ShellSnapshot>,
     pub(crate) overview_active: Option<bool>,
     pub(crate) disconnected: bool,
+    pub(crate) logout: Option<(u32, String)>,
+    pub(crate) logout_cancelled: Vec<u32>,
 }
 
 enum ControlUpdate {
@@ -70,6 +72,8 @@ enum ControlUpdate {
     Snapshot(ShellSnapshot),
     OverviewState(bool),
     Disconnected,
+    Logout(u32, String),
+    LogoutCancelled(u32),
 }
 
 impl ShellControl {
@@ -77,7 +81,7 @@ impl ShellControl {
         let connection = control_connection()?;
         let (globals, mut queue) = registry_queue_init::<ControlState>(&connection)?;
         let qh = queue.handle();
-        let manager = globals.bind::<FereseShellManagerV1, _, _>(&qh, 1..=2, ())?;
+        let manager = globals.bind::<FereseShellManagerV1, _, _>(&qh, 1..=3, ())?;
         let shell = manager.get_shell(&qh, ());
         let (sender, updates) = mpsc::channel();
         let mut state = ControlState::new(sender);
@@ -104,10 +108,23 @@ impl ShellControl {
             snapshot: None,
             overview_active: None,
             disconnected: false,
+            logout: None,
+            logout_cancelled: Vec::new(),
         };
 
         loop {
             match self.updates.try_recv() {
+                Ok(ControlUpdate::Logout(serial, output)) => poll.logout = Some((serial, output)),
+                Ok(ControlUpdate::LogoutCancelled(serial)) => {
+                    if poll
+                        .logout
+                        .as_ref()
+                        .is_some_and(|(pending, _)| *pending == serial)
+                    {
+                        poll.logout = None;
+                    }
+                    poll.logout_cancelled.push(serial);
+                }
                 Ok(ControlUpdate::Config(source)) => poll.config = Some(source),
                 Ok(ControlUpdate::Snapshot(snapshot)) => poll.snapshot = Some(snapshot),
                 Ok(ControlUpdate::OverviewState(active)) => poll.overview_active = Some(active),
@@ -131,6 +148,20 @@ impl ShellControl {
         let (hi, lo) = split_id(id);
         self.shell.activate_window(hi, lo);
         let _ = self.connection.flush();
+    }
+
+    pub(crate) fn confirm_logout(&self, serial: u32) {
+        if self.shell.version() >= 3 {
+            self.shell.confirm_logout(serial);
+            let _ = self.connection.flush();
+        }
+    }
+
+    pub(crate) fn cancel_logout(&self, serial: u32) {
+        if self.shell.version() >= 3 {
+            self.shell.cancel_logout(serial);
+            let _ = self.connection.flush();
+        }
     }
 
     pub(crate) fn set_overview_active(&self, active: bool) {
@@ -281,6 +312,17 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
                 let _ = state
                     .sender
                     .send(ControlUpdate::Snapshot(state.pending.clone()));
+            }
+            ferese_shell_v1::Event::LogoutRequested {
+                serial,
+                output_name,
+            } => {
+                let _ = state
+                    .sender
+                    .send(ControlUpdate::Logout(serial, output_name));
+            }
+            ferese_shell_v1::Event::LogoutCancelled { serial } => {
+                let _ = state.sender.send(ControlUpdate::LogoutCancelled(serial));
             }
             ferese_shell_v1::Event::OverviewState { active } => {
                 let _ = state.sender.send(ControlUpdate::OverviewState(active != 0));

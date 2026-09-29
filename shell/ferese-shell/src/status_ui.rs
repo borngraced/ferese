@@ -71,7 +71,6 @@ pub struct OpenMenu {
     pub id: window::Id,
     pub kind: Menu,
     pub motion: super::motion::PopupMotion,
-    pub confirm: Option<Action>,
     pub effects: Option<EffectsBinding>,
     pub regions: super::motion::Regions,
 }
@@ -118,7 +117,6 @@ impl FereseShell {
             id,
             kind,
             motion: super::motion::PopupMotion::new(self.config.animations),
-            confirm: None,
             effects: None,
             regions: Default::default(),
         });
@@ -456,30 +454,7 @@ impl FereseShell {
         if kind != Menu::Calendar {
             rows = rows.push(heading);
         }
-        if let Some(action) = &menu.confirm {
-            let title = match action {
-                Action::Poweroff => "Power off this computer?",
-                Action::Suspend => "Suspend this computer?",
-                _ => "Restart this computer?",
-            };
-            rows = rows
-                .push(text(title))
-                .push(
-                    text(if matches!(action, Action::Suspend) {
-                        "The session will not be locked. Anyone can access it after waking."
-                    } else {
-                        "Save your work before continuing."
-                    })
-                    .size(13),
-                )
-                .push(
-                    row![
-                        menu_button("Cancel", Message::CancelPower, primary, p),
-                        menu_button("Confirm", Message::Control(action.clone()), primary, p)
-                    ]
-                    .spacing(8),
-                );
-        } else if kind == Menu::Calendar {
+        if kind == Menu::Calendar {
             rows = rows.push(calendar_grid(self.calendar_offset, theme, p));
         } else {
             let combined = menu.kind == Menu::System;
@@ -1397,7 +1372,6 @@ mod tests {
             id: window::Id::unique(),
             kind: Menu::Network,
             motion,
-            confirm: None,
             effects: None,
             regions: Default::default(),
         };

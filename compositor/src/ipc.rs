@@ -321,6 +321,7 @@ impl Ferese {
     fn dispatch_ipc_command(&mut self, command: &str, args: &Value) -> Result<Value, CommandError> {
         match command {
             "exit" => {} // The IPC worker stops the loop after writing the response.
+            "request-logout" => self.request_logout_confirmation(),
             "reload-config" => self
                 .reload_config()
                 .map_err(|e| CommandError::new("invalid_config", e))?,

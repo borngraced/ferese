@@ -254,13 +254,17 @@ pub fn available(program: &str) -> bool {
 }
 
 fn run(program: &str, args: &[&str]) -> Result<String, String> {
+    run_with_timeout(program, args, "2s")
+}
+
+fn run_with_timeout(program: &str, args: &[&str], timeout: &str) -> Result<String, String> {
     if !available(program) {
         return Err(format!("{program} is not installed"));
     }
 
     // Coreutils timeout bounds disconnected D-Bus services, too. Never invoke a shell.
     let output = Command::new("timeout")
-        .args(["--kill-after=1s", "2s", program])
+        .args(["--kill-after=1s", timeout, program])
         .args(args)
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
@@ -517,6 +521,16 @@ fn notifications(bus: &mut StatusBus) -> Option<Notifications> {
         _ => return None,
     };
     Some(Notifications { count, dnd })
+}
+
+pub(super) fn execute_power(action: Action) -> Result<(), String> {
+    let action = match action {
+        Action::Poweroff => "poweroff",
+        Action::Reboot => "reboot",
+        Action::Suspend => "suspend",
+        _ => return Err("Invalid power action".to_owned()),
+    };
+    run_with_timeout("systemctl", &[action], "120s").map(|_| ())
 }
 
 fn execute(action: &Action, settings: Option<&[String]>) -> Result<(), String> {
