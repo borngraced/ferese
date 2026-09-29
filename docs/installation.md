@@ -13,7 +13,7 @@ desktop instead of direct access to the graphics device.
 
 Build with **Rust 1.95 or newer**, a C/C++ toolchain, CMake, pkg-config, and the
 native development libraries below. The installer builds Ferese, its shell,
-Settings, command-line tools, locker, polkit agent, and ScreenCast portal together. It does not install system
+Settings, command-line tools, locker, polkit agent, and desktop portal backend together. It does not install system
 packages or enable background services at boot. On systemd systems, the installed
 session helper activates `ferese-session.target` after exporting the compositor's
 Wayland display, and stops it when the shell exits. This keeps
@@ -105,7 +105,7 @@ The installer adds:
 - Commands under `/usr/local/bin/`, including `ferese-session`, `ferese-settings`,
   `feresectl`, `ferese-lock`, `ferese-polkit-agent`, `ferese-screenshot`, and
   `xdg-desktop-portal-ferese`, and `ferese-record`.
-- D-Bus activation and Ferese-specific ScreenCast portal registration.
+- D-Bus activation and Ferese-specific desktop portal registration.
 - A Wayland session entry at `/usr/share/wayland-sessions/ferese.desktop`.
 - A Settings application entry, icons, the default wallpaper, and an example config.
 - `/etc/pam.d/ferese-lock`, using your distribution's authentication stack.

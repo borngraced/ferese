@@ -73,7 +73,12 @@ pub fn resolve(
     let mut result = WindowRuleResult::default();
     if matches!(
         app_id.as_deref(),
-        Some("dev.ferese.authentication" | "dev.ferese.screenshare" | "dev.ferese.screenshot")
+        Some(
+            "dev.ferese.authentication"
+                | "dev.ferese.screenshare"
+                | "dev.ferese.screenshot"
+                | "dev.ferese.portaldialog"
+        )
     ) {
         result.floating = Some(true);
     }
@@ -217,6 +222,7 @@ mod tests {
     #[test]
     fn native_dialogs_float_by_default_and_allow_user_overrides() {
         for app_id in [
+            "dev.ferese.PortalDialog",
             "dev.ferese.ScreenShare",
             "dev.ferese.ScreenShare.desktop",
             "dev.ferese.Authentication",

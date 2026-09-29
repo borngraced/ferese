@@ -258,7 +258,7 @@ impl Picker {
     }
 }
 
-fn appearance() -> (
+pub(crate) fn appearance() -> (
     cosmic::Theme,
     cosmic::font::Font,
     cosmic::iced::Color,

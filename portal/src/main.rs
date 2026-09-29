@@ -1,6 +1,10 @@
 mod backend;
 mod capture;
+mod consent;
+mod desktop;
+mod parent;
 mod picker;
+mod settings;
 mod stream;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -16,6 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         [flag] if flag == "--picker" => picker::run(),
+        [flag] if flag == "--consent" => consent::run(),
         [] => tokio::runtime::Runtime::new()?.block_on(backend::run()),
         _ => Err("Usage: xdg-desktop-portal-ferese [--sources]".into()),
     }

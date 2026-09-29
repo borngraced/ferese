@@ -1,0 +1,183 @@
+use cosmic::{
+    Element,
+    app::{Core, Settings, Task},
+    iced::{Alignment, Length},
+    widget::{button, column, container, image, row, scrollable},
+};
+use serde::{Deserialize, Serialize};
+use std::io::{Read, Write};
+
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct Prompt {
+    pub title: String,
+    pub description: String,
+    pub accept: String,
+    pub parent: String,
+    pub image: Option<std::path::PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+enum Message {
+    Opened(cosmic::iced::window::Id),
+    Attached(
+        Result<
+            (
+                Option<std::sync::Arc<crate::parent::Parent>>,
+                Result<ferese_theme::material::ModalMaterial, String>,
+            ),
+            String,
+        >,
+    ),
+    Accept,
+    Cancel,
+}
+
+struct Consent {
+    core: Core,
+    prompt: Prompt,
+    material: Option<ferese_theme::material::ModalMaterial>,
+    parent: Option<std::sync::Arc<crate::parent::Parent>>,
+    palette: ferese_theme::Palette,
+    font: cosmic::font::Font,
+    background: cosmic::iced::Color,
+}
+
+pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let mut input = String::new();
+    std::io::stdin()
+        .take(64 * 1024)
+        .read_to_string(&mut input)?;
+    let prompt: Prompt = serde_json::from_str(&input)?;
+    let (theme, font, background, _) = crate::picker::appearance();
+    let height = if prompt.image.is_some() { 430. } else { 220. };
+    cosmic::app::run::<Consent>(
+        Settings::default()
+            .size(cosmic::iced::Size::new(440., height))
+            .client_decorations(false)
+            .transparent(true)
+            .theme(theme)
+            .default_font(font)
+            .default_text_size(14.)
+            .is_daemon(false),
+        (prompt, font, background),
+    )?;
+    Ok(())
+}
+
+impl cosmic::Application for Consent {
+    type Executor = cosmic::executor::Default;
+    type Flags = (Prompt, cosmic::font::Font, cosmic::iced::Color);
+    type Message = Message;
+    const APP_ID: &'static str = "dev.ferese.PortalDialog";
+
+    fn core(&self) -> &Core {
+        &self.core
+    }
+    fn core_mut(&mut self) -> &mut Core {
+        &mut self.core
+    }
+
+    fn init(mut core: Core, (prompt, font, background): Self::Flags) -> (Self, Task<Message>) {
+        core.window.show_headerbar = false;
+        core.window.border_padding = Some(0);
+        core.window.content_container = false;
+        let app = Self {
+            core,
+            prompt,
+            material: None,
+            parent: None,
+            palette: {
+                let document = ferese_config::config_path()
+                    .and_then(|path| std::fs::read_to_string(path).ok())
+                    .and_then(|source| ferese_config::Document::parse(&source).ok());
+                ferese_theme::Palette::from_document(document.as_ref())
+            },
+            font,
+            background,
+        };
+        (app, Task::none())
+    }
+
+    fn subscription(&self) -> cosmic::iced::Subscription<Message> {
+        cosmic::iced::event::listen_with(|event, _, id| match event {
+            cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => {
+                Some(Message::Opened(id))
+            }
+            cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+                key: cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::Escape),
+                ..
+            }) => Some(Message::Cancel),
+            _ => None,
+        })
+    }
+
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::Opened(id) => {
+                let parent = self.prompt.parent.clone();
+                return cosmic::iced::window::run(id, move |window| {
+                    let parent =
+                        crate::parent::Parent::attach(window, &parent)?.map(std::sync::Arc::new);
+                    Ok((
+                        parent,
+                        ferese_theme::material::ModalMaterial::attach(window),
+                    ))
+                })
+                .map(|result| cosmic::Action::App(Message::Attached(result)));
+            }
+            Message::Attached(Ok((parent, material))) => {
+                self.parent = parent;
+                self.material = material.ok();
+            }
+            Message::Attached(Err(error)) => {
+                eprintln!("ferese portal: {error}");
+                return cosmic::iced::exit();
+            }
+            Message::Accept => {
+                println!("true");
+                let _ = std::io::stdout().flush();
+                return cosmic::iced::exit();
+            }
+            Message::Cancel => return cosmic::iced::exit(),
+        }
+        Task::none()
+    }
+
+    fn style(&self) -> Option<cosmic::iced::theme::Style> {
+        Some(self.palette.application_style(if self.material.is_some() {
+            cosmic::iced::Color::TRANSPARENT
+        } else {
+            self.background
+        }))
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        let text = |value: String| ferese_theme::text(value, self.font);
+        let mut content = column![
+            text(self.prompt.title.clone()).size(22),
+            scrollable(text(self.prompt.description.clone())).height(Length::Fill)
+        ]
+        .spacing(16);
+        if let Some(path) = &self.prompt.image {
+            content = content.push(
+                image(image::Handle::from_path(path))
+                    .height(Length::Fill)
+                    .width(Length::Fill)
+                    .content_fit(cosmic::iced::ContentFit::Contain),
+            );
+        }
+        content = content.push(
+            row![
+                button::custom(text("Cancel".into()))
+                    .class(cosmic::theme::Button::Text)
+                    .on_press(Message::Cancel),
+                button::custom(text(self.prompt.accept.clone()))
+                    .class(ferese_theme::accent_button())
+                    .on_press(Message::Accept)
+            ]
+            .spacing(12)
+            .align_y(Alignment::Center),
+        );
+        container(content).padding(24).width(Length::Fill).into()
+    }
+}

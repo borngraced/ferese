@@ -47,7 +47,9 @@ The [standard installer](installation.md) builds and installs the backend, its
 D-Bus activation entry, and a Ferese-specific portal preference file. Install
 `pipewire`, a PipeWire session manager such as `wireplumber`,
 `xdg-desktop-portal`, and `xdg-desktop-portal-gtk` using your distribution's package
-manager. The GTK backend supplies other portal interfaces such as file selection.
+manager. The GTK backend supplies standard dialogs such as file selection. Ferese also
+provides native Settings, Screenshot and Wallpaper services; see
+[desktop portals](portals.md).
 The built-in recorder also needs GStreamer’s PipeWire, base, and good plugins
 (`pipewiresrc`, `videoconvert`, `vp8enc`, and `webmmux`). The installation guide
 includes these packages.

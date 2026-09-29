@@ -25,8 +25,7 @@ use zbus::{
     object_server::SignalEmitter,
     zvariant::{OwnedObjectPath, OwnedValue, Value},
 };
-type Options = HashMap<String, OwnedValue>;
-type Reply = (u32, Options);
+pub(crate) type Options = HashMap<String, OwnedValue>;
 #[derive(Debug)]
 enum StartError {
     Cancelled,
@@ -45,16 +44,16 @@ impl From<&str> for StartError {
 const FRONTEND: &str = "org.freedesktop.portal.Desktop";
 const PATH: &str = "/org/freedesktop/portal/desktop";
 #[derive(Default)]
-struct Cancel {
-    stopped: AtomicBool,
+pub(crate) struct Cancel {
+    pub(crate) stopped: AtomicBool,
     changed: Notify,
 }
 impl Cancel {
-    fn stop(&self) {
+    pub(crate) fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         self.changed.notify_one();
     }
-    async fn wait(&self) {
+    pub(crate) async fn wait(&self) {
         if !self.stopped.load(Ordering::SeqCst) {
             self.changed.notified().await;
         }
@@ -147,7 +146,10 @@ fn shell_recorder(pid: u32) -> bool {
     parent.is_some_and(|pid| matches_binary(pid, "ferese-shell") == Some(true))
 }
 
-async fn authorize(connection: &Connection, header: &Header<'_>) -> zbus::fdo::Result<String> {
+pub(crate) async fn authorize(
+    connection: &Connection,
+    header: &Header<'_>,
+) -> zbus::fdo::Result<String> {
     let sender = header
         .sender()
         .ok_or_else(|| zbus::fdo::Error::AccessDenied("Missing caller".into()))?;
@@ -155,7 +157,7 @@ async fn authorize(connection: &Connection, header: &Header<'_>) -> zbus::fdo::R
     let owner = dbus.get_name_owner(FRONTEND.try_into().unwrap()).await?;
     if sender.as_str() != owner.as_str() {
         return Err(zbus::fdo::Error::AccessDenied(
-            "Use the ScreenCast desktop portal".into(),
+            "Use the desktop portal".into(),
         ));
     }
     Ok(sender.to_string())
@@ -230,7 +232,7 @@ impl Backend {
         _options: Options,
         #[zbus(connection)] connection: &Connection,
         #[zbus(header)] header: Header<'_>,
-    ) -> zbus::fdo::Result<Reply> {
+    ) -> zbus::fdo::Result<(u32, Options)> {
         let owner = authorize(connection, &header).await?;
         if !session_handle
             .as_str()
@@ -281,7 +283,7 @@ impl Backend {
         options: Options,
         #[zbus(connection)] connection: &Connection,
         #[zbus(header)] header: Header<'_>,
-    ) -> zbus::fdo::Result<Reply> {
+    ) -> zbus::fdo::Result<(u32, Options)> {
         let owner = authorize(connection, &header).await?;
         let settings = source_options(&options);
         let mut sessions = self.sessions.lock().await;
@@ -318,7 +320,7 @@ impl Backend {
         _options: Options,
         #[zbus(connection)] connection: &Connection,
         #[zbus(header)] header: Header<'_>,
-    ) -> zbus::fdo::Result<Reply> {
+    ) -> zbus::fdo::Result<(u32, Options)> {
         let owner = authorize(connection, &header).await?;
         if !handle
             .as_str()
@@ -413,9 +415,9 @@ impl Backend {
         }
     }
 }
-struct Request {
-    cancel: Arc<Cancel>,
-    owner: String,
+pub(crate) struct Request {
+    pub(crate) cancel: Arc<Cancel>,
+    pub(crate) owner: String,
 }
 #[zbus::interface(name = "org.freedesktop.impl.portal.Request")]
 impl Request {
@@ -449,8 +451,12 @@ impl SessionObject {
     async fn closed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 // All helpers die with the service, including a picker awaiting user input.
-fn child_command() -> Result<Command, String> {
-    let mut command = Command::new(std::env::current_exe().map_err(|e| e.to_string())?);
+pub(crate) fn child_command() -> Result<Command, String> {
+    child_command_for(std::env::current_exe().map_err(|e| e.to_string())?)
+}
+
+pub(crate) fn child_command_for(program: impl AsRef<std::ffi::OsStr>) -> Result<Command, String> {
+    let mut command = Command::new(program);
     let parent = std::process::id() as libc::pid_t;
     // SAFETY: only async-signal-safe libc calls run between fork and exec.
     unsafe {
@@ -585,21 +591,24 @@ async fn supervise(mut children: Vec<Child>, cancel: Arc<Cancel>) {
 }
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let backend = Backend::default();
+    let settings = crate::settings::Settings::new();
+    let requests = crate::desktop::Requests::default();
     let connection = zbus::connection::Builder::session()?
         .name("org.freedesktop.impl.portal.desktop.ferese")?
         .serve_at(PATH, backend.clone())?
+        .serve_at(PATH, settings.clone())?
+        .serve_at(PATH, crate::desktop::Screenshot(requests.clone()))?
+        .serve_at(PATH, crate::desktop::Wallpaper(requests.clone()))?
         .serve_at(
             "/org/ferese/ScreenRecorder",
             RecorderControl(backend.clone()),
         )?
         .build()
         .await?;
+    tokio::spawn(settings.watch(connection.clone()));
     // Frontend death must revoke every stream, even if Session.Close never arrives.
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        if backend.sessions.lock().await.is_empty() {
-            continue;
-        }
         let owner = match zbus::fdo::DBusProxy::new(&connection).await {
             Ok(proxy) => proxy
                 .get_name_owner(FRONTEND.try_into().unwrap())
@@ -608,6 +617,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|name| name.to_string()),
             Err(_) => None,
         };
+        requests.revoke_stale(owner.as_deref()).await;
         let stale: Vec<_> = backend
             .sessions
             .lock()

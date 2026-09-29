@@ -104,6 +104,7 @@ Settings → Shortcuts** to change them or assign gestures to other actions.
 - [Desktop widgets](docs/desktop-widgets.md)
 - [Notifications](docs/notifications.md)
 - [Native locker](docs/locking.md)
+- [Desktop portals and compatibility](docs/portals.md)
 - [Screen sharing and recording](docs/screen-sharing.md)
 
 ## Development

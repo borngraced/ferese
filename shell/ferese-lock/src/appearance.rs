@@ -30,7 +30,8 @@ impl Appearance {
         };
         let palette = ferese_theme::Palette::from_document(doc.as_ref());
         let font = string("theme.typography.font_family", "Inter");
-        let path = string("theme.background.path", ferese_config::default_wallpaper());
+        let background = string("theme.background.path", ferese_config::default_wallpaper());
+        let path = string("theme.background.lock_path", &background);
         let path = if let Some(tail) = path.strip_prefix("~/") {
             std::env::var("HOME")
                 .map(|home| format!("{home}/{tail}"))

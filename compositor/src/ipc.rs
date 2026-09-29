@@ -341,6 +341,17 @@ impl Ferese {
             "expel" => self.expel_focused_window(),
             "close" => self.close_focused_window(),
             "get-focused-window" => return Ok(self.focused_window_json()),
+            "get-windows" => return Ok(self.windows_json()),
+            "has-client-surfaces" => {
+                let pid = args
+                    .get("pid")
+                    .and_then(Value::as_u64)
+                    .and_then(|pid| u32::try_from(pid).ok())
+                    .ok_or_else(|| {
+                        CommandError::new("invalid_argument", "pid must be an unsigned process ID")
+                    })?;
+                return Ok(json!(self.has_client_surfaces(pid)));
+            }
             "get-workspaces" => return Ok(self.workspaces_json()),
             "get-outputs" => return Ok(self.outputs_json()),
             _ => {
@@ -504,6 +515,64 @@ impl Ferese {
         self.focused_window
             .map(|window| json!({ "id": window.0 }))
             .unwrap_or(Value::Null)
+    }
+
+    fn has_client_surfaces(&self, pid: u32) -> bool {
+        use smithay::reexports::wayland_server::Resource;
+        let belongs_to =
+            |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface| {
+                surface
+                    .client()
+                    .and_then(|client| client.get_credentials(&self.display_handle).ok())
+                    .is_some_and(|credentials| credentials.pid as u32 == pid)
+            };
+        self.window_ids
+            .keys()
+            .filter_map(|window| window.toplevel())
+            .any(|toplevel| belongs_to(toplevel.wl_surface()))
+            || self.space.outputs().any(|output| {
+                smithay::desktop::layer_map_for_output(output)
+                    .layers()
+                    .any(|layer| belongs_to(layer.wl_surface()))
+            })
+    }
+
+    fn windows_json(&self) -> Value {
+        use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData};
+        let mut windows = self
+            .window_ids
+            .iter()
+            .filter_map(|(window, id)| {
+                let toplevel = window.toplevel()?;
+                let (app_id, title) = with_states(toplevel.wl_surface(), |states| {
+                    let attributes = states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .unwrap()
+                        .lock()
+                        .unwrap();
+                    (
+                        attributes.app_id.clone().unwrap_or_default(),
+                        attributes.title.clone().unwrap_or_default(),
+                    )
+                });
+                let rect = self.visual_rect_for_window(window)?;
+                Some(json!({
+                    "id": id.0,
+                    "app_id": app_id,
+                    "title": title,
+                    "focused": self.focused_window == Some(*id),
+                    "mapped": self.space.element_location(window).is_some(),
+                    "workspace": self.workspaces.workspace_for_window(*id).map(|workspace| workspace.0),
+                    "x": rect.loc.x,
+                    "y": rect.loc.y,
+                    "width": rect.size.w,
+                    "height": rect.size.h,
+                }))
+            })
+            .collect::<Vec<_>>();
+        windows.sort_by_key(|window| window["id"].as_u64());
+        Value::Array(windows)
     }
 
     fn workspaces_json(&self) -> Value {
