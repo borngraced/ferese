@@ -515,7 +515,14 @@ impl WorkspaceSet {
         self.active = workspace;
 
         debug_assert!(self.validate().is_ok());
-        Ok(self.active().fullscreen.or(self.active().last_focused))
+        let focused = self.active().last_focused;
+        let visible_floating = focused.filter(|window| {
+            matches!(
+                self.placement(*window),
+                Some(WindowPlacement::Floating { .. })
+            )
+        });
+        Ok(visible_floating.or(self.active().fullscreen).or(focused))
     }
 
     pub fn workspace(&self, id: WorkspaceId) -> Option<&Workspace> {
@@ -631,11 +638,13 @@ impl WorkspaceSet {
                 "focused window is not on the active workspace",
             ));
         }
-        if self
-            .active()
-            .fullscreen
-            .is_some_and(|fullscreen| fullscreen != window)
-        {
+        if self.active().fullscreen.is_some_and(|fullscreen| {
+            fullscreen != window
+                && !matches!(
+                    self.placement(window),
+                    Some(WindowPlacement::Floating { .. })
+                )
+        }) {
             return Err(WorkspaceError::InvalidState(
                 "focused window is hidden by fullscreen",
             ));
@@ -823,7 +832,7 @@ impl WorkspaceSet {
             .get_mut(&workspace_id)
             .ok_or(WorkspaceError::UnknownWorkspace(workspace_id))?;
         workspace.floating.push(window);
-        if focus && workspace.fullscreen.is_none() {
+        if focus {
             workspace.last_focused = Some(window);
         }
         self.window_workspaces.insert(window, workspace_id);
@@ -1610,6 +1619,31 @@ mod tests {
         assert_eq!(workspaces.active().last_focused, Some(WindowId(1)));
         assert_eq!(workspaces.active().fullscreen, Some(WindowId(1)));
         assert!(workspaces.active().layout.contains(WindowId(2)));
+        assert!(workspaces.validate().is_ok());
+    }
+
+    #[test]
+    fn floating_dialog_can_focus_above_fullscreen() {
+        let mut workspaces = WorkspaceSet::default();
+        let workspace = workspaces.active_id();
+        workspaces
+            .insert_window(WindowId(1), Axis::Horizontal, 0.5)
+            .unwrap();
+        workspaces.toggle_fullscreen(WindowId(1)).unwrap();
+        workspaces
+            .insert_floating_window(
+                WindowId(2),
+                workspace,
+                Rect::new(100.0, 100.0, 500.0, 400.0),
+                true,
+            )
+            .unwrap();
+
+        assert_eq!(workspaces.active().last_focused, Some(WindowId(2)));
+        assert!(workspaces.focus_window(WindowId(2)).is_ok());
+        workspaces.switch_to_numeric(2).unwrap();
+        assert_eq!(workspaces.activate(workspace).unwrap(), Some(WindowId(2)));
+        assert_eq!(workspaces.active().fullscreen, Some(WindowId(1)));
         assert!(workspaces.validate().is_ok());
     }
 

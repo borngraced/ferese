@@ -128,6 +128,7 @@ pub struct Ferese {
     maximized_windows: HashSet<WindowId>,
     maximized_column_widths: HashMap<WindowId, ColumnWidth>,
     window_stack: crate::stacking::WindowStack,
+    floating_above_fullscreen: HashMap<WindowId, WindowId>,
     natural_floating_pending: HashSet<WindowId>,
     pub(crate) window_borders: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
     pub(crate) window_dims: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
@@ -347,6 +348,7 @@ impl Ferese {
             maximized_windows: HashSet::new(),
             maximized_column_widths: HashMap::new(),
             window_stack: crate::stacking::WindowStack::default(),
+            floating_above_fullscreen: HashMap::new(),
             natural_floating_pending: HashSet::new(),
             window_borders: HashMap::new(),
             window_dims: HashMap::new(),
@@ -804,13 +806,25 @@ impl Ferese {
                 self.inverse_presented_window_point(*id, position.x, position.y)?;
             let source_point = Point::from((source_x, source_y)) + window.geometry().loc.to_f64();
 
-            window
-                .surface_under(source_point, WindowSurfaceType::ALL)
-                .map(|(surface, surface_location)| {
-                    let surface_point = source_point - surface_location.to_f64();
-                    (surface, position - surface_point)
-                })
+            let surface = window.surface_under(source_point, WindowSurfaceType::ALL);
+            let (surface, surface_location) = match surface {
+                Some(hit) => hit,
+                None if self.window_fills_visual_bounds(*id, workspace) => {
+                    (window.toplevel()?.wl_surface().clone(), Point::from((0, 0)))
+                }
+                None => return None,
+            };
+            let surface_point = source_point - surface_location.to_f64();
+            Some((surface, position - surface_point))
         })
+    }
+
+    fn window_fills_visual_bounds(&self, id: WindowId, workspace: WorkspaceId) -> bool {
+        self.maximized_windows.contains(&id)
+            || self
+                .workspaces
+                .workspace(workspace)
+                .is_some_and(|workspace| workspace.fullscreen == Some(id))
     }
 
     fn layer_surface_under(
@@ -887,7 +901,13 @@ impl Ferese {
                     self.inverse_presented_window_point(*id, position.x, position.y)?;
                 let source_point =
                     Point::from((source_x, source_y)) + window.geometry().loc.to_f64();
-                window.surface_under(source_point, WindowSurfaceType::ALL)?;
+                if window
+                    .surface_under(source_point, WindowSurfaceType::ALL)
+                    .is_none()
+                    && !self.window_fills_visual_bounds(*id, workspace)
+                {
+                    return None;
+                }
             }
 
             Some(window.clone())
@@ -941,6 +961,17 @@ impl Ferese {
                 floating,
                 geometry.is_some_and(|geometry| geometry.is_zooming()),
                 geometry.is_some_and(|geometry| geometry.is_fullscreen()),
+                floating
+                    && id.is_some_and(|id| {
+                        self.floating_above_fullscreen
+                            .get(&id)
+                            .is_some_and(|parent| {
+                                self.workspaces
+                                    .workspace_for_window(id)
+                                    .and_then(|workspace| self.workspaces.workspace(workspace))
+                                    .is_some_and(|workspace| workspace.fullscreen == Some(*parent))
+                            })
+                    }),
             );
             (
                 priority,
@@ -1027,7 +1058,8 @@ impl Ferese {
         let rect = client_size(&window)
             .map(|size| natural_floating_rect(bounds, size))
             .unwrap_or_else(|| centered_floating_rect(bounds));
-        let focus = self.workspaces.active().fullscreen.is_none();
+        let fullscreen = self.workspaces.active().fullscreen;
+        let focus = true;
         if let Err(error) =
             self.workspaces
                 .insert_floating_window(id, self.workspaces.active_id(), rect, focus)
@@ -1040,6 +1072,9 @@ impl Ferese {
         }
         self.window_ids.insert(window.clone(), id);
         self.window_stack.insert(id);
+        if let Some(fullscreen) = fullscreen {
+            self.floating_above_fullscreen.insert(id, fullscreen);
+        }
         if focus {
             self.focused_window = Some(id);
         }
@@ -1095,9 +1130,12 @@ impl Ferese {
         let id = WindowId(self.next_window_id);
         self.next_window_id += 1;
 
+        let focus = workspace == self.workspaces.active_id()
+            && (self.focused_window == Some(parent)
+                || self.workspaces.active().fullscreen == Some(parent));
         if let Err(error) = self
             .workspaces
-            .insert_floating_window(id, workspace, rect, false)
+            .insert_floating_window(id, workspace, rect, focus)
         {
             tracing::error!(%error, ?id, ?parent, "failed to insert transient window");
             return;
@@ -1105,8 +1143,21 @@ impl Ferese {
 
         self.window_ids.insert(window.clone(), id);
         self.window_stack.insert(id);
-        self.space.map_element(window, (0, 0), false);
+        if self
+            .workspaces
+            .workspace(workspace)
+            .is_some_and(|workspace| workspace.fullscreen == Some(parent))
+        {
+            self.floating_above_fullscreen.insert(id, parent);
+        }
+        if focus {
+            self.focused_window = Some(id);
+        }
+        self.space.map_element(window, (0, 0), focus);
         self.relayout();
+        if focus {
+            self.restore_keyboard_focus();
+        }
     }
 
     pub(crate) fn apply_initial_window_rules(
@@ -1273,7 +1324,25 @@ impl Ferese {
             return;
         }
 
+        if self
+            .workspaces
+            .workspace_for_window(parent)
+            .and_then(|workspace| self.workspaces.workspace(workspace))
+            .is_some_and(|workspace| workspace.fullscreen == Some(parent))
+        {
+            self.floating_above_fullscreen.insert(id, parent);
+        }
+        if self.focused_window == Some(parent) {
+            if let Err(error) = self.workspaces.focus_window(id) {
+                tracing::warn!(%error, ?id, "failed to focus transient window");
+            } else {
+                self.focused_window = Some(id);
+                self.window_stack.raise(id);
+            }
+        }
+
         self.relayout();
+        self.restore_keyboard_focus();
     }
 
     pub fn remove_tiled_window(&mut self, window: &Window) {
@@ -1289,6 +1358,7 @@ impl Ferese {
         self.maximized_windows.remove(&id);
         self.maximized_column_widths.remove(&id);
         self.window_stack.remove(id);
+        self.floating_above_fullscreen.remove(&id);
         self.natural_floating_pending.remove(&id);
         self.window_borders.remove(&id);
         self.window_dims.remove(&id);
