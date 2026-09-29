@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::Entry},
     error::Error,
     ffi::OsString,
     sync::Arc,
@@ -1468,12 +1468,13 @@ impl Ferese {
             if scrolling.is_none() {
                 self.viewport_coupled_widths.remove(&id);
             }
-            let committed_size = client_size(&window);
-            let had_geometry = self.window_geometry.contains_key(&id);
-            let geometry = self
-                .window_geometry
-                .entry(id)
-                .or_insert_with(|| WindowGeometry::new(rect, committed_size));
+            let (geometry, had_geometry) = match self.window_geometry.entry(id) {
+                Entry::Occupied(entry) => (entry.into_mut(), true),
+                Entry::Vacant(entry) => (
+                    entry.insert(WindowGeometry::new(rect, client_size(&window))),
+                    false,
+                ),
+            };
             let mode = if is_fullscreen {
                 PresentationMode::Fullscreen
             } else if is_maximized {
@@ -1852,7 +1853,7 @@ impl Ferese {
                     settled_coupled_widths.push(id);
                 }
             }
-            if let Some(size) = geometry.client.expire_wait(self.start_time.elapsed()) {
+            if let Some(size) = geometry.client.expire_wait(now) {
                 tracing::warn!(
                     ?id,
                     configured_width = size.width,
@@ -1861,7 +1862,7 @@ impl Ferese {
                     "client did not commit the final configured size within 500 ms"
                 );
             }
-            if let Some(size) = geometry.presentation_size_request(self.start_time.elapsed())
+            if let Some(size) = geometry.presentation_size_request(now)
                 && !self.natural_floating_pending.contains(&id)
                 && let Some(toplevel) = window.toplevel()
             {

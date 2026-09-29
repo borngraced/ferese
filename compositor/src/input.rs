@@ -239,10 +239,13 @@ impl Ferese {
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
                 let position = pointer.current_location();
                 let focus = self.surface_under(position);
-                let (scale_x, scale_y) = self
-                    .window_under_visual(position)
-                    .and_then(|window| self.visual_scale_for_window(&window))
-                    .unwrap_or((1.0, 1.0));
+                let (scale_x, scale_y) = if self.overview.is_presenting() {
+                    self.window_under_visual(position)
+                        .and_then(|window| self.visual_scale_for_window(&window))
+                        .unwrap_or((1.0, 1.0))
+                } else {
+                    (1.0, 1.0)
+                };
                 let delta = event.delta();
                 let delta_unaccel = event.delta_unaccel();
 
