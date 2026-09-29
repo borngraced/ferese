@@ -25,6 +25,17 @@ use smithay::{
 };
 
 use crate::{Ferese, config::BindingAction};
+use ferese_layout::WindowId;
+
+fn hover_blocked_after_drag(blocked: &mut Option<WindowId>, target: Option<WindowId>) -> bool {
+    if let Some(window) = *blocked {
+        if target == Some(window) {
+            return true;
+        }
+        *blocked = None;
+    }
+    false
+}
 
 impl Ferese {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
@@ -279,6 +290,12 @@ impl Ferese {
             InputEvent::PointerButton { event, .. } => {
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
                 let serial = SERIAL_COUNTER.next_serial();
+                let released_over_another_window = (event.state() == ButtonState::Released
+                    && pointer.is_grabbed())
+                .then(|| self.window_under_visual(pointer.current_location()))
+                .flatten()
+                .and_then(|window| self.window_ids.get(&window).copied())
+                .filter(|window| Some(*window) != self.focused_window);
 
                 // Native popup_done destroys Iced's window immediately. For
                 // effects-capable shell popups, release input now but defer
@@ -337,6 +354,7 @@ impl Ferese {
                 }
 
                 if event.state() == ButtonState::Pressed && !pointer.is_grabbed() {
+                    self.hover_focus_blocked = None;
                     self.focus_window_at(pointer.current_location(), serial, true);
                 }
 
@@ -350,6 +368,9 @@ impl Ferese {
                     },
                 );
                 pointer.frame(self);
+                if event.state() == ButtonState::Released {
+                    self.hover_focus_blocked = released_over_another_window;
+                }
             }
             InputEvent::PointerAxis { event, .. } => {
                 let source = event.source();
@@ -624,8 +645,19 @@ impl Ferese {
         {
             return;
         }
+        if self.layer_under(position).is_some() {
+            self.hover_focus_blocked = None;
+            return;
+        }
 
-        let Some(window) = self.window_under_visual(position) else {
+        let window = self.window_under_visual(position);
+        let target = window
+            .as_ref()
+            .and_then(|window| self.window_ids.get(window).copied());
+        if hover_blocked_after_drag(&mut self.hover_focus_blocked, target) {
+            return;
+        }
+        let Some(window) = window else {
             return;
         };
         if self.window_ids.get(&window).copied() == self.focused_window {
@@ -797,7 +829,23 @@ fn overview_escape(symbol: u32, overview_active: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{emergency_shortcut_escape, overview_escape, virtual_terminal};
+    use super::{
+        WindowId, emergency_shortcut_escape, hover_blocked_after_drag, overview_escape,
+        virtual_terminal,
+    };
+
+    #[test]
+    fn drag_release_does_not_turn_motion_inside_the_same_window_into_hover_focus() {
+        let selected = WindowId(1);
+        let other = WindowId(2);
+        let mut blocked = Some(other);
+
+        assert!(hover_blocked_after_drag(&mut blocked, Some(other)));
+        assert!(hover_blocked_after_drag(&mut blocked, Some(other)));
+        assert!(!hover_blocked_after_drag(&mut blocked, Some(selected)));
+        assert_eq!(blocked, None);
+        assert!(!hover_blocked_after_drag(&mut blocked, Some(other)));
+    }
 
     #[test]
     fn escape_closes_only_an_active_overview() {
