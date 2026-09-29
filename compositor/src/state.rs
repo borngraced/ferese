@@ -1442,19 +1442,16 @@ impl Ferese {
             }
         }
 
-        let hidden = self
-            .window_ids
-            .iter()
-            .filter(|(_, id)| !visible.contains(id))
-            .map(|(window, _)| window.clone())
-            .collect::<Vec<_>>();
-
-        let mut layout_changed = hidden
-            .iter()
-            .any(|window| self.space.element_location(window).is_some());
-        for window in hidden {
-            self.space.unmap_elem(&window);
+        let mut space = std::mem::take(&mut self.space);
+        let mut layout_changed = false;
+        for (window, id) in &self.window_ids {
+            if visible.contains(id) {
+                continue;
+            }
+            layout_changed |= space.element_location(window).is_some();
+            space.unmap_elem(window);
         }
+        self.space = space;
 
         let now = self.start_time.elapsed();
 
