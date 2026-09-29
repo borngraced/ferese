@@ -125,7 +125,9 @@ pub(crate) fn init(
                         return;
                     }
                 };
-                if call.request.command == "screenshot" {
+                if call.request.command == "screenshot-window" {
+                    state.start_window_screenshot(call.request, call.response);
+                } else if call.request.command == "screenshot" {
                     // Deferred: this path answers the caller itself, exactly
                     // once, whenever the request finishes or is terminated.
                     state.start_screenshot(call.request, call.response);
@@ -309,6 +311,8 @@ fn serve_connection(
         };
         let (response, receiver) = sync_channel(1);
         let exit_requested = request.command == "exit";
+        let screenshot_requested =
+            matches!(request.command.as_str(), "screenshot" | "screenshot-window");
         let call = IpcEvent::Call(IpcCall {
             owner,
             request,
@@ -323,6 +327,9 @@ fn serve_connection(
         };
         let exit_accepted = exit_requested && response.error.is_none();
         if let Err(error) = write_frame(&mut stream, &response) {
+            if screenshot_requested {
+                discard_undelivered_screenshot(&response);
+            }
             tracing::debug!(%error, "IPC client disconnected before receiving its response");
             return;
         }
@@ -332,6 +339,19 @@ fn serve_connection(
             signal.wakeup();
             return;
         }
+    }
+}
+
+fn discard_undelivered_screenshot(response: &Response) {
+    if response.error.is_none()
+        && let Some(path) = response
+            .result
+            .as_ref()
+            .and_then(|result| result["path"].as_str())
+        && let Err(error) = fs::remove_file(path)
+        && error.kind() != io::ErrorKind::NotFound
+    {
+        tracing::debug!(%error, "failed to remove an undelivered screenshot");
     }
 }
 
@@ -518,6 +538,93 @@ impl Ferese {
         // The nested backend redraws on its refresh timer; this drives the
         // direct backend immediately and is a no-op otherwise.
         crate::backends::direct::render_all(self);
+    }
+
+    fn start_window_screenshot(&mut self, request: Request, response: SyncSender<Response>) {
+        let reject = |message: String| {
+            let _ = response.try_send(Response::error(
+                request.id,
+                "window_capture_failed",
+                message,
+            ));
+        };
+        if self.session_lock.active || !screencopy::capture_allowed() {
+            reject("Screen capture is unavailable".into());
+            return;
+        }
+        if let Err(error) = validate_request(&request) {
+            reject(error.message);
+            return;
+        }
+        let Some(id) = request
+            .args
+            .get("window")
+            .and_then(Value::as_u64)
+            .map(ferese_layout::WindowId)
+        else {
+            reject("Expected a window ID".into());
+            return;
+        };
+        let Some(window) = self
+            .window_ids
+            .iter()
+            .find(|(_, candidate)| **candidate == id)
+            .map(|(window, _)| window.clone())
+        else {
+            reject("Window no longer exists".into());
+            return;
+        };
+        let Some(output) = self
+            .space
+            .outputs()
+            .find(|output| self.window_belongs_to_output(id, output))
+            .cloned()
+        else {
+            reject("Window output is unavailable".into());
+            return;
+        };
+        let geometry = window.geometry();
+        let scale = output.current_scale().fractional_scale();
+        let size = geometry.size.to_physical_precise_round(scale);
+        let spec = crate::handlers::screenshot::PartSpec {
+            preserve_alpha: true,
+            transform: Transform::Normal,
+            scale,
+            location: (0, 0),
+            logical_width: geometry.size.w,
+            logical_height: geometry.size.h,
+            buffer_width: size.w,
+            buffer_height: size.h,
+        };
+        let fallback = response.clone();
+        let capture = match self.screenshot.admit(request.id, response, vec![spec]) {
+            Ok(capture) => capture,
+            Err(error) => {
+                let _ =
+                    fallback.try_send(Response::error(request.id, "screenshot_rejected", error));
+                return;
+            }
+        };
+        let result = if let Some(backend) = &self.nested_backend {
+            match backend.try_borrow_mut() {
+                Ok(mut backend) => crate::winit::capture_window_buffer(
+                    backend.renderer(),
+                    &window,
+                    geometry,
+                    scale,
+                ),
+                Err(_) => Err("Window renderer is busy".into()),
+            }
+        } else if let Some(backend) = &mut self.direct_backend {
+            backend.capture_window_buffer(&window, geometry, &output)
+        } else {
+            Err("Window renderer is unavailable".into())
+        };
+        self.on_screenshot_part(PartOutcome {
+            request: capture,
+            part: 0,
+            result,
+        });
     }
 
     pub(crate) fn on_screenshot_part(&mut self, outcome: PartOutcome) {
@@ -1028,6 +1135,20 @@ mod tests {
 
         assert_eq!(client.read(&mut byte).unwrap(), 0);
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn failed_screenshot_delivery_removes_only_its_staging_file() {
+        let root = unique_test_directory("undelivered-screenshot");
+        fs::create_dir(&root).unwrap();
+        let path = root.join("capture.png");
+        fs::write(&path, b"capture").unwrap();
+        let response = Response::success(1, serde_json::json!({"path": path}));
+
+        discard_undelivered_screenshot(&response);
+        assert!(!path.exists());
+        discard_undelivered_screenshot(&response);
+        fs::remove_dir(root).unwrap();
     }
 
     #[test]

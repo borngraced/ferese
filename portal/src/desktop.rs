@@ -91,7 +91,7 @@ impl Screenshot {
 
     #[zbus(property)]
     fn available_targets(&self) -> u32 {
-        1 | 4
+        1 | 2 | 4 | 8
     }
 
     async fn screenshot(
@@ -225,65 +225,52 @@ pub(crate) async fn ipc(
     command: &'static str,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    tokio::task::spawn_blocking(move || {
-        let path = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .ok_or("Missing runtime directory")?
-            .join("ferese/control.sock");
-        let mut stream = UnixStream::connect(path).map_err(|error| error.to_string())?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(15)))
-            .map_err(|error| error.to_string())?;
-        stream
-            .set_write_timeout(Some(Duration::from_secs(2)))
-            .map_err(|error| error.to_string())?;
-        let request = ferese_ipc::Request {
-            version: ferese_ipc::VERSION,
-            id: 1,
-            kind: "command".into(),
-            command: command.into(),
-            args,
-        };
-        ferese_ipc::write_frame(&mut stream, &request).map_err(|error| error.to_string())?;
-        let response: ferese_ipc::Response =
-            ferese_ipc::read_frame(&mut stream).map_err(|error| error.to_string())?;
-        if let Some(error) = response.error {
-            return Err(error.message);
-        }
-        response.result.ok_or("Missing IPC result".into())
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    tokio::task::spawn_blocking(move || ipc_sync(command, args))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
-async fn select_geometry(point: bool, windows: Option<String>) -> Result<Option<String>, String> {
+fn ipc_sync(command: &'static str, args: serde_json::Value) -> Result<serde_json::Value, String> {
+    let path = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .ok_or("Missing runtime directory")?
+        .join("ferese/control.sock");
+    let mut stream = UnixStream::connect(path).map_err(|error| error.to_string())?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(15)))
+        .map_err(|error| error.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .map_err(|error| error.to_string())?;
+    let request = ferese_ipc::Request {
+        version: ferese_ipc::VERSION,
+        id: 1,
+        kind: "command".into(),
+        command: command.into(),
+        args,
+    };
+    ferese_ipc::write_frame(&mut stream, &request).map_err(|error| error.to_string())?;
+    let response: ferese_ipc::Response =
+        ferese_ipc::read_frame(&mut stream).map_err(|error| error.to_string())?;
+    if let Some(error) = response.error {
+        return Err(error.message);
+    }
+    response.result.ok_or("Missing IPC result".into())
+}
+
+async fn select_geometry(point: bool) -> Result<Option<String>, String> {
     let mut command = crate::backend::child_command_for("slurp")?;
     if point {
         command.arg("-p");
     }
-    if windows.is_some() {
-        command.arg("-r");
-    }
-    command.stdin(if windows.is_some() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    });
-    let mut child = command
+    command.stdin(Stdio::null());
+    let child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| error.to_string())?;
     let pid = child.id().ok_or("Missing selection process ID")?;
-    if let Some(windows) = windows {
-        let mut input = child.stdin.take().unwrap();
-        input
-            .write_all(windows.as_bytes())
-            .await
-            .map_err(|error| error.to_string())?;
-        drop(input);
-    }
     let output = tokio::time::timeout(Duration::from_secs(300), child.wait_with_output())
         .await
         .map_err(|_| "Selection timed out")?
@@ -313,25 +300,39 @@ pub(crate) async fn wait_for_surface_removal(pid: u32) -> Result<(), String> {
 }
 
 async fn capture(geometry: Option<String>) -> Result<Vec<u8>, String> {
-    let result = ipc("screenshot", serde_json::json!({"geometry": geometry})).await?;
-    let path = result["path"]
-        .as_str()
-        .ok_or("Missing screenshot path")?
-        .to_owned();
+    capture_command("screenshot", serde_json::json!({"geometry": geometry})).await
+}
+
+async fn capture_command(
+    command: &'static str,
+    args: serde_json::Value,
+) -> Result<Vec<u8>, String> {
     tokio::task::spawn_blocking(move || {
-        let file = std::fs::File::open(&path).map_err(|error| error.to_string())?;
-        let _ = std::fs::remove_file(path);
-        let mut bytes = Vec::new();
-        file.take(MAX_IMAGE_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| error.to_string())?;
-        if bytes.len() as u64 > MAX_IMAGE_BYTES {
-            return Err("Screenshot is too large".into());
-        }
-        Ok(bytes)
+        let result = ipc_sync(command, args)?;
+        let path = result["path"].as_str().ok_or("Missing screenshot path")?;
+        read_screenshot(path)
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+fn read_screenshot(path: &str) -> Result<Vec<u8>, String> {
+    struct Cleanup<'a>(&'a str);
+    impl Drop for Cleanup<'_> {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(self.0);
+        }
+    }
+    let _cleanup = Cleanup(path);
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    file.take(MAX_IMAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > MAX_IMAGE_BYTES {
+        return Err("Screenshot is too large".into());
+    }
+    Ok(bytes)
 }
 
 async fn screenshot(app: &str, parent: &str, options: &Options) -> Result<Option<Options>, String> {
@@ -353,9 +354,18 @@ async fn screenshot(app: &str, parent: &str, options: &Options) -> Result<Option
                 1
             },
         );
-    if !matches!(target, 1 | 4) {
+    if !matches!(target, 1 | 2 | 4 | 8) {
         return Err("Unsupported screenshot target".into());
     }
+    let active_window = if target == 8 {
+        Some(
+            ipc("get-focused-window", serde_json::json!({})).await?["id"]
+                .as_u64()
+                .ok_or("No active window")?,
+        )
+    } else {
+        None
+    };
     if !consent(
         app,
         parent,
@@ -368,17 +378,28 @@ async fn screenshot(app: &str, parent: &str, options: &Options) -> Result<Option
     {
         return Ok(None);
     }
-    let geometry = match target {
-        1 => None,
+    let bytes = match target {
+        1 => capture(None).await?,
         4 => {
-            let Some(geometry) = select_geometry(false, None).await? else {
+            let Some(geometry) = select_geometry(false).await? else {
                 return Ok(None);
             };
-            Some(geometry)
+            capture(Some(geometry)).await?
+        }
+        2 | 8 => {
+            let id = match active_window {
+                Some(id) => id,
+                None => {
+                    let Some(id) = select_window(app, parent).await? else {
+                        return Ok(None);
+                    };
+                    id
+                }
+            };
+            capture_command("screenshot-window", serde_json::json!({"window":id})).await?
         }
         _ => unreachable!(),
     };
-    let bytes = capture(geometry).await?;
     let directory = private_directory("screenshots")?;
     let mut file = tempfile::Builder::new()
         .prefix("screenshot-")
@@ -395,6 +416,88 @@ async fn screenshot(app: &str, parent: &str, options: &Options) -> Result<Option
     )])))
 }
 
+fn window_sources(windows: &serde_json::Value) -> Result<Vec<crate::capture::Source>, String> {
+    let windows = windows.as_array().ok_or("Invalid window list")?;
+    if windows.len() > 128 {
+        return Err("Too many windows to choose from".into());
+    }
+    let mut sources = Vec::new();
+    for window in windows.iter().filter(|window| window["mapped"] == true) {
+        let Some(id) = window["id"].as_u64() else {
+            continue;
+        };
+        let title = window["title"].as_str().unwrap_or("Untitled window");
+        let app = window["app_id"].as_str().unwrap_or("");
+        let label = format!("{title} — {app}")
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(256)
+            .collect();
+        sources.push(crate::capture::Source {
+            name: id.to_string(),
+            label,
+            width: window["width"]
+                .as_i64()
+                .and_then(|w| i32::try_from(w).ok())
+                .unwrap_or(0),
+            height: window["height"]
+                .as_i64()
+                .and_then(|h| i32::try_from(h).ok())
+                .unwrap_or(0),
+            x: 0,
+            y: 0,
+            scale: 1,
+        });
+    }
+    Ok(sources)
+}
+
+async fn select_window(app: &str, parent: &str) -> Result<Option<u64>, String> {
+    let windows = ipc("get-windows", serde_json::json!({})).await?;
+    let sources = window_sources(&windows)?;
+    if sources.is_empty() {
+        return Err("No windows are available".into());
+    }
+    let prompt = crate::picker::Prompt {
+        app: app.into(),
+        sources,
+        multiple: false,
+        parent: parent.into(),
+        window_capture: true,
+    };
+    let mut child = crate::backend::child_command()?
+        .arg("--picker")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    let pid = child.id().ok_or("Missing window selector PID")?;
+    let mut stdin = child.stdin.take().unwrap();
+    stdin
+        .write_all(&serde_json::to_vec(&prompt).map_err(|error| error.to_string())?)
+        .await
+        .map_err(|error| error.to_string())?;
+    drop(stdin);
+    let output = tokio::time::timeout(Duration::from_secs(300), child.wait_with_output())
+        .await
+        .map_err(|_| "Window selection timed out")?
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let names: Vec<String> =
+        serde_json::from_slice(&output.stdout).map_err(|_| "Invalid window selection")?;
+    if names.len() != 1 || !prompt.sources.iter().any(|source| source.name == names[0]) {
+        return Err("Unknown selected window".into());
+    }
+    wait_for_surface_removal(pid).await?;
+    names[0]
+        .parse::<u64>()
+        .map(Some)
+        .map_err(|_| "Invalid window ID".into())
+}
+
 async fn pick_color(app: &str, parent: &str) -> Result<Option<Options>, String> {
     if !consent(
         app,
@@ -408,7 +511,7 @@ async fn pick_color(app: &str, parent: &str) -> Result<Option<Options>, String> 
     {
         return Ok(None);
     }
-    let Some(geometry) = select_geometry(true, None).await? else {
+    let Some(geometry) = select_geometry(true).await? else {
         return Ok(None);
     };
     let bytes = capture(Some(geometry)).await?;
@@ -652,6 +755,35 @@ mod tests {
         ] {
             assert!(local_path(uri).is_err());
         }
+    }
+
+    #[test]
+    fn screenshot_reads_remove_staging_files_on_success_and_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("capture.png");
+        std::fs::write(&path, b"capture").unwrap();
+        assert_eq!(read_screenshot(path.to_str().unwrap()).unwrap(), b"capture");
+        assert!(!path.exists());
+
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_IMAGE_BYTES + 1).unwrap();
+        assert!(read_screenshot(path.to_str().unwrap()).is_err());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn window_choices_preserve_identity_and_bound_untrusted_titles() {
+        let windows = serde_json::json!([
+            {"id": 1, "mapped": true, "title": "Editor\n", "app_id": "zed"},
+            {"id": 2, "mapped": false, "title": "Hidden", "app_id": "foot"},
+            {"id": 3, "mapped": true, "title": "x".repeat(1024)}
+        ]);
+        let sources = window_sources(&windows).unwrap();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(sources[0].name, "1");
+        assert_eq!(sources[0].label, "Editor — zed");
+        assert_eq!(sources[1].label.chars().count(), 256);
+        assert!(window_sources(&serde_json::json!({})).is_err());
     }
 
     #[test]

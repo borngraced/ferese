@@ -85,6 +85,30 @@ impl DirectBackendState {
             remaining,
         )
     }
+
+    pub(crate) fn capture_window_buffer(
+        &mut self,
+        window: &smithay::desktop::Window,
+        geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+        output: &Output,
+    ) -> Result<crate::handlers::screenshot::CaptureBuffer, String> {
+        let device = self
+            .devices
+            .values_mut()
+            .find(|device| {
+                device
+                    .outputs
+                    .values()
+                    .any(|candidate| &candidate.output == output)
+            })
+            .ok_or("Window output is unavailable")?;
+        crate::winit::capture_window_buffer(
+            &mut device.renderer,
+            window,
+            geometry,
+            output.current_scale().fractional_scale(),
+        )
+    }
 }
 
 #[derive(Clone, Debug)]

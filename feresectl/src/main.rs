@@ -33,7 +33,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err(format!("{}: {}", error.code, error.message).into());
     }
 
-    if command == "screenshot" {
+    if matches!(command.as_str(), "screenshot" | "screenshot-window") {
         write_png(&response)
     } else {
         println!(
@@ -71,6 +71,13 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(String, Value),
     let command = args.next().ok_or_else(usage)?;
     let positional = args.collect::<Vec<_>>();
     let payload = match command.as_str() {
+        "screenshot-window" => {
+            exactly_one(&command, &positional, "window ID")?;
+            let window = positional[0]
+                .parse::<u64>()
+                .map_err(|_| "Expected an unsigned window ID")?;
+            json!({"window":window})
+        }
         "focus" | "move" | "resize" => {
             exactly_one(&command, &positional, "direction")?;
             json!({ "direction": positional[0] })
@@ -126,7 +133,7 @@ fn socket_path() -> Result<PathBuf, io::Error> {
 }
 
 fn usage() -> String {
-    "usage: feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
+    "usage: feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl screenshot-window <window-id>\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
 }
 
 #[cfg(test)]

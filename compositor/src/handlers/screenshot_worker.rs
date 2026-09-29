@@ -200,6 +200,7 @@ mod tests {
             pixel[3] = 255;
         }
         OutputFrame {
+            preserve_alpha: false,
             width,
             height,
             stride,

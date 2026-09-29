@@ -503,6 +503,7 @@ async fn start_streams(
         sources,
         multiple,
         parent: parent.into(),
+        window_capture: false,
     };
     let picker = picker(&prompt).await?;
     let picker_pid = picker.id().ok_or("Missing picker process ID")?;

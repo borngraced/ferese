@@ -10,6 +10,7 @@ use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Size, Transfor
 const BYTES_PER_PIXEL: usize = 4;
 
 pub(crate) struct OutputFrame {
+    pub(crate) preserve_alpha: bool,
     pub(crate) width: i32,
     pub(crate) height: i32,
     pub(crate) stride: usize,
@@ -114,7 +115,7 @@ fn scale_and_convert(
                 out[to] = pixel[2];
                 out[to + 1] = pixel[1];
                 out[to + 2] = pixel[0];
-                out[to + 3] = 255;
+                out[to + 3] = if frame.preserve_alpha { pixel[3] } else { 255 };
             }
         }
         return Some(out);
@@ -147,7 +148,7 @@ fn scale_and_convert(
             out[to] = pixel[2];
             out[to + 1] = pixel[1];
             out[to + 2] = pixel[0];
-            out[to + 3] = 255;
+            out[to + 3] = if frame.preserve_alpha { pixel[3] } else { 255 };
         }
     }
     Some(out)
@@ -362,6 +363,7 @@ pub(crate) type PartSender = smithay::reexports::calloop::channel::Sender<PartOu
 // Geometry snapshotted when the request was admitted, so the encoding worker
 // never re-queries an output whose transform or scale has since changed.
 pub(crate) struct PartSpec {
+    pub(crate) preserve_alpha: bool,
     pub(crate) transform: Transform,
     pub(crate) scale: f64,
     pub(crate) location: (i32, i32),
@@ -510,6 +512,7 @@ impl Coordinator {
                 } else {
                     pixels.extend_from_slice(&buffer.pixels);
                     Some(OutputFrame {
+                        preserve_alpha: spec.preserve_alpha,
                         width: buffer.width,
                         height: buffer.height,
                         stride: buffer.stride,
@@ -664,6 +667,7 @@ pub(crate) struct PlannedPart {
 impl PlannedPart {
     pub(crate) fn spec(&self, output: &OutputLayout) -> PartSpec {
         PartSpec {
+            preserve_alpha: false,
             transform: output.transform,
             scale: output.scale,
             location: (self.logical.loc.x, self.logical.loc.y),
@@ -984,6 +988,7 @@ mod completion {
 
     fn spec(width: i32, height: i32) -> PartSpec {
         PartSpec {
+            preserve_alpha: false,
             transform: Transform::Normal,
             scale: 1.0,
             location: (0, 0),
@@ -1276,6 +1281,7 @@ mod completion {
         assert!(overflow.is_err(), "outstanding requests are bounded");
 
         let huge = PartSpec {
+            preserve_alpha: false,
             buffer_width: 1 << 20,
             buffer_height: 1 << 20,
             ..spec(2, 2)
@@ -1351,6 +1357,7 @@ mod tests {
             pixels.extend_from_slice(&[b'a' + index as u8, 0, 0, 255]);
         }
         OutputFrame {
+            preserve_alpha: false,
             width,
             height,
             stride: width as usize * BYTES_PER_PIXEL,
@@ -1377,6 +1384,7 @@ mod tests {
             pixels.extend_from_slice(&[(index % 251) as u8, 0, 0, 255]);
         }
         OutputFrame {
+            preserve_alpha: false,
             width,
             height,
             stride: width as usize * BYTES_PER_PIXEL,

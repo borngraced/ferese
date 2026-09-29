@@ -14,7 +14,8 @@ use smithay::{
     backend::{
         allocator::Fourcc,
         renderer::{
-            Bind, Color32F, ErasedContextId, Frame, ImportDma, Offscreen, Renderer, Texture,
+            Bind, Color32F, ErasedContextId, ExportMem, Frame, ImportDma, Offscreen, Renderer,
+            Texture,
             damage::OutputDamageTracker,
             element::{
                 Element, Id, Kind as RenderElementKind, RenderElement, UnderlyingStorage,
@@ -167,6 +168,56 @@ pub(crate) fn capture_resize_snapshot(
         last_tick: None,
         scale,
     }))
+}
+
+pub(crate) fn capture_window_buffer(
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    geometry: Rectangle<i32, Logical>,
+    scale: f64,
+) -> Result<crate::handlers::screenshot::CaptureBuffer, String> {
+    let snapshot = capture_resize_snapshot(renderer, window, geometry, scale, 128 * 1024 * 1024)
+        .map_err(|error| error.to_string())?
+        .ok_or("Window has no capturable content")?;
+    let size = snapshot.texture.size();
+    let mapping = renderer
+        .copy_texture(
+            &snapshot.texture,
+            Rectangle::from_size(size),
+            Fourcc::Abgr8888,
+        )
+        .map_err(|error| error.to_string())?;
+    if mapping.format() != Some(Fourcc::Abgr8888) {
+        return Err("Unsupported window readback format".into());
+    }
+    let bytes = (size.w as usize)
+        .checked_mul(size.h as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or("Window is too large")?;
+    let source = renderer
+        .map_texture(&mapping)
+        .map_err(|error| error.to_string())?;
+    if source.len() < bytes {
+        return Err("Incomplete window readback".into());
+    }
+    let mut pixels = source[..bytes].to_vec();
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+        let alpha = pixel[3] as u16;
+        for channel in &mut pixel[..3] {
+            *channel = if alpha == 0 {
+                0
+            } else {
+                ((*channel as u16 * 255 + alpha / 2) / alpha).min(255) as u8
+            };
+        }
+    }
+    Ok(crate::handlers::screenshot::CaptureBuffer {
+        width: size.w,
+        height: size.h,
+        stride: size.w as usize * 4,
+        pixels,
+    })
 }
 
 render_elements! {

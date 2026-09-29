@@ -16,6 +16,8 @@ pub struct Prompt {
     pub multiple: bool,
     #[serde(default)]
     pub parent: String,
+    #[serde(default)]
+    pub window_capture: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -49,11 +51,16 @@ struct Picker {
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();
     std::io::stdin()
-        .take(64 * 1024)
+        .take(256 * 1024 + 1)
         .read_to_string(&mut input)?;
+    if input.len() > 256 * 1024 {
+        return Err("Picker request is too large".into());
+    }
     let prompt: Prompt = serde_json::from_str(&input)?;
 
-    if prompt.sources.is_empty() || prompt.sources.len() > 16 {
+    if prompt.sources.is_empty()
+        || prompt.sources.len() > if prompt.window_capture { 128 } else { 16 }
+    {
         return Err("No shareable displays".into());
     }
 
@@ -114,7 +121,16 @@ impl cosmic::Application for Picker {
         let task = app
             .core
             .main_window_id()
-            .map(|id| app.set_window_title("Ferese — share your screen".into(), id))
+            .map(|id| {
+                app.set_window_title(
+                    if app.prompt.window_capture {
+                        "Ferese — capture a window".into()
+                    } else {
+                        "Ferese — share your screen".into()
+                    },
+                    id,
+                )
+            })
             .unwrap_or_else(Task::none);
 
         (app, task)
@@ -199,8 +215,21 @@ impl cosmic::Application for Picker {
             row![
                 glyph(ferese_theme::icons::DISPLAY, 24),
                 column![
-                    self.text("Choose a display").size(18),
-                    self.text(format!("Share with {app}")).size(12),
+                    self.text(if self.prompt.window_capture {
+                        "Choose a window"
+                    } else {
+                        "Choose a display"
+                    })
+                    .size(18),
+                    self.text(format!(
+                        "{} {app}",
+                        if self.prompt.window_capture {
+                            "Screenshot for"
+                        } else {
+                            "Share with"
+                        }
+                    ))
+                    .size(12),
                 ]
                 .spacing(2)
                 .width(Length::Fill),
@@ -214,7 +243,12 @@ impl cosmic::Application for Picker {
             let mut entry = row![
                 glyph(ferese_theme::icons::DISPLAY, 24),
                 column![
-                    self.text(&source.name).size(14),
+                    self.text(if self.prompt.window_capture {
+                        &source.label
+                    } else {
+                        &source.name
+                    })
+                    .size(14),
                     self.text(format!("{} × {}", source.width, source.height))
                         .size(12)
                 ]
@@ -242,14 +276,25 @@ impl cosmic::Application for Picker {
             (self.prompt.sources.len().min(4) * 56) as f32,
         )));
         content = content.push(
-            self.text("Everything on this display, including notifications, is visible.")
-                .size(12)
-                .width(Length::Fill),
+            self.text(if self.prompt.window_capture {
+                "Only the selected window will be captured."
+            } else {
+                "Everything on this display, including notifications, is visible."
+            })
+            .size(12)
+            .width(Length::Fill),
         );
         let mut share = button::custom(
-            row![self.text("Share"), glyph(ferese_theme::icons::ARROW, 16)]
-                .spacing(8)
-                .align_y(Alignment::Center),
+            row![
+                self.text(if self.prompt.window_capture {
+                    "Capture"
+                } else {
+                    "Share"
+                }),
+                glyph(ferese_theme::icons::ARROW, 16)
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center),
         )
         .class(ferese_theme::accent_button())
         .padding([6, 16]);

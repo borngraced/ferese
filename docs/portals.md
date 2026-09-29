@@ -9,9 +9,13 @@ standard file, print and application dialogs. Install both backends.
 - **Settings:** Ferese's color scheme, accent color, contrast preference and
   reduced-motion setting. Changes are signalled after valid KDL appearance
   changes; malformed saves leave the last valid preferences intact.
-- **Screenshot:** whole-screen and selected-area PNG captures, plus a screen
-  color picker. Every capture asks for consent. Interactive requests offer area
-  selection. Selection uses `slurp`; captures use Ferese's bounded screenshot IPC.
+- **Screenshot:** screen, selected-area, selected-window and active-window PNG
+  captures, plus a screen color picker. Window captures render the selected
+  toplevel and its subsurfaces in isolation, preserving transparency; occluding
+  windows, separate popups, shell layers and compositor borders are excluded.
+  The native window picker lists window titles and application IDs. Every capture
+  asks for consent. Interactive requests offer area selection; area and color
+  selection use `slurp`. Captures use Ferese's bounded screenshot IPC.
   The helper must disappear from the compositor before capture starts.
 - **Wallpaper:** a preview and confirmation, then an atomic configuration update.
   Desktop and lock-screen wallpaper can be set independently, or together.
@@ -59,7 +63,7 @@ Matching D-Bus signatures does not establish complete feature parity.
 | Interface | Ferese integration |
 | --- | --- |
 | Settings | Native, including appearance change signals |
-| Screenshot | Native screen/area capture and PickColor; true window capture remains missing |
+| Screenshot | Native screen/area/window/active-window capture and PickColor |
 | Wallpaper | Native desktop, lock-screen and combined targets |
 | ScreenCast | Native monitors with logical geometry metadata; window sources and persistence remain missing |
 | Access, Account, AppChooser, DynamicLauncher, FileChooser, Notification, Print | Delegated to GTK |
@@ -76,9 +80,9 @@ The frontend supplies additional APIs such as OpenURI, network monitoring,
 document export and permission storage. Adding a similarly named backend service
 is neither required nor sufficient for those APIs.
 
-Do not advertise window capture or input services until the compositor provides
-the corresponding operation. Screen crops include occluding windows and cannot
-serve as isolated window captures. GNOME's remote-input features require native
+Do not advertise window sources for ScreenCast or input services until the
+compositor provides the corresponding operation. Screen crops include occluding
+windows and cannot serve as isolated window streams. GNOME's remote-input features require native
 compositor/session work, rather than substituting successful empty replies.
 
 ## Validation
@@ -97,6 +101,16 @@ and configuration conflicts in an isolated nested compositor:
 ```sh
 FERESE_TEST_SHORTCUTS=1 python3 scripts/tests/test_shortcuts_isolated.py
 ```
+
+Check window capture isolation, transparency and orientation with overlapping
+clients in a temporary nested compositor:
+
+```sh
+FERESE_TEST_WINDOW_CAPTURE=1 python3 scripts/tests/test_window_capture_isolated.py
+```
+
+Capture a managed window directly from the CLI with `feresectl screenshot-window
+<window-id> > capture.png`; `feresectl get-windows` lists IDs.
 
 The contract test compares introspection against the installed official backend
 XML, verifies appearance changes and invalid-save retention, and checks that
