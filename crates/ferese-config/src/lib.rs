@@ -1,3 +1,7 @@
+pub mod families;
+pub mod presets;
+pub mod theme;
+
 use std::fmt;
 use std::path::PathBuf;
 
@@ -45,7 +49,7 @@ pub fn default_wallpaper() -> &'static str {
 }
 
 fn field(name: &str, parent: &str) -> String {
-    if parent == "commands" {
+    if matches!(parent, "commands" | "custom_themes") {
         return name.to_owned();
     }
 
@@ -210,6 +214,14 @@ impl Document {
         &self.value
     }
 
+    /// A runtime view; the original KDL remains available for comment-preserving edits.
+    pub fn with_theme(&self, theme: &theme::ResolvedTheme) -> Self {
+        let mut document = self.clone();
+        document.value["theme"] = serde_json::to_value(&theme.tokens).expect("serializable theme tokens");
+        document.value["theme"]["appearance"] = serde_json::to_value(theme.appearance).unwrap();
+        document
+    }
+
     pub fn get(&self, path: &str) -> Option<&Value> {
         let mut value = &self.value;
 
@@ -229,7 +241,26 @@ impl Document {
     }
 
     pub fn set(&mut self, path: &str, value: Value) -> Result<(), Error> {
+        if value.as_str() == Some("")
+            && matches!(
+                path,
+                "theme.file" | "theme.light.file" | "theme.dark.file" | "theme.accent"
+            )
+        {
+            return self.unset(path);
+        }
         let mut candidate = self.clone();
+        if matches!(
+            path,
+            "theme.mode"
+                | "theme.family"
+                | "theme.light.family"
+                | "theme.dark.family"
+                | "theme.light.preset"
+                | "theme.dark.preset"
+        ) {
+            candidate.migrate_theme_selection()?;
+        }
         let parts = path.split('.').collect::<Vec<_>>();
         set_in(&mut candidate.doc, &parts, "", value)?;
         format_document(&mut candidate.doc);
@@ -262,6 +293,67 @@ impl Document {
         Ok(())
     }
 
+    fn migrate_theme_selection(&mut self) -> Result<(), Error> {
+        if self.get("theme.mode").is_some() {
+            return Ok(());
+        }
+        if self.get("theme.light").is_some() || self.get("theme.dark").is_some() {
+            set_in(&mut self.doc, &["theme", "mode"], "", Value::String("dark".into()))?;
+            return self.refresh();
+        }
+        let Some(index) = self.doc.nodes().iter().position(|node| node.name().value() == "theme") else {
+            return Ok(());
+        };
+        if let Some(children) = self.doc.nodes_mut()[index].children_mut().as_mut() {
+            let mut moved = Vec::new();
+            for name in ["colors", "surface", "border", "focus-ring"] {
+                if let Some(index) = children.nodes().iter().position(|node| node.name().value() == name) {
+                    moved.push(children.nodes_mut().remove(index));
+                }
+            }
+            if !moved.is_empty() {
+                let dark = section_mut(children, &["dark"], "theme")?;
+                dark.nodes_mut().extend(moved);
+            }
+        }
+        set_in(&mut self.doc, &["theme", "mode"], "", Value::String("dark".into()))?;
+        self.refresh()
+    }
+
+    pub fn unset(&mut self, path: &str) -> Result<(), Error> {
+        if self.get(path).is_none() {
+            return Ok(());
+        }
+        let mut candidate = self.clone();
+        let (name, parents) = path.rsplit_once('.').map_or((path, ""), |(p, n)| (n, p));
+        let doc = section_mut(
+            &mut candidate.doc,
+            &parents.split('.').filter(|s| !s.is_empty()).collect::<Vec<_>>(),
+            "",
+        )?;
+        if let Some(index) = doc
+            .nodes()
+            .iter()
+            .position(|node| field(node.name().value(), parents.rsplit('.').next().unwrap_or("")) == name)
+        {
+            let node = doc.nodes_mut().remove(index);
+            let mut comments = String::new();
+            collect_comments(&node, &mut comments);
+            if let Some(format) = doc.format_mut() {
+                format.trailing.push_str(&comments);
+            } else {
+                doc.set_format(kdl::KdlDocumentFormat {
+                    leading: String::new(),
+                    trailing: comments,
+                });
+            }
+        }
+        format_document(&mut candidate.doc);
+        candidate.refresh()?;
+        *self = candidate;
+        Ok(())
+    }
+
     pub fn remove(&mut self, path: &str, index: usize) -> Result<(), Error> {
         let mut candidate = self.clone();
         let (last, parents) = path.rsplit_once('.').map_or((path, ""), |(p, l)| (l, p));
@@ -285,6 +377,37 @@ impl Document {
         *self = candidate;
 
         Ok(())
+    }
+}
+
+fn collect_comments(node: &KdlNode, output: &mut String) {
+    let mut keep = |text: &str| {
+        if text.contains("//") || text.contains("/*") {
+            output.push_str(text);
+            output.push('\n');
+        }
+    };
+    if let Some(format) = node.format() {
+        keep(&format.leading);
+        keep(&format.before_children);
+        keep(&format.before_terminator);
+        keep(&format.terminator);
+        keep(&format.trailing);
+    }
+    for entry in node.entries() {
+        if let Some(format) = entry.format() {
+            keep(&format.leading);
+            keep(&format.trailing);
+        }
+    }
+    if let Some(children) = node.children() {
+        if let Some(format) = children.format() {
+            keep(&format.leading);
+            keep(&format.trailing);
+        }
+        for child in children.nodes() {
+            collect_comments(child, output);
+        }
     }
 }
 
@@ -506,7 +629,7 @@ fn kdl_value(value: &Value) -> Result<KdlValue, Error> {
 }
 
 fn node_name(key: &str, parent: &str) -> String {
-    if parent == "commands" {
+    if matches!(parent, "commands" | "custom_themes") {
         return key.into();
     }
 
@@ -599,6 +722,33 @@ pub fn from_str<T: DeserializeOwned>(source: &str) -> Result<T, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn adopting_appearance_modes_preserves_legacy_colors_and_comments() {
+        let mut document = Document::parse(
+            "// my desktop\ntheme {\n    colors {\n        accent \"#123456\" // my accent\n    }\n}\n",
+        )
+        .unwrap();
+        document.set("theme.mode", serde_json::json!("light")).unwrap();
+        assert_eq!(
+            document.get("theme.dark.colors.accent"),
+            Some(&serde_json::json!("#123456"))
+        );
+        assert!(document.get("theme.colors").is_none());
+        assert!(document.to_string().contains("// my accent"));
+        document.unset("theme.dark.colors").unwrap();
+        assert!(document.to_string().contains("// my accent"));
+        assert!(document.to_string().contains("// my desktop"));
+        Document::parse(&document.to_string()).unwrap();
+    }
+
+    #[test]
+    fn clearing_optional_theme_references_removes_them_without_empty_paths() {
+        let mut document = Document::parse("theme { file \"custom_theme.kdl\"; } ").unwrap();
+        document.set("theme.file", serde_json::json!("")).unwrap();
+        assert!(document.get("theme.file").is_none());
+        document.set("theme.file", serde_json::json!("")).unwrap();
+    }
+
     #[test]
     fn widget_output_arrays_and_command_names_survive_edits() {
         let source = r#"commands {

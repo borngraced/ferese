@@ -21,7 +21,7 @@ lock screen, and screen sharing. Change themes and settings without restarting.
 - Scrolling and tree layouts, floating windows, and a workspace overview.
 - Configurable keyboard shortcuts and touchpad gestures.
 - Multiple monitors with fractional scaling.
-- Six theme presets, wallpapers, blur, and adjustable corners.
+- Six theme families, Light/Dark/Auto modes, custom KDL themes, wallpapers, blur, and adjustable corners.
 - Clock and sticky-note widgets.
 - Screenshots with Satty editing, screen sharing, and top-bar recording.
 

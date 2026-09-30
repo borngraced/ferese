@@ -117,6 +117,7 @@ pub(crate) fn init(event_loop: &mut EventLoop<'static, Ferese>) -> Result<Screen
                     }
                     state.portal_shortcuts.remove(owner);
                     state.portal_session.remove(owner);
+                    state.theme_engine.remove(owner);
                     state.refresh_idle_inhibition();
                     return;
                 }
@@ -141,6 +142,22 @@ pub(crate) fn init(event_loop: &mut EventLoop<'static, Ferese>) -> Result<Screen
                         call.request.id,
                         "invalid_argument",
                         "Missing capture session",
+                    ));
+                }
+            } else if call.request.command == "theme-watch" {
+                if let Err(error) = validate_request(&call.request) {
+                    let _ = call
+                        .response
+                        .try_send(Response::error(call.request.id, error.code, error.message));
+                } else if let Some(since) = call.request.args["since"].as_u64() {
+                    state
+                        .theme_engine
+                        .watch(call.owner, call.request.id, since, call.response);
+                } else {
+                    let _ = call.response.try_send(Response::error(
+                        call.request.id,
+                        "invalid_argument",
+                        "Missing theme revision",
                     ));
                 }
             } else if call.request.command == "session-watch" {
@@ -323,6 +340,19 @@ fn serve_connection(mut stream: UnixStream, sender: channel::SyncSender<IpcEvent
                 return;
             }
         };
+        if request.command == "theme-preview" {
+            let response = match validate_request(&request) {
+                Err(error) => Response::error(request.id, error.code, error.message),
+                Ok(()) => match crate::theme::preview(&request.args) {
+                    Ok(value) => Response::success(request.id, value),
+                    Err(error) => Response::error(request.id, "invalid_config", error),
+                },
+            };
+            if write_frame(&mut stream, &response).is_err() {
+                return;
+            }
+            continue;
+        }
         let (response, receiver) = sync_channel(1);
         let exit_requested = request.command == "exit";
         let screenshot_requested = matches!(request.command.as_str(), "screenshot" | "screenshot-window");
@@ -404,7 +434,9 @@ impl Ferese {
         if self.session_lock.active
             && !matches!(
                 request.command.as_str(),
-                "portal-shortcuts-poll"
+                "theme-get"
+                    | "theme-status"
+                    | "portal-shortcuts-poll"
                     | "input-capture-disable"
                     | "input-capture-release"
                     | "get-session-state"
@@ -429,6 +461,14 @@ impl Ferese {
 
     fn dispatch_ipc_command(&mut self, owner: u64, command: &str, args: &Value) -> Result<Value, CommandError> {
         match command {
+            "theme-get" | "theme-status" => return Ok(self.theme_engine.value()),
+            "theme-set-mode" => {
+                let mode = serde_json::from_value(args["mode"].clone())
+                    .map_err(|error| CommandError::new("invalid_argument", error.to_string()))?;
+                return self
+                    .set_theme_mode(mode)
+                    .map_err(|error| CommandError::new("invalid_config", error));
+            }
             "portal-inhibit" => {
                 let inhibition = serde_json::from_value(args.clone())
                     .map_err(|error| CommandError::new("invalid_argument", error.to_string()))?;

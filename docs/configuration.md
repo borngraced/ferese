@@ -108,22 +108,43 @@ Changing default width preserves manually resized columns.
 
 ## Appearance
 
-Settings → Appearance offers six presets: **Ferese Blue** (default),
-**Monochrome**, **Gruvbox**, **Dracula**, **Ayu Light**, and **Monokai**.
-Ferese Blue uses the logo accent, `#3D7BE6`. Presets update colors and preserve
-wallpaper, fonts, corners, and opacity. Colors remain individually editable.
+Settings → Appearance offers six paired themes: **Ferese Blue** (default),
+**Catppuccin**, **Gruvbox**, **Rosé Pine**, **Tokyo Night**, and **Everforest**.
+Ferese Blue uses the logo accent, `#3D7BE6`, and has light and dark variants.
+Choose Light, Dark, or Auto in Settings or Control Center. Auto follows local
+07:00 and 19:00 boundaries unless you change its schedule.
+
+Selections store preset names. Partial KDL files can override shared colors or
+one appearance. See [Themes](theme-engine.md) for files, accessibility options,
+and live previews.
 
 | Section / key | Type | Default | Meaning |
 | --- | --- | --- | --- |
+| `theme.mode` | `"light"`, `"dark"`, `"auto"` | `"dark"` | Selected appearance mode |
+| `theme.family` | family id | `"ferese-blue"` | Paired theme; automatically uses its light or dark variant |
+| `theme.split` | boolean | `false` | Use separate light/dark families; retains both selections when disabled |
+| `theme.light.family`, `theme.dark.family` | family id | `"ferese-blue"` | Stored selections used when split is enabled |
+| `theme.custom-themes.<id>.file` | path | unset | Imported KDL family with explicit light and/or dark sections |
+| `theme.light.preset` | preset name | `"ferese-blue-light"` | Light palette; see the [preset pairs](theme-engine.md#preset-pairs) |
+| `theme.dark.preset` | preset name | `"ferese-blue"` | Dark palette |
+| `theme.file` | path | unset | Shared partial KDL theme |
+| `theme.light.file`, `theme.dark.file` | path | unset | Partial KDL theme for one appearance |
+| `theme.accent` | hex color | unset | Accent override, adjusted for readability in each appearance |
+| `theme.schedule.source` | `"system"`, `"schedule"` | `"schedule"` | Follow GTK/GNOME appearance or a custom schedule; sunrise/sunset is deferred |
+| `theme.schedule.timezone` | `"system"` or IANA timezone | `"system"` | Auto schedule timezone |
+| `theme.schedule.light-at`, `theme.schedule.dark-at` | `HH:MM` | `"07:00"`, `"19:00"` | Auto boundaries; times must differ |
+| `theme.accessibility.increase-contrast` | boolean | `false` | Strengthen text and borders |
+| `theme.accessibility.reduce-transparency` | boolean | `false` | Solid surfaces; skip background blur |
 | `appearance.corner-radius` | number ≥ 0 | unset | Legacy fallback for shell radius |
 | `appearance.inactive-dim.enabled` | boolean | `false` | Dim unfocused windows |
 | `appearance.inactive-dim.amount` | number 0–1 | `0.15` | Darkening strength |
 | `appearance.inactive-dim.duration-ms` | number ≥ 0 | `150` | Dimming and focus-ring transition; 0 snaps |
-| `theme.typography.font-family` | string | system sans-serif | Shell, Settings and overview font |
+| `theme.typography.font-family` | string | `"Inter"` | Shell, Settings and overview font |
 | `theme.background.path` | string | bundled Ferese wallpaper | Wallpaper image path; an existing selection overrides the default |
 | `theme.background.mode` | `"fill"`, `"fit"` | `"fill"` | Crop or letterbox |
 | `theme.material.style` | `"solid"`, `"translucent"` | `"solid"` | Shell background material |
 | `theme.material.opacity` | number 0–1 | `0.78` | Shared shell background opacity for bars, menus, popovers, notifications and themed dialogs. Text/icons stay opaque; 0 hides the material. Solid mode is always opaque |
+| `theme.material.tint-strength` | number 0–1 | Dark `0.5`, light `1` | Color strength over the blurred backdrop |
 | `theme.material.blur-radius` | number ≥ 0 | `12` | Translucent backdrop blur, capped at 32; 0 disables |
 
 | `theme.colors` key | Default | Meaning |

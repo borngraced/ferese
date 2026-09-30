@@ -82,6 +82,8 @@ fn main() -> iced::Result {
 
 #[derive(Clone)]
 enum Message {
+    ThemeChanged(ferese_config::theme::Snapshot),
+    WallpaperLoaded(u64, Result<widget::image::Handle, String>),
     Event(Box<Event>),
     Input(String),
     Submit,
@@ -188,6 +190,11 @@ impl cosmic::Application for Locker {
 
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
+            if self.preview {
+                Subscription::none()
+            } else {
+                ferese_theme::service::subscription().map(Message::ThemeChanged)
+            },
             event::listen_with(|event, _, _| match event {
                 Event::PlatformSpecific(PlatformSpecific::Wayland(
                     wayland::Event::Output(..) | wayland::Event::SessionLock(..),
@@ -202,6 +209,50 @@ impl cosmic::Application for Locker {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::ThemeChanged(snapshot) => {
+                let palette = ferese_theme::Palette::from_resolved(&snapshot.presented);
+                self.appearance.appearance = snapshot.presented.appearance;
+                self.appearance.panel = palette.sidebar;
+                self.appearance.text = palette.text;
+                self.appearance.accent = palette.accent;
+                self.appearance.on_accent = palette.on_accent;
+                self.appearance.radius = palette.radius;
+                self.appearance.font = ferese_theme::font(Some(&snapshot.presented.tokens.typography.font_family));
+                let theme = cosmic::command::set_theme(self.appearance.theme());
+                let target = &snapshot.theme;
+                let path = target
+                    .tokens
+                    .background
+                    .lock_path
+                    .as_ref()
+                    .or(target.tokens.background.path.as_ref())
+                    .cloned()
+                    .unwrap_or_else(|| ferese_config::default_wallpaper().into());
+                let reduce = target.accessibility.reduce_transparency;
+                if path != self.appearance.wallpaper_path || reduce != self.appearance.reduce_transparency {
+                    self.appearance.wallpaper_path = path.clone();
+                    self.appearance.reduce_transparency = reduce;
+                    self.appearance.wallpaper_revision = self.appearance.wallpaper_revision.wrapping_add(1);
+                    let revision = self.appearance.wallpaper_revision;
+                    let blur = if reduce { 0. } else { self.appearance.wallpaper_blur };
+                    let wallpaper = cosmic::task::future(async move {
+                        let result = tokio::task::spawn_blocking(move || appearance::load_wallpaper(&path, blur))
+                            .await
+                            .unwrap_or_else(|e| Err(e.to_string()));
+                        Message::WallpaperLoaded(revision, result)
+                    });
+                    return Task::batch([theme, wallpaper]);
+                }
+                return theme;
+            }
+            Message::WallpaperLoaded(revision, result) => {
+                if revision == self.appearance.wallpaper_revision {
+                    match result {
+                        Ok(image) => self.appearance.wallpaper = image,
+                        Err(error) => eprintln!("ferese-lock: retained wallpaper: {error}"),
+                    }
+                }
+            }
             Message::Event(box Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers))) => {
                 self.caps_lock = modifiers.contains(iced::keyboard::Modifiers::CAPS_LOCK);
             }

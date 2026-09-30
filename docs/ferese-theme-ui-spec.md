@@ -7,9 +7,10 @@ and defaults.
 
 ## Shared appearance
 
-The six presets are Ferese Blue, Monochrome, Gruvbox, Dracula, Ayu Light, and
-Monokai. Ferese Blue uses the logo accent, `#3D7BE6`. Presets change colors while
-preserving wallpaper, typography, corners, and opacity.
+The six theme families are Ferese Blue, Catppuccin, Gruvbox, Rosé Pine, Tokyo
+Night, and Everforest. Each has a paired light and dark palette. Ferese Blue uses the
+logo accent, `#3D7BE6`. Presets supply colors and materials; explicit wallpaper,
+typography, geometry, and material overrides remain in place.
 
 The interface font applies to shell text and native dialogs. Clock and note
 widgets can override it. Managed-window corners and shell corners are separate
@@ -57,6 +58,7 @@ background so the dialog remains usable.
 | `palette` | Resolve configuration colors and build the native toolkit theme |
 | `controls` | Surfaces, navigation, text buttons, and input styles |
 | `menus` | Rows, headings, sections, separators, switches, and sliders |
+| `gallery` | Split theme previews, selected badges and accessible radio navigation |
 | `calendar` | Date/time labels, clock digits, and calendar grids |
 | `icons` | Shared SVG assets, sizing, and tint |
 | `typography` | Shared font selection and text |
@@ -69,7 +71,7 @@ fonts, foreground colors, or opacity values.
 
 ## UI checks
 
-- Check text and icons in all six presets, including Ayu Light.
+- Check text and icons in all twelve light and dark variants.
 - Check rest, hover, pressed, focused, selected, and disabled controls.
 - Keep accent-button labels readable after typing or changing focus.
 - Keep controls usable with solid materials and blur disabled.

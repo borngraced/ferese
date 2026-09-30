@@ -77,26 +77,11 @@ pub fn separator<'a, M: 'a>(foreground: Color, opacity: f32) -> Element<'a, M> {
 }
 
 pub fn switch<'a, M: 'a>(enabled: bool, palette: crate::Palette, opacity: f32) -> Element<'a, M> {
-    let track = if enabled {
-        palette.accent
-    } else {
-        Color {
-            a: 0.22,
-            ..palette.text
-        }
-    };
-    let thumb = if enabled {
-        crate::foreground(track, palette.text)
-    } else {
-        palette.text
-    };
+    let (track, thumb) = crate::controls::switch_colors(palette, enabled, false);
     let knob = container(cosmic::widget::Space::new().width(16).height(16))
         .width(16)
         .height(16)
-        .class(crate::controls::surface(
-            Color { a: opacity, ..thumb },
-            palette.radius.min(8.),
-        ));
+        .class(crate::controls::surface(Color { a: opacity, ..thumb }, 8.));
     container(knob)
         .width(36)
         .height(20)
@@ -106,14 +91,11 @@ pub fn switch<'a, M: 'a>(enabled: bool, palette: crate::Palette, opacity: f32) -
         } else {
             cosmic::iced::alignment::Horizontal::Left
         })
-        .class(crate::controls::surface(
-            track.scale_alpha(opacity),
-            palette.radius.min(10.),
-        ))
+        .class(crate::controls::surface(track.scale_alpha(opacity), 10.))
         .into()
 }
 
-pub fn slider(foreground: Color, opacity: f32, radius: f32) -> cosmic::theme::iced::Slider {
+pub fn slider(foreground: Color, opacity: f32) -> cosmic::theme::iced::Slider {
     let style = std::rc::Rc::new(move |_: &cosmic::Theme| {
         use cosmic::iced::widget::slider::{Breakpoint, Handle, HandleShape, Rail, Style};
         Style {
@@ -128,16 +110,12 @@ pub fn slider(foreground: Color, opacity: f32, radius: f32) -> cosmic::theme::ic
                 ),
                 width: 4.,
                 border: cosmic::iced::Border {
-                    radius: radius.min(2.).into(),
+                    radius: 2.into(),
                     ..Default::default()
                 },
             },
             handle: Handle {
-                shape: HandleShape::Rectangle {
-                    width: 10,
-                    height: 10,
-                    border_radius: radius.min(5.).into(),
-                },
+                shape: HandleShape::Circle { radius: 6. },
                 background: foreground.into(),
                 border_width: 0.,
                 border_color: Color::TRANSPARENT,

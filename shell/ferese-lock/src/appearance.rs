@@ -4,6 +4,7 @@ use ferese_config::Document;
 
 #[derive(Clone)]
 pub struct Appearance {
+    pub appearance: ferese_config::theme::Appearance,
     pub dim: f32,
     pub show_clock: bool,
     pub show_date: bool,
@@ -11,17 +12,42 @@ pub struct Appearance {
     pub panel: Color,
     pub text: Color,
     pub accent: Color,
+    pub on_accent: Color,
     pub radius: f32,
     pub font: cosmic::font::Font,
     pub wallpaper: image::Handle,
+    pub wallpaper_path: std::path::PathBuf,
+    pub wallpaper_blur: f32,
+    pub wallpaper_revision: u64,
+    pub reduce_transparency: bool,
     pub avatar: Option<image::Handle>,
 }
 
 impl Appearance {
     pub fn load(user: &str, path: Option<&std::path::Path>) -> Self {
         let doc = path
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| Document::parse(&s).ok());
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .and_then(|source| Document::parse(&source).ok());
+        let mut theme = ferese_theme::service::current().presented;
+        if let Some(path) = path.filter(|path| ferese_config::config_path().as_deref() != Some(*path))
+            && let Some(document) = &doc
+            && let Ok(mut connection) = ferese_ipc::theme::Connection::connect()
+        {
+            let args = serde_json::json!({
+                "source": document.to_string(),
+                "directory": path.parent(),
+            });
+            if let Ok(value) = connection.call("theme-preview", args)
+                && let Ok(preview) = serde_json::from_value(value["theme"].clone())
+            {
+                theme = preview;
+            }
+        }
+        Self::from_document(user, doc, &theme)
+    }
+
+    fn from_document(user: &str, doc: Option<Document>, theme: &ferese_config::theme::ResolvedTheme) -> Self {
+        let doc = doc.map(|doc| doc.with_theme(theme));
         let string = |key: &str, fallback: &str| {
             doc.as_ref()
                 .and_then(|d| d.get(key))
@@ -29,7 +55,7 @@ impl Appearance {
                 .unwrap_or(fallback)
                 .to_owned()
         };
-        let palette = ferese_theme::Palette::from_document(doc.as_ref());
+        let palette = ferese_theme::Palette::from_resolved(&theme);
         let font = string("theme.typography.font_family", "Inter");
         let background = string("theme.background.path", ferese_config::default_wallpaper());
         let path = string("theme.background.lock_path", &background);
@@ -40,29 +66,18 @@ impl Appearance {
         } else {
             path
         };
-        let wallpaper = image::Handle::from_path(path);
-        // Soften a bounded thumbnail once, before requesting the lock. The
-        // renderer scales this shared image across outputs; no per-frame blur.
-        let pixels = cosmic::iced::advanced::graphics::image::load(&wallpaper)
-            .or_else(|_| {
-                cosmic::iced::advanced::graphics::image::load(&image::Handle::from_bytes(
-                    include_bytes!("../../../assets/wallpapers/ferese.png").as_slice(),
-                ))
-            })
-            .expect("bundled wallpaper is valid");
+        let wallpaper_path = std::path::PathBuf::from(path);
         let blur = doc
             .as_ref()
-            .and_then(|d| d.get("lock_screen.background_blur"))
-            .and_then(|v| v.as_f64())
+            .and_then(|doc| doc.get("lock_screen.background_blur"))
+            .and_then(|value| value.as_f64())
             .unwrap_or(18.)
             .clamp(0., 40.) as f32;
-        let wallpaper = if blur > 0. {
-            let thumbnail = ::image::imageops::thumbnail(&pixels, 640, 640);
-            let softened = ::image::imageops::blur(&thumbnail, blur);
-            image::Handle::from_rgba(softened.width(), softened.height(), softened.into_raw())
-        } else {
-            image::Handle::from_rgba(pixels.width(), pixels.height(), pixels.into_raw())
-        };
+        let reduce_transparency = theme.accessibility.reduce_transparency;
+        let wallpaper =
+            load_wallpaper(&wallpaper_path, if reduce_transparency { 0. } else { blur }).unwrap_or_else(|_| {
+                image::Handle::from_bytes(include_bytes!("../../../assets/wallpapers/ferese.png").as_slice())
+            });
         let boolean = |key, fallback| {
             doc.as_ref()
                 .and_then(|d| d.get(key))
@@ -70,6 +85,7 @@ impl Appearance {
                 .unwrap_or(fallback)
         };
         Self {
+            appearance: theme.appearance,
             dim: doc
                 .as_ref()
                 .and_then(|d| d.get("lock_screen.background_dim"))
@@ -82,9 +98,14 @@ impl Appearance {
             panel: palette.sidebar,
             text: palette.text,
             accent: palette.accent,
+            on_accent: palette.on_accent,
             radius: palette.radius,
             font: ferese_theme::font(Some(&font)),
             wallpaper,
+            wallpaper_path,
+            wallpaper_blur: blur,
+            wallpaper_revision: 0,
+            reduce_transparency,
             avatar: account_picture(user),
         }
     }
@@ -95,12 +116,14 @@ impl Appearance {
 
     pub fn theme(&self) -> cosmic::Theme {
         ferese_theme::Palette {
+            appearance: self.appearance,
             background: self.panel,
             sidebar: self.panel,
             card: self.panel,
             text: self.text,
             muted: self.text.scale_alpha(0.55),
             accent: self.accent,
+            on_accent: self.on_accent,
             radius: self.radius,
             error: Color::from_rgb8(235, 98, 98),
         }
@@ -166,12 +189,41 @@ mod tests {
         "##,
         )
         .unwrap();
-        let appearance = Appearance::load("no-such-test-user", Some(&config));
+        let document = Document::parse(&std::fs::read_to_string(&config).unwrap()).unwrap();
+        let theme = ferese_config::theme::resolve(&document, directory.path(), jiff::Timestamp::now(), |_| {
+            Err("unexpected file".into())
+        })
+        .unwrap()
+        .theme;
+        let appearance = Appearance::from_document("no-such-test-user", Some(document), &theme);
         assert_eq!(appearance.radius, 0.);
-        assert_eq!(appearance.accent, Color::from_rgb8(255, 85, 0));
+        assert_eq!(theme.requested_accent, "#FF5500");
+        assert_eq!(
+            appearance.accent,
+            ferese_theme::parse_color(&theme.tokens.colors.accent).unwrap()
+        );
+        assert!(ferese_theme::contrast(appearance.accent.into(), appearance.on_accent.into()) >= 4.5);
         assert!(!appearance.show_clock && !appearance.show_date);
         assert_eq!(appearance.clock_format(), "%I:%M %p");
         assert_eq!(appearance.dim, 0.7);
         assert_eq!(appearance.theme().cosmic().corner_radii.radius_m, [0.; 4]);
     }
+}
+
+pub fn load_wallpaper(path: &std::path::Path, blur: f32) -> Result<image::Handle, String> {
+    let (width, height) = ::image::image_dimensions(path).map_err(|e| e.to_string())?;
+    if u64::from(width) * u64::from(height) * 4 > 256 * 1024 * 1024 {
+        return Err("Lock wallpaper exceeds the decode limit".into());
+    }
+    let pixels = ::image::open(path).map_err(|e| e.to_string())?.into_rgba8();
+    let pixels = if blur > 0. {
+        ::image::imageops::blur(&::image::imageops::thumbnail(&pixels, 640, 640), blur)
+    } else {
+        pixels
+    };
+    Ok(image::Handle::from_rgba(
+        pixels.width(),
+        pixels.height(),
+        pixels.into_raw(),
+    ))
 }

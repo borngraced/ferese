@@ -24,6 +24,7 @@ mod session_lock;
 mod shell_control;
 mod stacking;
 mod state;
+mod theme;
 mod wallpaper;
 mod window_rules;
 mod winit;
@@ -40,7 +41,6 @@ pub use state::{Ferese, RuntimeConfig};
 use tracing::{info, warn};
 
 use crate::backends::LaunchConfig;
-use crate::config::Config;
 
 fn main() -> Result<(), Box<dyn Error>> {
     init_logging();
@@ -53,18 +53,27 @@ fn main() -> Result<(), Box<dyn Error>> {
             return Err("usage: ferese --check-config PATH".into());
         }
         let source = std::fs::read_to_string(&args[1])?;
-        Config::parse_source(&source)?.runtime_config()?;
+        theme::prepare(
+            &source,
+            std::path::Path::new(&args[1])
+                .parent()
+                .unwrap_or(std::path::Path::new(".")),
+        )?;
         println!("Configuration is valid");
         return Ok(());
     }
 
     let launch =
         LaunchConfig::from_environment().map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    let initial_source = config::config_path().and_then(|path| std::fs::read_to_string(path).ok());
-    let config = match initial_source.as_deref() {
-        Some(source) => Config::parse_source(source)?,
-        None => Config::load()?,
-    };
+    let initial_source = config::config_path()
+        .filter(|path| path.exists())
+        .map(|path| theme::read_source(&path))
+        .transpose()?;
+    let source = initial_source.as_deref().unwrap_or("");
+    let directory = config::config_path()
+        .and_then(|path| path.parent().map(ToOwned::to_owned))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let (config, runtime, candidate) = theme::prepare(source, &directory)?;
     let mut event_loop = EventLoop::try_new()?;
     let signals = Signals::new(&[Signal::SIGINT, Signal::SIGTERM])?;
     event_loop
@@ -74,20 +83,11 @@ fn main() -> Result<(), Box<dyn Error>> {
             state.loop_signal.stop();
         })?;
     let display = Display::new()?;
-    let runtime = config.runtime_config()?;
     let mut state = Ferese::new(&mut event_loop, display, runtime)?;
     state.config_source = initial_source.filter(|source| source.len() <= 60 * 1024);
+    theme::init(&mut event_loop, &mut state, candidate)?;
     overview::init_font_loader(&mut event_loop, &mut state)?;
     backends::init(launch.backend, &mut event_loop, &mut state)?;
-    let mut monitor = config::config_path().and_then(|path| {
-        match reload::ConfigMonitor::with_wakeup(path, Some(event_loop.get_signal())) {
-            Ok(monitor) => Some(monitor),
-            Err(error) => {
-                warn!(%error, "automatic config watching unavailable; use feresectl reload-config");
-                None
-            }
-        }
-    });
     use calloop::timer::{TimeoutAction, Timer};
     info!(socket = ?state.socket_name, backend = ?launch.backend, "Ferese is accepting Wayland clients");
     let mut child = spawn_client(&mut state, launch.client, launch.client_capabilities);
@@ -104,30 +104,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             TimeoutAction::ToDuration(Duration::from_secs(1))
         },
     )?;
-    let reload_timer_pending = std::rc::Rc::new(std::cell::Cell::new(false));
     let reload_handle = event_loop.handle();
     let result = event_loop.run(None, &mut state, |state| {
-        if let Some(monitor) = &mut monitor {
-            if let Some(result) = monitor.poll(std::time::Instant::now())
-                && let Err(error) = result.and_then(|source| state.reload_config_source(source))
-            {
-                warn!(%error, "config reload rejected; retaining last working config");
-            }
-            // At most one timer exists. Edits arriving during debounce move the
-            // deadline; the old timer wakes once and is replaced if necessary.
-            if !reload_timer_pending.get()
-                && let Some(deadline) = monitor.next_deadline()
-            {
-                let pending = reload_timer_pending.clone();
-                match reload_handle.insert_source(Timer::from_deadline(deadline), move |_, _, _| {
-                    pending.set(false);
-                    TimeoutAction::Drop
-                }) {
-                    Ok(_) => reload_timer_pending.set(true),
-                    Err(error) => warn!(%error, "could not schedule config debounce"),
-                }
-            }
-        }
+        state.poll_theme();
         // The decoder wakes the loop after publishing its result, including
         // when no output has a pending frame.
         let wallpaper_changed = state.wallpaper.poll();

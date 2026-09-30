@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
+use std::fmt;
 use std::path::PathBuf;
-use std::{fmt, fs, io};
 
 use ferese_animation::SpringConfig;
 use ferese_core::LayoutMode;
@@ -187,6 +187,7 @@ pub struct ThemeSettings {
     pub focus_ring_gradient: Option<BorderGradient>,
     pub shadow_color: RgbaColor,
     pub surface_base_color: RgbaColor,
+    pub bar_background_color: RgbaColor,
     pub text_primary_color: RgbaColor,
     pub shell_opacity: f64,
     pub inactive_dim: InactiveDimSettings,
@@ -196,6 +197,7 @@ pub struct ThemeSettings {
     pub shadow_opacity: f64,
     pub material_style: MaterialStyle,
     pub backdrop_blur: f64,
+    pub material_tint_strength: f64,
     pub material_radius: f64,
     pub panel_radius: f64,
 }
@@ -258,14 +260,40 @@ struct ThemeConfig {
     shadow: ThemeShadowConfig,
     #[serde(default)]
     material: ThemeMaterialConfig,
+    #[serde(default)]
+    surface: ThemeSurfaceConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ThemeSurfaceConfig {
+    #[serde(default)]
+    bar: ThemeBarConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ThemeBarConfig {
+    background: Option<String>,
 }
 
 impl Config {
+    #[cfg(test)]
     pub(crate) fn parse_source(source: &str) -> Result<Self, ConfigError> {
         ferese_config::from_str(source).map_err(|source| ConfigError::Parse {
             path: config_path().unwrap_or_default(),
             source,
         })
+    }
+
+    pub(crate) fn resolved_theme_settings(
+        theme: &ferese_config::theme::ResolvedTheme,
+        inactive_dim: InactiveDimSettings,
+    ) -> Result<ThemeSettings, ConfigError> {
+        let mut config = Self::default();
+        config.theme = serde_json::from_value(serde_json::to_value(&theme.tokens).unwrap())
+            .expect("resolved theme matches runtime schema");
+        let mut settings = config.theme_settings()?;
+        settings.inactive_dim = inactive_dim;
+        Ok(settings)
     }
 
     pub(crate) fn runtime_config(&self) -> Result<crate::RuntimeConfig, ConfigError> {
@@ -328,6 +356,8 @@ struct ThemeMaterialConfig {
     style: MaterialStyle,
     #[serde(default = "default_backdrop_blur")]
     blur_radius: f64,
+    #[serde(default = "default_material_tint_strength")]
+    tint_strength: f64,
 }
 
 impl Default for ThemeMaterialConfig {
@@ -336,12 +366,17 @@ impl Default for ThemeMaterialConfig {
             style: MaterialStyle::Solid,
             opacity: default_shell_opacity(),
             blur_radius: default_backdrop_blur(),
+            tint_strength: default_material_tint_strength(),
         }
     }
 }
 
 fn default_shell_opacity() -> f64 {
     ferese_config::DEFAULT_MATERIAL_OPACITY
+}
+
+fn default_material_tint_strength() -> f64 {
+    0.5
 }
 
 fn default_backdrop_blur() -> f64 {
@@ -834,10 +869,7 @@ enum ColumnWidthValue {
 
 #[derive(Debug)]
 pub enum ConfigError {
-    Read {
-        path: PathBuf,
-        source: io::Error,
-    },
+    #[cfg(test)]
     Parse {
         path: PathBuf,
         source: ferese_config::Error,
@@ -870,9 +902,7 @@ pub enum ConfigError {
 impl fmt::Display for ConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Read { path, source } => {
-                write!(formatter, "failed to read {}: {source}", path.display())
-            }
+            #[cfg(test)]
             Self::Parse { path, source } => {
                 write!(formatter, "failed to parse {}: {source}", path.display())
             }
@@ -904,7 +934,7 @@ impl fmt::Display for ConfigError {
 impl Error for ConfigError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Read { source, .. } => Some(source),
+            #[cfg(test)]
             Self::Parse { source, .. } => Some(source),
             Self::InvalidColumnWidth { .. }
             | Self::InvalidAnimationValue { .. }
@@ -919,19 +949,6 @@ impl Error for ConfigError {
 }
 
 impl Config {
-    pub fn load() -> Result<Self, ConfigError> {
-        let Some(path) = config_path() else {
-            return Ok(Self::default());
-        };
-        let source = match fs::read_to_string(&path) {
-            Ok(source) => source,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(source) => return Err(ConfigError::Read { path, source }),
-        };
-
-        ferese_config::from_str(&source).map_err(|source| ConfigError::Parse { path, source })
-    }
-
     pub fn layout_mode(&self) -> LayoutMode {
         match self.layout.mode.unwrap_or(LayoutModeValue::Scrolling) {
             LayoutModeValue::Scrolling => LayoutMode::Scrolling,
@@ -1173,6 +1190,15 @@ impl Config {
             focus_ring_gradient: self.theme.focus_ring.settings("focus_ring")?,
             shadow_color: parse_color(&self.theme.colors.shadow, "colors.shadow")?,
             surface_base_color: parse_color(&self.theme.colors.surface_base, "colors.surface_base")?,
+            bar_background_color: parse_color(
+                self.theme
+                    .surface
+                    .bar
+                    .background
+                    .as_deref()
+                    .unwrap_or(&self.theme.colors.surface_base),
+                "surface.bar.background",
+            )?,
             shell_opacity: unit_theme_value(self.theme.material.opacity, "material.opacity")?,
             inactive_dim: InactiveDimSettings {
                 enabled: self.appearance.inactive_dim.enabled,
@@ -1188,6 +1214,7 @@ impl Config {
             shadow_opacity,
             material_style: self.theme.material.style,
             backdrop_blur: nonnegative_theme_value(self.theme.material.blur_radius, "material.blur_radius")?.min(32.0),
+            material_tint_strength: unit_theme_value(self.theme.material.tint_strength, "material.tint_strength")?,
             material_radius,
             panel_radius: material_radius,
         })
@@ -2020,6 +2047,7 @@ mod tests {
                 focus_ring_gradient: None,
                 shadow_color: RgbaColor([1.0 / 255.0, 2.0 / 255.0, 3.0 / 255.0, 128.0 / 255.0]),
                 surface_base_color: RgbaColor([17.0 / 255.0, 24.0 / 255.0, 33.0 / 255.0, 1.0,]),
+                bar_background_color: RgbaColor([17.0 / 255.0, 24.0 / 255.0, 33.0 / 255.0, 1.0,]),
                 text_primary_color: RgbaColor([244.0 / 255.0, 247.0 / 255.0, 251.0 / 255.0, 1.0]),
                 shell_opacity: 0.78,
                 inactive_dim: InactiveDimSettings {
@@ -2033,6 +2061,7 @@ mod tests {
                 shadow_opacity: 0.4,
                 material_style: MaterialStyle::Translucent,
                 backdrop_blur: 12.0,
+                material_tint_strength: 0.5,
                 material_radius: 14.0,
                 panel_radius: 14.0,
             }
@@ -2103,6 +2132,7 @@ mod tests {
             .theme_settings()
             .unwrap();
         assert_eq!(theme.surface_base_color, RgbaColor([0.0, 0.0, 0.0, 1.0]));
+        assert_eq!(theme.bar_background_color, RgbaColor([1.0, 1.0, 1.0, 1.0]));
     }
 
     #[test]

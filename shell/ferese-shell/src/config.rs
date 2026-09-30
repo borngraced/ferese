@@ -13,6 +13,7 @@ pub(crate) struct ShellConfig {
     pub(crate) font_family: Option<String>,
     pub(crate) wallpaper: WallpaperConfig,
     pub(crate) theme: ShellTheme,
+    pub(crate) theme_mode: ferese_config::theme::Mode,
     pub(crate) status: StatusConfig,
 }
 
@@ -40,6 +41,7 @@ impl Default for StatusConfig {
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ShellTheme {
+    pub(crate) appearance: ferese_config::theme::Appearance,
     pub(crate) bar_background: [u8; 4],
     pub(crate) bar_text_primary: [u8; 4],
     pub(crate) bar_text_muted: [u8; 4],
@@ -48,6 +50,7 @@ pub(crate) struct ShellTheme {
     pub(crate) text_primary: [u8; 4],
     pub(crate) text_muted: [u8; 4],
     pub(crate) accent: [u8; 4],
+    pub(crate) on_accent: [u8; 4],
     pub(crate) border: [u8; 4],
     pub(crate) shadow: [u8; 4],
     pub(crate) bar_height: f32,
@@ -66,6 +69,7 @@ pub(crate) struct ShellTheme {
 impl Default for ShellTheme {
     fn default() -> Self {
         Self {
+            appearance: Default::default(),
             bar_background: [28, 32, 46, 255],
             bar_text_primary: [240, 243, 250, 255],
             bar_text_muted: [170, 180, 199, 255],
@@ -74,6 +78,7 @@ impl Default for ShellTheme {
             text_primary: [244, 247, 251, 255],
             text_muted: [135, 147, 162, 255],
             accent: [61, 123, 230, 255],
+            on_accent: [244, 247, 251, 255],
             border: [255, 255, 255, 24],
             shadow: [0, 0, 0, 85],
             bar_height: 28.0,
@@ -96,12 +101,14 @@ impl ShellTheme {
         let color = |[r, g, b, a]: [u8; 4]| cosmic::iced::Color::from_rgba8(r, g, b, f32::from(a) / 255.);
         let surface = color(self.surface_base);
         ferese_theme::Palette {
+            appearance: self.appearance,
             background: surface,
             sidebar: surface,
             card: surface,
             text: color(self.text_primary),
             muted: color(self.text_muted),
             accent: color(self.accent),
+            on_accent: color(self.on_accent),
             radius: self.material_radius,
             error: cosmic::iced::Color::from_rgb8(235, 98, 98),
         }
@@ -229,6 +236,8 @@ struct ThemeColorsConfig {
     text_muted: String,
     #[serde(default = "default_accent")]
     accent: String,
+    #[serde(default = "default_text_primary")]
+    on_accent: String,
     #[serde(default = "default_border")]
     border: String,
     #[serde(default = "default_shadow")]
@@ -242,6 +251,7 @@ impl Default for ThemeColorsConfig {
             text_primary: default_text_primary(),
             text_muted: default_text_muted(),
             accent: default_accent(),
+            on_accent: default_text_primary(),
             border: default_border(),
             shadow: default_shadow(),
         }
@@ -327,11 +337,28 @@ pub(crate) fn load() -> ShellConfig {
 }
 
 pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, ferese_config::Error> {
-    match ferese_config::from_str::<FereseConfig>(source) {
+    let document = ferese_config::Document::parse(source)?;
+    let snapshot = ferese_theme::service::current();
+    parse_document(
+        &document.with_theme(&snapshot.presented),
+        snapshot.presented.appearance,
+        snapshot.mode,
+    )
+}
+
+fn parse_document(
+    document: &ferese_config::Document,
+    appearance: ferese_config::theme::Appearance,
+    mode: ferese_config::theme::Mode,
+) -> Result<ShellConfig, ferese_config::Error> {
+    match serde_json::from_value::<FereseConfig>(document.value().clone())
+        .map_err(|error| ferese_config::Error::from(error.to_string()))
+    {
         Ok(config) => {
             config.notifications.validate().map_err(ferese_config::Error::from)?;
             config.desktop_widgets.validate().map_err(ferese_config::Error::from)?;
             let mut theme = shell_theme(&config.theme);
+            theme.appearance = appearance;
             theme.material_radius = nonnegative_or(
                 config
                     .theme
@@ -351,6 +378,7 @@ pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, ferese_config::E
                 font_family: config.theme.typography.font_family,
                 wallpaper: config.theme.background,
                 theme,
+                theme_mode: mode,
                 status: StatusConfig {
                     low_battery_threshold: config.status.low_battery_threshold.min(100),
                     ..config.status
@@ -358,6 +386,21 @@ pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, ferese_config::E
             })
         }
         Err(error) => Err(error),
+    }
+}
+
+impl ShellConfig {
+    pub(crate) fn apply_theme(&mut self, theme: &ferese_config::theme::ResolvedTheme) {
+        let config: ThemeConfig = serde_json::from_value(serde_json::to_value(&theme.tokens).unwrap()).unwrap();
+        self.theme = shell_theme(&config);
+        self.theme.appearance = theme.appearance;
+        self.theme.material_radius = theme.tokens.geometry.shell_radius as f32;
+        self.theme.bar_radius = self.theme.material_radius;
+        self.font_family = Some(theme.tokens.typography.font_family.clone());
+        self.wallpaper = config.background;
+        if std::env::var_os("FERESE_COMPOSITOR_WALLPAPER").is_some() {
+            self.wallpaper.path = None;
+        }
     }
 }
 
@@ -378,6 +421,7 @@ fn shell_theme(theme: &ThemeConfig) -> ShellTheme {
     let alpha = (opacity * 255.0).round() as u8;
 
     ShellTheme {
+        appearance: defaults.appearance,
         material_radius: defaults.material_radius,
         bar_background: {
             let mut background = parse_color(&theme.surface.bar.background).unwrap_or(defaults.bar_background);
@@ -395,6 +439,7 @@ fn shell_theme(theme: &ThemeConfig) -> ShellTheme {
         text_primary: parse_color(&theme.colors.text_primary).unwrap_or(defaults.text_primary),
         text_muted: parse_color(&theme.colors.text_muted).unwrap_or(defaults.text_muted),
         accent: parse_color(&theme.colors.accent).unwrap_or(defaults.accent),
+        on_accent: parse_color(&theme.colors.on_accent).unwrap_or(defaults.on_accent),
         border: parse_color(&theme.colors.border).unwrap_or(defaults.border),
         shadow: parse_color(&theme.colors.shadow).unwrap_or(defaults.shadow),
         bar_height: positive_or(theme.geometry.top_bar_height, defaults.bar_height),
@@ -527,7 +572,7 @@ pub(crate) fn config_path() -> Option<PathBuf> {
 mod tests {
     #[test]
     fn desktop_clock_parses_and_rejects_invalid_reload_values() {
-        let clock = super::parse_source(
+        let clock = parse_test_source(
             r#"desktop-widgets {
     clock {
         enabled #true
@@ -544,16 +589,21 @@ mod tests {
         .clock;
         assert!(clock.enabled);
         assert_eq!(clock.anchor, ferese_core::desktop::Anchor::BottomRight);
-        assert!(super::parse_source("desktop-widgets {\n    clock {\n        opacity 1.1\n    }\n}\n").is_err());
-        assert!(super::parse_source("desktop-widgets {\n    clock {\n        time-format \"%\"\n    }\n}\n").is_err());
+        assert!(parse_test_source("desktop-widgets {\n    clock {\n        opacity 1.1\n    }\n}\n").is_err());
+        assert!(parse_test_source("desktop-widgets {\n    clock {\n        time-format \"%\"\n    }\n}\n").is_err());
     }
     use super::*;
 
+    fn parse_test_source(source: &str) -> Result<ShellConfig, ferese_config::Error> {
+        let document = ferese_config::Document::parse(source)?;
+        parse_document(&document, Default::default(), Default::default())
+    }
+
     #[test]
     fn keybinding_guide_is_enabled_until_explicitly_disabled() {
-        assert!(parse_source("").unwrap().status.keybinding_guide);
+        assert!(parse_test_source("").unwrap().status.keybinding_guide);
         assert!(
-            !parse_source("status { keybinding-guide #false; }")
+            !parse_test_source("status { keybinding-guide #false; }")
                 .unwrap()
                 .status
                 .keybinding_guide
@@ -590,14 +640,14 @@ theme {
     #[test]
     fn shell_radius_unifies_surfaces_and_preserves_legacy_fallbacks() {
         for radius in [0.0, 18.0] {
-            let config = parse_source(&format!("appearance {{\n corner-radius 9\n}}\ntheme {{\n geometry {{\n shell-radius {radius}\n top-bar-radius 5\n window-radius 23\n }}\n}}")).unwrap();
+            let config = parse_test_source(&format!("appearance {{\n corner-radius 9\n}}\ntheme {{\n geometry {{\n shell-radius {radius}\n top-bar-radius 5\n window-radius 23\n }}\n}}")).unwrap();
             assert_eq!(config.theme.material_radius, radius);
             assert_eq!(config.theme.bar_radius, radius);
         }
-        let legacy = parse_source("theme {\n geometry {\n top-bar-radius 7\n }\n}").unwrap();
+        let legacy = parse_test_source("theme {\n geometry {\n top-bar-radius 7\n }\n}").unwrap();
         assert_eq!(legacy.theme.material_radius, 7.0);
         assert_eq!(legacy.theme.bar_radius, 7.0);
-        let legacy = parse_source("appearance {\n corner-radius 6\n}").unwrap();
+        let legacy = parse_test_source("appearance {\n corner-radius 6\n}").unwrap();
         assert_eq!(legacy.theme.material_radius, 6.0);
         assert_eq!(legacy.theme.bar_radius, 6.0);
     }

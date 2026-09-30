@@ -16,6 +16,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         return autostart::run();
     }
+    if env::args().nth(1).as_deref() == Some("theme") {
+        return theme_command(env::args().skip(2).collect());
+    }
     let (command, args) = parse_args(env::args().skip(1))?;
     let request = Request {
         version: VERSION,
@@ -41,6 +44,44 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
         Ok(())
     }
+}
+
+fn theme_command(args: Vec<String>) -> Result<(), Box<dyn Error>> {
+    let mut connection = ferese_ipc::theme::Connection::connect()?;
+    match args.as_slice() {
+        [command] if command == "get" || command == "status" => {
+            println!("{}", serde_json::to_string_pretty(&connection.get()?)?);
+        }
+        [command] if command == "subscribe" => {
+            let mut snapshot = connection.get()?;
+            loop {
+                println!("{}", serde_json::to_string(&snapshot)?);
+                snapshot = connection.watch(snapshot.revision)?;
+            }
+        }
+        [command, mode] if command == "mode" && matches!(mode.as_str(), "light" | "dark" | "auto") => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&connection.call("theme-set-mode", json!({"mode": mode}))?)?
+            );
+        }
+        [command, path] if command == "preview" => {
+            let source = fs::read_to_string(path)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&connection.call(
+                    "theme-preview",
+                    json!({"source": source, "directory": std::path::Path::new(path).canonicalize()?.parent()})
+                )?)?
+            );
+        }
+        _ => {
+            return Err(
+                "usage: feresectl theme <get|status|subscribe|mode light|mode dark|mode auto|preview PATH>".into(),
+            );
+        }
+    }
+    Ok(())
 }
 
 // The compositor stages the PNG in a private directory and replies with its

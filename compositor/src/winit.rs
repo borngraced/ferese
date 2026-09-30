@@ -442,8 +442,6 @@ void main() {
 }
 "#;
 
-const BLURRED_MATERIAL_TINT: f32 = 0.5;
-
 #[derive(Clone, Debug)]
 pub(crate) struct BlurProgram(GlesTexProgram);
 
@@ -1378,8 +1376,19 @@ fn output_elements(
         output,
         &[Layer::Bottom, Layer::Background],
     ));
-    if let Some(wallpaper) = state.wallpaper.element(renderer, output) {
+    state.prepare_theme_wallpaper(renderer, output);
+    let progress = state.theme_progress();
+    let wallpaper = state.wallpaper.element(renderer, output);
+    let has_wallpaper = wallpaper.is_some();
+    if let Some(mut wallpaper) = wallpaper {
+        wallpaper.alpha = progress;
         elements.push(wallpaper.into());
+    }
+    if let Some(mut previous) = state.previous_theme_wallpaper(renderer, output) {
+        if !has_wallpaper {
+            previous.alpha = 1. - progress;
+        }
+        elements.push(previous.into());
     }
     elements
 }
@@ -2397,14 +2406,19 @@ fn material_element(
     let mode = output.current_mode()?;
     let scale = output.current_scale().fractional_scale();
     let transform = output.current_transform().invert();
-    let [red, green, blue, _] = state.theme_settings.surface_base_color.0;
+    let background = if role == crate::effects::SemanticRole::Panel {
+        state.theme_settings.bar_background_color
+    } else {
+        state.theme_settings.surface_base_color
+    };
+    let [red, green, blue, _] = background.0;
     let radius = radius.min(geometry.size.w.min(geometry.size.h) as f32 * 0.5);
     let [offset_y, shadow_blur, shadow_opacity] = material.shadow;
     let edge_bar = role == crate::effects::SemanticRole::Panel && radius == 0.0 && geometry.loc.y == 0;
     let shadow_opacity = if edge_bar {
         0.0
     } else {
-        shadow_opacity * f64::from(presentation_alpha)
+        shadow_opacity * (state.theme_settings.shadow_opacity / 0.2) * f64::from(presentation_alpha)
     };
     let shadow_geometry = Rectangle::new(
         (geometry.loc.x, geometry.loc.y + offset_y.round() as i32).into(),
@@ -2479,7 +2493,7 @@ fn material_element(
         None
     };
     if capture.is_some() {
-        parameters.tint[3] = BLURRED_MATERIAL_TINT;
+        parameters.tint[3] = state.theme_settings.material_tint_strength as f32;
     }
     let make_element = || {
         if let Some((capture, program)) = &capture {
@@ -2771,7 +2785,12 @@ mod tests {
         let mut target_texture: GlesTexture = renderer.create_buffer(Fourcc::Abgr8888, size).unwrap();
         let damage = Rectangle::<i32, Physical>::from_size((32, 32).into());
 
-        for opacity in [0.2f32, 0.71, 1.0] {
+        for (opacity, strength, tint) in [
+            (0.2f32, 0.5f32, 0.1f32),
+            (0.71, 0.5, 0.1),
+            (1.0, 0.5, 0.1),
+            (0.94, 1.0, 245.0 / 255.0),
+        ] {
             let uniforms = vec![
                 Uniform::new("visible_rect", [0.0f32, 0.0, 32.0, 32.0]),
                 Uniform::new("material_radius", 0.0f32),
@@ -2780,7 +2799,7 @@ mod tests {
                 Uniform::new("blur_radius", 12.0f32),
                 Uniform::new("presentation_alpha", 1.0f32),
                 Uniform::new("background_opacity", opacity),
-                Uniform::new("tint", [0.1f32, 0.1, 0.1, super::BLURRED_MATERIAL_TINT]),
+                Uniform::new("tint", [tint, tint, tint, strength]),
             ];
             let mut target = renderer.bind(&mut target_texture).unwrap();
             {
@@ -2820,9 +2839,7 @@ mod tests {
                 left.abs_diff(right) <= 2,
                 "opacity {opacity} leaked the original backdrop: {left} versus {right}"
             );
-            let expected = (128.0 * (1.0 - super::BLURRED_MATERIAL_TINT * opacity)
-                + 25.5 * super::BLURRED_MATERIAL_TINT * opacity)
-                .round() as u8;
+            let expected = (128.0 * (1.0 - strength * opacity) + tint * 255.0 * strength * opacity).round() as u8;
             assert!(
                 left.abs_diff(expected) <= 2,
                 "opacity {opacity} failed to control tint: {left} versus {expected}"

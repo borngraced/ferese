@@ -52,6 +52,7 @@ pub(crate) struct Selection {
 
 #[derive(Clone, Debug)]
 enum Message {
+    ThemeChanged(ferese_config::theme::Snapshot),
     WindowOpened(cosmic::iced::window::Id),
     Attached(
         Result<
@@ -159,14 +160,28 @@ impl cosmic::Application for Picker {
     }
 
     fn subscription(&self) -> cosmic::iced::Subscription<Message> {
-        cosmic::iced::event::listen_with(|event, _, id| match event {
-            cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => Some(Message::WindowOpened(id)),
-            _ => None,
-        })
+        cosmic::iced::Subscription::batch([
+            ferese_theme::service::subscription().map(Message::ThemeChanged),
+            cosmic::iced::event::listen_with(|event, _, id| match event {
+                cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => {
+                    Some(Message::WindowOpened(id))
+                }
+                _ => None,
+            }),
+        ])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::ThemeChanged(snapshot) => {
+                self.palette = ferese_theme::Palette::from_resolved(&snapshot.presented).flat();
+                self.font = ferese_theme::font(Some(&snapshot.presented.tokens.typography.font_family));
+                self.background = cosmic::iced::Color {
+                    a: ferese_theme::service::opacity(&snapshot.presented),
+                    ..self.palette.sidebar
+                };
+                return cosmic::command::set_theme(self.palette.native_theme());
+            }
             Message::WindowOpened(id) => {
                 let parent = self.prompt.parent.clone();
                 return cosmic::iced::window::run(id, move |window| {
@@ -381,20 +396,14 @@ pub(crate) fn appearance() -> (
     cosmic::iced::Color,
     ferese_theme::Palette,
 ) {
-    let document = ferese_config::config_path()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|source| ferese_config::Document::parse(&source).ok());
-    let palette = ferese_theme::Palette::from_document(document.as_ref()).flat();
-    let family = document
-        .as_ref()
-        .and_then(|document| document.get("theme.typography.font_family"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("Inter");
+    let snapshot = ferese_theme::service::current();
+    let palette = ferese_theme::Palette::from_resolved(&snapshot.presented).flat();
+    let family = &snapshot.presented.tokens.typography.font_family;
     (
         palette.native_theme(),
         ferese_theme::font(Some(family)),
         cosmic::iced::Color {
-            a: ferese_theme::material_opacity(document.as_ref()),
+            a: ferese_theme::service::opacity(&snapshot.presented),
             ..palette.sidebar
         },
         palette,

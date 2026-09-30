@@ -1,12 +1,13 @@
 use cosmic::iced::Color;
-use ferese_config::Document;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
+    pub appearance: ferese_config::theme::Appearance,
     pub background: Color,
     pub sidebar: Color,
     pub card: Color,
     pub accent: Color,
+    pub on_accent: Color,
     pub text: Color,
     pub muted: Color,
     pub error: Color,
@@ -14,33 +15,23 @@ pub struct Palette {
 }
 
 impl Palette {
-    pub fn from_document(document: Option<&Document>) -> Self {
-        let color = |key, fallback| {
-            document
-                .and_then(|document| document.get(key))
-                .and_then(|value| value.as_str())
-                .and_then(parse_color)
-                .unwrap_or_else(|| parse_color(fallback).expect("valid default theme color"))
-        };
-        let base = color("theme.colors.surface_base", "#111821");
+    pub fn from_resolved(theme: &ferese_config::theme::ResolvedTheme) -> Self {
+        let color = |value: &str| parse_color(value).expect("validated resolved theme color");
         Self {
-            background: mix(base, surface_shade(base), 0.025),
-            sidebar: base,
-            card: mix(base, surface_shade(base), 0.055),
-            accent: color("theme.colors.accent", "#3D7BE6"),
-            text: color("theme.colors.text_primary", "#F4F7FB"),
-            muted: color("theme.colors.text_muted", "#8793A2"),
-            error: mix(base, Color::from_rgb8(210, 80, 80), 0.2),
-            radius: document
-                .and_then(|document| {
-                    document
-                        .get("theme.geometry.shell_radius")
-                        .or_else(|| document.get("appearance.corner_radius"))
-                })
-                .and_then(|value| value.as_f64())
-                .filter(|value| value.is_finite())
-                .unwrap_or(14.)
-                .clamp(0., 64.) as f32,
+            appearance: theme.appearance,
+            background: color(&theme.tokens.colors.application_background),
+            sidebar: color(&theme.tokens.colors.surface_base),
+            card: color(&theme.tokens.colors.surface_raised),
+            accent: color(&theme.tokens.colors.accent),
+            on_accent: color(&theme.tokens.colors.on_accent),
+            text: color(&theme.tokens.colors.text_primary),
+            muted: color(&theme.tokens.colors.text_muted),
+            error: mix(
+                color(&theme.tokens.colors.surface_base),
+                Color::from_rgb8(210, 80, 80),
+                0.2,
+            ),
+            radius: theme.tokens.geometry.shell_radius as f32,
         }
     }
 
@@ -52,7 +43,7 @@ impl Palette {
 
     pub fn native_theme(self) -> cosmic::Theme {
         let rgba = |c: Color| cosmic::cosmic_theme::palette::Srgba::new(c.r, c.g, c.b, 1.);
-        let builder = if crate::luminance(self.sidebar) > 0.5 {
+        let builder = if self.appearance == ferese_config::theme::Appearance::Light {
             cosmic::cosmic_theme::ThemeBuilder::light()
         } else {
             cosmic::cosmic_theme::ThemeBuilder::dark()
@@ -70,9 +61,9 @@ impl Palette {
             .bg_color(rgba(self.background))
             .primary_container_bg(rgba(self.card))
             .text_tint(rgba(self.text).color)
-            .accent(crate::accent_color(self.accent, self.card))
+            .accent(rgba(self.accent).color)
             .build();
-        crate::apply(&mut native, self.text);
+        crate::apply(&mut native, self.on_accent);
         cosmic::Theme::custom(std::sync::Arc::new(native))
     }
 
@@ -113,22 +104,6 @@ pub fn surface_shade(base: Color) -> Color {
     }
 }
 
-pub fn material_opacity(document: Option<&Document>) -> f32 {
-    let style = document
-        .and_then(|document| document.get("theme.material.style"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("solid");
-    if style != "translucent" {
-        return 1.;
-    }
-    document
-        .and_then(|document| document.get("theme.material.opacity"))
-        .and_then(|value| value.as_f64())
-        .filter(|value| value.is_finite())
-        .unwrap_or(ferese_config::DEFAULT_MATERIAL_OPACITY)
-        .clamp(0., 1.) as f32
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,23 +111,15 @@ mod tests {
     #[test]
     fn every_preset_builds_an_opaque_control_palette_over_translucent_materials() {
         for preset in crate::PRESETS {
-            let document = Document::parse(&format!(
-                r##"theme {{
-                    colors {{
-                        surface-base "{}"
-                        accent "{}"
-                        text-primary "{}"
-                        text-muted "{}"
-                    }}
-                    material {{ style translucent; opacity 0.25; }}
-                    geometry {{ shell-radius 0; }}
-                }}"##,
-                preset.base, preset.accent, preset.text, preset.muted,
-            ))
-            .unwrap();
-            let palette = Palette::from_document(Some(&document));
+            let mut resolved = ferese_config::theme::ResolvedTheme::default();
+            resolved.appearance = preset.appearance;
+            resolved.tokens = ferese_config::theme::preset(preset.id, preset.appearance).unwrap();
+            resolved.tokens.material.style = "translucent".into();
+            resolved.tokens.material.opacity = 0.25;
+            resolved.tokens.geometry.shell_radius = 0.;
+            let palette = Palette::from_resolved(&resolved);
             let native = palette.native_theme();
-            assert_eq!(material_opacity(Some(&document)), 0.25);
+            assert_eq!(crate::service::opacity(&resolved), 0.25);
             assert_eq!(native.cosmic().primary(false).base.alpha, 1.);
             assert_eq!(native.cosmic().corner_radii.radius_m, [0.; 4]);
             for component in [&native.cosmic().accent, &native.cosmic().accent_button] {
@@ -172,12 +139,13 @@ mod tests {
         for (style, opacity, expected) in [
             ("solid", 0.4, 1.),
             ("translucent", 0.4, 0.4),
-            ("translucent", 2., 1.),
-            ("translucent", -1., 0.),
+            ("translucent", 1., 1.),
+            ("translucent", 0., 0.),
         ] {
-            let document =
-                Document::parse(&format!("theme {{ material {{ style {style}; opacity {opacity}; }} }}")).unwrap();
-            assert_eq!(material_opacity(Some(&document)), expected);
+            let mut theme = ferese_config::theme::ResolvedTheme::default();
+            theme.tokens.material.style = style.into();
+            theme.tokens.material.opacity = opacity;
+            assert_eq!(crate::service::opacity(&theme), expected);
         }
     }
 }

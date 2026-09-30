@@ -89,22 +89,17 @@ appearance {
 }
 
 theme {
+    mode "dark"
+    family "ferese-blue"
+    split #false
+    schedule { source "schedule"; timezone "system"; light-at "07:00"; dark-at "19:00"; }
+    accessibility { increase-contrast #false; reduce-transparency #false; }
     background {
         mode "fill"
         // path "/absolute/path/to/wallpaper.png"
     }
-    colors {
-        accent "#3D7BE6"
-        surface-base "#111821"
-        text-primary "#F4F7FB"
-        text-muted "#8793A2"
-        border "#FFFFFF18"
-        shadow "#00000055"
-    }
     material {
         style "translucent"
-        opacity 0.78
-        blur-radius 25
     }
     geometry {
         window-radius 12
@@ -123,13 +118,6 @@ theme {
             blur 10
             offset-y 2
             opacity 0.07
-        }
-    }
-    surface {
-        bar {
-            background "#111821"
-            text-primary "#F4F7FB"
-            text-muted "#8793A2"
         }
     }
     // typography { font-family "JetBrainsMono Nerd Font"; }

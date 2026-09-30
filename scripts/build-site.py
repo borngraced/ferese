@@ -16,6 +16,8 @@ PAGES = [
     ('why-ferese', 'Why Ferese', ROOT / 'docs/why-ferese.md'),
     ('installation', 'Installation', ROOT / 'docs/installation.md'),
     ('configuration', 'Configuration', ROOT / 'docs/configuration.md'),
+    ('theme-engine', 'Themes', ROOT / 'docs/theme-engine.md'),
+    ('theme-palette-sources', 'Theme palette sources', ROOT / 'docs/theme-palette-sources.md'),
     ('shortcuts', 'Shortcuts and gestures', ROOT / 'docs/shortcuts.md'),
     ('desktop-widgets', 'Desktop widgets', ROOT / 'docs/desktop-widgets.md'),
     ('notifications', 'Notifications', ROOT / 'docs/notifications.md'),

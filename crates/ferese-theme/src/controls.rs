@@ -34,6 +34,36 @@ pub fn text_button<'a, M: Clone + 'a>(
         .class(button_style(palette, selected))
 }
 
+pub fn switch<'a, M: Clone + 'a>(enabled: bool, palette: Palette) -> button::Button<'a, M> {
+    let paint = move |focused| button::Style {
+        background: None,
+        text_color: Some(palette.text),
+        icon_color: Some(palette.text),
+        border_radius: 12.into(),
+        border_width: if focused { 1. } else { 0. },
+        border_color: palette.accent,
+        ..Default::default()
+    };
+    button::custom(crate::menus::switch(enabled, palette, 1.))
+        .padding(2)
+        .class(theme::Button::Custom {
+            active: Box::new(move |focused, _| paint(focused)),
+            hovered: Box::new(move |focused, _| paint(focused)),
+            pressed: Box::new(move |focused, _| paint(focused)),
+            disabled: Box::new(move |_| paint(false)),
+        })
+}
+
+pub(crate) fn switch_colors(palette: Palette, enabled: bool, hovered: bool) -> (Color, Color) {
+    let track = if enabled {
+        palette.accent
+    } else {
+        mix(palette.card, palette.text, if hovered { 0.18 } else { 0.12 })
+    };
+    let thumb = crate::foreground(track, palette.text);
+    (track, thumb)
+}
+
 pub fn navigation_style(p: Palette, selected: bool) -> theme::Button {
     styled_button(p, selected, true)
 }
@@ -48,7 +78,7 @@ pub fn settings_input(p: Palette) -> theme::TextInput {
         icon_color: Some(p.muted),
         text_color: Some(p.text),
         placeholder_color: p.muted,
-        selected_text_color: p.sidebar,
+        selected_text_color: p.on_accent,
         selected_fill: p.accent,
         label_color: p.muted,
     };
@@ -231,5 +261,32 @@ pub fn filled_button(fill: Color, foreground: Color, radius: f32, opacity: f32) 
         hovered: Box::new(move |_, _| paint(1.)),
         pressed: Box::new(move |_, _| paint(2.)),
         disabled: Box::new(move |_| paint(0.)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn switch_thumb_remains_readable_in_every_preset_and_state() {
+        for preset in crate::PRESETS {
+            let resolved = ferese_config::theme::ResolvedTheme {
+                appearance: preset.appearance,
+                tokens: ferese_config::theme::preset(preset.id, preset.appearance).unwrap(),
+                ..Default::default()
+            };
+            let palette = Palette::from_resolved(&resolved);
+            for enabled in [false, true] {
+                for hovered in [false, true] {
+                    let (track, thumb) = switch_colors(palette, enabled, hovered);
+                    assert!(
+                        crate::contrast(track, thumb) >= 4.5,
+                        "{}: enabled={enabled}, hovered={hovered}",
+                        preset.name,
+                    );
+                }
+            }
+        }
     }
 }

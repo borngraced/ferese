@@ -166,6 +166,7 @@ struct FereseShell {
     recorder: recording::Recorder,
     calendar_offset: i32,
     status_error: Option<String>,
+    theme_error: Option<String>,
     menu: Option<status_ui::OpenMenu>,
     system_modal: Option<system_modal::SystemModal>,
     guide_shown: bool,
@@ -212,6 +213,9 @@ struct OutputSurfaces {
 
 #[derive(Clone, Debug)]
 enum Message {
+    ThemeChanged(ferese_config::theme::Snapshot),
+    ThemeMode(ferese_config::theme::Mode),
+    ThemeModeSet(Result<(), String>),
     BeginNoteEdit(String),
     NoteAction(String, cosmic::widget::text_editor::Action),
     SaveNote(String, u64),
@@ -282,6 +286,7 @@ impl cosmic::Application for FereseShell {
             recorder: recording::Recorder::default(),
             calendar_offset: 0,
             status_error: None,
+            theme_error: None,
             menu: None,
             system_modal: None,
             guide_shown: false,
@@ -322,6 +327,7 @@ impl cosmic::Application for FereseShell {
 
     fn subscription(&self) -> Subscription<Self::Message> {
         Subscription::batch([
+            ferese_theme::service::subscription().map(Message::ThemeChanged),
             if self
                 .system_modal
                 .as_ref()
@@ -409,6 +415,38 @@ impl cosmic::Application for FereseShell {
         self.update_power_materials();
 
         match message {
+            Message::ThemeChanged(snapshot) => {
+                let mut config = self.config.clone();
+                config.apply_theme(&snapshot.presented);
+                config.theme_mode = snapshot.mode;
+                if snapshot.error != self.theme_error {
+                    if let Some(error) = &snapshot.error {
+                        self.notifications.service_error("Theme could not be loaded", error);
+                    }
+                    self.theme_error = snapshot.error;
+                }
+                return self.apply_config(config);
+            }
+            Message::ThemeMode(mode) => {
+                return cosmic::task::future(async move {
+                    let result = tokio::task::spawn_blocking(move || {
+                        let mut connection = ferese_ipc::theme::Connection::connect().map_err(|e| e.to_string())?;
+                        connection
+                            .call("theme-set-mode", serde_json::json!({"mode": mode}))
+                            .map(|_| ())
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()));
+                    cosmic::Action::App(Message::ThemeModeSet(result))
+                });
+            }
+            Message::ThemeModeSet(result) => {
+                if let Err(error) = result {
+                    self.notifications
+                        .service_error("Appearance could not be changed", &error);
+                }
+                return Task::none();
+            }
             Message::BeginNoteEdit(id) => {
                 let mut tasks = vec![self.finish_note_edit()];
 
@@ -814,7 +852,7 @@ impl cosmic::Application for FereseShell {
 
 impl FereseShell {
     fn reload_config(&mut self, source: String) -> Task<Message> {
-        let mut config = match config::parse_source(&source) {
+        let config = match config::parse_source(&source) {
             Ok(config) => config,
             Err(error) => {
                 eprintln!("ferese-shell: reload rejected; keeping current config: {error}");
@@ -822,6 +860,10 @@ impl FereseShell {
             }
         };
 
+        self.apply_config(config)
+    }
+
+    fn apply_config(&mut self, mut config: config::ShellConfig) -> Task<Message> {
         if std::env::var_os("FERESE_COMPOSITOR_WALLPAPER").is_some() {
             config.wallpaper.path = None;
         }
@@ -2017,9 +2059,7 @@ impl FereseShell {
         let clock = container(motion::button(
             button::custom(
                 row![
-                    text(date)
-                        .size(12)
-                        .class(theme::Text::Color(color(shell_theme.text_muted))),
+                    text(date).size(12).class(theme::Text::Color(foreground)),
                     text(time).size(bar.text_size).class(theme::Text::Color(foreground)),
                 ]
                 .spacing(8)

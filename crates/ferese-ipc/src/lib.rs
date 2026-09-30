@@ -5,6 +5,8 @@ use std::{fmt, io};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod theme;
+
 pub const VERSION: u32 = 1;
 pub const MAX_PAYLOAD_SIZE: usize = 1024 * 1024;
 

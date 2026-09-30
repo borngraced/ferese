@@ -440,6 +440,35 @@ impl FereseShell {
         if kind != Menu::Calendar {
             rows = rows.push(heading);
         }
+        if kind == Menu::System {
+            use ferese_config::theme::{Appearance, Mode};
+            let mut modes = row([]).spacing(6);
+            for (mode, label) in [(Mode::Light, "☀ Light"), (Mode::Dark, "☾ Dark"), (Mode::Auto, "◐ Auto")] {
+                modes = modes.push(
+                    button::custom(text(label).font(shell_font()).size(13))
+                        .width(Length::Fill)
+                        .padding(9)
+                        .class(ferese_theme::controls::button_style(
+                            theme.palette(),
+                            self.config.theme_mode == mode,
+                        ))
+                        .on_press(cosmic::Action::App(Message::ThemeMode(mode))),
+                );
+            }
+            rows = rows.push(modes);
+            if self.config.theme_mode == Mode::Auto {
+                rows = rows.push(
+                    text(if theme.appearance == Appearance::Light {
+                        "Auto · currently light"
+                    } else {
+                        "Auto · currently dark"
+                    })
+                    .font(shell_font())
+                    .size(12)
+                    .class(cosmic::theme::Text::Color(muted)),
+                );
+            }
+        }
         if kind == Menu::Calendar {
             rows = rows.push(calendar_grid(self.calendar_offset, theme, p));
         } else {
@@ -1119,7 +1148,7 @@ fn slider_row(
     })
     .width(Length::Fill)
     .height(24)
-    .class(ferese_theme::menus::slider(foreground, opacity, motion::radius(5.)));
+    .class(ferese_theme::menus::slider(foreground, opacity));
     row![
         accented_icon(source, 18, foreground, icon_accent),
         control,

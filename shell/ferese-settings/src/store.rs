@@ -78,6 +78,7 @@ impl Snapshot {
 
     pub fn edit(&mut self, edit: &Edit) -> Result<(), String> {
         match edit {
+            Edit::Unset(path) => self.doc.unset(path),
             Edit::Set(path, value) => self.doc.set(path, value.clone()),
             Edit::Add(path, fields) => self.doc.add(path, fields.clone()),
             Edit::Remove(path, index) => self.doc.remove(path, *index),
@@ -90,6 +91,7 @@ impl Snapshot {
 
 #[derive(Clone, Debug)]
 pub enum Edit {
+    Unset(String),
     Set(String, Value),
     Add(String, Vec<(String, Value)>),
     Remove(String, usize),
@@ -106,6 +108,35 @@ pub fn config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."));
     let path = directory.join("ferese/config.kdl");
     path.canonicalize().unwrap_or(path)
+}
+
+pub fn pick_file(title: &str, filter: &str) -> Result<Option<String>, String> {
+    let mut debug = std::env::var("GDK_DEBUG").unwrap_or_default();
+    if !debug.is_empty() {
+        debug.push(',');
+    }
+    debug.push_str("no-portals");
+    let output = Command::new("zenity")
+        .env("GDK_DEBUG", debug)
+        .env("GTK_USE_PORTAL", "0")
+        .arg("--file-selection")
+        .arg(format!("--title={title}"))
+        .arg(format!("--file-filter={filter}"))
+        .arg("--file-filter=All files | *")
+        .output()
+        .map_err(|e| format!("Could not open the file chooser: {e}. Install zenity to choose files."))?;
+    if output.status.code() == Some(1) {
+        return Ok(None);
+    }
+    if !output.status.success() {
+        return Err(format!(
+            "File chooser failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let path = String::from_utf8(output.stdout).map_err(|_| "The file path is not valid UTF-8.".to_owned())?;
+    let path = path.trim_end_matches(['\r', '\n']);
+    Ok((!path.is_empty()).then(|| path.to_owned()))
 }
 
 pub fn sibling(name: &str) -> PathBuf {

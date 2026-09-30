@@ -1,6 +1,7 @@
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Page {
     Appearance,
+    Accessibility,
     Wallpaper,
     Desktop,
     Bar,
@@ -15,8 +16,9 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Appearance,
+        Self::Accessibility,
         Self::Wallpaper,
         Self::Desktop,
         Self::Bar,
@@ -33,6 +35,7 @@ impl Page {
     pub fn title(self) -> &'static str {
         match self {
             Self::Appearance => "Appearance",
+            Self::Accessibility => "Accessibility",
             Self::Wallpaper => "Wallpaper",
             Self::Desktop => "Desktop widgets",
             Self::Bar => "Menu bar",
@@ -50,6 +53,7 @@ impl Page {
     pub fn subtitle(self) -> &'static str {
         match self {
             Self::Appearance => "A desktop that feels like yours.",
+            Self::Accessibility => "Make the desktop easier to see and use.",
             Self::Wallpaper => "Set the scene for your workspace.",
             Self::Desktop => "A clock that feels at home on your wallpaper.",
             Self::Bar => "Everything you need, within reach.",
@@ -66,6 +70,7 @@ impl Page {
 
     pub fn icon(self) -> &'static str {
         match self {
+            Self::Accessibility => "M12 3a2 2 0 1 0 0 4a2 2 0 1 0 0-4 M4 9h16 M12 9v6 M12 15l-5 6 M12 15l5 6",
             Self::Appearance => {
                 "M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 0-4h-1a1 1 0 0 1 0-2h3a6 6 0 0 0 0-12z M7 9h.01 M10 6h.01 M15 6h.01 M18 10h.01"
             }
@@ -178,7 +183,7 @@ pub fn text(
     Field::new(path, label, description, Kind::Text { default, argv: false })
 }
 
-fn choice(
+pub fn choice(
     path: &str,
     label: &str,
     description: &str,
@@ -591,7 +596,70 @@ pub fn fields(page: Page) -> Vec<Field> {
                 false,
             ),
         ],
+        Page::Accessibility => vec![
+            toggle(
+                "theme.accessibility.increase_contrast",
+                "Increase contrast",
+                "Stronger text and borders.",
+                false,
+            ),
+            toggle(
+                "theme.accessibility.reduce_transparency",
+                "Reduce transparency",
+                "Solid surfaces; background blur is disabled.",
+                false,
+            ),
+            toggle(
+                "animations.reduced_motion",
+                "Reduce motion",
+                "Use immediate changes in place of animations.",
+                false,
+            ),
+        ],
         Page::Appearance => vec![
+            choice(
+                "theme.mode",
+                "Appearance",
+                "Choose a fixed appearance or let Auto follow a source.",
+                "dark",
+                &[("light", "Light"), ("dark", "Dark"), ("auto", "Auto")],
+            ),
+            text(
+                "theme.file",
+                "Shared theme file",
+                "Optional KDL overrides. Relative paths start in your config folder.",
+                "",
+            ),
+            text(
+                "theme.light.file",
+                "Light theme file",
+                "Optional overrides for Light appearance.",
+                "",
+            ),
+            text(
+                "theme.dark.file",
+                "Dark theme file",
+                "Optional overrides for Dark appearance.",
+                "",
+            ),
+            text(
+                "theme.schedule.light_at",
+                "Light at",
+                "Local time in HH:MM format.",
+                "07:00",
+            ),
+            text(
+                "theme.schedule.dark_at",
+                "Dark at",
+                "Local time in HH:MM format.",
+                "19:00",
+            ),
+            text(
+                "theme.schedule.timezone",
+                "Timezone",
+                "system follows your desktop timezone; or enter an IANA timezone.",
+                "system",
+            ),
             range(
                 "theme.geometry.shell_radius",
                 "Shell corner radius",
@@ -604,16 +672,10 @@ pub fn fields(page: Page) -> Vec<Field> {
                 false,
             ),
             text(
-                "theme.colors.accent",
+                "theme.accent",
                 "Accent color",
                 "Focus rings and selected controls. Use a hex color.",
                 "#3D7BE6",
-            ),
-            text(
-                "theme.colors.surface_base",
-                "Surface color",
-                "The base color for desktop surfaces.",
-                "#111821",
             ),
             choice(
                 "theme.material.style",
@@ -858,12 +920,6 @@ pub fn fields(page: Page) -> Vec<Field> {
                 2.0,
                 0.05,
                 "×",
-                false,
-            ),
-            toggle(
-                "animations.reduced_motion",
-                "Reduce motion",
-                "Use immediate changes in place of animations.",
                 false,
             ),
             range(

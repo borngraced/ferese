@@ -4,8 +4,9 @@ The shared native UI theme for the shell, settings, lock screen, authentication
 prompt and screen-sharing/recording chooser.
 
 - `Palette` resolves KDL colors and corners and builds the native toolkit theme.
-- `PRESETS` defines the six built-in color schemes.
+- `PRESETS` defines twelve variants in six families.
 - `font` and `text` provide shared font selection and text.
+- `gallery` supplies split theme tiles, accessible radio groups and keyboard navigation.
 - `controls` supplies surfaces, navigation, font-aware text buttons and input styles.
 - `menus` supplies headings, rows, sections, separators, switches and slider styles.
 - `calendar` supplies date/time labels, stacked clock digits and calendar grids.

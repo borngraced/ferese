@@ -34,6 +34,7 @@ pub enum Event {
 }
 
 enum Command {
+    Local(String, String),
     Close(u32, u64, u32),
     Action(u32, u64, String),
 }
@@ -205,7 +206,7 @@ impl Service {
             let server = Server {
                 events: sender.clone(),
                 registry: registry.clone(),
-                timeout: worker_timeout,
+                timeout: worker_timeout.clone(),
             };
             let connection = match address.as_deref() {
                 Some(address) => zbus::blocking::connection::Builder::address(address),
@@ -224,6 +225,15 @@ impl Service {
             let _ = sender.try_send(Event::Ready);
             while let Ok(command) = receiver.recv() {
                 let result = match command {
+                    Command::Local(title, body) => {
+                        let server = Server {
+                            events: sender.clone(),
+                            registry: registry.clone(),
+                            timeout: worker_timeout.clone(),
+                        };
+                        let _ = server.notify("Ferese", 0, "", &title, &body, vec![], HashMap::new(), -1);
+                        continue;
+                    }
                     Command::Close(id, revision, reason) => {
                         if !registry.lock().unwrap().close(id, revision, reason) {
                             continue;
@@ -285,6 +295,13 @@ impl Center {
             toasts: VecDeque::new(),
             last_tick: Instant::now(),
         }
+    }
+
+    pub fn service_error(&self, title: &str, body: &str) {
+        let _ = self
+            .service
+            .commands
+            .try_send(Command::Local(title.into(), body.into()));
     }
 
     pub fn configure(&mut self, config: ferese_core::notifications::NotificationConfig) {

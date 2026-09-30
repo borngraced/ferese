@@ -29,6 +29,7 @@ pub(crate) struct ShortcutField {
 
 #[derive(Clone, Debug)]
 enum Message {
+    ThemeChanged(ferese_config::theme::Snapshot),
     Opened(cosmic::iced::window::Id),
     Attached(Result<(Option<Arc<crate::parent::Parent>>, Result<ModalMaterial, String>), String>),
     Accept,
@@ -100,12 +101,7 @@ impl cosmic::Application for Consent {
             prompt,
             material: None,
             parent: None,
-            palette: {
-                let document = ferese_config::config_path()
-                    .and_then(|path| std::fs::read_to_string(path).ok())
-                    .and_then(|source| ferese_config::Document::parse(&source).ok());
-                Palette::from_document(document.as_ref())
-            },
+            palette: Palette::from_resolved(&ferese_theme::service::current().presented),
             font,
             background,
         };
@@ -113,18 +109,30 @@ impl cosmic::Application for Consent {
     }
 
     fn subscription(&self) -> cosmic::iced::Subscription<Message> {
-        cosmic::iced::event::listen_with(|event, _, id| match event {
-            cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => Some(Message::Opened(id)),
-            cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
-                key: cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::Escape),
-                ..
-            }) => Some(Message::Cancel),
-            _ => None,
-        })
+        cosmic::iced::Subscription::batch([
+            ferese_theme::service::subscription().map(Message::ThemeChanged),
+            cosmic::iced::event::listen_with(|event, _, id| match event {
+                cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => Some(Message::Opened(id)),
+                cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+                    key: cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::Escape),
+                    ..
+                }) => Some(Message::Cancel),
+                _ => None,
+            }),
+        ])
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::ThemeChanged(snapshot) => {
+                self.palette = Palette::from_resolved(&snapshot.presented).flat();
+                self.font = ferese_theme::font(Some(&snapshot.presented.tokens.typography.font_family));
+                self.background = cosmic::iced::Color {
+                    a: ferese_theme::service::opacity(&snapshot.presented),
+                    ..self.palette.sidebar
+                };
+                return cosmic::command::set_theme(self.palette.native_theme());
+            }
             Message::Opened(id) => {
                 let parent = self.prompt.parent.clone();
                 return cosmic::iced::window::run(id, move |window| {

@@ -13,33 +13,35 @@ use crate::PromptEvent;
 
 #[derive(Clone)]
 struct Appearance {
+    appearance: ferese_config::theme::Appearance,
     surface: Color,
     text: Color,
     muted: Color,
     accent: Color,
+    on_accent: Color,
     radius: f32,
     font: cosmic::font::Font,
 }
 
 impl Appearance {
     fn load() -> Self {
-        let document = ferese_config::config_path()
-            .and_then(|path| std::fs::read_to_string(path).ok())
-            .and_then(|source| ferese_config::Document::parse(&source).ok());
-        let palette = ferese_theme::Palette::from_document(document.as_ref()).flat();
-        let family = document
-            .as_ref()
-            .and_then(|document| document.get("theme.typography.font_family"))
-            .and_then(|value| value.as_str())
-            .unwrap_or("Inter");
+        let snapshot = ferese_theme::service::current();
+        Self::from_resolved(&snapshot.presented)
+    }
+
+    fn from_resolved(theme: &ferese_config::theme::ResolvedTheme) -> Self {
+        let palette = ferese_theme::Palette::from_resolved(theme).flat();
+        let family = &theme.tokens.typography.font_family;
         Self {
+            appearance: theme.appearance,
             surface: Color {
-                a: ferese_theme::material_opacity(document.as_ref()),
+                a: ferese_theme::service::opacity(theme),
                 ..palette.sidebar
             },
             text: palette.text,
             muted: palette.muted,
             accent: palette.accent,
+            on_accent: palette.on_accent,
             radius: palette.radius,
             font: ferese_theme::font(Some(family)),
         }
@@ -47,12 +49,14 @@ impl Appearance {
 
     fn palette(&self) -> ferese_theme::Palette {
         ferese_theme::Palette {
+            appearance: self.appearance,
             background: self.surface,
             sidebar: self.surface,
             card: self.surface,
             text: self.text,
             muted: self.muted,
             accent: self.accent,
+            on_accent: self.on_accent,
             radius: self.radius,
             error: Color::from_rgb8(235, 98, 98),
         }
@@ -65,6 +69,7 @@ impl Appearance {
 
 #[derive(Clone)]
 enum Message {
+    ThemeChanged(ferese_config::theme::Snapshot),
     WindowOpened(cosmic::iced::window::Id),
     MaterialAttached(Result<ferese_theme::material::ModalMaterial, String>),
     Tick,
@@ -224,6 +229,7 @@ impl cosmic::Application for Prompt {
 
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
+            ferese_theme::service::subscription().map(Message::ThemeChanged),
             cosmic::iced::time::every(Duration::from_millis(30)).map(|_| Message::Tick),
             cosmic::iced::event::listen_with(|event, _, id| match event {
                 cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => {
@@ -236,6 +242,10 @@ impl cosmic::Application for Prompt {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::ThemeChanged(snapshot) => {
+                self.appearance = Appearance::from_resolved(&snapshot.presented);
+                return cosmic::command::set_theme(self.appearance.theme());
+            }
             Message::WindowOpened(id) => {
                 return cosmic::iced::window::run(id, ferese_theme::material::ModalMaterial::attach)
                     .map(|result| cosmic::Action::App(Message::MaterialAttached(result)));

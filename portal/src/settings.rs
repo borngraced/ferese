@@ -2,8 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ferese_config::Document;
-use ferese_theme::Palette;
+use ferese_config::theme::{Appearance as ThemeAppearance, ResolvedTheme};
 use tokio::sync::RwLock;
 use zbus::Connection;
 use zbus::object_server::SignalEmitter;
@@ -18,33 +17,21 @@ struct Appearance {
     scheme: u32,
     accent: (f64, f64, f64),
     reduced_motion: u32,
+    contrast: u32,
 }
 
 impl Appearance {
-    fn from_document(document: Option<&Document>) -> Self {
-        let palette = Palette::from_document(document);
-        let animations = document
-            .and_then(|document| document.get("animations.enabled"))
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(true);
+    fn from_resolved(theme: &ResolvedTheme) -> Self {
+        let accent = ferese_config::theme::rgba(&theme.tokens.colors.accent).expect("validated accent");
         Self {
-            scheme: if ferese_theme::luminance(palette.sidebar) > 0.5 {
+            scheme: if theme.appearance == ThemeAppearance::Light {
                 2
             } else {
                 1
             },
-            accent: (
-                palette.accent.r as f64,
-                palette.accent.g as f64,
-                palette.accent.b as f64,
-            ),
-            reduced_motion: u32::from(
-                !animations
-                    || document
-                        .and_then(|doc| doc.get("animations.reduced_motion"))
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false),
-            ),
+            accent: (accent[0], accent[1], accent[2]),
+            reduced_motion: u32::from(theme.reduced_motion),
+            contrast: u32::from(theme.accessibility.increase_contrast),
         }
     }
 
@@ -52,7 +39,7 @@ impl Appearance {
         HashMap::from([
             ("color-scheme".into(), self.scheme.into()),
             ("accent-color".into(), Value::from(self.accent).try_to_owned().unwrap()),
-            ("contrast".into(), 0u32.into()),
+            ("contrast".into(), self.contrast.into()),
             ("reduced-motion".into(), self.reduced_motion.into()),
         ])
     }
@@ -63,28 +50,53 @@ pub(crate) struct Settings(Arc<RwLock<Appearance>>);
 
 impl Settings {
     pub(crate) fn new() -> Self {
-        Self(Arc::new(RwLock::new(
-            load().unwrap_or_else(|| Appearance::from_document(None)),
-        )))
+        Self(Arc::new(RwLock::new(Appearance::from_resolved(
+            &ferese_ipc::theme::current().theme,
+        ))))
     }
 
     pub(crate) async fn watch(self, connection: Connection) {
         let emitter = SignalEmitter::new(&connection, PATH).unwrap();
         loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            let Some(next) = load() else { continue };
-            let mut current = self.0.write().await;
-            if *current == next {
+            let connection = tokio::task::spawn_blocking(ferese_ipc::theme::Connection::connect).await;
+            let Ok(Ok(mut connection)) = connection else {
+                tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
-            }
-            let previous = current.values();
-            *current = next;
-            drop(current);
-            for (key, value) in next.values() {
-                if previous.get(&key) != Some(&value) {
-                    let _ = Self::setting_changed(&emitter, APPEARANCE, &key, value).await;
+            };
+            let Ok(cancellation) = connection.cancellation() else {
+                return;
+            };
+            let (send, mut receive) = tokio::sync::mpsc::channel(1);
+            tokio::task::spawn_blocking(move || {
+                let Ok(mut snapshot) = connection.get() else { return };
+                loop {
+                    let revision = snapshot.revision;
+                    if send.blocking_send(snapshot).is_err() {
+                        return;
+                    }
+                    match connection.watch(revision) {
+                        Ok(next) => snapshot = next,
+                        Err(_) => return,
+                    }
+                }
+            });
+            while let Some(snapshot) = receive.recv().await {
+                let next = Appearance::from_resolved(&snapshot.theme);
+                let mut current = self.0.write().await;
+                if *current == next {
+                    continue;
+                }
+                let previous = current.values();
+                *current = next;
+                drop(current);
+                for (key, value) in next.values() {
+                    if previous.get(&key) != Some(&value) {
+                        let _ = Self::setting_changed(&emitter, APPEARANCE, &key, value).await;
+                    }
                 }
             }
+            drop(cancellation);
+            tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
 }
@@ -135,19 +147,6 @@ fn matches_namespace(filters: &[String], namespace: &str) -> bool {
         })
 }
 
-fn load() -> Option<Appearance> {
-    let path = ferese_config::config_path()?;
-    let source = match std::fs::read_to_string(path) {
-        Ok(source) if source.len() <= 1024 * 1024 => source,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Some(Appearance::from_document(None));
-        }
-        _ => return None,
-    };
-    let document = Document::parse(&source).ok()?;
-    Some(Appearance::from_document(Some(&document)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,18 +169,19 @@ mod tests {
 
     #[test]
     fn reports_ferese_theme_and_reduced_motion() {
-        let doc = Document::parse(
-            "theme { colors { surface-base \"#ffffff\"; accent \"#ff8000\"; }; }; animations { enabled #false; }",
-        )
-        .unwrap();
-        let appearance = Appearance::from_document(Some(&doc));
+        let mut resolved = ResolvedTheme::default();
+        resolved.appearance = ThemeAppearance::Light;
+        resolved.tokens.colors.accent = "#ff8000".into();
+        resolved.reduced_motion = true;
+        resolved.accessibility.increase_contrast = true;
+        let appearance = Appearance::from_resolved(&resolved);
         assert_eq!(appearance.scheme, 2);
         assert_eq!(appearance.reduced_motion, 1);
         assert_eq!(appearance.accent.0, 1.);
         assert_eq!(appearance.accent.2, 0.);
         assert_eq!(
             u32::try_from(appearance.values().remove("contrast").unwrap()).unwrap(),
-            0
+            1
         );
     }
 }

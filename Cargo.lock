@@ -1657,6 +1657,7 @@ dependencies = [
  "ferese-protocols",
  "fontdb",
  "image",
+ "jiff",
  "libc",
  "notify",
  "serde",
@@ -1665,6 +1666,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "xcursor",
+ "zbus",
 ]
 
 [[package]]
@@ -1678,9 +1680,11 @@ dependencies = [
 name = "ferese-config"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "kdl",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -1696,6 +1700,7 @@ dependencies = [
 name = "ferese-ipc"
 version = "0.1.0"
 dependencies = [
+ "ferese-config",
  "serde",
  "serde_json",
 ]
@@ -1709,12 +1714,14 @@ name = "ferese-lock"
 version = "0.1.0"
 dependencies = [
  "ferese-config",
+ "ferese-ipc",
  "ferese-theme",
  "image",
  "jiff",
  "libc",
  "libcosmic",
  "libloading",
+ "serde_json",
  "tempfile",
  "tokio",
  "wayland-client",
@@ -1791,9 +1798,13 @@ name = "ferese-theme"
 version = "0.1.0"
 dependencies = [
  "ferese-config",
+ "ferese-ipc",
  "ferese-protocols",
+ "iced_accessibility",
  "jiff",
  "libcosmic",
+ "serde_json",
+ "tokio",
  "wayland-client",
 ]
 

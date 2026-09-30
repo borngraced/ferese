@@ -1,11 +1,16 @@
 //! Filesystem events wake the loop; only pending edits need a debounce timer.
+#[cfg(test)]
 use std::io::Read;
 use std::path::PathBuf;
+#[cfg(test)]
 use std::sync::mpsc;
+#[cfg(test)]
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 
+#[cfg(test)]
 fn read_source(path: &std::path::Path) -> Result<String, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut source = String::new();
@@ -18,6 +23,7 @@ fn read_source(path: &std::path::Path) -> Result<String, String> {
     Ok(source)
 }
 
+#[cfg(test)]
 pub(crate) struct ConfigMonitor {
     _watcher: RecommendedWatcher,
     events: mpsc::Receiver<()>,
@@ -26,6 +32,7 @@ pub(crate) struct ConfigMonitor {
     observed: Option<String>,
 }
 
+#[cfg(test)]
 impl ConfigMonitor {
     #[cfg(test)]
     pub(crate) fn new(path: PathBuf) -> notify::Result<Self> {
@@ -115,13 +122,33 @@ impl crate::Ferese {
         if source.len() > 60 * 1024 {
             return Err("configuration exceeds the 60 KiB live-reload limit".into());
         }
-        if self.config_source.as_ref() == Some(&source) {
-            return Ok(());
-        }
         // Validate every runtime field before mutating any scene/input state.
-        let config = crate::config::Config::parse_source(&source).map_err(|e| e.to_string())?;
-        let runtime = config.runtime_config().map_err(|e| e.to_string())?;
-        self.apply_runtime_config(runtime)?;
+        let directory = crate::config::config_path()
+            .and_then(|path| path.parent().map(ToOwned::to_owned))
+            .unwrap_or_else(|| PathBuf::from("."));
+        let (_, mut runtime, candidate) = match crate::theme::prepare(&source, &directory) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.theme_engine.reject(error.clone());
+                return Err(error);
+            }
+        };
+        let wallpaper = runtime.wallpaper.clone();
+        runtime.wallpaper = self.wallpaper.configuration().clone();
+        let previous_theme = self.theme_settings;
+        let non_theme = |source: &str| -> Option<serde_json::Value> {
+            let document = ferese_config::Document::parse(source).ok()?;
+            let mut value = document.value().clone();
+            value.as_object_mut()?.remove("theme");
+            Some(value)
+        };
+        if self.config_source.as_deref().and_then(non_theme) != non_theme(&source) {
+            self.apply_runtime_config(runtime)?;
+        }
+        self.overview
+            .set_font_family(candidate.theme.tokens.typography.font_family.clone());
+        self.theme_settings = previous_theme;
+        self.accept_theme(candidate, wallpaper);
         self.config_source = Some(source.clone());
         self.shell_resources.retain(|resource| {
             if let Ok(shell) = resource.upgrade() {
@@ -139,7 +166,7 @@ impl crate::Ferese {
 
     pub(crate) fn reload_config(&mut self) -> Result<(), String> {
         let path = crate::config::config_path().ok_or("config directory is unavailable")?;
-        let source = read_source(&path)?;
+        let source = crate::theme::read_source(&path)?;
         self.reload_config_source(source)
     }
 }

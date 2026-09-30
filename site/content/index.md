@@ -6,7 +6,7 @@ windows, and a shared theme for its desktop tools.
 ## Get started
 
 1. [Install Ferese](installation.md), or try a [nested preview](installation.md#preview-and-logs).
-2. Open **Control Center → Settings** to choose a theme and configure your desktop.
+2. Choose Light, Dark, or Auto in **Control Center**. Open **Settings** for [theme files and presets](theme-engine.md).
 3. Use the [configuration reference](configuration.md) for shortcuts, gestures, window rules, and displays.
 
 ## Default shortcuts

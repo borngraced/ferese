@@ -1,8 +1,8 @@
 use cosmic::Element;
 use cosmic::iced::{Color, Length};
 use cosmic::widget::icon as svg_icon;
+pub use ferese_theme::Palette;
 pub use ferese_theme::controls::{button_style, navigation_style, settings_input as input_style, surface};
-pub use ferese_theme::{Palette, mix, surface_shade};
 
 use crate::Message;
 use crate::schema::Page;
@@ -21,12 +21,8 @@ fn hex(c: Color) -> String {
     )
 }
 
-pub fn native_theme(snapshot: Option<&Snapshot>) -> cosmic::Theme {
-    Palette::from_document(snapshot.map(|snapshot| &snapshot.doc)).native_theme()
-}
-
-pub fn configured_font(snapshot: &Snapshot) -> cosmic::font::Font {
-    ferese_theme::font(Some(&snapshot.string("theme.typography.font_family", "Inter")))
+pub fn native_theme(_snapshot: Option<&Snapshot>) -> cosmic::Theme {
+    Palette::from_resolved(&ferese_theme::service::current().presented).native_theme()
 }
 
 pub fn icon(page: Page, tint: Color) -> svg_icon::Icon {
@@ -44,107 +40,149 @@ pub fn action_icon(path: &str, tint: Color) -> svg_icon::Icon {
     ferese_theme::icons::outline(path, tint, 16)
 }
 
-pub use ferese_theme::{PRESETS, Preset};
+#[cfg(test)]
+pub use ferese_theme::PRESETS;
 
+pub fn split(snapshot: &Snapshot) -> bool {
+    snapshot
+        .item("theme.split")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or_else(|| {
+            ferese_config::families::family_id(&snapshot.string("theme.light.preset", "ferese-blue-light"))
+                != ferese_config::families::family_id(&snapshot.string("theme.dark.preset", "ferese-blue"))
+        })
+}
+
+pub fn family_selection(snapshot: &Snapshot, appearance: Option<ferese_config::theme::Appearance>) -> String {
+    let Some(appearance) = appearance else {
+        return snapshot.string(
+            "theme.family",
+            ferese_config::families::family_id(&snapshot.string("theme.dark.preset", "ferese-blue")),
+        );
+    };
+    let kind = if appearance == ferese_config::theme::Appearance::Light {
+        "light"
+    } else {
+        "dark"
+    };
+    let preset = snapshot.string(
+        &format!("theme.{kind}.preset"),
+        if kind == "light" {
+            "ferese-blue-light"
+        } else {
+            "ferese-blue"
+        },
+    );
+    snapshot.string(
+        &format!("theme.{kind}.family"),
+        ferese_config::families::family_id(&preset),
+    )
+}
+
+pub fn choose_family(id: &str, appearance: Option<ferese_config::theme::Appearance>) -> Vec<Edit> {
+    let kinds: &[&str] = match appearance {
+        Some(ferese_config::theme::Appearance::Light) => &["light"],
+        Some(ferese_config::theme::Appearance::Dark) => &["dark"],
+        None => &[],
+    };
+    let mut edits = vec![set(
+        &appearance.map_or_else(
+            || "theme.family".into(),
+            |a| {
+                format!(
+                    "theme.{}.family",
+                    if a == ferese_config::theme::Appearance::Light {
+                        "light"
+                    } else {
+                        "dark"
+                    }
+                )
+            },
+        ),
+        id,
+    )];
+    for kind in kinds {
+        for token in ["colors", "surface", "border", "focus_ring"] {
+            edits.push(Edit::Unset(format!("theme.{kind}.{token}")));
+        }
+    }
+    edits
+}
+
+pub fn toggle_split(snapshot: &Snapshot, enabled: bool, active: ferese_config::theme::Appearance) -> Vec<Edit> {
+    let mut edits = vec![];
+    if enabled {
+        let id = family_selection(snapshot, None);
+        for kind in ["light", "dark"] {
+            if snapshot.item(&format!("theme.{kind}.family")).is_none() {
+                let selection = if snapshot.item("theme.family").is_some() {
+                    id.clone()
+                } else {
+                    family_selection(
+                        snapshot,
+                        Some(if kind == "light" {
+                            ferese_config::theme::Appearance::Light
+                        } else {
+                            ferese_config::theme::Appearance::Dark
+                        }),
+                    )
+                };
+                edits.push(set(&format!("theme.{kind}.family"), selection));
+            }
+        }
+    } else {
+        edits.push(set("theme.family", family_selection(snapshot, Some(active))));
+    }
+    edits.push(set("theme.split", enabled));
+    edits
+}
+
+#[cfg(test)]
 pub fn preset(index: usize) -> Vec<Edit> {
     let Some(preset) = PRESETS.get(index) else {
-        return Vec::new();
+        return vec![];
     };
-
-    vec![
-        set("theme.colors.accent", preset.accent),
-        set("theme.colors.surface_base", preset.base),
-        set("theme.colors.text_primary", preset.text),
-        set("theme.colors.text_muted", preset.muted),
-        set("theme.colors.border", preset.border),
-        set("theme.colors.shadow", "#00000055"),
-        set("theme.surface.bar.background", preset.base),
-        set("theme.surface.bar.text_primary", preset.text),
-        set("theme.surface.bar.text_muted", preset.muted),
-        set("theme.focus_ring.gradient.from", preset.accent),
-        set("theme.focus_ring.gradient.to", preset.gradient_end),
-        set("theme.focus_ring.gradient.angle", 0.0),
-    ]
+    let kind = if preset.appearance == ferese_config::theme::Appearance::Light {
+        "light"
+    } else {
+        "dark"
+    };
+    let mut edits = vec![set(&format!("theme.{kind}.preset"), preset.id)];
+    for token in ["colors", "surface", "border", "focus_ring"] {
+        edits.push(Edit::Unset(format!("theme.{kind}.{token}")));
+    }
+    edits
 }
 
+#[cfg(test)]
 pub fn preset_selected(snapshot: &Snapshot, index: usize) -> bool {
-    let Some(preset) = PRESETS.get(index) else {
-        return false;
+    let Some(preset) = PRESETS.get(index) else { return false };
+    let kind = if preset.appearance == ferese_config::theme::Appearance::Light {
+        "light"
+    } else {
+        "dark"
     };
-
-    [
-        ("theme.colors.accent", preset.accent, "#3D7BE6"),
-        ("theme.colors.surface_base", preset.base, "#111821"),
-        ("theme.colors.text_primary", preset.text, "#F4F7FB"),
-        ("theme.colors.text_muted", preset.muted, "#8793A2"),
-        ("theme.colors.border", preset.border, "#FFFFFF18"),
-        ("theme.colors.shadow", "#00000055", "#00000055"),
-        ("theme.surface.bar.background", preset.base, "#1C202EF2"),
-        ("theme.surface.bar.text_primary", preset.text, "#F0F3FA"),
-        ("theme.surface.bar.text_muted", preset.muted, "#AAB4C7"),
-        ("theme.focus_ring.gradient.from", preset.accent, "#3D7BE6"),
-        ("theme.focus_ring.gradient.to", preset.gradient_end, "#3D7BE6"),
-    ]
-    .into_iter()
-    .all(|(path, expected, fallback)| {
-        if index == 0 && snapshot.item(path).is_none() {
-            return true;
-        }
-        snapshot.string(path, fallback).eq_ignore_ascii_case(expected)
-    }) && snapshot.number("theme.focus_ring.gradient.angle", 0.) == 0.
+    snapshot.string(
+        &format!("theme.{kind}.preset"),
+        if kind == "dark" {
+            "ferese-blue"
+        } else {
+            "ferese-blue-light"
+        },
+    ) == preset.id
+        && ["colors", "surface", "border", "focus_ring"]
+            .iter()
+            .all(|token| snapshot.item(&format!("theme.{kind}.{token}")).is_none())
 }
 
-fn preset_preview_handle(preset: &Preset) -> svg_icon::Handle {
-    let base = preset.base;
-    let accent = preset.accent;
-    let end = preset.gradient_end;
-    let text = preset.text;
-    let muted = preset.muted;
-    let surface = color(base, Color::BLACK);
-    let card = hex(mix(surface, surface_shade(surface), 0.055));
-    let svg = format!(
-        r##"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="132" viewBox="0 0 240 132">
-    <defs>
-        <linearGradient id="wall" x2="1" y2="1">
-            <stop stop-color="{accent}" stop-opacity=".24"/>
-            <stop offset="1" stop-color="{end}" stop-opacity=".06"/>
-        </linearGradient>
-    </defs>
-    <rect width="240" height="132" rx="10" fill="{base}"/>
-    <rect width="240" height="132" rx="10" fill="url(#wall)"/>
-    <path d="M0 112Q52 48 120 93T240 67V132H0Z" fill="{accent}" opacity=".09"/>
-    <rect x="8" y="8" width="224" height="12" rx="4" fill="{base}"/>
-    <rect x="14" y="12" width="6" height="4" rx="1" fill="{accent}"/>
-    <path d="M26 14h4m4 0h4m164 0h6m4 0h6" stroke="{muted}" stroke-width="2" stroke-linecap="round"/>
-    <rect x="16" y="34" width="121" height="82" rx="7" fill="{card}"/>
-    <path d="M26 44h102" stroke="{muted}" opacity=".16"/>
-    <rect x="23" y="50" width="25" height="59" rx="3" fill="{base}"/>
-    <rect x="26" y="57" width="19" height="7" rx="2" fill="{accent}" opacity=".6"/>
-    <path d="M29 73h11m-11 9h9m-9 9h12" stroke="{muted}" opacity=".6" stroke-width="2" stroke-linecap="round"/>
-    <path d="M56 59h38m-38 10h63m-63 8h49m-49 8h58" stroke="{text}" opacity=".55" stroke-width="2" stroke-linecap="round"/>
-    <rect x="55" y="94" width="29" height="9" rx="3" fill="{accent}"/>
-    <rect x="145" y="37" width="78" height="70" rx="7" fill="{card}" stroke="{accent}" stroke-width="1.2"/>
-    <circle cx="154" cy="45" r="1.5" fill="{accent}"/>
-    <path d="M161 45h17" stroke="{muted}" stroke-width="2" stroke-linecap="round"/>
-    <path d="M155 58h27m-27 9h56m-56 9h37m-37 9h49m-49 9h30" stroke="{text}" opacity=".55" stroke-width="2" stroke-linecap="round"/>
-</svg>"##,
-    );
-    svg_icon::from_svg_bytes(svg.into_bytes()).symbolic(false)
+pub fn preview_resolved<'a>(snapshot: &Snapshot, theme: &ferese_config::theme::ResolvedTheme) -> Element<'a, Message> {
+    let mut snapshot = snapshot.clone();
+    snapshot.doc = snapshot.doc.with_theme(theme);
+    preview(&snapshot, theme)
 }
 
-pub fn preset_preview(index: usize) -> Element<'static, Message> {
-    static HANDLES: std::sync::OnceLock<Vec<svg_icon::Handle>> = std::sync::OnceLock::new();
-    HANDLES.get_or_init(|| PRESETS.iter().map(preset_preview_handle).collect())[index]
-        .clone()
-        .icon()
-        .width(Length::Fill)
-        .height(Length::Fixed(90.))
-        .content_fit(cosmic::iced::ContentFit::Contain)
-        .into()
-}
-
-pub fn preview(snapshot: &Snapshot) -> Element<'static, Message> {
-    let p = Palette::from_document(Some(&snapshot.doc));
+fn preview(snapshot: &Snapshot, theme: &ferese_config::theme::ResolvedTheme) -> Element<'static, Message> {
+    let p = Palette::from_resolved(theme);
     let base = hex(p.sidebar);
     let card = hex(p.card);
     let accent = hex(p.accent);
@@ -211,16 +249,63 @@ mod tests {
     }
 
     #[test]
+    fn galleries_follow_mode_and_keep_selection_independent() {
+        let mut snapshot = Snapshot::parse(String::from(r#"theme { mode "auto"; }"#)).unwrap();
+        for index in 0..PRESETS.len() {
+            for edit in preset(index) {
+                snapshot.edit(&edit).unwrap();
+            }
+            assert_eq!(snapshot.string("theme.mode", ""), "auto");
+        }
+    }
+
+    #[test]
+    fn split_toggle_restores_the_pair_and_uses_the_active_family_when_linked() {
+        use ferese_config::theme::Appearance::{Dark, Light};
+        let mut snapshot = Snapshot::parse(r#"theme { family "ferese-blue"; split #true; light { family "gruvbox"; }; dark { family "catppuccin"; }; }"#.into()).unwrap();
+        for edit in toggle_split(&snapshot, false, Light) {
+            snapshot.edit(&edit).unwrap();
+        }
+        assert!(!split(&snapshot));
+        assert_eq!(family_selection(&snapshot, None), "gruvbox");
+        for edit in choose_family("everforest", None) {
+            snapshot.edit(&edit).unwrap();
+        }
+        for edit in toggle_split(&snapshot, true, Dark) {
+            snapshot.edit(&edit).unwrap();
+        }
+        assert!(split(&snapshot));
+        assert_eq!(family_selection(&snapshot, Some(Light)), "gruvbox");
+        assert_eq!(family_selection(&snapshot, Some(Dark)), "catppuccin");
+    }
+
+    #[test]
+    fn the_first_split_starts_with_both_variants_of_the_single_family() {
+        use ferese_config::theme::Appearance::{Dark, Light};
+        let mut snapshot = Snapshot::parse(r#"theme { family "tokyo-night"; }"#.into()).unwrap();
+        for edit in toggle_split(&snapshot, true, Dark) {
+            snapshot.edit(&edit).unwrap();
+        }
+        assert_eq!(family_selection(&snapshot, Some(Light)), "tokyo-night");
+        assert_eq!(family_selection(&snapshot, Some(Dark)), "tokyo-night");
+    }
+
+    #[test]
     fn presets_are_distinct_and_readable_on_settings_surfaces() {
         for (index, preset) in PRESETS.iter().enumerate() {
-            let snapshot = configured_preset(index);
-            let palette = Palette::from_document(Some(&snapshot.doc));
+            let tokens = ferese_config::theme::preset(preset.id, preset.appearance).unwrap();
+            let mut theme = ferese_config::theme::ResolvedTheme::default();
+            theme.appearance = preset.appearance;
+            theme.tokens = tokens;
+            let palette = Palette::from_resolved(&theme);
             for background in [palette.background, palette.sidebar, palette.card] {
                 assert!(contrast(palette.text, background) >= 4.5, "{} text", preset.name);
                 assert!(contrast(palette.muted, background) >= 4.5, "{} muted text", preset.name);
             }
             for other in PRESETS.iter().skip(index + 1) {
-                assert_ne!(preset.accent, other.accent);
+                if preset.appearance == other.appearance {
+                    assert_ne!(preset.accent, other.accent);
+                }
                 assert_ne!(preset.base, other.base);
             }
         }
@@ -231,12 +316,19 @@ mod tests {
         for index in 0..PRESETS.len() {
             let mut snapshot = configured_preset(index);
             assert!(preset_selected(&snapshot, index));
+            let kind = if PRESETS[index].appearance == ferese_config::theme::Appearance::Light {
+                "light"
+            } else {
+                "dark"
+            };
             snapshot
-                .edit(&set("theme.surface.bar.text_primary", "#123456"))
+                .edit(&set(&format!("theme.{kind}.surface.bar.text_primary"), "#123456"))
                 .unwrap();
             assert!(!preset_selected(&snapshot, index));
             let mut snapshot = configured_preset(index);
-            snapshot.edit(&set("theme.focus_ring.gradient.to", "#123456")).unwrap();
+            snapshot
+                .edit(&set(&format!("theme.{kind}.focus_ring.gradient.to"), "#123456"))
+                .unwrap();
             assert!(!preset_selected(&snapshot, index));
         }
         assert!(preset_selected(&Snapshot::parse(String::new()).unwrap(), 0));
@@ -250,8 +342,14 @@ mod tests {
         assert!(logo.contains(PRESETS[0].accent));
 
         for (index, item) in PRESETS.iter().enumerate() {
-            let snapshot = configured_preset(index);
-            assert_eq!(native_theme(Some(&snapshot)).cosmic().is_dark, item.name != "Ayu Light");
+            let _ = index;
+            let mut resolved = ferese_config::theme::ResolvedTheme::default();
+            resolved.appearance = item.appearance;
+            resolved.tokens = ferese_config::theme::preset(item.id, item.appearance).unwrap();
+            assert_eq!(
+                Palette::from_resolved(&resolved).native_theme().cosmic().is_dark,
+                item.appearance == ferese_config::theme::Appearance::Dark
+            );
         }
     }
 }

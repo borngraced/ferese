@@ -6,6 +6,10 @@ license.workspace = true
 rust-version = "1.95"
 
 [dependencies]
+jiff.workspace = true
 kdl = "6.7.1"
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

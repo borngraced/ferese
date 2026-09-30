@@ -113,6 +113,14 @@ impl WallpaperState {
         }
     }
 
+    pub(crate) fn configuration(&self) -> &WallpaperConfig {
+        &self.config
+    }
+
+    pub(crate) fn failed(&self) -> bool {
+        self.config.path.is_some() && self.receiver.is_none() && self.pixels.is_none()
+    }
+
     #[cfg(test)]
     pub fn owns_background(&self) -> bool {
         self.owned
