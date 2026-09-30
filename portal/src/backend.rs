@@ -54,12 +54,15 @@ pub(crate) struct Cancel {
 impl Cancel {
     pub(crate) fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
-        self.changed.notify_one();
+        self.changed.notify_waiters();
     }
 
     pub(crate) async fn wait(&self) {
+        let changed = self.changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
         if !self.stopped.load(Ordering::SeqCst) {
-            self.changed.notified().await;
+            changed.await;
         }
     }
 }
@@ -912,6 +915,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let lockdown = crate::lockdown::Lockdown::new();
     let shortcuts = crate::shortcuts::GlobalShortcuts::new(requests.clone());
     let inhibit = crate::inhibit::Inhibit::default();
+    let input_capture = crate::input_capture::InputCapture::new(requests.clone());
     let connection = zbus::connection::Builder::session()?
         .name("org.freedesktop.impl.portal.desktop.ferese")?
         .serve_at(PATH, backend.clone())?
@@ -923,6 +927,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .serve_at(PATH, lockdown.clone())?
         .serve_at(PATH, shortcuts.clone())?
         .serve_at(PATH, inhibit.clone())?
+        .serve_at(PATH, input_capture.clone())?
         .serve_at(
             "/org/ferese/ScreenRecorder",
             RecorderControl(backend.clone()),
@@ -950,6 +955,9 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         requests.revoke_stale(owner.as_deref()).await;
         shortcuts.revoke_stale(&connection, owner.as_deref()).await;
         inhibit.revoke_stale(&connection, owner.as_deref()).await;
+        input_capture
+            .revoke_stale(&connection, owner.as_deref())
+            .await;
 
         let stale: Vec<_> = backend
             .sessions

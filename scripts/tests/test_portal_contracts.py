@@ -54,7 +54,7 @@ def private_bus_checks():
                         raise AssertionError((root / "backend.log").read_text())
                     time.sleep(0.05)
             node = ET.fromstring(xml)
-            for name in ("ScreenCast", "Settings", "Screenshot", "Wallpaper", "Background", "Usb", "Lockdown", "GlobalShortcuts", "Inhibit"):
+            for name in ("ScreenCast", "Settings", "Screenshot", "Wallpaper", "Background", "Usb", "Lockdown", "GlobalShortcuts", "Inhibit", "InputCapture"):
                 interface = node.find(f"interface[@name='org.freedesktop.impl.portal.{name}']")
                 assert interface is not None, name
                 expected = ET.parse(f"/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.{name}.xml").getroot().find("interface")
@@ -110,6 +110,18 @@ def private_bus_checks():
                                          GLib.Variant("(su)", ("org.freedesktop.portal.Desktop", 0)), GLib.VariantType.new("(u)"),
                                          Gio.DBusCallFlags.NONE, 5000, None).unpack()[0]
             assert request_name == 1
+            capture = "org.freedesktop.impl.portal.InputCapture"
+            caps, = call("org.freedesktop.DBus.Properties", "Get", GLib.Variant("(ss)", (capture, "SupportedCapabilities")), "(v)")
+            assert caps == 3
+            session = PATH + "/session/test/inputcapture"
+            call(capture, "CreateSession2", GLib.Variant("(osa{sv})", (session, "org.test.Capture", {})), "(a{sv})")
+            try:
+                call(capture, "GetZones", GLib.Variant("(oosa{sv})", (PATH + "/request/test/zones", session, "org.test.Capture", {})))
+                raise AssertionError("Zones available without approval")
+            except GLib.Error as error:
+                assert "InvalidArgs" in str(error), error
+            bus.call_sync(NAME, session, "org.freedesktop.impl.portal.Session", "Close", None, None, Gio.DBusCallFlags.NONE, 5000, None)
+
             version, = call("org.freedesktop.DBus.Properties", "Get", GLib.Variant("(ss)", ("org.freedesktop.impl.portal.ScreenCast", "version")), "(v)")
             assert version == 4
             source_types, = call("org.freedesktop.DBus.Properties", "Get", GLib.Variant("(ss)", ("org.freedesktop.impl.portal.ScreenCast", "AvailableSourceTypes")), "(v)")

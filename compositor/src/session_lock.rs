@@ -123,6 +123,7 @@ impl SessionLockHandler for Ferese {
         }
         self.cancel_logout_confirmation();
         self.session_lock.active = true;
+        self.input_capture.disable_all();
         self.portal_session.set_locked(true);
         self.session_lock.owner = Some(confirmation.ext_session_lock().clone());
         self.session_lock.confirmation = Some(confirmation);

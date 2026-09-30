@@ -59,6 +59,27 @@ impl Ferese {
             self.focus_lock_surface();
         }
 
+        if self.input_capture.active()
+            && matches!(
+                &event,
+                InputEvent::GestureSwipeBegin { .. }
+                    | InputEvent::GestureSwipeUpdate { .. }
+                    | InputEvent::GestureSwipeEnd { .. }
+                    | InputEvent::GesturePinchBegin { .. }
+                    | InputEvent::GesturePinchUpdate { .. }
+                    | InputEvent::GesturePinchEnd { .. }
+                    | InputEvent::GestureHoldBegin { .. }
+                    | InputEvent::GestureHoldEnd { .. }
+                    | InputEvent::TouchDown { .. }
+                    | InputEvent::TouchMotion { .. }
+                    | InputEvent::TouchUp { .. }
+                    | InputEvent::TouchCancel { .. }
+                    | InputEvent::TouchFrame { .. }
+            )
+        {
+            return;
+        }
+
         match event {
             InputEvent::GestureSwipeBegin { event } => {
                 let pointer = seat.get_pointer().expect("seat has a pointer");
@@ -143,6 +164,13 @@ impl Ferese {
                 let keycode = event.key_code();
                 let state = event.state();
 
+                let was_captured = self.input_capture.active();
+                if self.input_capture.captures(1) {
+                    keyboard.unset_grab(self);
+                    if keyboard.current_focus().is_some() {
+                        keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
+                    }
+                }
                 keyboard.input::<(), _>(
                     self,
                     keycode,
@@ -160,6 +188,17 @@ impl Ferese {
                             return FilterResult::Forward;
                         }
                         let symbol = keysym.modified_sym().raw();
+                        if data.input_capture.active() && emergency_shortcut_escape(symbol, modifiers.ctrl, modifiers.alt) {
+                            if state == KeyState::Pressed {
+                                data.input_capture.disable_all();
+                                data.intercepted_keys.insert(keycode);
+                            }
+                            return FilterResult::Intercept(());
+                        }
+                        if data.input_capture.captures(1) {
+                            data.input_capture.push(serde_json::json!({"type":"key", "key":keycode.raw().saturating_sub(8), "pressed":state == KeyState::Pressed}));
+                            return FilterResult::Forward;
+                        }
                         if data.overview.is_active()
                             && matches!(symbol, keysyms::KEY_Return | keysyms::KEY_KP_Enter)
                         {
@@ -249,12 +288,18 @@ impl Ferese {
                         FilterResult::Intercept(())
                     },
                 );
+                if was_captured && !self.input_capture.active() {
+                    self.restore_input_capture_focus();
+                }
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
                 let Some(position) = self.absolute_event_position(&event) else {
                     return;
                 };
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
+                if self.capture_pointer_motion(pointer.current_location(), position, true) {
+                    return;
+                }
                 let position = self.constrain_pointer_position(&pointer, position);
 
                 pointer.motion(
@@ -284,6 +329,9 @@ impl Ferese {
                 };
                 let delta = event.delta();
                 let delta_unaccel = event.delta_unaccel();
+                if self.capture_pointer_motion(position, position + delta, false) {
+                    return;
+                }
 
                 pointer.relative_motion(
                     self,
@@ -313,6 +361,12 @@ impl Ferese {
                 crate::backends::direct::render_all(self);
             }
             InputEvent::PointerButton { event, .. } => {
+                if self.input_capture.active() {
+                    if self.input_capture.captures(2) {
+                        self.input_capture.push(serde_json::json!({"type":"button", "button":event.button_code(), "pressed":event.state() == ButtonState::Pressed}));
+                    }
+                    return;
+                }
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
                 let serial = SERIAL_COUNTER.next_serial();
 
@@ -411,6 +465,12 @@ impl Ferese {
                 let vertical = event.amount(Axis::Vertical).unwrap_or_else(|| {
                     event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.0
                 });
+                if self.input_capture.active() {
+                    if self.input_capture.captures(2) {
+                        self.input_capture.push(serde_json::json!({"type":"scroll", "x":horizontal, "y":vertical, "v120_x":event.amount_v120(Axis::Horizontal), "v120_y":event.amount_v120(Axis::Vertical), "stop_x":source == AxisSource::Finger && event.amount(Axis::Horizontal) == Some(0.0), "stop_y":source == AxisSource::Finger && event.amount(Axis::Vertical) == Some(0.0)}));
+                    }
+                    return;
+                }
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
                 if self.scroll_overview_strip(
                     pointer.current_location(),
@@ -664,6 +724,9 @@ impl Ferese {
     }
 
     fn focus_window_at(&mut self, position: Point<f64, Logical>, serial: Serial, raise: bool) {
+        if self.input_capture.captures(1) {
+            return;
+        }
         if self.session_lock.active {
             self.focus_output_at(position);
             self.focus_lock_surface();

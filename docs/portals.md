@@ -47,13 +47,20 @@ standard file, print and application dialogs. Install both backends.
   for acknowledgements for up to one second. Power confirmations list blockers
   and recheck them before acting; authentication failure cancels the query.
   UserSwitch is recorded, but Ferese currently has no user-switch operation.
+- **InputCapture:** approved keyboard and pointer capture over a private EIS
+  connection, with standard screen zones and pointer barriers on outside display
+  edges. Capture begins at a configured barrier; releasing it restores local
+  input. Ctrl+Alt+Escape returns control immediately. Locking, topology/keymap
+  changes, receiver disconnects and stalled consumers stop capture. Permission
+  is requested for every session; touch capture and remembered grants are not
+  offered. This is an input receiver, not remote input injection.
 - **ScreenCast:** monitor and isolated window sharing with a native picker, PipeWire streams and explicit opt-in
   saved permissions. The frontend stores and revokes saved choices. Invalid
   restore data or changed display identity requires fresh consent.
   See [screen sharing](screen-sharing.md) for lifetime and recording details.
 
 Native request dialogs use Ferese's theme and are floating windows. Screenshot,
-PickColor, Wallpaper, USB and ScreenCast consent dialogs use Wayland parent identifiers to establish
+PickColor, Wallpaper, USB, InputCapture and ScreenCast consent dialogs use Wayland parent identifiers to establish
 a transient relationship with the requesting window.
 Cancelling a request or losing the portal frontend terminates its pending helper.
 
@@ -80,7 +87,7 @@ Matching D-Bus signatures does not establish complete feature parity.
 | GlobalShortcuts | Native sessions, configurable keyboard triggers, conflict checks and activation/release signals |
 | RemoteDesktop | Deferred: authorized input injection and EIS transport |
 | Clipboard | Deferred with RemoteDesktop |
-| InputCapture | Missing zones, pointer barriers and EIS transport |
+| InputCapture | Native v2 keyboard/pointer consent, zones, outside-edge barriers and private EIS receiver transport |
 | Lockdown | Native seven-property policy provider with persisted configuration and change signals |
 | Inhibit | Native inhibitors and session monitors; UserSwitch recorded until a switch operation exists |
 
@@ -95,8 +102,7 @@ only to the native portal executable and checks session opt-in and locking.
 Window resizing renegotiates PipeWire video dimensions. Closing the selected
 window ends sharing; its lifetime ID cannot select a replacement app. Window
 selections require fresh consent and are not saved as display permissions.
-InputCapture still needs native zones, barriers and EIS transport. RemoteDesktop
-and its Clipboard integration remain deferred.
+RemoteDesktop and its Clipboard integration remain deferred.
 
 ## Validation
 
@@ -155,3 +161,14 @@ closure using a disposable nested compositor and a real PipeWire consumer:
 ```sh
 FERESE_TEST_WINDOW_STREAM=1 python3 scripts/tests/test_window_stream_isolated.py
 ```
+
+Check InputCapture state and its transport against an installed libei receiver:
+
+```sh
+cargo test --locked -p ferese input_capture::tests
+cargo test --locked -p xdg-desktop-portal-ferese eis::tests -- --ignored
+```
+
+The receiver test uses a private socket pair and synthetic input; it never
+captures the host keyboard or changes host focus. Real pointer-barrier crossings
+and interactive consent still need a live session check.

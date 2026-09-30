@@ -10,6 +10,7 @@ mod gestures;
 mod grabs;
 mod handlers;
 mod input;
+mod input_capture;
 mod ipc;
 mod metrics;
 mod overview;
@@ -137,6 +138,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         // All input/Wayland callbacks have returned, releasing seat locks.
         // Coalesce cursor changes and redraw here, never inside cursor_image.
+        if state.input_capture.restore_focus {
+            state.restore_input_capture_focus();
+        }
         let wallpaper_retry = state.wallpaper.take_retry_wakeup();
         if std::mem::take(&mut state.cursor_redraw_pending) || wallpaper_changed || wallpaper_retry
         {

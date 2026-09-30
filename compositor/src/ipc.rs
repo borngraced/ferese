@@ -47,6 +47,7 @@ const DEADLINE_IDLE: Duration = Duration::from_secs(1);
 
 #[derive(Debug)]
 struct IpcCall {
+    native_portal: bool,
     owner: u64,
     request: Request,
     response: SyncSender<Response>,
@@ -121,13 +122,42 @@ pub(crate) fn init(
                 let call = match event {
                     IpcEvent::Call(call) => call,
                     IpcEvent::Closed(owner) => {
+                        let captured = state.input_capture.active();
+                        state.input_capture.remove_owner(owner);
+                        if captured && !state.input_capture.active() {
+                            state.restore_input_capture_focus();
+                        }
                         state.portal_shortcuts.remove(owner);
                         state.portal_session.remove(owner);
                         state.refresh_idle_inhibition();
                         return;
                     }
                 };
-                if call.request.command == "session-watch" {
+                if call.request.command.starts_with("input-capture-") && !call.native_portal {
+                    let _ = call.response.try_send(Response::error(
+                        call.request.id,
+                        "access_denied",
+                        "Input capture is restricted to the native portal",
+                    ));
+                } else if call.request.command == "input-capture-watch" {
+                    if let Err(error) = validate_request(&call.request) {
+                        let _ = call.response.try_send(Response::error(
+                            call.request.id,
+                            error.code,
+                            error.message,
+                        ));
+                    } else if let Some(id) = call.request.args["session"].as_u64() {
+                        state
+                            .input_capture
+                            .watch(call.owner, call.request.id, id, call.response);
+                    } else {
+                        let _ = call.response.try_send(Response::error(
+                            call.request.id,
+                            "invalid_argument",
+                            "Missing capture session",
+                        ));
+                    }
+                } else if call.request.command == "session-watch" {
                     if let Err(error) = validate_request(&call.request) {
                         let _ = call.response.send(Response::error(
                             call.request.id,
@@ -310,6 +340,7 @@ fn serve_connection(
     signal: LoopSignal,
     owner: u64,
 ) {
+    let native_portal = crate::handlers::window_capture::is_portal(&stream);
     let _connection = IpcConnection {
         owner,
         sender: sender.clone(),
@@ -337,6 +368,7 @@ fn serve_connection(
         let screenshot_requested =
             matches!(request.command.as_str(), "screenshot" | "screenshot-window");
         let call = IpcEvent::Call(IpcCall {
+            native_portal,
             owner,
             request,
             response,
@@ -417,6 +449,8 @@ impl Ferese {
             && !matches!(
                 request.command.as_str(),
                 "portal-shortcuts-poll"
+                    | "input-capture-disable"
+                    | "input-capture-release"
                     | "get-session-state"
                     | "portal-inhibit"
                     | "portal-monitor-register"
@@ -524,6 +558,106 @@ impl Ferese {
             }
             "portal-shortcuts-poll" => {
                 return Ok(self.portal_shortcuts.poll(owner, self.session_lock.active));
+            }
+            "input-capture-register" => {
+                if self.session_lock.active {
+                    return Err(CommandError::new("session_locked", "Session is locked"));
+                }
+                let id = self
+                    .input_capture
+                    .register(owner, u32_arg(args, "capabilities")?)
+                    .map_err(|e| CommandError::new("invalid_capture", e))?;
+                self.refresh_input_capture_zones();
+                let keyboard = self.seat.get_keyboard().expect("seat has keyboard");
+                let keymap = keyboard.with_xkb_state(self, |state| {
+                    let xkb = state.xkb().lock().unwrap();
+                    // SAFETY: the ref-counted keymap does not escape the locked Xkb;
+                    // only its owned string is retained for the EIS keyboard.
+                    unsafe { xkb.keymap() }
+                        .get_as_string(smithay::input::keyboard::xkb::KEYMAP_FORMAT_TEXT_V1)
+                });
+                return Ok(json!({"session":id, "keymap":keymap}));
+            }
+            "input-capture-zones" => {
+                self.refresh_input_capture_zones();
+                return self
+                    .input_capture
+                    .zones(
+                        args["session"].as_u64().ok_or_else(|| {
+                            CommandError::new("invalid_capture", "Missing session")
+                        })?,
+                    )
+                    .map_err(|e| CommandError::new("invalid_capture", e));
+            }
+            "input-capture-barriers" => {
+                self.refresh_input_capture_zones();
+                let id = args["session"]
+                    .as_u64()
+                    .ok_or_else(|| CommandError::new("invalid_capture", "Missing session"))?;
+                let barriers = serde_json::from_value(args["barriers"].clone())
+                    .map_err(|_| CommandError::new("invalid_capture", "Invalid barriers"))?;
+                let active = self.input_capture.active();
+                let failed = self
+                    .input_capture
+                    .set_barriers(id, u32_arg(args, "zone_set")?, barriers)
+                    .map_err(|e| CommandError::new("invalid_capture", e))?;
+                if active && !self.input_capture.active() {
+                    self.restore_input_capture_focus();
+                }
+                return Ok(json!({"failed_barriers":failed}));
+            }
+            "input-capture-enable" => {
+                self.refresh_input_capture_zones();
+                let id = args["session"]
+                    .as_u64()
+                    .ok_or_else(|| CommandError::new("invalid_capture", "Missing session"))?;
+                self.input_capture
+                    .enable(id)
+                    .map_err(|e| CommandError::new("invalid_capture", e))?;
+            }
+            "input-capture-disable" | "input-capture-release" => {
+                let id = args["session"]
+                    .as_u64()
+                    .ok_or_else(|| CommandError::new("invalid_capture", "Missing session"))?;
+                let position = args
+                    .get("cursor_position")
+                    .filter(|position| !position.is_null())
+                    .map(|position| {
+                        let position = position
+                            .as_array()
+                            .filter(|values| values.len() == 2)
+                            .ok_or("Invalid cursor position")?;
+                        let point = (
+                            position[0].as_f64().ok_or("Invalid cursor position")?,
+                            position[1].as_f64().ok_or("Invalid cursor position")?,
+                        );
+                        self.input_capture
+                            .valid_position(point)
+                            .then_some(point)
+                            .ok_or("Cursor position is outside the capture zones")
+                    })
+                    .transpose()
+                    .map_err(|e| CommandError::new("invalid_capture", e))?;
+                let active = self.input_capture.active();
+                let result = if command == "input-capture-disable" {
+                    self.input_capture.disable(id)
+                } else {
+                    self.input_capture.release(
+                        id,
+                        args["activation_id"]
+                            .as_u64()
+                            .and_then(|id| u32::try_from(id).ok()),
+                    )
+                };
+                result.map_err(|e| CommandError::new("invalid_capture", e))?;
+                if active && !self.input_capture.active() {
+                    if let Some(position) = position
+                        && let Some(pointer) = self.seat.get_pointer()
+                    {
+                        pointer.set_location(position.into());
+                    }
+                    self.restore_input_capture_focus();
+                }
             }
             "exit" => {} // The IPC worker stops the loop after writing the response.
             "request-logout" => self.request_logout_confirmation(),

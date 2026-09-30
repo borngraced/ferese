@@ -72,6 +72,15 @@ impl Bridge {
         .map_err(|error| error.to_string())?
     }
 
+    pub(crate) async fn capture_watch(&self, session: u64) -> Result<Json, String> {
+        self.request(
+            "input-capture-watch",
+            serde_json::json!({"session":session}),
+            true,
+        )
+        .await
+    }
+
     pub(crate) async fn closed(&self) {
         use std::io::Read;
         let Ok(reader) = self.0.shutdown.try_clone() else {

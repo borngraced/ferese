@@ -232,6 +232,7 @@ pub struct Ferese {
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
     pub(crate) loop_handle: smithay::reexports::calloop::LoopHandle<'static, Self>,
+    pub(crate) input_capture: crate::input_capture::InputCapture,
     pub(crate) portal_session: crate::portal_session::PortalSession,
     pub space: Space<Window>,
     pub workspaces: WorkspaceSet,
@@ -453,6 +454,7 @@ impl Ferese {
             loop_signal: event_loop.get_signal(),
             loop_handle: event_loop.handle(),
             portal_session: Default::default(),
+            input_capture: Default::default(),
             space: Space::default(),
             workspaces: WorkspaceSet::new(
                 config.layout_mode,
@@ -582,6 +584,10 @@ impl Ferese {
 
         if let Some(keyboard) = self.seat.get_keyboard() {
             if keyboard_changed {
+                self.input_capture.close_all();
+                if self.input_capture.restore_focus {
+                    self.restore_input_capture_focus();
+                }
                 let options = (!config.input_settings.xkb_options.is_empty())
                     .then(|| config.input_settings.xkb_options.join(","));
 
@@ -895,6 +901,9 @@ impl Ferese {
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
         if self.session_lock.active {
             return self.lock_surface_under(position);
+        }
+        if self.input_capture.active() {
+            return None;
         }
         self.layer_surface_under(position, &[Layer::Overlay, Layer::Top])
             .map(|(_, surface, origin)| (surface, origin))
@@ -1594,6 +1603,7 @@ impl Ferese {
     }
 
     pub fn relayout(&mut self) {
+        self.refresh_input_capture_zones();
         let visible_workspaces = self.visible_workspace_ids();
         self.prune_empty_workspaces(&visible_workspaces);
         if self.session_lock.active {
@@ -2428,6 +2438,9 @@ impl Ferese {
     }
 
     fn focus_direction_with_slide(&mut self, direction: Direction, slide: bool) {
+        if self.input_capture.captures(1) {
+            return;
+        }
         if self.focus_overview_direction(direction) {
             return;
         }
@@ -3007,6 +3020,9 @@ impl Ferese {
     }
 
     pub(crate) fn restore_keyboard_focus(&mut self) {
+        if self.input_capture.captures(1) {
+            return;
+        }
         if self.session_lock.active {
             self.focus_lock_surface();
             return;

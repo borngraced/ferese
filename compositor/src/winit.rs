@@ -2863,6 +2863,9 @@ fn cursor_elements(
     output_geometry: Rectangle<i32, Logical>,
     scale: f64,
 ) -> Vec<AnimatedWindowRenderElement> {
+    if state.input_capture.active() {
+        return Vec::new();
+    }
     let Some(pointer) = state.seat.get_pointer() else {
         return Vec::new();
     };
