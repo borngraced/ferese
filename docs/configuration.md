@@ -413,6 +413,11 @@ autostart {
 }
 ```
 
+The locked display dims after 30 seconds and sleeps after 120 seconds of
+inactivity. Settings → Lock screen changes `lock-screen.dim-after-seconds` and
+`lock-screen.sleep-after-seconds`; zero disables each action. Input wakes the
+display without unlocking. Display sleep does not suspend the computer.
+
 `ferese-lock` is the native PAM-authenticated locker. It follows your wallpaper,
 colors, font and shell corner radius. Its command returns successfully only after
 the compositor confirms the lock; the UI keeps running until authentication

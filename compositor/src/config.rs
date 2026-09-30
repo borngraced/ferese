@@ -18,6 +18,8 @@ pub struct Config {
     #[serde(default)]
     notifications: ferese_core::notifications::NotificationConfig,
     #[serde(default)]
+    lock_screen: crate::session_lock::IdleSettings,
+    #[serde(default)]
     desktop_widgets: ferese_core::desktop::DesktopWidgets,
     #[serde(default)]
     pub(crate) autostart: Vec<DaemonConfig>,
@@ -292,6 +294,7 @@ impl Config {
         let input_settings = self.input_settings()?;
         let bindings = self.bindings(&input_settings)?;
         Ok(crate::RuntimeConfig {
+            lock_idle: self.lock_screen.validate()?,
             autostart: self.autostart.clone(),
             layout_mode: self.layout_mode(),
             gap_config: self.gap_config()?,

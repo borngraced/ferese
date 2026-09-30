@@ -43,6 +43,14 @@ impl Ferese {
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         let seat = self.seat.clone();
         self.idle_notifier_state.notify_activity(&seat);
+        if !matches!(
+            &event,
+            InputEvent::DeviceAdded { .. }
+                | InputEvent::DeviceRemoved { .. }
+                | InputEvent::SwitchToggle { .. }
+        ) {
+            self.lock_input_activity();
+        }
 
         if self.session_lock.active {
             // An already-bound IME or drag client may install a grab after the

@@ -226,6 +226,7 @@ impl ClosingAnimation {
 pub struct Ferese {
     pub(crate) session_lock_state: smithay::wayland::session_lock::SessionLockManagerState,
     pub(crate) session_lock: crate::session_lock::Lock,
+    pub(crate) lock_idle: crate::session_lock::IdleSettings,
     pub(crate) config_source: Option<String>,
     pub start_time: Instant,
     pub socket_name: OsString,
@@ -353,6 +354,7 @@ pub struct Ferese {
 }
 
 pub struct RuntimeConfig {
+    pub(crate) lock_idle: crate::session_lock::IdleSettings,
     pub(crate) autostart: Vec<crate::config::DaemonConfig>,
     pub(crate) overview_font_family: String,
     pub(crate) wallpaper: crate::wallpaper::WallpaperConfig,
@@ -447,6 +449,7 @@ impl Ferese {
         let mut state = Self {
             session_lock_state,
             session_lock: crate::session_lock::Lock::default(),
+            lock_idle: config.lock_idle,
             config_source: None,
             start_time,
             socket_name,
@@ -609,6 +612,7 @@ impl Ferese {
             );
         }
 
+        self.lock_idle = config.lock_idle;
         self.advance_animations(Instant::now());
 
         let touchpad_changed = self.input_settings.touchpad != config.input_settings.touchpad;
@@ -677,6 +681,10 @@ impl Ferese {
     }
 
     pub fn register_output(&mut self, output: &Output, identity: String) {
+        if self.session_lock.active {
+            self.session_lock.output_added(output);
+            self.lock_input_activity();
+        }
         let Some(geometry) = self.space.output_geometry(output) else {
             tracing::error!(output = %output.name(), "cannot register an unmapped output");
             return;
@@ -738,6 +746,7 @@ impl Ferese {
         self.space.unmap_output(output);
         self.session_lock.surfaces.remove(output);
         self.session_lock.backgrounds.remove(output);
+        self.session_lock.output_removed(output);
 
         match self.output_workspaces.disconnect(output_id) {
             Ok(Some(target)) => {

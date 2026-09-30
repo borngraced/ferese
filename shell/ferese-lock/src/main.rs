@@ -351,7 +351,7 @@ impl Locker {
     }
 
     fn screen_content(&self, size: iced::Size) -> Element<'_, Message> {
-        let avatar_size = (size.height * 0.09).clamp(64., 112.);
+        let avatar_size = (size.height * 0.08).clamp(56., 88.);
         let clock_size = (size.height * 0.165)
             .min(
                 size.width
@@ -367,7 +367,7 @@ impl Locker {
         let a = &self.appearance;
         let mut input = widget::text_input("Password", self.password.as_str())
             .password()
-            .padding([8, 18])
+            .padding([6, 12])
             .style(ferese_theme::controls::lock_input(
                 a.radius, a.accent, a.panel,
             ))
@@ -435,8 +435,8 @@ impl Locker {
         .spacing(12)
         .align_x(iced::Alignment::Center)
         .width(
-            (size.height * 0.37)
-                .clamp(260., 420.)
+            (size.height * 0.31)
+                .clamp(240., 320.)
                 .min((size.width - margin * 2.).max(160.)),
         );
         let mut clock = column([]).spacing(0).align_x(iced::Alignment::Center);

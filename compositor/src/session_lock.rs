@@ -1,4 +1,8 @@
 use crate::Ferese;
+use smithay::reexports::calloop::{
+    RegistrationToken,
+    timer::{TimeoutAction, Timer},
+};
 use smithay::{
     output::Output,
     reexports::{
@@ -16,7 +20,72 @@ use smithay::{
         LockSurface, SessionLockHandler, SessionLockManagerState, SessionLockState, SessionLocker,
     },
 };
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::{Duration, Instant},
+};
+
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
+#[serde(default)]
+pub(crate) struct IdleSettings {
+    pub dim_after_seconds: u64,
+    pub sleep_after_seconds: u64,
+}
+
+impl Default for IdleSettings {
+    fn default() -> Self {
+        Self {
+            dim_after_seconds: 30,
+            sleep_after_seconds: 120,
+        }
+    }
+}
+
+impl IdleSettings {
+    pub(crate) fn validate(self) -> Result<Self, crate::config::ConfigError> {
+        if self.dim_after_seconds > 86400 || self.sleep_after_seconds > 86400 {
+            return Err(crate::config::ConfigError::InvalidInputValue {
+                field: "lock_screen.idle_delay",
+                value: "must be between 0 and 86400 seconds".into(),
+            });
+        }
+        Ok(self)
+    }
+
+    fn next_poll(self, elapsed: Duration, animate: bool) -> Duration {
+        let dim_at = Duration::from_secs(self.dim_after_seconds);
+        if animate
+            && self.dim_after_seconds != 0
+            && elapsed >= dim_at
+            && elapsed < dim_at + Duration::from_millis(500)
+        {
+            return Duration::from_millis(16);
+        }
+        [self.dim_after_seconds, self.sleep_after_seconds]
+            .into_iter()
+            .filter(|delay| *delay != 0)
+            .filter_map(|delay| Duration::from_secs(delay).checked_sub(elapsed))
+            .filter(|delay| !delay.is_zero())
+            .min()
+            .unwrap_or(Duration::from_secs(1))
+            .min(Duration::from_secs(1))
+    }
+
+    fn appearance(self, elapsed: Duration) -> (f32, bool) {
+        let sleeping = self.sleep_after_seconds != 0
+            && elapsed >= Duration::from_secs(self.sleep_after_seconds);
+        let dim = if self.dim_after_seconds == 0 {
+            0.0
+        } else {
+            elapsed
+                .saturating_sub(Duration::from_secs(self.dim_after_seconds))
+                .as_secs_f32()
+                .min(0.5)
+                * 1.3
+        };
+        (if sleeping { 1.0 } else { dim }, sleeping)
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct Lock {
@@ -27,9 +96,79 @@ pub(crate) struct Lock {
     pub backgrounds: HashMap<Output, smithay::backend::renderer::element::solid::SolidColorBuffer>,
     presented: HashSet<Output>,
     confirmed: bool,
+    idle_since: Option<Instant>,
+    pub(crate) idle_opacity: f32,
+    pub(crate) sleeping: bool,
+    pub(crate) idle_overlays:
+        HashMap<Output, smithay::backend::renderer::element::solid::SolidColorBuffer>,
+    idle_timer: Option<RegistrationToken>,
+}
+
+impl Lock {
+    fn ready_for_idle<'a>(&self, outputs: impl Iterator<Item = &'a Output>) -> bool {
+        self.active
+            && outputs
+                .into_iter()
+                .all(|output| self.presented.contains(output))
+    }
+
+    pub(crate) fn output_added(&mut self, output: &Output) {
+        self.presented.remove(output);
+    }
+
+    pub(crate) fn output_removed(&mut self, output: &Output) {
+        self.presented.remove(output);
+        self.idle_overlays.remove(output);
+    }
+
+    fn activity(&mut self, now: Instant) -> bool {
+        if !self.active {
+            return false;
+        }
+        let changed = self.idle_opacity != 0.0 || self.sleeping;
+        self.idle_since = Some(now);
+        self.idle_opacity = 0.0;
+        self.sleeping = false;
+        changed
+    }
 }
 
 impl Ferese {
+    pub(crate) fn lock_input_activity(&mut self) {
+        if self.session_lock.activity(Instant::now()) {
+            crate::backends::direct::wake_locked_outputs(self);
+            self.cursor_redraw_pending = true;
+        }
+    }
+
+    fn update_lock_idle(&mut self, now: Instant) {
+        if !self.session_lock.ready_for_idle(self.space.outputs()) {
+            return;
+        }
+        let since = self.session_lock.idle_since.get_or_insert(now);
+        let (mut opacity, sleeping) = self
+            .lock_idle
+            .appearance(now.saturating_duration_since(*since));
+        if !self.animations_enabled() && opacity > 0.0 && !sleeping {
+            opacity = 0.65;
+        }
+        let changed =
+            opacity != self.session_lock.idle_opacity || sleeping != self.session_lock.sleeping;
+        let was_sleeping = self.session_lock.sleeping;
+        self.session_lock.idle_opacity = opacity;
+        self.session_lock.sleeping = sleeping;
+        if changed {
+            if was_sleeping && !sleeping {
+                crate::backends::direct::wake_locked_outputs(self);
+            } else if sleeping {
+                crate::backends::direct::sleep_locked_outputs(self);
+            } else {
+                crate::backends::direct::render_all(self);
+            }
+            self.cursor_redraw_pending = true;
+        }
+    }
+
     pub(crate) fn lock_surface_under(
         &self,
         position: Point<f64, Logical>,
@@ -123,6 +262,28 @@ impl SessionLockHandler for Ferese {
         }
         self.cancel_logout_confirmation();
         self.session_lock.active = true;
+        self.session_lock.idle_since = Some(Instant::now());
+        match self.loop_handle.insert_source(
+            Timer::from_duration(Duration::from_secs(1)),
+            |_, _, state| {
+                if !state.session_lock.active {
+                    return TimeoutAction::Drop;
+                }
+                state.update_lock_idle(Instant::now());
+                let elapsed = state
+                    .session_lock
+                    .idle_since
+                    .map_or(Duration::ZERO, |since| since.elapsed());
+                TimeoutAction::ToDuration(
+                    state
+                        .lock_idle
+                        .next_poll(elapsed, state.animations_enabled()),
+                )
+            },
+        ) {
+            Ok(token) => self.session_lock.idle_timer = Some(token),
+            Err(error) => tracing::warn!(%error, "could not schedule lock screen inactivity"),
+        }
         self.input_capture.disable_all();
         self.portal_session.set_locked(true);
         self.session_lock.owner = Some(confirmation.ext_session_lock().clone());
@@ -166,7 +327,14 @@ impl SessionLockHandler for Ferese {
     }
 
     fn unlock(&mut self) {
+        if let Some(timer) = self.session_lock.idle_timer.take() {
+            self.loop_handle.remove(timer);
+        }
+        let sleeping = self.session_lock.sleeping;
         self.session_lock = Lock::default();
+        if sleeping {
+            crate::backends::direct::wake_locked_outputs(self);
+        }
         self.portal_session.set_locked(false);
         self.restore_keyboard_focus();
         crate::backends::direct::render_all(self);
@@ -223,3 +391,121 @@ impl Dispatch<ExtSessionLockV1, SessionLockState> for Ferese {
 smithay::reexports::wayland_server::delegate_global_dispatch!(Ferese: [ExtSessionLockManagerV1: smithay::wayland::session_lock::SessionLockManagerGlobalData] => SessionLockManagerState);
 smithay::reexports::wayland_server::delegate_dispatch!(Ferese: [ExtSessionLockManagerV1: ()] => SessionLockManagerState);
 smithay::reexports::wayland_server::delegate_dispatch!(Ferese: [ExtSessionLockSurfaceV1: smithay::wayland::session_lock::ExtLockSurfaceUserData] => SessionLockManagerState);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_policy_fades_then_sleeps_and_activity_resets_it() {
+        let policy = IdleSettings::default();
+        assert_eq!(policy.appearance(Duration::from_secs(29)), (0.0, false));
+        let halfway = policy.appearance(Duration::from_millis(30_250));
+        assert!((halfway.0 - 0.325).abs() < 0.001 && !halfway.1);
+        assert_eq!(policy.appearance(Duration::from_secs(31)), (0.65, false));
+        assert_eq!(policy.appearance(Duration::from_secs(120)), (1.0, true));
+        assert_eq!(policy.appearance(Duration::ZERO), (0.0, false));
+        assert_eq!(
+            policy.next_poll(Duration::from_millis(29_998), true),
+            Duration::from_millis(2)
+        );
+        assert_eq!(
+            policy.next_poll(Duration::from_secs(30), true),
+            Duration::from_millis(16)
+        );
+        assert_eq!(
+            policy.next_poll(Duration::from_secs(30), false),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn protected_fallback_frames_allow_idle_after_early_locker_crash() {
+        let output = Output::new(
+            "test".into(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: "test".into(),
+                model: "test".into(),
+            },
+        );
+        let mut lock = Lock {
+            active: true,
+            ..Lock::default()
+        };
+        assert!(!lock.ready_for_idle(std::iter::once(&output)));
+        lock.presented.insert(output.clone());
+        assert!(lock.ready_for_idle(std::iter::once(&output)));
+        assert!(!lock.confirmed);
+        lock.output_added(&output);
+        assert!(!lock.ready_for_idle(std::iter::once(&output)));
+        assert!(!lock.confirmed);
+    }
+
+    #[test]
+    fn input_wakes_a_sleeping_lock_without_unlocking_or_losing_confirmation() {
+        let mut lock = Lock {
+            active: true,
+            confirmed: true,
+            sleeping: true,
+            idle_opacity: 1.0,
+            ..Lock::default()
+        };
+        let now = Instant::now();
+        assert!(lock.activity(now));
+        assert!(lock.active && lock.confirmed);
+        assert!(!lock.sleeping);
+        assert_eq!(lock.idle_opacity, 0.0);
+        assert_eq!(lock.idle_since, Some(now));
+        assert!(!lock.activity(now));
+        let mut unlocked = Lock::default();
+        assert!(!unlocked.activity(now));
+        assert!(unlocked.idle_since.is_none());
+    }
+
+    #[test]
+    fn idle_disabled_options_are_independent() {
+        assert_eq!(
+            IdleSettings {
+                dim_after_seconds: 0,
+                sleep_after_seconds: 0
+            }
+            .appearance(Duration::from_secs(9999)),
+            (0.0, false)
+        );
+        assert_eq!(
+            IdleSettings {
+                dim_after_seconds: 0,
+                sleep_after_seconds: 10
+            }
+            .appearance(Duration::from_secs(10)),
+            (1.0, true)
+        );
+        assert_eq!(
+            IdleSettings {
+                dim_after_seconds: 1,
+                sleep_after_seconds: 0
+            }
+            .appearance(Duration::from_secs(9999)),
+            (0.65, false)
+        );
+        assert!(
+            IdleSettings {
+                dim_after_seconds: 86401,
+                sleep_after_seconds: 0
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            crate::config::Config::parse_source("lock-screen { dim-after-seconds -1; }").is_err()
+        );
+        assert!(
+            crate::config::Config::parse_source("lock-screen { sleep-after-seconds 90000; }")
+                .unwrap()
+                .runtime_config()
+                .is_err()
+        );
+    }
+}

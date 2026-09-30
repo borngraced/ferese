@@ -15,7 +15,7 @@ This is an ordinary, closable window. Submitting the field does not call PAM,
 lock, or unlock anything. Do not type your actual password into a visual preview.
 
 Settings → Lock screen provides clock visibility, date visibility, time format,
-wallpaper dimming and softness, and a safe preview button. Your account picture is loaded from
+wallpaper dimming and softness, inactivity delays, and a safe preview button. Your account picture is loaded from
 AccountsService or `~/.face`, with a user silhouette as a fallback.
 
 The locker reads Ferese's wallpaper, theme colors, typography, and shell radius
@@ -64,3 +64,46 @@ never reports success merely because the window appeared.
 Validation references: [session-lock protocol](https://wayland.app/protocols/ext-session-lock-v1),
 [PAM authentication](https://man7.org/linux/man-pages/man3/pam_authenticate.3.html),
 and [PAM account checks](https://man7.org/linux/man-pages/man3/pam_acct_mgmt.3.html).
+
+## Inactivity and display sleep
+
+A locked display dims after 30 seconds without input and sleeps after 120 seconds.
+Dimming fades over half a second. Any keyboard, pointer or touch activity restores
+brightness and wakes the display while keeping the session locked. The compositor
+owns this policy, so it remains effective if the locker crashes. Sleep starts only
+after the compositor has confirmed that every display is protected.
+
+Settings → Lock screen adjusts both delays. Zero disables that action:
+
+```kdl
+lock-screen {
+    dim-after-seconds 30
+    sleep-after-seconds 120
+}
+```
+
+These delays are independent of automatic locking. Existing idle inhibitors from
+apps cannot keep an already locked display awake. In a direct session, display
+sleep uses DRM DPMS without removing outputs or rearranging workspaces; nested
+previews show black instead of powering off the host display. This puts displays
+to sleep, not the computer. Suspend remains a separate system power action.
+
+## Practical swaylock comparison
+
+| Behavior | Ferese Lock |
+| --- | --- |
+| Secure Wayland locking and protection after a locker crash | Session-lock protocol, compositor-owned fallback |
+| All displays, including hotplug | Separate lock surface for each display |
+| Readiness before an idle manager permits suspend | Default command waits for compositor confirmation |
+| Password verification | PAM authentication and account checks on a worker |
+| Password clearing and Caps Lock feedback | Escape clears; Caps Lock indicator |
+| Authentication failure feedback and retry delay | Error message and bounded retry delay |
+| Wallpaper, font and color customization | Shared Ferese theme and Settings |
+| Inactivity and display power | Compositor dimming and DPMS; input restores brightness |
+
+[Swaylock](https://github.com/swaywm/swaylock/blob/master/swaylock.1.scd) provides
+additional appearance flags, layout indicators and readiness-FD CLI options.
+Ferese uses its shared configuration and existing startup acknowledgement instead.
+Like the [swayidle example](https://github.com/swaywm/swayidle/blob/master/swayidle.1.scd),
+locking and display sleep are separate from system suspend. Password changes and
+interactive multi-factor prompts remain outside this password-only interface.

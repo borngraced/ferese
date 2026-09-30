@@ -1,6 +1,6 @@
 """Opt-in lock protocol smoke test. Opens a temporary nested compositor.
 Run: FERESE_TEST_LOCK=1 python3 scripts/tests/test_lock_isolated.py
-Requires release binaries and bwrap. Host PAM is never modified.
+Requires built binaries and bwrap. FERESE_TEST_BIN_DIR selects debug/release. Host PAM is never modified.
 """
 import os
 import unittest
@@ -21,9 +21,10 @@ class NativeLockTest(unittest.TestCase):
         host_display=os.environ.get('WAYLAND_DISPLAY','wayland-1')
         if not host_display.startswith('/'):host_display=str(pathlib.Path(os.environ['XDG_RUNTIME_DIR'])/host_display)
         env=dict(os.environ,XDG_RUNTIME_DIR=str(runtime),XDG_CONFIG_HOME=str(root/'config'),WAYLAND_DISPLAY=host_display,FERESE_ENABLE_SCREENCOPY='1')
+        binary_dir = Path(os.environ.get('FERESE_TEST_BIN_DIR', 'target/release'))
         log=(root/'compositor.log').open('w')
-        compositor=subprocess.Popen(['target/release/ferese','--backend','nested'],env=env,stdout=log,stderr=subprocess.STDOUT)
-        ctl=pathlib.Path('target/release/feresectl')
+        compositor=subprocess.Popen([str(binary_dir / 'ferese'),'--backend','nested'],env=env,stdout=log,stderr=subprocess.STDOUT)
+        ctl=binary_dir / 'feresectl'
         assert ctl.is_file(), f'missing {ctl}; build it with cargo build --release -p feresectl'
         locker=None
         locker_log=(root/'locker.log').open('w')
@@ -42,7 +43,7 @@ class NativeLockTest(unittest.TestCase):
             assert result.returncode == 0, f'Capture failed while unlocked: {result.stderr.decode()}'
             assert (root/'unlocked.png').stat().st_size > 0, 'Capture produced an empty file'
             print('Native capture succeeded while unlocked',flush=True)
-            locker=subprocess.Popen(['bwrap','--bind','/','/','--dev-bind','/dev','/dev','--ro-bind',str(pam),'/etc/pam.d','--unshare-user','--','target/release/ferese-lock'],env=childenv,stdout=subprocess.DEVNULL,stderr=locker_log,start_new_session=True)
+            locker=subprocess.Popen(['bwrap','--bind','/','/','--dev-bind','/dev','/dev','--ro-bind',str(pam),'/etc/pam.d','--unshare-user','--',str(binary_dir / 'ferese-lock')],env=childenv,stdout=subprocess.DEVNULL,stderr=locker_log,start_new_session=True)
             assert locker.wait(timeout=20) == 0, (root/'locker.log').read_text()
             print('Native locker received compositor confirmation',flush=True)
             result=capture(root/'locked.png')

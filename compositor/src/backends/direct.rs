@@ -184,6 +184,7 @@ struct DirectOutput {
     damage_tracker: OutputDamageTracker,
     render_metrics: RenderMetrics,
     frame_pending: bool,
+    power_off: bool,
     lock_frame_pending: bool,
 }
 
@@ -268,6 +269,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                             output.damage_tracker =
                                 OutputDamageTracker::from_output(&output.output);
                             output.frame_pending = false;
+                            output.power_off = false;
                         });
                     });
                 }
@@ -287,6 +289,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     }
                 }
                 tracing::info!("direct session activated");
+                state.lock_input_activity();
                 render_all(state);
             }
         })?;
@@ -561,6 +564,45 @@ fn open_primary_device(
     Ok(())
 }
 
+pub(crate) fn sleep_locked_outputs(state: &mut Ferese) {
+    if !state.session_lock.active || !state.session_lock.sleeping {
+        return;
+    }
+    let Some(backend) = state.direct_backend.as_mut() else {
+        return;
+    };
+    for device in backend
+        .devices
+        .values_mut()
+        .filter(|device| device.drm.is_active())
+    {
+        for output in device.outputs.values_mut() {
+            if output.power_off || output.frame_pending {
+                continue;
+            }
+            match output.surface.surface().clear() {
+                Ok(()) => output.power_off = true,
+                Err(error) => {
+                    tracing::warn!(%error, output = %output.output.name(), "could not sleep locked display")
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn wake_locked_outputs(state: &mut Ferese) {
+    if let Some(backend) = state.direct_backend.as_mut() {
+        for device in backend.devices.values_mut() {
+            for output in device.outputs.values_mut() {
+                if std::mem::take(&mut output.power_off) {
+                    output.surface.reset_buffer_ages();
+                }
+            }
+        }
+    }
+    render_all(state);
+}
+
 pub fn render_all(state: &mut Ferese) {
     let outputs = state
         .direct_backend
@@ -652,6 +694,18 @@ fn lid_hides_panel(closed: bool, external_available: bool) -> bool {
 }
 
 fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
+    if state.session_lock.active && state.session_lock.sleeping {
+        sleep_locked_outputs(state);
+        let asleep = state
+            .direct_backend
+            .as_ref()
+            .and_then(|backend| backend.devices.get(&node))
+            .and_then(|device| device.outputs.get(&crtc))
+            .is_none_or(|output| output.power_off || output.frame_pending);
+        if asleep {
+            return;
+        }
+    }
     let missed_deadlines = state
         .direct_backend
         .as_ref()
@@ -1318,6 +1372,7 @@ fn create_direct_output(
         damage_tracker,
         render_metrics,
         frame_pending: false,
+        power_off: false,
         lock_frame_pending: false,
     })
 }

@@ -550,6 +550,28 @@ pub fn note_fields(index: usize) -> Vec<Field> {
 pub fn fields(page: Page) -> Vec<Field> {
     match page {
         Page::LockScreen => vec![
+            range(
+                "lock_screen.dim_after_seconds",
+                "Dim after",
+                "Dim the locked display after inactivity. Zero disables dimming.",
+                30.0,
+                0.0,
+                600.0,
+                5.0,
+                "s",
+                true,
+            ),
+            range(
+                "lock_screen.sleep_after_seconds",
+                "Display sleep after",
+                "Turn off locked displays after inactivity. Input wakes them; zero disables display sleep.",
+                120.0,
+                0.0,
+                1800.0,
+                15.0,
+                "s",
+                true,
+            ),
             toggle(
                 "lock_screen.show_clock",
                 "Show clock",

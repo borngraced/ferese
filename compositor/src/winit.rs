@@ -1148,6 +1148,30 @@ fn output_elements(
             });
         background.resize(geometry.size);
         let mut elements = Vec::new();
+        let opacity = state.session_lock.idle_opacity;
+        if opacity > 0.0 {
+            let overlay = state
+                .session_lock
+                .idle_overlays
+                .entry(output.clone())
+                .or_insert_with(|| {
+                    smithay::backend::renderer::element::solid::SolidColorBuffer::new(
+                        geometry.size,
+                        [0.0, 0.0, 0.0, 1.0],
+                    )
+                });
+            overlay.resize(geometry.size);
+            elements.push(
+                SolidColorRenderElement::from_buffer(
+                    overlay,
+                    (0, 0),
+                    scale,
+                    opacity,
+                    RenderElementKind::Unspecified,
+                )
+                .into(),
+            );
+        }
         if let Some(surface) = state
             .session_lock
             .surfaces
