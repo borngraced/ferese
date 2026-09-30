@@ -13,6 +13,28 @@ pub fn button_style(p: Palette, selected: bool) -> theme::Button {
     styled_button(p, selected, false)
 }
 
+pub fn text_button<'a, M: Clone + 'a>(
+    label: impl Into<std::borrow::Cow<'a, str>> + 'a,
+    font: cosmic::font::Font,
+    palette: Palette,
+    selected: bool,
+) -> button::Button<'a, M> {
+    let theme = cosmic::theme::active();
+    let native = theme.cosmic();
+    let content = widget::row![
+        crate::text(label, font)
+            .size(14)
+            .line_height(cosmic::iced::widget::text::LineHeight::Absolute(20.into())),
+    ]
+    .height(native.space_l())
+    .padding([0, native.space_s()])
+    .align_y(cosmic::iced::Alignment::Center);
+
+    button::custom(content)
+        .padding(0)
+        .class(button_style(palette, selected))
+}
+
 pub fn navigation_style(p: Palette, selected: bool) -> theme::Button {
     styled_button(p, selected, true)
 }

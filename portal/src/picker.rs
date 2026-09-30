@@ -44,7 +44,7 @@ struct Picker {
     prompt: Prompt,
     selected: Vec<usize>,
     background: cosmic::iced::Color,
-    foreground: cosmic::iced::Color,
+    palette: ferese_theme::Palette,
     font: cosmic::font::Font,
 }
 
@@ -64,7 +64,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("No shareable displays".into());
     }
 
-    let (theme, font, background, foreground) = appearance();
+    let (theme, font, background, palette) = appearance();
     let height = 180. + (prompt.sources.len().min(4) as f32 * 56.);
     cosmic::app::run::<Picker>(
         Settings::default()
@@ -75,7 +75,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             .default_font(font)
             .default_text_size(14.)
             .is_daemon(false),
-        (prompt, background, foreground, font),
+        (prompt, background, palette, font),
     )?;
 
     Ok(())
@@ -86,7 +86,7 @@ impl cosmic::Application for Picker {
     type Flags = (
         Prompt,
         cosmic::iced::Color,
-        cosmic::iced::Color,
+        ferese_theme::Palette,
         cosmic::font::Font,
     );
     type Message = Message;
@@ -102,7 +102,7 @@ impl cosmic::Application for Picker {
 
     fn init(
         mut core: Core,
-        (prompt, background, foreground, font): Self::Flags,
+        (prompt, background, palette, font): Self::Flags,
     ) -> (Self, Task<Message>) {
         core.window.show_headerbar = false;
         core.window.border_padding = Some(0);
@@ -115,7 +115,7 @@ impl cosmic::Application for Picker {
             prompt,
             selected: Vec::new(),
             background,
-            foreground,
+            palette,
             font,
         };
         let task = app
@@ -194,15 +194,11 @@ impl cosmic::Application for Picker {
     }
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
-        Some(cosmic::iced::theme::Style {
-            background_color: if self.material.is_some() {
-                cosmic::iced::Color::TRANSPARENT
-            } else {
-                self.background
-            },
-            text_color: self.foreground,
-            icon_color: self.foreground,
-        })
+        Some(self.palette.application_style(if self.material.is_some() {
+            cosmic::iced::Color::TRANSPARENT
+        } else {
+            self.background
+        }))
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -265,7 +261,7 @@ impl cosmic::Application for Picker {
                     .class(if selected {
                         ferese_theme::accent_button()
                     } else {
-                        cosmic::theme::Button::Standard
+                        ferese_theme::controls::navigation_style(self.palette, false)
                     })
                     .padding(8)
                     .width(Length::Fill)
@@ -304,7 +300,7 @@ impl cosmic::Application for Picker {
         content = content.push(
             row![
                 button::custom(self.text("Cancel"))
-                    .class(cosmic::theme::Button::Text)
+                    .class(ferese_theme::controls::button_style(self.palette, false))
                     .on_press(Message::Cancel),
                 share
             ]
@@ -327,7 +323,7 @@ pub(crate) fn appearance() -> (
     cosmic::Theme,
     cosmic::font::Font,
     cosmic::iced::Color,
-    cosmic::iced::Color,
+    ferese_theme::Palette,
 ) {
     let document = ferese_config::config_path()
         .and_then(|path| std::fs::read_to_string(path).ok())
@@ -345,6 +341,6 @@ pub(crate) fn appearance() -> (
             a: ferese_theme::material_opacity(document.as_ref()),
             ..palette.sidebar
         },
-        palette.text,
+        palette,
     )
 }

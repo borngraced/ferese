@@ -6,7 +6,7 @@ prompt and screen-sharing/recording chooser.
 - `Palette` resolves KDL colors and corners and builds the native toolkit theme.
 - `PRESETS` defines the six built-in color schemes.
 - `font` and `text` share bounded font-name storage and explicit font selection.
-- `controls` supplies surfaces, navigation, buttons and input styles.
+- `controls` supplies surfaces, navigation, font-aware text buttons and input styles.
 - `menus` supplies headings, rows, sections, separators, switches and slider styles.
 - `calendar` supplies date/time labels, stacked clock digits and calendar grids.
   Callers supply the date and navigation controls.

@@ -1514,12 +1514,14 @@ impl FereseShell {
             .align_x(alignment);
 
         if note.interactive {
-            let title = cosmic::widget::text(if note.title.is_empty() {
-                "⋮⋮"
-            } else {
-                &note.title
-            })
-            .font(font)
+            let title = ferese_theme::text(
+                if note.title.is_empty() {
+                    "⋮⋮"
+                } else {
+                    &note.title
+                },
+                font,
+            )
             .size(note.title_size)
             .class(theme::Text::Color(foreground));
             let header = cosmic::widget::mouse_area(container(title).width(Length::Fill))
@@ -1549,15 +1551,17 @@ impl FereseShell {
             );
         } else if !note.title.is_empty() {
             body = body.push(
-                cosmic::widget::text(note.title.clone())
-                    .font(cosmic::font::Font {
+                ferese_theme::text(
+                    note.title.clone(),
+                    cosmic::font::Font {
                         weight: cosmic::iced::font::Weight::Semibold,
                         ..font
-                    })
-                    .size(note.title_size)
-                    .width(Length::Fill)
-                    .align_x(alignment)
-                    .class(theme::Text::Color(foreground)),
+                    },
+                )
+                .size(note.title_size)
+                .width(Length::Fill)
+                .align_x(alignment)
+                .class(theme::Text::Color(foreground)),
             );
         }
 
@@ -1582,8 +1586,7 @@ impl FereseShell {
             );
         } else {
             body = body.push(
-                cosmic::widget::text(note.text.clone())
-                    .font(font)
+                ferese_theme::text(note.text.clone(), font)
                     .size(note.text_size)
                     .width(Length::Fill)
                     .align_x(alignment)
@@ -1747,8 +1750,7 @@ impl FereseShell {
 
         if pixel && clock.show_date {
             labels = labels.push(
-                cosmic::widget::text(self.desktop_clock.1.clone())
-                    .font(date_font)
+                ferese_theme::text(self.desktop_clock.1.clone(), date_font)
                     .size(clock.date_size)
                     .class(theme::Text::Color(tint(
                         &clock.date_color,
@@ -1780,8 +1782,7 @@ impl FereseShell {
 
                 for (position, digit) in digits.chars().enumerate() {
                     digit_row = digit_row.push(
-                        cosmic::widget::text(digit.to_string())
-                            .font(font)
+                        ferese_theme::text(digit.to_string(), font)
                             .size(size)
                             .line_height(cosmic::iced::widget::text::LineHeight::Relative(0.8))
                             .class(theme::Text::Color(digit_colors[(line + position) % 2])),
@@ -1809,8 +1810,7 @@ impl FereseShell {
                 .min(available_height / 1.3);
 
             labels = labels.push(
-                cosmic::widget::text(self.desktop_clock.0.clone())
-                    .font(font)
+                ferese_theme::text(self.desktop_clock.0.clone(), font)
                     .size(size)
                     .width(Length::Fill)
                     .align_x(alignment)
@@ -1820,8 +1820,7 @@ impl FereseShell {
 
         if !pixel && clock.show_date {
             labels = labels.push(
-                cosmic::widget::text(self.desktop_clock.1.clone())
-                    .font(font)
+                ferese_theme::text(self.desktop_clock.1.clone(), font)
                     .size(clock.date_size)
                     .width(Length::Fill)
                     .align_x(alignment)

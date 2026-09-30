@@ -1,6 +1,6 @@
 use super::*;
 use cosmic::iced::widget::Space;
-use cosmic::widget::{column, text};
+use cosmic::widget::column;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PowerAction {
@@ -436,9 +436,8 @@ impl FereseShell {
             let rows = match &modal.content {
                 Content::Power(action) => {
                     let mut rows = column![
-                        text(action.title()).font(shell_font()).size(23),
+                        text(action.title()).size(23),
                         text(action.description())
-                            .font(shell_font())
                             .size(14)
                             .class(theme::Text::Color(palette.muted)),
                     ]
@@ -448,13 +447,12 @@ impl FereseShell {
                     {
                         rows = rows.push(
                             text("Applications requested that this action be prevented:")
-                                .font(shell_font())
                                 .size(13)
                                 .class(theme::Text::Color(palette.muted)),
                         );
                         let items = inhibitors.reasons.iter().fold(
                             column::with_capacity(inhibitors.reasons.len()).spacing(6),
-                            |rows, reason| rows.push(text(reason).font(shell_font()).size(13)),
+                            |rows, reason| rows.push(text(reason).size(13)),
                         );
                         rows = rows.push(
                             container(cosmic::widget::scrollable(items).height(Length::Shrink))
@@ -476,11 +474,14 @@ impl FereseShell {
                     rows.push(
                         row![
                             Space::new().width(Length::Fill),
-                            button::text("Cancel")
-                                .class(ferese_theme::controls::button_style(palette, false))
-                                .on_press(cosmic::Action::App(Message::CancelPower)),
-                            button::text(label)
-                                .class(ferese_theme::controls::button_style(palette, true))
+                            ferese_theme::controls::text_button(
+                                "Cancel",
+                                shell_font(),
+                                palette,
+                                false
+                            )
+                            .on_press(cosmic::Action::App(Message::CancelPower)),
+                            ferese_theme::controls::text_button(label, shell_font(), palette, true)
                                 .on_press_maybe(
                                     modal
                                         .inhibitors
@@ -496,12 +497,8 @@ impl FereseShell {
                     for entry in entries {
                         bindings = bindings.push(
                             row![
-                                text(&entry.keys)
-                                    .font(shell_font())
-                                    .size(13)
-                                    .width(Length::FillPortion(1)),
+                                text(&entry.keys).size(13).width(Length::FillPortion(1)),
                                 text(&entry.description)
-                                    .font(shell_font())
                                     .size(13)
                                     .width(Length::FillPortion(1)),
                             ]
@@ -518,12 +515,30 @@ impl FereseShell {
                         .saturating_sub(360)
                         .clamp(40, 400) as f32;
                     column![
-                        text("Welcome to Ferese").font(shell_font()).size(23),
-                        text("Your active shortcuts").font(shell_font()).size(14).class(theme::Text::Color(palette.muted)),
-                        container(cosmic::widget::scrollable(bindings).height(Length::Shrink)).max_height(height),
-                        text("Disable this guide in Settings → Shortcuts. It appears at each login until disabled.").font(shell_font()).size(12).class(theme::Text::Color(palette.muted)),
-                        row![Space::new().width(Length::Fill), button::text("Got it").class(ferese_theme::controls::button_style(palette, true)).on_press(cosmic::Action::App(Message::CancelPower))],
-                    ].spacing(14)
+                        text("Welcome to Ferese").size(23),
+                        ferese_theme::menus::section_label(
+                            "Your active shortcuts",
+                            shell_font(),
+                            palette.muted,
+                        )
+                        .size(14),
+                        container(cosmic::widget::scrollable(bindings).height(Length::Shrink))
+                            .max_height(height),
+                        text("Disable this guide in Settings → Shortcuts. It appears at each login until disabled.")
+                            .size(12)
+                            .class(theme::Text::Color(palette.muted)),
+                        row![
+                            Space::new().width(Length::Fill),
+                            ferese_theme::controls::text_button(
+                                "Got it",
+                                shell_font(),
+                                palette,
+                                true,
+                            )
+                            .on_press(cosmic::Action::App(Message::CancelPower)),
+                        ],
+                    ]
+                    .spacing(14)
                 }
             };
             container(rows)

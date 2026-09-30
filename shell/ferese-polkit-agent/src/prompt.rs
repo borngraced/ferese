@@ -2,9 +2,9 @@ use crate::PromptEvent;
 use cosmic::{
     Element,
     app::{Core, Settings, Task},
-    iced::{Alignment, Background, Border, Color, Length, Size, Subscription, window},
+    iced::{Alignment, Color, Length, Size, Subscription, window},
     theme,
-    widget::{self, button, column, container, row, text},
+    widget::{self, button, column, container, row},
 };
 use std::{
     collections::VecDeque,
@@ -198,15 +198,15 @@ impl cosmic::Application for Prompt {
     }
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
-        Some(cosmic::iced::theme::Style {
-            background_color: if self.material.is_some() {
-                cosmic::iced::Color::TRANSPARENT
-            } else {
-                self.appearance.surface
-            },
-            text_color: self.appearance.text,
-            icon_color: self.appearance.text,
-        })
+        Some(
+            self.appearance
+                .palette()
+                .application_style(if self.material.is_some() {
+                    cosmic::iced::Color::TRANSPARENT
+                } else {
+                    self.appearance.surface
+                }),
+        )
     }
 
     fn init(
@@ -334,7 +334,7 @@ impl cosmic::Application for Prompt {
                 Message::Submit
             });
         }
-        let action = button::custom(text("Authenticate").font(palette.font).size(13))
+        let action = button::custom(ferese_theme::text("Authenticate", palette.font).size(13))
             .class(ferese_theme::accent_button())
             .height(Length::Fixed(36.))
             .padding([8, 16])
@@ -346,20 +346,13 @@ impl cosmic::Application for Prompt {
                 .height(40)
                 .center_x(40)
                 .center_y(40)
-                .class(theme::Container::custom(move |_| {
-                    widget::container::Style {
-                        background: Some(Background::Color(palette.accent.scale_alpha(0.13))),
-                        border: Border {
-                            radius: 12.0.into(),
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    }
-                })),
+                .class(ferese_theme::controls::surface(
+                    palette.accent.scale_alpha(0.13),
+                    12.,
+                )),
             column![
-                text("Authentication required").font(palette.font).size(18),
-                text(format!("Confirm as {}", self.user))
-                    .font(palette.font)
+                ferese_theme::text("Authentication required", palette.font).size(18),
+                ferese_theme::text(format!("Confirm as {}", self.user), palette.font)
                     .size(12)
                     .class(theme::Text::Color(palette.muted)),
             ]
@@ -369,30 +362,31 @@ impl cosmic::Application for Prompt {
         .align_y(Alignment::Center);
         let mut body = column![
             heading,
-            text(&self.description).font(palette.font).size(13),
+            ferese_theme::text(&self.description, palette.font).size(13),
             input
         ]
         .spacing(14)
         .width(Length::Fill);
         if let Some(error) = &self.error {
             body = body.push(
-                text(error)
-                    .font(palette.font)
+                ferese_theme::text(error, palette.font)
                     .size(12)
                     .class(theme::Text::Color(Color::from_rgb8(235, 98, 98))),
             );
         } else if let Some(info) = &self.info {
             body = body.push(
-                text(info)
-                    .font(palette.font)
+                ferese_theme::text(info, palette.font)
                     .size(12)
                     .class(theme::Text::Color(palette.muted)),
             );
         }
         body = body.push(
             row![
-                button::custom(text("Cancel").font(palette.font).size(13))
-                    .class(theme::Button::Text)
+                button::custom(ferese_theme::text("Cancel", palette.font).size(13))
+                    .class(ferese_theme::controls::button_style(
+                        palette.palette(),
+                        false
+                    ))
                     .padding([8, 14])
                     .on_press(Message::Cancel),
                 action
