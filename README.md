@@ -73,7 +73,6 @@ See the [configuration reference](docs/configuration.md) and
 | Super + right-button drag | Resize a floating window |
 | Three-finger swipe up / down | Next / previous workspace |
 | Three-finger swipe left / right | Focus the window to the right / left |
-| Login shortcut guide | Appears at login; disable in Settings → Shortcuts |
 
 See [all shortcuts and mouse actions](docs/shortcuts.md), including Super-drag
 to move and Super-right-drag to resize floating windows.
