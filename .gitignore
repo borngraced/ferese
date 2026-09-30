@@ -3,14 +3,8 @@
 *.log
 ChatGPT Image*.png
 
-# Local implementation notes and validation plans
+# Local architecture decision notes
 /docs/adr/
-/docs/animation-validation.md
-/docs/nested-resize-testing.md
-/docs/native-soak-testing.md
-/docs/ferese-window-manager-spec.md
-/docs/ferese-theme-ui-spec.md
-/docs/ferese-shell-design.md
 
 # Generated GitHub Pages site
 /build/site/

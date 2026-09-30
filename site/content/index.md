@@ -1,69 +1,53 @@
-# The Ferese handbook
+# Ferese handbook
 
-Ferese is a complete Wayland desktop built around personalization. Its custom shell, native Settings, live themes, and flexible layouts work together as one cohesive experience.
+Ferese is a Linux Wayland desktop with scrolling columns, tree tiling, floating
+windows, and a shared theme for its desktop tools.
 
-This handbook covers installing Ferese, finding your way around, and making the desktop your own.
+## Get started
 
-[Why Ferese](why-ferese.md) explains why the desktop is designed as one integrated system rather than assembled from separately configured tools.
-
-## Start with your first session
-
-1. Read [Installation](installation.md) for dependencies, building, login-manager or TTY startup, and recovery.
+1. [Install Ferese](installation.md), or try a [nested preview](installation.md#preview-and-logs).
 2. Open **Control Center → Settings** to choose a theme and configure your desktop.
-3. Explore the [configuration reference](configuration.md) for layouts, shortcuts, window rules, and displays.
+3. Use the [configuration reference](configuration.md) for shortcuts, gestures, window rules, and displays.
 
-Want to try it before switching desktops? The [preview instructions](installation.md#preview-and-logs) cover running Ferese inside an existing Wayland session.
+## Default shortcuts
 
-## Find your way around
-
-Ferese supports scrolling columns, tree tiling, floating windows, and a workspace overview. These are the built-in keyboard shortcuts; all can be changed in Settings.
+`Super` is usually the Windows key. All these shortcuts can be changed in Settings.
 
 | Shortcut | Action |
 | --- | --- |
 | Super + Enter | Open a terminal |
-| Super + H / J / K / L | Focus a window |
-| Super + R | Cycle column width |
-| Super + Tab | Open workspace and window overview |
+| Super + H / J / K / L | Focus left / down / up / right |
+| Super + F | Maximize the window |
+| Super + Shift + F | Toggle fullscreen |
+| Super + Tab | Open overview |
 | Super + M | Switch scrolling / tree layout |
+| Print Screen | Capture the active monitor and open Satty |
 | Super + Shift + S | Select a screenshot area |
+| Super + Shift + E | Ask to log out |
 
-Three-finger swipes move between workspaces and windows. Open **Control Center → Settings → Shortcuts** to change the defaults or assign gestures to other actions.
+See [all shortcuts and mouse actions](shortcuts.md), including Super-drag to move
+and Super-right-drag to resize floating windows.
 
-## Make it feel like yours
+Three-finger swipes up/down switch workspaces; left/right focus windows.
+Change gestures in **Settings → Shortcuts**. The login shortcut guide can be
+disabled there too.
 
-Use **Settings** for everyday customization. Choose an appearance preset, change the wallpaper, adjust shell and window corners, or add a clock and sticky notes through [Desktop widgets](desktop-widgets.md).
+## Desktop guides
 
-[Native locker](locking.md) covers lock-screen appearance, authentication, and idle locking.
+- [Desktop widgets](desktop-widgets.md): clocks and sticky notes.
+- [Notifications](notifications.md): history and Do Not Disturb.
+- [Lock screen](locking.md): appearance, automatic locking, and display sleep.
+- [Screen sharing and recording](screen-sharing.md): share an app or display, or save a video.
+- [Desktop portals](portals.md): integration with applications.
 
-[Notifications](notifications.md) explains popup cards, history, Do Not Disturb, and app actions.
+Use Settings or edit `~/.config/ferese/config.kdl`. Changes reload automatically;
+invalid edits keep the last working configuration.
 
-If you prefer a text editor, your configuration lives at:
+## Troubleshooting
 
-```text
-~/.config/ferese/config.kdl
-```
+See [logs and recovery](installation.md#logout-and-recovery). `feresectl exit`
+ends the session immediately; `feresectl request-logout` asks for confirmation.
 
-Ferese reloads changes as you make them. An invalid edit keeps the last working configuration. Settings also preserves a backup of your previous save. See [Saving and validation](configuration.md#saving-and-validation).
-
-## Share your screen
-
-Use Ferese’s native display picker to share a monitor with a portal-compatible
-recording or conferencing app. To save a video directly, click the recording
-icon in the top bar. See [Screen sharing and recording](screen-sharing.md) for setup, stopping a session, and supported sources.
-
-## Keep a recovery path
-
-Keep another desktop session available while testing hardware behavior. Save your work before logging out: `feresectl exit` and **Super + Shift + E** end the current session immediately.
-
-The [recovery guide](installation.md#logout-and-recovery) explains logs, installed releases, and rollback.
-
-## Work on Ferese
-
-Ferese is built in Rust on Smithay. Use release builds when evaluating motion and startup performance. From the repository checkout:
-
-```sh
-cargo test --workspace --locked
-cargo fmt --all --check
-```
-
-The [source repository](https://github.com/ferese-wm/ferese) is the place to explore implementation details and report issues. When reporting a problem, include how to reproduce it, whether you used the nested or DRM backend, and relevant logs.
+Report problems in the [issue tracker](https://github.com/ferese-wm/ferese/issues).
+Include reproduction steps, whether Ferese ran as a nested preview or a direct
+session, and relevant logs. Contributors can start with [Development](development.md).

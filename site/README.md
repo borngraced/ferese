@@ -2,7 +2,6 @@
 
 The public site is static HTML and CSS. The handbook is generated from the
 project's Markdown guides, so website and repository documentation stay in sync.
-There are no client frameworks, external fonts, or tracking scripts.
 
 ## Local preview
 
@@ -18,8 +17,7 @@ site sources or Markdown guides, then refresh the browser.
 
 - `site/index.html` and `site/styles.css`: homepage and shared visual design.
 - `site/content/index.md`: handbook introduction.
-- `docs/{why-ferese,installation,configuration,desktop-widgets,notifications,locking,screen-sharing}.md`:
-  source guides.
+- `docs/*.md`: guides; published pages are listed in `scripts/build-site.py`.
 - `scripts/build-site.py`: renders Markdown, resolves links, generates section
   navigation, previous/next links, and the search index.
 - `site/app.js`: handbook search and code copying. Reading and navigation work

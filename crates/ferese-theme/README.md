@@ -5,7 +5,7 @@ prompt and screen-sharing/recording chooser.
 
 - `Palette` resolves KDL colors and corners and builds the native toolkit theme.
 - `PRESETS` defines the six built-in color schemes.
-- `font` and `text` share bounded font-name storage and explicit font selection.
+- `font` and `text` provide shared font selection and text.
 - `controls` supplies surfaces, navigation, font-aware text buttons and input styles.
 - `menus` supplies headings, rows, sections, separators, switches and slider styles.
 - `calendar` supplies date/time labels, stacked clock digits and calendar grids.
@@ -16,9 +16,8 @@ prompt and screen-sharing/recording chooser.
   Keep the attachment alive with its window and make the client background
   transparent after attachment succeeds. Other compositors retain the client fill.
 
-Applications own layout, data, actions and animation timing. Pass their current
-palette and animation progress into the shared components; do not build another
-native theme or copy a common control style into an application.
+Applications supply layout, data, actions, and animation progress. Extend shared
+components when a style is needed across apps.
 
 ```rust
 let palette = ferese_theme::Palette::from_document(Some(&document));

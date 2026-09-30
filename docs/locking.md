@@ -1,79 +1,43 @@
-# Native locker
+# Lock screen
 
-Ferese Lock uses `ext-session-lock-v1`, not a fullscreen application overlay.
-Each output receives its own surface, including outputs added while locked.
-The compositor protects the desktop if the client exits or crashes.
+Ferese Lock follows your desktop wallpaper, colors, font, and shell corners.
+Open **Settings → Lock screen** to change its clock, date, wallpaper softness,
+and inactivity delays.
 
-## Preview
-
-```sh
-cargo build --release --locked -p ferese-lock
-target/release/ferese-lock --preview
-```
-
-This is an ordinary, closable window. Submitting the field does not call PAM,
-lock, or unlock anything. Do not type your actual password into a visual preview.
-
-Settings → Lock screen provides clock visibility, date visibility, time format,
-wallpaper dimming and softness, inactivity delays, and a safe preview button. Your account picture is loaded from
-AccountsService or `~/.face`, with a user silhouette as a fallback.
-
-The locker reads Ferese's wallpaper, theme colors, typography, and shell radius
-at startup. The wallpaper is softened once and shared across displays. Set softness
-to zero to keep it sharp. Escape clears the password. Caps Lock is shown above authentication
-status. Password verification runs on a worker, and repeated attempts are held
-for two seconds after failure, in addition to delays enforced by PAM.
-
-## Installation and locking
-
-The normal `scripts/install.sh` includes the native binary and installs
-`/etc/pam.d/ferese-lock` if absent. Existing administrator policies are preserved.
-Fedora/Arch installations use `system-auth`; Debian-family installations use
-`common-auth` and `common-account`; the fallback uses the system `login` stack.
-There is no setuid binary, password command argument, or shadow-file reader.
-Both authentication and account validation must succeed. Expired credentials
-must be updated outside the locker. Interactive multi-factor enrollment and
-password changes are not supported by this initial password UI.
+## Preview and lock
 
 ```sh
-ferese-lock                # returns after confirmation, UI stays running
-ferese-lock --foreground   # stays attached until unlock
+ferese-lock --preview      # ordinary window; does not lock or check passwords
+ferese-lock                # lock; returns after compositor confirmation
+ferese-lock --foreground   # stay attached until unlock
 ```
 
-The `swayidle -w` example in [Configuration](configuration.md#login-items-and-locking)
-can invoke the default command. Auto-locking is opt-in. This change does not
-install or start an idle daemon, replace your login manager, or change the Control Center's
-suspend action. Test real password authentication inside a nested Ferese session
-before enabling this on your desktop.
+Do not enter your real password in a preview. The account picture comes from
+AccountsService or `~/.face`; a silhouette is used when neither is available.
 
-## Security and recovery
+Escape clears the password. Caps Lock is shown beside authentication status.
+Failed attempts show an error and delay retries. Authentication uses the system's
+PAM policy; both password and account validation must succeed.
 
-Never interpret the preview as proof of a locked desktop. A missing PAM policy
-or unsupported compositor produces an error before a lock request. A failure
-or authentication-worker panic never authorizes unlock. A crash after the lock
-request may leave the session permanently locked; end that session from another
-TTY if necessary. Do not restart the compositor to test crash behavior on a live
-session with unsaved work.
+## Automatic locking
 
-The pinned libcosmic backend emits `Locked` twice: once when requesting a lock
-and once on the actual protocol callback. The startup handshake waits for the
-second notification. Re-audit this behavior whenever upgrading libcosmic. The
-parent times out with an error after 15 seconds and leaves the UI running; it
-never reports success merely because the window appeared.
+Install `swayidle`, then add this to `~/.config/ferese/config.kdl` to lock after
+five minutes and before system sleep:
 
-Validation references: [session-lock protocol](https://wayland.app/protocols/ext-session-lock-v1),
-[PAM authentication](https://man7.org/linux/man-pages/man3/pam_authenticate.3.html),
-and [PAM account checks](https://man7.org/linux/man-pages/man3/pam_acct_mgmt.3.html).
+```kdl
+autostart {
+    command "swayidle" "-w" "timeout" "300" "ferese-lock" "before-sleep" "ferese-lock" "lock" "ferese-lock"
+}
+```
+
+Test password unlocking before enabling automatic locking. The installer provides
+`/etc/pam.d/ferese-lock` and preserves an existing administrator policy.
 
 ## Inactivity and display sleep
 
-A locked display dims after 30 seconds without input and sleeps after 120 seconds.
-Dimming fades over half a second. Any keyboard, pointer or touch activity restores
-brightness and wakes the display while keeping the session locked. The compositor
-owns this policy, so it remains effective if the locker crashes. Sleep starts only
-after the compositor has confirmed that every display is protected.
-
-Settings → Lock screen adjusts both delays. Zero disables that action:
+Locked displays dim after 30 seconds without input and sleep after 120 seconds.
+Keyboard, pointer, or touch activity wakes them without unlocking. Set either
+delay to zero to disable it, in Settings or KDL:
 
 ```kdl
 lock-screen {
@@ -82,28 +46,19 @@ lock-screen {
 }
 ```
 
-These delays are independent of automatic locking. Existing idle inhibitors from
-apps cannot keep an already locked display awake. In a direct session, display
-sleep uses DRM DPMS without removing outputs or rearranging workspaces; nested
-previews show black instead of powering off the host display. This puts displays
-to sleep, not the computer. Suspend remains a separate system power action.
+These delays start after locking, independently of the automatic-lock timer.
+Display sleep does not suspend the computer. A nested preview shows black
+instead of powering off the host display.
 
-## Practical swaylock comparison
+## Recovery and limits
 
-| Behavior | Ferese Lock |
-| --- | --- |
-| Secure Wayland locking and protection after a locker crash | Session-lock protocol, compositor-owned fallback |
-| All displays, including hotplug | Separate lock surface for each display |
-| Readiness before an idle manager permits suspend | Default command waits for compositor confirmation |
-| Password verification | PAM authentication and account checks on a worker |
-| Password clearing and Caps Lock feedback | Escape clears; Caps Lock indicator |
-| Authentication failure feedback and retry delay | Error message and bounded retry delay |
-| Wallpaper, font and color customization | Shared Ferese theme and Settings |
-| Inactivity and display power | Compositor dimming and DPMS; input restores brightness |
+The lock covers all displays, including newly connected ones. If the lock UI
+crashes, the compositor keeps the session protected. Recovery may require ending
+that session from another TTY; see [Recovery](installation.md#logout-and-recovery).
 
-[Swaylock](https://github.com/swaywm/swaylock/blob/master/swaylock.1.scd) provides
-additional appearance flags, layout indicators and readiness-FD CLI options.
-Ferese uses its shared configuration and existing startup acknowledgement instead.
-Like the [swayidle example](https://github.com/swaywm/swayidle/blob/master/swayidle.1.scd),
-locking and display sleep are separate from system suspend. Password changes and
-interactive multi-factor prompts remain outside this password-only interface.
+The password interface does not support password changes or interactive
+multi-factor prompts. Update expired credentials outside the locker.
+
+Developers should validate locking and readiness against
+[ext-session-lock-v1](https://wayland.app/protocols/ext-session-lock-v1).
+See [Development](development.md) for tests.

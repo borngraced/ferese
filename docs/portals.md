@@ -1,174 +1,60 @@
 # Desktop portals
 
-Applications call the standard `org.freedesktop.portal.Desktop` frontend. Ferese's
-native backend implements desktop integration; GTK remains the fallback for
-standard file, print and application dialogs. Install both backends.
+Desktop portals let applications request screen sharing, screenshots, wallpaper
+changes, and other desktop services. Ferese provides themed consent dialogs;
+GTK supplies file, print, and other standard dialogs.
 
-## Native services
+Install `xdg-desktop-portal`, `xdg-desktop-portal-gtk`, and Ferese's backend through
+[Installation](installation.md). The session launcher starts the services with
+the correct display environment.
 
-- **Settings:** Ferese's color scheme, accent color, contrast preference and
-  reduced-motion setting. Changes are signalled after valid KDL appearance
-  changes; malformed saves leave the last valid preferences intact.
-- **Screenshot:** screen, selected-area, selected-window and active-window PNG
-  captures, plus a screen color picker. Window captures render the selected
-  toplevel and its subsurfaces in isolation, preserving transparency; occluding
-  windows, separate popups, shell layers and compositor borders are excluded.
-  The native window picker lists window titles and application IDs. Every capture
-  asks for consent. Interactive requests offer area selection; area and color
-  selection use `slurp`. Captures use Ferese's bounded screenshot IPC.
-  The helper must disappear from the compositor before capture starts.
-- **Wallpaper:** a preview and confirmation, then an atomic configuration update.
-  Desktop and lock-screen wallpaper can be set independently, or together.
-  Ferese copies accepted local images into its own private data directory so
-  temporary portal files can disappear safely. Image bytes and decoded dimensions
-  are bounded. `theme.background.lock-path` overrides the lock-screen image;
-  without it the lock screen follows `theme.background.path`.
-- **Background:** native open-window/app state, change signals and per-instance
-  background consent. Legacy autostart requests create managed XDG desktop entries;
-  current frontends manage those files themselves. Direct sessions launch standard
-  XDG autostart entries after importing the display environment. User overrides,
-  Hidden, OnlyShowIn, NotShowIn and TryExec are respected; previews skip autostart.
-- **Lockdown:** standard printing, save-to-disk, application-handler, location,
-  camera, microphone and sound-output restrictions. All default to unrestricted.
-  Configure boolean `disable-*` fields under `portals { lockdown { ... } }`;
-  changes are signalled to the frontend. Invalid policy types retain the current
-  policy. Only the portal frontend may write backend policy properties.
-- **USB:** native confirmation showing device vendor/model and requested read-only
-  or read/write access. The portal frontend handles device enumeration and opening.
-- **GlobalShortcuts:** session-scoped keyboard shortcuts with native trigger
-  selection, conflict checking, activation/release signals and reconfiguration.
-  Applications cannot replace Ferese bindings or reserved escape/VT shortcuts.
-  Closing a session or losing its compositor connection releases its shortcuts;
-  shortcuts do not activate on the lock screen. Saved choices are offered for
-  future sessions, with explicit approval before registering them.
-- **Inhibit:** connection-scoped logout, suspend and idle inhibitors, backed by
-  logind descriptors and compositor idle inhibition. Native session monitors
-  report lock state and Running/QueryEnd/Ending transitions. Ending queries wait
-  for acknowledgements for up to one second. Power confirmations list blockers
-  and recheck them before acting; authentication failure cancels the query.
-  UserSwitch is recorded, but Ferese currently has no user-switch operation.
-- **InputCapture:** approved keyboard and pointer capture over a private EIS
-  connection, with standard screen zones and pointer barriers on outside display
-  edges. Capture begins at a configured barrier; releasing it restores local
-  input. Ctrl+Alt+Escape returns control immediately. Locking, topology/keymap
-  changes, receiver disconnects and stalled consumers stop capture. Permission
-  is requested for every session; touch capture and remembered grants are not
-  offered. This is an input receiver, not remote input injection.
-- **ScreenCast:** monitor and isolated window sharing with a native picker, PipeWire streams and explicit opt-in
-  saved permissions. The frontend stores and revokes saved choices. Invalid
-  restore data or changed display identity requires fresh consent.
-  See [screen sharing](screen-sharing.md) for lifetime and recording details.
+## Supported services
 
-Native request dialogs use Ferese's theme and are floating windows. Screenshot,
-PickColor, Wallpaper, USB, InputCapture and ScreenCast consent dialogs use Wayland parent identifiers to establish
-a transient relationship with the requesting window.
-Cancelling a request or losing the portal frontend terminates its pending helper.
-
-The packaged `ferese-portals.conf` selects these interfaces explicitly. Existing
-user overrides in `~/.config/xdg-desktop-portal/` may take precedence. Install the
-new compositor, backend and preference files together; screenshot synchronization
-requires the updated compositor IPC.
-
-## GNOME compatibility audit
-
-The audit compares the [GNOME backend's registered interfaces](https://github.com/GNOME/xdg-desktop-portal-gnome/blob/main/data/meson.build)
-with the [standard backend D-Bus contracts](https://flatpak.github.io/xdg-desktop-portal/docs/impl-dbus-interfaces.html).
-Matching D-Bus signatures does not establish complete feature parity.
-
-| Interface | Ferese integration |
+| Service | Behavior |
 | --- | --- |
-| Settings | Native, including appearance change signals |
-| Screenshot | Native screen/area/window/active-window capture and PickColor |
-| Wallpaper | Native desktop, lock-screen and combined targets |
-| ScreenCast | Native v4 monitors and isolated windows, logical geometry, live window resizing and opt-in saved display permissions |
-| Access, Account, AppChooser, DynamicLauncher, FileChooser, Notification, Print | Delegated to GTK |
-| Background | Native application state, per-instance consent and XDG autostart |
-| Usb | Native consent; standard frontend handles enumeration and device descriptors |
-| GlobalShortcuts | Native sessions, configurable keyboard triggers, conflict checks and activation/release signals |
-| RemoteDesktop | Deferred: authorized input injection and EIS transport |
-| Clipboard | Deferred with RemoteDesktop |
-| InputCapture | Native v2 keyboard/pointer consent, zones, outside-edge barriers and private EIS receiver transport |
-| Lockdown | Native seven-property policy provider with persisted configuration and change signals |
-| Inhibit | Native inhibitors and session monitors; UserSwitch recorded until a switch operation exists |
+| Settings | Color scheme, accent, contrast, and reduced-motion preferences |
+| Screenshot | Screen, area, window, active-window capture, and color picking |
+| Wallpaper | Preview and approval for desktop, lock screen, or both |
+| ScreenCast | Display and window sharing through PipeWire |
+| Background | Permission to run in the background and startup integration |
+| USB | Device information and approval for requested access |
+| GlobalShortcuts | App shortcut selection, conflict checks, and activation |
+| Inhibit | App requests to delay logout, suspend, or idle actions |
+| InputCapture | Approved keyboard/pointer capture for input-sharing applications |
+| Lockdown | Administrator restrictions on printing, saving, handlers, location, camera, microphone, and sound |
+| FileChooser, Print, Access, Account, AppChooser, DynamicLauncher, Notification | GTK backend |
 
-The frontend supplies additional APIs such as OpenURI, network monitoring,
-document export and permission storage. Adding a similarly named backend service
-is neither required nor sufficient for those APIs.
+RemoteDesktop and its session Clipboard integration are not implemented.
+This does not affect ordinary application clipboard use.
 
-Window streams render only the selected toplevel and its subsurfaces, including
-on an inactive workspace. Overlapping apps, shell layers, separate popup windows
-and compositor decorations are excluded. The private capture protocol is available
-only to the native portal executable and checks session opt-in and locking.
-Window resizing renegotiates PipeWire video dimensions. Closing the selected
-window ends sharing; its lifetime ID cannot select a replacement app. Window
-selections require fresh consent and are not saved as display permissions.
-RemoteDesktop and its Clipboard integration remain deferred.
+## Consent and capture
 
-## Validation
+Screenshot and screen-sharing requests ask for approval. Screen sharing can
+remember display permissions when the application requests it and the user opts
+in. Window sharing always asks again. See [Screen sharing](screen-sharing.md).
+Window captures contain the selected app and its subsurfaces; separate popups,
+other apps, shell layers, and compositor decorations are excluded.
 
-Build the backend and run unit tests, then check its contracts on a private bus:
+InputCapture starts at an approved display-edge barrier. **Ctrl+Alt+Escape**
+returns local control. Locking, disconnecting the receiver, or changing displays
+or the keyboard layout stops capture. Touch and remembered InputCapture grants
+are not supported. InputCapture forwards local input; it does not inject remote input.
 
-```sh
-cargo build --locked -p xdg-desktop-portal-ferese
-cargo test --locked -p xdg-desktop-portal-ferese
-python3 scripts/tests/test_portal_contracts.py
-```
+Wallpaper approval copies the image into Ferese's data directory and updates the
+config. Set `theme.background.lock-path` for a separate lock-screen image; otherwise
+it follows the desktop wallpaper.
 
-With a Wayland host and a built compositor, check shortcut connection cleanup
-and configuration conflicts in an isolated nested compositor:
+Global shortcuts cannot replace Ferese bindings or reserved escape/console keys.
+They stop when the app session closes and never activate on the lock screen.
+Power confirmations show app inhibitors before proceeding. Ferese has no
+user-switch operation.
 
-```sh
-FERESE_TEST_SHORTCUTS=1 python3 scripts/tests/test_shortcuts_isolated.py
-```
+## Portal selection
 
-Check window capture isolation, transparency and orientation with overlapping
-clients in a temporary nested compositor:
+The installer writes `/usr/share/xdg-desktop-portal/ferese-portals.conf`.
+Overrides in `~/.config/xdg-desktop-portal/` may take precedence. If a request opens
+the wrong dialog or no source appears, check those overrides and confirm that
+`XDG_CURRENT_DESKTOP` includes `Ferese`.
 
-```sh
-FERESE_TEST_WINDOW_CAPTURE=1 python3 scripts/tests/test_window_capture_isolated.py
-```
-
-Capture a managed window directly from the CLI with `feresectl screenshot-window
-<window-id> > capture.png`; `feresectl get-windows` lists IDs.
-
-The contract test compares introspection against the installed official backend
-XML, verifies appearance changes and invalid-save retention, and checks that
-sensitive methods reject callers outside the portal frontend. It does not open
-consent dialogs or capture the host desktop. Interactive consent, fractional-scale
-capture, polkit and hotplug still require a live session test.
-
-Check native inhibitor lifetimes, acknowledgement generations and session-ending
-transitions against a mock logind in an isolated nested compositor:
-
-```sh
-FERESE_TEST_INHIBIT=1 python3 scripts/tests/test_inhibit_isolated.py
-```
-
-The shell now requires version 4 of Ferese's shell protocol; rebuild the shell
-and compositor together when upgrading.
-
-Check restored sharing, mode downgrade, stale-data fallback, output-generation
-validation and frontend-disconnect cleanup with synthetic monitor identities on
-an isolated bus and nested compositor:
-
-```sh
-FERESE_TEST_RESTORE=1 python3 scripts/tests/test_restore_isolated.py
-```
-
-Check live window pixels, overlap isolation, inactive workspaces, resizing and
-closure using a disposable nested compositor and a real PipeWire consumer:
-
-```sh
-FERESE_TEST_WINDOW_STREAM=1 python3 scripts/tests/test_window_stream_isolated.py
-```
-
-Check InputCapture state and its transport against an installed libei receiver:
-
-```sh
-cargo test --locked -p ferese input_capture::tests
-cargo test --locked -p xdg-desktop-portal-ferese eis::tests -- --ignored
-```
-
-The receiver test uses a private socket pair and synthetic input; it never
-captures the host keyboard or changes host focus. Real pointer-barrier crossings
-and interactive consent still need a live session check.
+For capture issues, see [screen-sharing troubleshooting](screen-sharing.md#troubleshooting).
+For backend contracts and integration checks, see [Development](development.md#portal-checks).

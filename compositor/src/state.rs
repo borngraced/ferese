@@ -65,7 +65,7 @@ use smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager;
 
 use crate::backends::direct::DirectBackendState;
 use crate::config::{Binding, DaemonConfig, InputSettings, OutputProfile, ThemeSettings};
-use crate::cursor::NamedCursor;
+use crate::cursor::{NamedCursor, cursor_theme, load_named_cursor};
 use crate::dimming::DimAnimation;
 use crate::gestures::{Swipe, SwipeDirection};
 use crate::handlers::screencopy::PendingScreencopy;
@@ -74,13 +74,14 @@ use crate::handlers::screenshot_worker::Worker;
 use crate::input::LockedPointerHint;
 use crate::input_capture::InputCapture;
 use crate::ipc::IpcSocketGuard;
+use crate::overview::OverviewState;
 use crate::portal_session::PortalSession;
 use crate::portal_shortcuts::PortalShortcuts;
 use crate::resize_transaction::ResizeTransaction;
 use crate::session_lock::{IdleSettings, Lock};
 use crate::shell_control::ShellSnapshot;
 use crate::stacking::WindowStack;
-use crate::wallpaper::WallpaperState;
+use crate::wallpaper::{WallpaperConfig, WallpaperState};
 use crate::window_rules::{WindowRule, resolve as resolve_window_rules};
 use crate::winit::{
     BlurProgram, MaterialBuffers, MaterialProgram, NestedBackend, OverviewScrim, ResizeSnapshot, RoundedClipPrograms,
@@ -344,10 +345,10 @@ pub struct Ferese {
 }
 
 pub struct RuntimeConfig {
-    pub(crate) lock_idle: crate::session_lock::IdleSettings,
-    pub(crate) autostart: Vec<crate::config::DaemonConfig>,
+    pub(crate) lock_idle: IdleSettings,
+    pub(crate) autostart: Vec<DaemonConfig>,
     pub(crate) overview_font_family: String,
-    pub(crate) wallpaper: crate::wallpaper::WallpaperConfig,
+    pub(crate) wallpaper: WallpaperConfig,
     pub layout_mode: LayoutMode,
     pub gap_config: GapConfig,
     pub input_settings: InputSettings,
@@ -371,9 +372,11 @@ impl Ferese {
         config: RuntimeConfig,
     ) -> Result<Self, Box<dyn Error>> {
         let display_handle = display.handle();
+
         crate::handlers::screencopy::init_global(&display_handle);
         crate::effects::init_global(&display_handle);
         crate::shell_control::init_global(&display_handle);
+
         let alpha_modifier_state = AlphaModifierState::new::<Self>(&display_handle);
         let compositor_state = CompositorState::new::<Self>(&display_handle);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
@@ -427,8 +430,8 @@ impl Ferese {
         let socket_name = Self::init_wayland_listener(display, event_loop)?;
 
         let start_time = Instant::now();
-        let cursor_theme = crate::cursor::cursor_theme();
-        let default_cursor = crate::cursor::load_named_cursor(&cursor_theme, CursorIcon::Default);
+        let cursor_theme = cursor_theme();
+        let default_cursor = load_named_cursor(&cursor_theme, CursorIcon::Default);
         let named_cursors = HashMap::from([(CursorIcon::Default, default_cursor)]);
 
         let mut state = Self {
@@ -457,10 +460,10 @@ impl Ferese {
             resize_transactions: HashMap::new(),
             resize_snapshots: HashMap::new(),
             nested_backend: None,
-            wallpaper: crate::wallpaper::WallpaperState::with_wakeup(config.wallpaper, Some(event_loop.get_signal())),
+            wallpaper: WallpaperState::with_wakeup(config.wallpaper, Some(event_loop.get_signal())),
             maximized_windows: HashSet::new(),
             maximized_column_widths: HashMap::new(),
-            window_stack: crate::stacking::WindowStack::default(),
+            window_stack: WindowStack::default(),
             floating_above_fullscreen: HashMap::new(),
             natural_floating_pending: HashSet::new(),
             window_borders: HashMap::new(),
@@ -473,7 +476,7 @@ impl Ferese {
             overview_scrims: HashMap::new(),
             material_programs: HashMap::new(),
             material_buffers: HashMap::new(),
-            portal_shortcuts: crate::portal_shortcuts::PortalShortcuts::default(),
+            portal_shortcuts: PortalShortcuts::default(),
             pending_logout: None,
             logout_query: None,
             logout_owner: None,
@@ -506,20 +509,20 @@ impl Ferese {
             cursor_theme,
             named_cursors,
             intercepted_keys: HashSet::new(),
-            swipe: crate::gestures::Swipe::default(),
+            swipe: Swipe::default(),
             idle_inhibitors: HashMap::new(),
             active_shortcuts_inhibitor: None,
             direct_backend: None,
             _ipc_socket: None,
             pending_dmabuf_imports: Vec::new(),
             pending_screencopies: Vec::new(),
-            screenshot: crate::handlers::screenshot::Coordinator::new(),
+            screenshot: Coordinator::new(),
             screenshot_parts: None,
             screenshot_worker: None,
             shell_resources: Vec::new(),
             shell_snapshot_serial: 0,
             last_shell_snapshot: None,
-            overview: crate::overview::OverviewState::with_font_family(config.overview_font_family),
+            overview: OverviewState::with_font_family(config.overview_font_family),
             next_window_id: 1,
             next_output_id: 1,
             last_animation_tick: start_time,
@@ -557,6 +560,7 @@ impl Ferese {
         state.screenshot_parts = Some(screenshot.parts);
         state.screenshot_worker = Some(screenshot.worker);
         state._ipc_socket = Some(screenshot._guard);
+
         Ok(state)
     }
 

@@ -1,37 +1,24 @@
 # Notifications
 
-Ferese Shell provides themed notification cards and an in-session history panel.
-Cards appear beneath the bar on the focused output and follow the selected theme.
-Click the notification icon in the bar to open history, toggle Do Not Disturb, or
-clear notifications. Escape, clicking outside, or the close button closes the history panel.
-The center uses the same anchored popup and animation as the other bar menus.
-Both the center and popup cards follow the shell material: translucent mode uses
-the compositor’s blur and tint, while solid mode stays opaque.
-
-## Send a notification
-
-Notifications use the standard `org.freedesktop.Notifications` D-Bus interface.
-Existing apps and `notify-send` work without Ferese-specific commands:
-
-```sh
-notify-send --app-name=Ferese --icon=dialog-information "Hello" "Your desktop notification"
-```
+Ferese shows compact notification popups and a history panel opened from the bar.
+Their colors, font, corners, and background follow the shell theme.
 
 ## Popups and history
 
-Up to three popup cards are visible at once. History keeps the most recent 100
-notifications in memory and clears when the shell exits. Hovering a popup pauses
-its timer. Critical notifications bypass Do Not Disturb and do not expire unless
-the sender supplies a timeout. App action buttons emit the standard action signal;
-a replacement updates the same notification ID. Transient messages are removed
-from history when they close.
+Up to three popups are visible at once. Hovering pauses a popup's timer.
+History keeps the latest 100 notifications and clears when the shell exits.
+App action buttons work when provided by the sender. Transient messages leave
+history when closed.
 
-## Settings and Do Not Disturb
+Critical notifications bypass Do Not Disturb and remain visible unless the app
+provides a timeout. Other apps can also request a timeout or no timeout.
 
-Settings → Notifications controls popup visibility, the initial Do Not Disturb
-state, and the default timeout. The bar's Do Not Disturb toggle is temporary;
-changing the Settings option saves the preference for future sessions. Apps can
-request their own timeout, including no timeout.
+## Settings
+
+**Settings → Notifications** controls popup visibility, the default timeout, and
+the Do Not Disturb preference. The bar toggle changes Do Not Disturb for the
+current session; Settings saves it for future sessions. Hidden popups still enter
+history.
 
 ```kdl
 notifications {
@@ -41,17 +28,20 @@ notifications {
 }
 ```
 
-The timeout must be between 1000 and 30000 milliseconds. Hiding popups still
-records notifications in history. Appearance follows the Ferese theme.
+The default timeout accepts 1000–30000 milliseconds.
 
-## Session integration
+## Send a test notification
 
-Only one notification server can own the D-Bus interface. The Ferese session
-launcher stops the SwayNotificationCenter user service before starting its shell.
-For a manually started shell, stop that service with `systemctl --user stop
-swaync.service`. If another server already owns the interface, Ferese leaves it
-running and logs that native notifications are unavailable.
+```sh
+notify-send --app-name=Ferese --icon=dialog-information "Hello" "Your desktop notification"
+```
 
-This implementation supports plain text, app icons, urgency, transient/resident
-hints, actions, replacements, and close signals. It does not advertise rich body
-markup, embedded image data, notification sounds, or history persistence.
+## Troubleshooting
+
+Only one notification server can run on the session bus. The session launcher
+stops `swaync.service` before starting the shell. When launching the shell manually,
+stop any existing notification server first. If another server owns the interface,
+Ferese logs that native notifications are unavailable.
+
+Ferese supports plain text, app icons, actions, replacement, and urgency. Rich
+markup, embedded images, sounds, and saved notification history are not supported.

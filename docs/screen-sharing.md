@@ -1,142 +1,73 @@
 # Screen sharing and recording
 
-Ferese includes a ScreenCast portal backend, `xdg-desktop-portal-ferese`.
-Applications use the standard desktop portal to request a display or window, then receive
-video through PipeWire. A recorder or conferencing application handles encoding,
-saving files, or sending video; those tasks do not run inside the compositor.
+Share a monitor or window from a Wayland-compatible recording or conferencing app,
+or save a video using the top bar. [Installation](installation.md) includes the
+portal and PipeWire dependencies.
 
 ## Record from the top bar
 
-1. Click the screen-recording icon in the top bar to open the display picker.
-2. Choose a monitor in the native picker and click **Share**.
-3. The icon changes to a stop square and shows elapsed time. Click it to stop.
+1. Click the recording icon.
+2. Select a monitor and click **Share**.
+3. Click the stop square to finish.
 
-The recorder finishes the video before sending a notification with its saved
-path. Videos are saved as VP8 WebM files under
-`Videos/Ferese` (using your configured XDG Videos folder). Audio is off.
-The icon uses the same theme accent, hover effect, and corner radius as the
-other bar controls.
-
-Encoding runs in a separate native `ferese-record` process using GStreamer.
-The shell remains responsive while a file is recorded or finalized. If saving
-fails, an error appears in the notification center; an unfinished `.webm.part` file
-may remain at the path shown in the error.
+Videos are saved as VP8 WebM files in your XDG Videos folder under `Ferese`.
+A notification shows the saved path. Audio and region recording are not supported
+by the built-in recorder; other recording apps can handle audio separately.
+If recording fails, a notification reports the error and any unfinished
+`.webm.part` file.
 
 ## Start sharing
 
-Use a Wayland screen-sharing or recording source in your application. Ferese
-opens a native source picker. Depending on what the application requests, choose
-from displays, windows, or both and press **Share**. Nothing is selected by default.
-Applications that request multiple sources can select up to eight. Display and
-window choices are grouped separately. Windows show their title and application.
-Window streams capture only the selected app's toplevel and subsurfaces, even
-when covered or on another workspace. Separate popups and compositor decorations
-are excluded. Resizing a shared window updates the video size without ending the
-session. Closing that window ends sharing.
-The picker uses your Ferese theme colors, font, and shell corner radius. Its
-background uses the same compositor material as popovers and authentication
-prompts: opaque in solid mode, or blurred and translucent using the shared
-**Appearance → Shell opacity** and blur settings. Text and icons remain opaque.
+Select a Wayland screen-sharing source in your application. In Ferese's picker,
+choose a display or window and click **Share**. Nothing is selected initially.
+Apps requesting multiple sources can select up to eight.
 
-Other applications keep a **screen sharing** window with a **Stop sharing** button.
-Ferese’s built-in recorder uses the top-bar stop control instead, leaving your
-windows accessible after display selection. The command-line recorder keeps the
-sharing window when it is not launched by the shell. Press **Stop sharing** or
-close the sharing window to revoke an ordinary application’s session. Closing the requesting application,
-locking Ferese, disconnecting the selected display, or changing a monitor's capture
-size also ends sharing. By default, each request asks for consent. If an application requests saved
-permissions, the picker offers an **Allow without asking** switch, off by default.
-Permissions can last while the application runs or until revoked, as requested
-by the app. The standard portal frontend owns permission storage and revocation.
-A changed or missing display, different app, or changed cursor options asks again.
-Displays without a reliable EDID identity, including nested previews, always need
-fresh consent. Window selections also require fresh consent and cannot enable saved
-display permissions. Stopping a stream ends that stream; it does not erase a previously
-saved permission.
-Everything visible on a shared display, including notifications, is included.
+A shared display includes everything visible on it, including notifications.
+A shared window includes only that app's content and subsurfaces, even when
+covered or on another workspace. Separate popups and compositor decorations are
+excluded. Resizing a shared window updates its video size; closing it ends sharing.
 
-## Installation
+The picker follows your shell colors, font, corners, opacity, and blur.
 
-The [standard installer](installation.md) builds and installs the backend, its
-D-Bus activation entry, and a Ferese-specific portal preference file. Install
-`pipewire`, a PipeWire session manager such as `wireplumber`,
-`xdg-desktop-portal`, and `xdg-desktop-portal-gtk` using your distribution's package
-manager. The GTK backend supplies standard dialogs such as file selection. Ferese also
-provides native Settings, Screenshot and Wallpaper services; see
-[desktop portals](portals.md).
-The built-in recorder also needs GStreamer’s PipeWire, base, and good plugins
-(`pipewiresrc`, `videoconvert`, `vp8enc`, and `webmmux`). The installation guide
-includes these packages.
+## Stop sharing
 
-Log into a new Ferese session after installation. The session launcher imports
-its Wayland display into the D-Bus activation environment. Nested previews leave
-the host activation environment alone.
+Click **Stop sharing** in the sharing window, or close that window. The built-in
+recorder uses the top-bar stop button instead. Sharing also ends when the app
+closes or Ferese locks. Disconnecting a shared monitor or changing its capture
+size ends its stream; start sharing again afterward.
 
-Existing custom window rules can float the picker and sharing indicator:
+## Remember permissions
 
-```kdl
-window-rule app-id="dev.ferese.ScreenShare" floating=#true
-```
+When an app requests saved display permissions, the picker offers **Allow without
+asking**, off by default. Approval lasts for the duration requested by the app.
+The portal manages stored permissions and revocation.
 
-The packaged example configuration already includes this rule. Existing user
-configuration is preserved during installation.
+A different app, changed display, or changed cursor option needs approval again.
+Nested previews and displays without a reliable identity always ask. Window
+permissions are not saved. Stopping a stream does not erase a saved permission.
 
-## Current capabilities
+## Requirements and limits
 
-- Monitor and isolated window capture, one PipeWire stream per source, up to 30 fps.
-- Window streams keep working across workspace switches and renegotiate on resize.
-- Hidden or embedded pointer, as requested by the application.
-- Logical stream position and size, including fractional output scales.
-- Wayland parent-window relationships for the consent picker.
-- Bounded frame storage and reusable shared-memory buffers.
-- Cancellation during selection, an explicit stop control, and process cleanup.
-- ScreenCast backend version 4 with explicit opt-in saved display permissions.
+Install PipeWire, WirePlumber, `xdg-desktop-portal`, and `xdg-desktop-portal-gtk`.
+The built-in recorder also needs GStreamer's PipeWire, base, and good plugins;
+see the [package lists](installation.md#requirements).
 
-Region selection and audio capture in Ferese’s recorder are not implemented yet.
-The top-bar recorder currently requests monitors. Other recording applications can handle audio separately.
-Video currently uses CPU copies through the compositor's shared-memory screencopy path, not DMA-BUF zero-copy. High-resolution
-or multiple-display recording can therefore use significant CPU and memory
-bandwidth. A paused stream checks capture availability once per second so locking
-also ends sessions without an active consumer.
+The installer supplies Ferese's portal backend and selects it for screen sharing.
+Log into a new Ferese session after installation.
 
-## Development checks
-
-Build the backend after installing the native dependencies in the
-[installation guide](installation.md#requirements):
-
-```sh
-cargo build --release --locked -p xdg-desktop-portal-ferese
-cargo test --locked -p xdg-desktop-portal-ferese
-# Exercise real video encoding and playback (requires the plugins above):
-cargo test --locked -p xdg-desktop-portal-ferese --bin ferese-record encoder_finishes_a_real_webm -- --ignored
-```
-
-The opt-in integration test opens a temporary nested compositor and uses a
-private D-Bus session. It requires built Ferese and locker binaries, Python
-GI/GStreamer with `pipewiresrc`, `dbus-daemon`, `xdg-desktop-portal`, and `bwrap`.
-It checks capture delivery and timestamps, cancellation, frontend loss, and lock
-revocation:
-
-```sh
-FERESE_TEST_PORTAL=1 \
-FERESE_TEST_PORTAL_BINARY=target/release/xdg-desktop-portal-ferese \
-python3 scripts/tests/test_portal_isolated.py
-```
-
-Add `FERESE_TEST_PORTAL_CONSENT=1` to exercise the native picker and restricted
-PipeWire connection. Select the temporary display and click **Share** when
-prompted. Tests capture only the nested preview and leave host PAM policies and
-D-Bus activation unchanged.
+Streams run at up to 30 fps and support hidden or embedded cursors. Capture copies
+frames through CPU-accessible buffers, so large or multiple streams can use
+substantial CPU and memory bandwidth.
 
 ## Troubleshooting
 
-Confirm that `XDG_CURRENT_DESKTOP` contains `Ferese`, PipeWire is running, and
-`FERESE_ENABLE_SCREENCOPY` was not set to `0` before launching the session.
+- Confirm PipeWire and WirePlumber are running.
+- Confirm `XDG_CURRENT_DESKTOP` includes `Ferese`.
+- Check that `FERESE_ENABLE_SCREENCOPY` was not set to `0` before session startup.
+- Check for portal overrides in `~/.config/xdg-desktop-portal/`.
 
-The installed preference is
-`/usr/share/xdg-desktop-portal/ferese-portals.conf`. A user override under
-`~/.config/xdg-desktop-portal/` can take precedence. Its ScreenCast preference
-should name `ferese`:
+The installed preference is `/usr/share/xdg-desktop-portal/ferese-portals.conf`.
+Its ScreenCast entry should select Ferese:
 
 ```ini
 [preferred]
@@ -144,8 +75,7 @@ default=gtk;
 org.freedesktop.impl.portal.ScreenCast=ferese;
 ```
 
-If capture dimensions change, stop and start sharing again. Ferese ends the old
-session instead of feeding incorrectly sized frames to the application.
-
-For development, `xdg-desktop-portal-ferese --sources` lists displays available
-on the current `WAYLAND_DISPLAY`. This command does not start a stream.
+`xdg-desktop-portal-ferese --sources` lists displays on the current
+`WAYLAND_DISPLAY` without starting a stream. Nested previews do not replace the
+host desktop's portal environment. See [Development](development.md#portal-checks)
+for isolated sharing tests.

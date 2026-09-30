@@ -2,8 +2,9 @@
 
 Edit `~/.config/ferese/config.kdl` (or `$XDG_CONFIG_HOME/ferese/config.kdl`),
 or open **Control Center → Settings**. Start with the [example](../packaging/config.kdl).
-All supported configuration sections are listed below; [desktop widgets](desktop-widgets.md)
-covers the complete clock and sticky-note fields separately.
+This reference covers layouts, appearance, input, and desktop behavior.
+See [Desktop widgets](desktop-widgets.md), [Notifications](notifications.md),
+and [Desktop portals](portals.md) for their additional options.
 
 ## KDL syntax
 
@@ -44,8 +45,7 @@ its command as positional arguments. Duplicate fields are rejected.
 The dotted paths in the reference tables below describe nested sections.
 
 Settings preserves comments and custom fields when editing, while normalizing
-indentation. Runtime configuration uses KDL only. KDL parsing requires Rust 1.95
-or newer to build.
+indentation. Configuration uses KDL.
 
 ## Saving and validation
 
@@ -74,15 +74,15 @@ Live config is limited to 60 KiB.
 | `layout` key | Type / values | Default | Meaning |
 | --- | --- | --- | --- |
 | `mode` | `"scrolling"`, `"tree"` | `"scrolling"` | Workspace layout |
-| `inner_gap` | number ≥ 0 | `10` | Between windows |
-| `outer_gap` | number ≥ 0 | `4` | Around workspace edges |
-| `smart_gaps` | boolean | `false` | Remove outer gaps for one tiled window |
+| `inner-gap` | number ≥ 0 | `10` | Between windows |
+| `outer-gap` | number ≥ 0 | `4` | Around workspace edges |
+| `smart-gaps` | boolean | `false` | Remove outer gaps for one tiled window |
 
 | `scrolling` key | Type / values | Default | Meaning |
 | --- | --- | --- | --- |
-| `default_column_width` | proportion > 0; or `"full"` | `0.5` | Width of new columns |
-| `focus_strategy` | `"minimal"`, `"center_on_focus"`, `"paged"` | `"minimal"` | Viewport movement on focus |
-| `width_presets` | array of widths | `[0.3333333333333333, 0.5, 0.6666666666666666, "full"]` | Super+R cycle; empty uses defaults |
+| `default-column-width` | proportion > 0; or `"full"` | `0.5` | Width of new columns |
+| `focus-strategy` | `"minimal"`, `"center_on_focus"`, `"paged"` | `"minimal"` | Viewport movement on focus |
+| `width-presets` | array of widths | `[0.3333333333333333, 0.5, 0.6666666666666666, "full"]` | Super+R cycle; empty uses defaults |
 
 `minimal` scrolls only to reveal the focused window. `center_on_focus` centers
 it. `paged` packs columns into viewport-sized pages: halves form pairs, thirds
@@ -94,95 +94,73 @@ Changing default width preserves manually resized columns.
 | Section / key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `animations.enabled` | boolean | `true` | Enable motion |
-| `animations.reduced_motion` | boolean | `false` | Disable animated motion |
+| `animations.reduced-motion` | boolean | `false` | Disable animated motion |
 | `animations.speed` | number > 0 | `1` | Higher is faster; `0.75` is slower |
 | `animations.spring.mass` | number > 0 | `1` | Window-motion spring mass |
 | `animations.spring.stiffness` | number > 0 | `700` | Spring stiffness |
 | `animations.spring.damping` | number ≥ 0 | `53` | Spring damping |
-| `animations.viewport_spring.mass` | number > 0 | `1` | Scrolling spring mass |
-| `animations.viewport_spring.stiffness` | number > 0 | `320` | Scrolling stiffness |
-| `animations.viewport_spring.damping_ratio` | number > 0 | `1` | `1` is critically damped |
+| `animations.viewport-spring.mass` | number > 0 | `1` | Scrolling spring mass |
+| `animations.viewport-spring.stiffness` | number > 0 | `320` | Scrolling stiffness |
+| `animations.viewport-spring.damping-ratio` | number > 0 | `1` | `1` is critically damped |
 
 ## Appearance
 
 Settings → Appearance offers six presets: **Ferese Blue** (default),
 **Monochrome**, **Gruvbox**, **Dracula**, **Ayu Light**, and **Monokai**.
-The two-row gallery previews each palette on a miniature desktop; a checkmark
-identifies the active preset.
-Ferese Blue uses the README logo's `#3D7BE6`. Each preset coordinates surfaces,
-text, menu-bar colors, borders and the focus ring. Ayu Light also switches native
-Settings controls to light styling. Presets preserve wallpaper, typography,
-geometry and opacity settings; colors remain individually editable.
-
-The community palettes are desktop adaptations with text shades adjusted for
-readability. Sources: [Gruvbox](https://github.com/morhetz/gruvbox),
-[Dracula](https://github.com/dracula/visual-studio-code),
-[Ayu](https://github.com/ayu-theme/ayu-colors), and
-[classic Monokai](https://github.com/microsoft/vscode/blob/main/extensions/theme-monokai/themes/monokai-color-theme.json).
-Marketplace install counts informed the shortlist; they are not a measurement
-of desktop users. Monochrome and Gruvbox replace similar blue palettes to keep
-these six visually distinct.
-
+Ferese Blue uses the logo accent, `#3D7BE6`. Presets update colors and preserve
+wallpaper, fonts, corners, and opacity. Colors remain individually editable.
 
 | Section / key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `appearance.corner_radius` | number ≥ 0 | unset | Legacy fallback for shell radius |
-| `appearance.inactive_dim.enabled` | boolean | `false` | Dim unfocused windows |
-| `appearance.inactive_dim.amount` | number 0–1 | `0.15` | Darkening strength |
-| `appearance.inactive_dim.duration_ms` | number ≥ 0 | `150` | Dimming and focus-ring transition; 0 snaps |
-| `theme.typography.font_family` | string | system sans-serif | Shell, Settings and overview font |
+| `appearance.corner-radius` | number ≥ 0 | unset | Legacy fallback for shell radius |
+| `appearance.inactive-dim.enabled` | boolean | `false` | Dim unfocused windows |
+| `appearance.inactive-dim.amount` | number 0–1 | `0.15` | Darkening strength |
+| `appearance.inactive-dim.duration-ms` | number ≥ 0 | `150` | Dimming and focus-ring transition; 0 snaps |
+| `theme.typography.font-family` | string | system sans-serif | Shell, Settings and overview font |
 | `theme.background.path` | string | bundled Ferese wallpaper | Wallpaper image path; an existing selection overrides the default |
 | `theme.background.mode` | `"fill"`, `"fit"` | `"fill"` | Crop or letterbox |
 | `theme.material.style` | `"solid"`, `"translucent"` | `"solid"` | Shell background material |
 | `theme.material.opacity` | number 0–1 | `0.78` | Shared shell background opacity for bars, menus, popovers, notifications and themed dialogs. Text/icons stay opaque; 0 hides the material. Solid mode is always opaque |
-| `theme.material.blur_radius` | number ≥ 0 | `12` | Translucent backdrop blur, capped at 32; 0 disables |
+| `theme.material.blur-radius` | number ≥ 0 | `12` | Translucent backdrop blur, capped at 32; 0 disables |
 
 | `theme.colors` key | Default | Meaning |
 | --- | --- | --- |
-| `surface_base` | `"#111821"` | Material/card base color |
-| `text_primary` | `"#F4F7FB"` | Main text |
-| `text_muted` | `"#8793A2"` | Secondary text |
+| `surface-base` | `"#111821"` | Material/card base color |
+| `text-primary` | `"#F4F7FB"` | Main text |
+| `text-muted` | `"#8793A2"` | Secondary text |
 | `accent` | `"#3D7BE6"` | Active controls and solid focus ring |
 | `border` | `"#FFFFFF18"` | Unfocused window border |
 | `shadow` | `"#00000055"` | Window shadow color |
 
-Ferese derives the text and icon color for filled accent controls from the
-configured theme. It keeps the configured text color and, when necessary, shades
-the accent fill slightly to reach a 4.5:1 contrast ratio. If that would require a
-large color change, it chooses black or white instead. The same rule is shared by
-native dialogs, settings selections, and notification badges. Hover, pressed,
-and disabled accent-button states use the same policy. Small filled controls
-resolve accent transparency against their theme surface so wallpaper cannot
-make their labels unreadable. No separate per-application color setting is needed.
-The target follows [normal-text contrast guidance](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html).
+Filled controls choose a contrasting text color automatically.
 
 | `theme.geometry` key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `border_width` | number ≥ 0 | `1` | Window border thickness |
-| `focus_ring_width` | number ≥ 0 | `2` | Focused border thickness |
-| `window_radius` | number ≥ 0 | `14` | Managed-window corners, independent of the shell |
-| `shell_radius` | number ≥ 0 | `14` | All shell surfaces, cards, widgets and interaction backgrounds; 0 makes them square |
-| `top_bar_height` | number > 0 | `28` | Menu-bar height |
-| `top_bar_margin_top` | integer ≥ 0 | `0` | Space above bar |
-| `top_bar_window_gap` | integer ≥ 0 | `0` | Clearance below bar |
-| `top_bar_margin_horizontal` | integer ≥ 0 | `0` | Bar side margins |
-| `top_bar_radius` | number ≥ 0 | unset | Legacy fallback for shell radius |
-| `panel_padding` | number ≥ 0 | `12` | Bar inner padding |
-| `control_gap` | number ≥ 0 | `12` | Right-side control spacing |
+| `border-width` | number ≥ 0 | `1` | Window border thickness |
+| `focus-ring-width` | number ≥ 0 | `2` | Focused border thickness |
+| `window-radius` | number ≥ 0 | `14` | Managed-window corners, independent of the shell |
+| `shell-radius` | number ≥ 0 | `14` | All shell surfaces, cards, widgets and interaction backgrounds; 0 makes them square |
+| `top-bar-height` | number > 0 | `28` | Menu-bar height |
+| `top-bar-margin-top` | integer ≥ 0 | `0` | Space above bar |
+| `top-bar-window-gap` | integer ≥ 0 | `0` | Clearance below bar |
+| `top-bar-margin-horizontal` | integer ≥ 0 | `0` | Bar side margins |
+| `top-bar-radius` | number ≥ 0 | unset | Legacy fallback for shell radius |
+| `panel-padding` | number ≥ 0 | `12` | Bar inner padding |
+| `control-gap` | number ≥ 0 | `12` | Right-side control spacing |
 
 | Section / key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `theme.surface.bar.background` | color | `"#1C202EF2"` | Shell fallback background; compositor materials use `surface_base` |
-| `theme.surface.bar.text_primary` | color | `"#F0F3FA"` | Bar text/icons |
-| `theme.surface.bar.text_muted` | color | `"#AAB4C7"` | Inactive bar foreground |
-| `theme.shadow.soft.offset_y` | number | `4` | Window shadow vertical offset |
+| `theme.surface.bar.background` | color | `"#1C202EF2"` | Shell fallback background; compositor materials use `surface-base` |
+| `theme.surface.bar.text-primary` | color | `"#F0F3FA"` | Bar text/icons |
+| `theme.surface.bar.text-muted` | color | `"#AAB4C7"` | Inactive bar foreground |
+| `theme.shadow.soft.offset-y` | number | `4` | Window shadow vertical offset |
 | `theme.shadow.soft.blur` | number ≥ 0 | `18` | Window shadow softness |
 | `theme.shadow.soft.opacity` | number 0–1 | `0.20` | Window shadow strength |
 
 Solid materials omit blur; translucent materials blur behind the surface color.
 True fullscreen removes decorations. Focus transitions never scale the content.
 
-Optional `theme.focus_ring.gradient` and `theme.border.gradient` use the same
+Optional `theme.focus-ring.gradient` and `theme.border.gradient` use the same
 keys: required `from` and `to` colors, and `angle` (number, default `0`). Angles
 are clockwise: 0 is left-to-right, 90 top-to-bottom. Omit the gradient section
 for solid `accent` or `border` colors.
@@ -199,16 +177,25 @@ theme {
 }
 ```
 
+## Workspaces
+
+A single-output session starts with workspace 1. Numbered workspace shortcuts create
+workspaces on demand; switching forward past the last workspace also creates the
+next one when the current workspace contains windows. Empty workspaces are
+cleaned up automatically, keeping at most one empty workspace in addition to
+any empty workspace currently shown on another display. Additional displays
+receive their own workspace.
+
 ## Input
 
 | `input` key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `focus_follows_mouse` | boolean | `false` | Focus visible windows under the pointer without raising them or scrolling; click or use keyboard focus to reveal a window |
-| `xkb_layout` | nonempty string | `"us"` | XKB layout |
-| `xkb_variant` | string | `""` | XKB variant |
-| `xkb_options` | string array | `[]` | XKB options |
-| `repeat_rate` | integer > 0 | `25` | Repeats per second |
-| `repeat_delay_ms` | integer ≥ 0 | `600` | Delay before repeat |
+| `focus-follows-mouse` | boolean | `false` | Focus visible windows under the pointer without raising them or scrolling; click or use keyboard focus to reveal a window |
+| `xkb-layout` | nonempty string | `"us"` | XKB layout |
+| `xkb-variant` | string | `""` | XKB variant |
+| `xkb-options` | string array | `[]` | XKB options |
+| `repeat-rate` | integer > 0 | `25` | Repeats per second |
+| `repeat-delay-ms` | integer ≥ 0 | `600` | Delay before repeat |
 
 With focus-follows-mouse enabled, hovering a visible part of a window changes
 keyboard focus without raising it or moving the scrolling viewport. Clicking or
@@ -221,7 +208,7 @@ Clicking a workspace card's background switches workspaces while keeping Overvie
 open. Previews follow layout order and use the configured shell font and colors.
 
 The touchpad device keys are booleans, all defaulting to `true`: `tap`,
-`natural_scroll` and `disable_while_typing`. These apply to DRM devices; nested
+`natural-scroll` and `disable-while-typing`. These apply to DRM devices; nested
 previews use the host's physical input settings.
 
 Three-finger swipes navigate on release: up goes to the next workspace on the
@@ -253,6 +240,8 @@ Adjust recognition distance in **Settings → Keyboard & mouse**, or with
 `swipe-threshold 80` under `input.touchpad` (integer 16–1000 logical pixels).
 
 ## Commands and bindings
+
+See [Shortcuts and gestures](shortcuts.md) for the full default keymap and mouse actions.
 
 `commands` maps arbitrary names to nonempty argument arrays. The built-in
 `terminal "foot"` can be overridden. Commands run directly, without a shell.
@@ -292,7 +281,7 @@ Super+Shift+1–9 move to workspace; Super+R width cycle; Super+C center;
 Super+[/] consume/expel; Super+F maximize; Super+Shift+F fullscreen;
 Super+M layout; Super+Shift+Space floating; Super+Tab overview;
 Super+Shift+S area screenshot; Print Screen whole-screen screenshot;
-Super+Shift+E immediate logout.
+Super+Shift+E logout confirmation.
 
 Hold Super and drag a floating window with the left mouse button to move it.
 Hold Super and drag with the right mouse button to resize it from the nearest
@@ -314,19 +303,8 @@ the same save and copy workflow.
 
 `ferese-screenshot --all` captures every enabled output as one image.
 
-The editor window is sized from the captured image rather than the output, so a
-small area selection does not open a large window. Sizing is advisory: the
-compositor floats the editor at whatever size Satty requests, clamped to the
-workspace.
-
-A capture is assembled from the readback each output produces when it is next
-redrawn, so a request is abandoned if an output has not been redrawn within 30
-seconds. That is reported as an error rather than a partial or empty image, and
-the request holds no resources once it is abandoned. Nothing is left in the
-runtime directory: `feresctl screenshot` writes a private file that the caller
-opens and unlinks, and any file a dead client leaves behind is reclaimed after
-an hour.
-
+Satty opens as a floating window sized for the captured image and constrained
+to the workspace.
 
 ## Window rules
 
@@ -335,7 +313,7 @@ window rules can override that behavior.
 
 | `window-rule` key | Type | Default / meaning |
 | --- | --- | --- |
-| `app_id` | nonempty string | Optional exact match; case-insensitive, `.desktop` suffix ignored |
+| `app-id` | nonempty string | Optional exact match; case-insensitive, `.desktop` suffix ignored |
 | `title` | nonempty string | Optional exact, case-sensitive match |
 | `transient` | boolean | Optional parent-dialog match |
 | `workspace` | integer > 0 | Leave placement unchanged |
@@ -369,8 +347,8 @@ are connected wins. Find connector names and persistent identities using
 | `transform` | enum below | `"normal"` |
 | `position` | `[integer, integer]` | Automatic horizontal placement |
 
-Transforms: `normal`, `rotate_90`, `rotate_180`, `rotate_270`, `flipped`,
-`flipped_90`, `flipped_180`, `flipped_270`. Unspecified connected displays stay
+Transforms: `normal`, `rotate-90`, `rotate-180`, `rotate-270`, `flipped`,
+`flipped-90`, `flipped-180`, `flipped-270`. Unspecified connected displays stay
 enabled with defaults. Disabling every usable output is rejected.
 
 ```kdl
@@ -390,10 +368,10 @@ returns. Ferese does not change the system's suspend policy.
 | `status` key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `keybinding-guide` | boolean | `true` | Show the active shortcut guide at login until disabled in Settings → Shortcuts. |
-| `window_title` | boolean | `true` | Focused window title in the bar center when space allows |
-| `battery_percentage` | boolean | `true` | Show percentage beside icon |
-| `low_battery_threshold` | integer 0–100 | `20` | Warning-color threshold |
-| `settings_command` | argument array | `["ferese-settings"]` | Settings launcher; `[]` hides the action |
+| `window-title` | boolean | `true` | Focused window title in the bar center when space allows |
+| `battery-percentage` | boolean | `true` | Show percentage beside icon |
+| `low-battery-threshold` | integer 0–100 | `20` | Warning-color threshold |
+| `settings-command` | argument array | `["ferese-settings"]` | Settings launcher; `[]` hides the action |
 
 ## Login items and locking
 
@@ -443,22 +421,19 @@ environment for screenshots to work.
 Text input is available by default; Ctrl+Alt+Escape releases an active shortcut
 inhibitor. Use `feresectl --help` for runtime control commands.
 
-## Notifications
-
-Settings → Notifications controls popups, Do Not Disturb, and the default timeout. See [Notifications](notifications.md) for KDL options and app behavior.
-
-A single-output session starts with workspace 1. Numbered workspace shortcuts create
-workspaces on demand; switching forward past the last workspace also creates the
-next one when the current workspace contains windows. Empty workspaces are
-cleaned up automatically, keeping at most one empty workspace in addition to
-any empty workspace currently shown on another display. Additional displays
-receive their own workspace.
-
 Shell rounding is controlled in Settings → Appearance → Shell corner radius.
 Small controls cap the radius to fit their size. Window rounding remains under
-Settings → Windows. `theme.geometry.shell_radius` takes precedence over the old
-`appearance.corner_radius` and then `theme.geometry.top_bar_radius` keys; when
+Settings → Windows. `theme.geometry.shell-radius` takes precedence over the old
+`appearance.corner-radius` and then `theme.geometry.top-bar-radius` keys; when
 none are set, the shell uses 14 px. Legacy clock/note radius fields no longer
 override shell rounding.
 
-Power actions use a centered system confirmation. The `exit` key binding (Super+Shift+E by default) requests logout confirmation; `feresectl request-logout` does the same. `feresectl exit` remains an immediate administrative exit.
+## Power and logout
+
+Power actions use a centered confirmation. **Super+Shift+E** and
+`feresectl request-logout` ask to log out. `feresectl exit` ends the session
+immediately.
+
+## Notifications
+
+See [Notifications](notifications.md) for popups, Do Not Disturb, and timeout options.

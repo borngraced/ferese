@@ -6,23 +6,12 @@ TTY. You do not need to replace your existing login manager or desktop.
 
 ## Requirements
 
-You need a working graphics driver with DRM/KMS and EGL support, an authenticated
-local login session with seat access through logind or seatd, D-Bus, and
-Linux-PAM for the native locker. A nested preview needs an existing Wayland
-desktop instead of direct access to the graphics device.
+Use a Wayland-capable graphics driver and a local user session with seat access
+through logind or seatd. A nested preview runs inside an existing Wayland desktop.
 
-Build with **Rust 1.95 or newer**, a C/C++ toolchain, CMake, pkg-config, and the
-native development libraries below. The installer builds Ferese, its shell,
-Settings, command-line tools, locker, polkit agent, and desktop portal backend together. It does not install system
-packages or enable background services at boot. On systemd systems, the installed
-session helper activates `ferese-session.target` after exporting the compositor's
-Wayland display, and stops it when the shell exits. This keeps
-`graphical-session.target` active so desktop portals can start. The native portal
-is D-Bus activated and supervised by systemd; it stops with the session so a
-previous release cannot remain running after logout. Session startup also refreshes
-an already-running native portal after importing the current display environment.
-Nested previews
-do not alter the host's activation environment or session targets.
+Building requires **Rust 1.95 or newer**, a C/C++ toolchain, CMake, pkg-config,
+and the libraries below. The installer builds all Ferese components; install
+system packages separately.
 
 ### Fedora
 
@@ -60,11 +49,9 @@ sudo apt install build-essential git curl cmake pkg-config libwayland-dev \
   gstreamer1.0-plugins-good
 ```
 
-These are package recipes, not a claim that every distribution release has been
-tested. Fedora is the currently exercised installation path. Older releases
-may need newer packages or additional repositories. For other distributions,
-install the equivalent libraries; see the upstream
-[Smithay dependencies](https://github.com/Smithay/smithay#system-dependencies).
+Fedora is the tested installation path. Package names and versions may differ
+on other distributions. See [Smithay dependencies](https://github.com/Smithay/smithay#system-dependencies)
+for equivalent libraries.
 
 ### Rust toolchain
 
@@ -98,32 +85,17 @@ The script builds locked release binaries, then requests administrator access
 through `sudo` or `pkexec` for installation. Do not run the whole build as root.
 The first build needs network access to fetch Rust dependencies.
 
-The installer adds:
+The installer adds the session launcher, desktop tools, portal backend, login
+entry, icons, default wallpaper, and example config. Releases live under
+`/usr/local/lib/ferese/releases/`; commands live under `/usr/local/bin/`.
+The `current` and `previous` links support updates and rollback.
 
-- Versioned releases under `/usr/local/lib/ferese/releases/`, with `current` and
-  `previous` links for upgrades and rollback.
-- Commands under `/usr/local/bin/`, including `ferese-session`, `ferese-settings`,
-  `feresectl`, `ferese-lock`, `ferese-polkit-agent`, `ferese-screenshot`, and
-  `xdg-desktop-portal-ferese`, and `ferese-record`.
-- D-Bus activation and Ferese-specific desktop portal registration.
-- A Wayland session entry at `/usr/share/wayland-sessions/ferese.desktop`.
-- A Settings application entry, icons, the default wallpaper, and an example config.
-- `/etc/pam.d/ferese-lock`, using your distribution's authentication stack.
-  An existing administrator-supplied policy is preserved.
-
-Your existing configuration and other desktop sessions are preserved. The
-installer does not change your default session or login manager.
-
-Ferese starts its own polkit authentication agent with the shell. Password
-prompts follow the configured font, accent, surface color, and corner radius.
-Authentication still uses polkit's system helper and policy. The agent starts
-only inside a Ferese session; logging into another desktop leaves its agent
-unchanged. Restart your Ferese session after upgrading to use the new prompt.
+Your configuration, other desktop sessions, and existing PAM policy are preserved.
+Ferese starts its authentication agent and portal services with the session.
 
 ### Initial configuration
 
-Ferese has built-in defaults. To start from the example without replacing an
-existing config:
+Ferese has built-in defaults. To start from the example without replacing your config:
 
 ```sh
 mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/ferese"
@@ -144,9 +116,7 @@ command in Settings if you prefer another terminal.
 
 Save your work and log out. Open your login screen's session selector, choose
 **Ferese**, and sign in. Any manager that supports Wayland sessions and reads
-`/usr/share/wayland-sessions/` can discover the installed entry. The selector's
-location and whether it appears before or after choosing your account depend
-on the login manager.
+`/usr/share/wayland-sessions/` can discover the installed entry.
 
 If Ferese is missing, confirm that the session entry exists and its launcher is
 executable:
@@ -169,15 +139,9 @@ If your greeter asks for a session command instead of reading desktop files, use
 /usr/local/bin/ferese-session
 ```
 
-For a setup such as greetd, configure that as the command launched **after user
-authentication**, using your greeter's session-command option. Preserve the
-existing authentication and greeter configuration. Do not set Ferese itself as
-the privileged greeter process. See the
-[greetd documentation](https://sr.ht/~kennylevinsen/greetd/) for your chosen frontend.
-
-The launcher starts the compositor and shell together, sets the desktop
-environment variables, and starts a D-Bus session when one is not already
-available. Launch it instead of the bare compositor for a complete desktop.
+For greetd, use this as the session command after authentication; see the
+[greetd documentation](https://sr.ht/~kennylevinsen/greetd/).
+The launcher starts the compositor, shell, and session services together.
 
 ### From a TTY
 
@@ -229,7 +193,8 @@ inside an existing Wayland desktop:
 
 ```sh
 cargo build --release --locked -p ferese -p ferese-shell -p ferese-settings -p feresectl -p ferese-lock -p xdg-desktop-portal-ferese
-target/release/ferese --backend nested --grant-effects --grant-shell-control -- \
+FERESE_ENABLE_SCREENCOPY=1 target/release/ferese --backend nested \
+  --grant-effects --grant-shell-control -- \
   target/release/ferese-shell
 ```
 
@@ -283,12 +248,13 @@ Installer options:
 
 `--dry-run` prints the planned commands. `--offline` requires dependencies to be
 cached already. `--skip-build` installs the binaries already in `target/release/`;
-use it only after building all six components from the intended revision.
+use it only after building all components from the intended revision.
 Run `./scripts/install.sh --help` for all options.
 
 ## Logout and recovery
 
-Save your work before **Super+Shift+E** or `feresectl exit`: logout is immediate.
+Use **Super+Shift+E** or `feresectl request-logout` to ask for logout confirmation.
+`feresectl exit` ends the session immediately; save your work first.
 If Ferese freezes, switch to another TTY with **Ctrl+Alt+F1–F12**, sign in, and
 identify the affected compositor process:
 
