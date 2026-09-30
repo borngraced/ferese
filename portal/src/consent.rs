@@ -4,8 +4,10 @@ use cosmic::{
     iced::{Alignment, Length},
     widget::{button, column, container, image, row, scrollable, text_input},
 };
+use ferese_theme::{Palette, accent_button, controls, material::ModalMaterial, text};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
+use std::sync::Arc;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Prompt {
@@ -31,8 +33,8 @@ enum Message {
     Attached(
         Result<
             (
-                Option<std::sync::Arc<crate::parent::Parent>>,
-                Result<ferese_theme::material::ModalMaterial, String>,
+                Option<Arc<crate::parent::Parent>>,
+                Result<ModalMaterial, String>,
             ),
             String,
         >,
@@ -45,9 +47,9 @@ enum Message {
 struct Consent {
     core: Core,
     prompt: Prompt,
-    material: Option<ferese_theme::material::ModalMaterial>,
-    parent: Option<std::sync::Arc<crate::parent::Parent>>,
-    palette: ferese_theme::Palette,
+    material: Option<ModalMaterial>,
+    parent: Option<Arc<crate::parent::Parent>>,
+    palette: Palette,
     font: cosmic::font::Font,
     background: cosmic::iced::Color,
 }
@@ -57,9 +59,11 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     std::io::stdin()
         .take(256 * 1024 + 1)
         .read_to_string(&mut input)?;
+
     if input.len() > 256 * 1024 {
         return Err("Consent request is too large".into());
     }
+
     let prompt: Prompt = serde_json::from_str(&input)?;
     let (theme, font, background, _) = crate::picker::appearance();
     let height = if prompt.image.is_some() || !prompt.shortcuts.is_empty() {
@@ -78,6 +82,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
             .is_daemon(false),
         (prompt, font, background),
     )?;
+
     Ok(())
 }
 
@@ -108,7 +113,7 @@ impl cosmic::Application for Consent {
                 let document = ferese_config::config_path()
                     .and_then(|path| std::fs::read_to_string(path).ok())
                     .and_then(|source| ferese_config::Document::parse(&source).ok());
-                ferese_theme::Palette::from_document(document.as_ref())
+                Palette::from_document(document.as_ref())
             },
             font,
             background,
@@ -134,12 +139,8 @@ impl cosmic::Application for Consent {
             Message::Opened(id) => {
                 let parent = self.prompt.parent.clone();
                 return cosmic::iced::window::run(id, move |window| {
-                    let parent =
-                        crate::parent::Parent::attach(window, &parent)?.map(std::sync::Arc::new);
-                    Ok((
-                        parent,
-                        ferese_theme::material::ModalMaterial::attach(window),
-                    ))
+                    let parent = crate::parent::Parent::attach(window, &parent)?.map(Arc::new);
+                    Ok((parent, ModalMaterial::attach(window)))
                 })
                 .map(|result| cosmic::Action::App(Message::Attached(result)));
             }
@@ -179,7 +180,7 @@ impl cosmic::Application for Consent {
     }
 
     fn view(&self) -> Element<'_, Message> {
-        let text = |value: String| ferese_theme::text(value, self.font);
+        let text = |value: String| text(value, self.font);
         let mut details = column![text(self.prompt.description.clone())].spacing(12);
         for (index, shortcut) in self.prompt.shortcuts.iter().enumerate() {
             details = details.push(
@@ -187,7 +188,7 @@ impl cosmic::Application for Consent {
                     text(shortcut.description.clone()),
                     text_input("Ctrl+Alt+k (leave empty to disable)", &shortcut.trigger)
                         .font(self.font)
-                        .style(ferese_theme::controls::settings_input(self.palette))
+                        .style(controls::settings_input(self.palette))
                         .on_input(move |value| Message::Shortcut(index, value))
                 ]
                 .spacing(6),
@@ -212,7 +213,7 @@ impl cosmic::Application for Consent {
                     .class(cosmic::theme::Button::Text)
                     .on_press(Message::Cancel),
                 button::custom(text(self.prompt.accept.clone()))
-                    .class(ferese_theme::accent_button())
+                    .class(accent_button())
                     .on_press(Message::Accept)
             ]
             .spacing(12)
