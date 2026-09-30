@@ -22,10 +22,20 @@ const PATH: &str = "/org/freedesktop/portal/desktop";
 const MAX_IMAGE_BYTES: u64 = 128 * 1024 * 1024;
 type Reply = (u32, Options);
 
-#[derive(Clone, Default)]
-pub(crate) struct Requests(Arc<Mutex<HashMap<String, (String, Arc<Cancel>)>>>);
+#[derive(Clone)]
+pub(crate) struct Requests(Arc<Mutex<HashMap<String, (String, Arc<Cancel>)>>>, usize);
+
+impl Default for Requests {
+    fn default() -> Self {
+        Self::with_limit(8)
+    }
+}
 
 impl Requests {
+    pub(crate) fn with_limit(limit: usize) -> Self {
+        Self(Default::default(), limit)
+    }
+
     pub(crate) async fn revoke_stale(&self, owner: Option<&str>) {
         for (request_owner, cancel) in self.0.lock().await.values() {
             if Some(request_owner.as_str()) != owner {
@@ -45,7 +55,7 @@ impl Requests {
             return Err(zbus::fdo::Error::InvalidArgs("Invalid request path".into()));
         }
         let mut pending = self.0.lock().await;
-        if pending.len() >= 8 || pending.contains_key(handle.as_str()) {
+        if pending.len() >= self.1 || pending.contains_key(handle.as_str()) {
             return Err(zbus::fdo::Error::LimitsExceeded(
                 "Request limit reached".into(),
             ));

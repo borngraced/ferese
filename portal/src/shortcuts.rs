@@ -1,9 +1,6 @@
-use std::{
-    collections::HashMap, io::Read, os::unix::net::UnixStream, process::Stdio, sync::Arc,
-    time::Duration,
-};
+use std::{collections::HashMap, io::Read, process::Stdio, sync::Arc, time::Duration};
 
-use serde_json::{Value as Json, json};
+use serde_json::json;
 use tokio::{io::AsyncWriteExt, sync::Mutex};
 use zbus::{
     Connection,
@@ -14,72 +11,13 @@ use zbus::{
 
 use crate::{
     backend::{Cancel, Options, authorize},
+    bridge::Bridge,
     consent::{Prompt, ShortcutField},
     desktop::Requests,
 };
 
 const PATH: &str = "/org/freedesktop/portal/desktop";
 type Shortcuts = Vec<(String, Options)>;
-
-#[derive(Clone)]
-struct Bridge(Arc<BridgeInner>);
-
-struct BridgeInner {
-    stream: std::sync::Mutex<UnixStream>,
-    shutdown: UnixStream,
-}
-
-impl Bridge {
-    fn connect() -> Result<Self, String> {
-        let path = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(std::path::PathBuf::from)
-            .ok_or("Missing runtime directory")?
-            .join("ferese/control.sock");
-        let stream = UnixStream::connect(path).map_err(|error| error.to_string())?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(2)))
-            .map_err(|error| error.to_string())?;
-        stream
-            .set_write_timeout(Some(Duration::from_secs(2)))
-            .map_err(|error| error.to_string())?;
-        let shutdown = stream.try_clone().map_err(|error| error.to_string())?;
-        Ok(Self(Arc::new(BridgeInner {
-            stream: std::sync::Mutex::new(stream),
-            shutdown,
-        })))
-    }
-
-    async fn call(&self, command: &'static str, args: Json) -> Result<Json, String> {
-        let bridge = self.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut stream = bridge
-                .0
-                .stream
-                .lock()
-                .map_err(|_| "Shortcut connection failed")?;
-            let request = ferese_ipc::Request {
-                version: ferese_ipc::VERSION,
-                id: 1,
-                kind: "command".into(),
-                command: command.into(),
-                args,
-            };
-            ferese_ipc::write_frame(&mut *stream, &request).map_err(|error| error.to_string())?;
-            let response: ferese_ipc::Response =
-                ferese_ipc::read_frame(&mut *stream).map_err(|error| error.to_string())?;
-            if let Some(error) = response.error {
-                return Err(error.message);
-            }
-            response.result.ok_or("Missing shortcut response".into())
-        })
-        .await
-        .map_err(|error| error.to_string())?
-    }
-
-    fn close(&self) {
-        let _ = self.0.shutdown.shutdown(std::net::Shutdown::Both);
-    }
-}
 
 struct Session {
     owner: String,
@@ -177,6 +115,7 @@ impl GlobalShortcuts {
         };
         let mut fields = fields;
         let mut message = "Choose shortcuts for this application. Leave a shortcut empty to disable it. System shortcuts cannot be overridden.".to_owned();
+
         loop {
             let selected = tokio::select! {
                 biased;
@@ -187,7 +126,9 @@ impl GlobalShortcuts {
             let Some(selected) = selected else {
                 return Ok(None);
             };
+
             validate_selection(&fields, &selected)?;
+
             let registration = selected
                 .iter()
                 .filter(|field| !field.trigger.trim().is_empty())
@@ -199,6 +140,7 @@ impl GlobalShortcuts {
             {
                 Ok(_) => {
                     let mut state = session.state.lock().await;
+
                     if session
                         .cancel
                         .stopped
@@ -218,6 +160,7 @@ impl GlobalShortcuts {
                                 .filter(|field| !field.trigger.trim().is_empty())
                                 .map(|field| json!({"id":field.id,"trigger":field.trigger}))
                                 .collect::<Vec<_>>();
+
                             if bridge
                                 .call("portal-shortcuts-register", json!(previous))
                                 .await
@@ -226,16 +169,20 @@ impl GlobalShortcuts {
                                 bridge.close();
                             }
                         }
+
                         return Ok(None);
                     }
+
                     state.fields = selected.clone();
                     state.bound = true;
                     state.bridge = Some(bridge.clone());
                     state.revision = state.revision.wrapping_add(1);
                     drop(state);
+
                     if let Err(error) = save(&session.app, &selected) {
                         eprintln!("ferese shortcuts: could not save preferences: {error}");
                     }
+
                     if first {
                         let backend = self.clone();
                         let connection = connection.clone();
@@ -244,6 +191,7 @@ impl GlobalShortcuts {
                             backend.watch(connection, path, session, bridge).await;
                         });
                     }
+
                     return Ok(Some(results(&selected)));
                 }
                 Err(error) => {

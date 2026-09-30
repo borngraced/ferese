@@ -126,8 +126,7 @@ impl IdleInhibitHandler for Ferese {
                 self.idle_inhibitors.remove(&surface);
             }
         }
-        self.idle_notifier_state
-            .set_is_inhibited(!self.idle_inhibitors.is_empty());
+        self.refresh_idle_inhibition();
     }
 }
 

@@ -105,8 +105,7 @@ impl CompositorHandler for Ferese {
         self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
         crate::backends::direct::render_all(self);
         if self.idle_inhibitors.remove(surface).is_some() {
-            self.idle_notifier_state
-                .set_is_inhibited(!self.idle_inhibitors.is_empty());
+            self.refresh_idle_inhibition();
         }
         if matches!(&self.cursor_status, smithay::input::pointer::CursorImageStatus::Surface(cursor) if cursor == surface)
         {

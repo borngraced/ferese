@@ -1,3 +1,4 @@
+mod compositor_ipc;
 mod config;
 mod control;
 mod keybinding_guide;
@@ -256,6 +257,7 @@ enum Message {
     Control(status::Action),
     ShowGuide,
     GuideLoaded(Result<Vec<keybinding_guide::Entry>, String>),
+    SystemInhibitors(window::Id, Result<compositor_ipc::Approval, String>),
     ConfirmPower(status::Action),
     CancelPower,
     ExecutePower,
@@ -690,6 +692,7 @@ impl cosmic::Application for FereseShell {
                     }
                 }
             }
+            Message::SystemInhibitors(id, result) => self.set_system_inhibitors(id, result),
             Message::ConfirmPower(action) => {
                 if let Some(action) = system_modal::PowerAction::from_status(action) {
                     return self.open_system_modal(action, None);

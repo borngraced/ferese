@@ -81,7 +81,7 @@ impl ShellControl {
         let connection = control_connection()?;
         let (globals, mut queue) = registry_queue_init::<ControlState>(&connection)?;
         let qh = queue.handle();
-        let manager = globals.bind::<FereseShellManagerV1, _, _>(&qh, 1..=3, ())?;
+        let manager = globals.bind::<FereseShellManagerV1, _, _>(&qh, 4..=4, ())?;
         let shell = manager.get_shell(&qh, ());
         let (sender, updates) = mpsc::channel();
         let mut state = ControlState::new(sender);
@@ -150,11 +150,10 @@ impl ShellControl {
         let _ = self.connection.flush();
     }
 
-    pub(crate) fn confirm_logout(&self, serial: u32) {
-        if self.shell.version() >= 3 {
-            self.shell.confirm_logout(serial);
-            let _ = self.connection.flush();
-        }
+    pub(crate) fn confirm_logout(&self, serial: u32, revision: u32, token: u32, force: bool) {
+        self.shell
+            .confirm_logout_with_inhibitors(serial, revision, token, u32::from(force));
+        let _ = self.connection.flush();
     }
 
     pub(crate) fn cancel_logout(&self, serial: u32) {

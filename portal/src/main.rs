@@ -1,7 +1,9 @@
 mod backend;
+mod bridge;
 mod capture;
 mod consent;
 mod desktop;
+mod inhibit;
 mod lockdown;
 mod parent;
 mod permissions;

@@ -122,10 +122,33 @@ pub(crate) fn init(
                     IpcEvent::Call(call) => call,
                     IpcEvent::Closed(owner) => {
                         state.portal_shortcuts.remove(owner);
+                        state.portal_session.remove(owner);
+                        state.refresh_idle_inhibition();
                         return;
                     }
                 };
-                if call.request.command == "screenshot-window" {
+                if call.request.command == "session-watch" {
+                    if let Err(error) = validate_request(&call.request) {
+                        let _ = call.response.send(Response::error(
+                            call.request.id,
+                            error.code,
+                            error.message,
+                        ));
+                    } else if let Some(since) = call.request.args["since"].as_u64() {
+                        state.portal_session.watch(
+                            call.owner,
+                            call.request.id,
+                            since,
+                            call.response,
+                        );
+                    } else {
+                        let _ = call.response.send(Response::error(
+                            call.request.id,
+                            "invalid_argument",
+                            "Missing session revision",
+                        ));
+                    }
+                } else if call.request.command == "screenshot-window" {
                     state.start_window_screenshot(call.request, call.response);
                 } else if call.request.command == "screenshot" {
                     // Deferred: this path answers the caller itself, exactly
@@ -322,8 +345,34 @@ fn serve_connection(
             tracing::warn!("disconnecting IPC client because the request queue is full");
             return;
         }
-        let Ok(response) = receiver.recv() else {
-            return;
+        let response = loop {
+            match receiver.recv_timeout(Duration::from_secs(1)) {
+                Ok(response) => break response,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    let mut byte = 0_u8;
+                    // SAFETY: the live stream owns this fd and byte is writable.
+                    let result = unsafe {
+                        libc::recv(
+                            std::os::fd::AsRawFd::as_raw_fd(&stream),
+                            (&mut byte as *mut u8).cast(),
+                            1,
+                            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+                        )
+                    };
+                    if result == 0 {
+                        return;
+                    }
+                    if result < 0
+                        && !matches!(
+                            io::Error::last_os_error().kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                        )
+                    {
+                        return;
+                    }
+                }
+            }
         };
         let exit_accepted = exit_requested && response.error.is_none();
         if let Err(error) = write_frame(&mut stream, &response) {
@@ -342,6 +391,13 @@ fn serve_connection(
     }
 }
 
+fn u32_arg(args: &Value, key: &str) -> Result<u32, CommandError> {
+    args[key]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| CommandError::new("invalid_argument", format!("Missing or invalid {key}")))
+}
+
 fn discard_undelivered_screenshot(response: &Response) {
     if response.error.is_none()
         && let Some(path) = response
@@ -357,7 +413,18 @@ fn discard_undelivered_screenshot(response: &Response) {
 
 impl Ferese {
     fn handle_ipc_request(&mut self, owner: u64, request: Request) -> Response {
-        if self.session_lock.active && request.command != "portal-shortcuts-poll" {
+        if self.session_lock.active
+            && !matches!(
+                request.command.as_str(),
+                "portal-shortcuts-poll"
+                    | "get-session-state"
+                    | "portal-inhibit"
+                    | "portal-monitor-register"
+                    | "portal-monitor-ack"
+                    | "logind-session-ending"
+                    | "cancel-session-end"
+            )
+        {
             return Response::error(
                 request.id,
                 "session_locked",
@@ -381,6 +448,72 @@ impl Ferese {
         args: &Value,
     ) -> Result<Value, CommandError> {
         match command {
+            "portal-inhibit" => {
+                let inhibition = serde_json::from_value(args.clone())
+                    .map_err(|error| CommandError::new("invalid_argument", error.to_string()))?;
+                self.portal_session
+                    .register(owner, inhibition)
+                    .map_err(|error| CommandError::new("invalid_argument", error))?;
+                self.refresh_idle_inhibition();
+                return Ok(json!({}));
+            }
+            "get-session-state" => {
+                return Ok(self.portal_session.snapshot());
+            }
+            "portal-monitor-register" => {
+                self.portal_session
+                    .register_monitor(owner)
+                    .map_err(|error| CommandError::new("invalid_argument", error))?;
+                let mut result = self.portal_session.snapshot();
+                result["monitor-owner"] = json!(owner);
+                return Ok(result);
+            }
+            "portal-monitor-ack" => {
+                let token = u32_arg(args, "token")?;
+                self.portal_session
+                    .acknowledge(owner, token)
+                    .map_err(|error| CommandError::new("invalid_argument", error))?;
+                return Ok(json!({}));
+            }
+            "begin-session-end" => {
+                self.portal_session.begin_owned_query(owner);
+                return Ok(self.portal_session.snapshot());
+            }
+            "cancel-session-end" => {
+                self.portal_session.cancel_query(u32_arg(args, "token")?);
+                return Ok(json!({}));
+            }
+            "validate-session-end" => {
+                self.portal_session
+                    .validate_end(
+                        u32_arg(args, "token")?,
+                        u32_arg(args, "inhibitor-revision")?,
+                        args["force"].as_bool().ok_or_else(|| {
+                            CommandError::new("invalid_argument", "Missing force confirmation")
+                        })?,
+                    )
+                    .map_err(|error| CommandError::new("inhibited", error))?;
+                return Ok(json!({}));
+            }
+            "commit-session-end" => {
+                self.portal_session
+                    .commit_end(
+                        u32_arg(args, "token")?,
+                        u32_arg(args, "inhibitor-revision")?,
+                        args["force"].as_bool().ok_or_else(|| {
+                            CommandError::new("invalid_argument", "Missing force confirmation")
+                        })?,
+                    )
+                    .map_err(|error| CommandError::new("inhibited", error))?;
+                return Ok(json!({}));
+            }
+            "logind-session-ending" => {
+                let ending = args["ending"].as_bool().ok_or_else(|| {
+                    CommandError::new("invalid_argument", "Missing shutdown state")
+                })?;
+                self.portal_session.set_phase(if ending { 3 } else { 1 });
+                return Ok(json!({}));
+            }
             "portal-shortcuts-register" => {
                 let shortcuts = serde_json::from_value(args.clone())
                     .map_err(|error| CommandError::new("invalid_argument", error.to_string()))?;

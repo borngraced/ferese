@@ -54,7 +54,7 @@ def private_bus_checks():
                         raise AssertionError((root / "backend.log").read_text())
                     time.sleep(0.05)
             node = ET.fromstring(xml)
-            for name in ("ScreenCast", "Settings", "Screenshot", "Wallpaper", "Background", "Usb", "Lockdown", "GlobalShortcuts"):
+            for name in ("ScreenCast", "Settings", "Screenshot", "Wallpaper", "Background", "Usb", "Lockdown", "GlobalShortcuts", "Inhibit"):
                 interface = node.find(f"interface[@name='org.freedesktop.impl.portal.{name}']")
                 assert interface is not None, name
                 expected = ET.parse(f"/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.{name}.xml").getroot().find("interface")

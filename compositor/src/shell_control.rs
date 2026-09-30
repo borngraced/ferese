@@ -14,7 +14,7 @@ use smithay::{
 use crate::{Ferese, private_client::ClientCapabilities, state::ClientState};
 
 pub(crate) fn init_global(display: &DisplayHandle) {
-    display.create_global::<Ferese, FereseShellManagerV1, _>(3, ());
+    display.create_global::<Ferese, FereseShellManagerV1, _>(4, ());
 }
 
 pub(crate) fn config_chunks(source: &str) -> Vec<&str> {
@@ -137,11 +137,25 @@ impl Dispatch<FereseShellV1, ()> for Ferese {
                 }
             }
             ferese_shell_v1::Request::ConfirmLogout { serial } => {
-                if state.logout_owner.as_ref() == Some(&shell.id())
-                    && consume_logout_confirmation(&mut state.pending_logout, serial)
-                {
-                    state.logout_owner = None;
-                    state.loop_signal.stop();
+                let snapshot = state.portal_session.snapshot();
+                let token = snapshot["query-token"].as_u64().unwrap_or(0) as u32;
+                let revision = snapshot["inhibitor-revision"].as_u64().unwrap_or(0) as u32;
+                state.confirm_portal_logout(shell, serial, token, revision, false);
+            }
+            ferese_shell_v1::Request::ConfirmLogoutWithInhibitors {
+                serial,
+                inhibitor_revision,
+                query_token,
+                force,
+            } => {
+                if force <= 1 {
+                    state.confirm_portal_logout(
+                        shell,
+                        serial,
+                        query_token,
+                        inhibitor_revision,
+                        force == 1,
+                    );
                 }
             }
             ferese_shell_v1::Request::CancelLogout { serial } => {
@@ -183,10 +197,18 @@ impl Dispatch<FereseShellV1, ()> for Ferese {
         _data: &(),
     ) {
         if state.logout_owner.as_ref() == Some(&shell.id()) {
-            state.pending_logout = None;
-            state.logout_owner = None;
+            state.cancel_logout_confirmation();
         }
     }
+}
+
+fn logout_confirmation_matches(
+    pending: Option<u32>,
+    query: Option<u32>,
+    serial: u32,
+    token: u32,
+) -> bool {
+    pending == Some(serial) && query == Some(token)
 }
 
 fn consume_logout_confirmation(pending: &mut Option<u32>, serial: u32) -> bool {
@@ -199,6 +221,34 @@ fn consume_logout_confirmation(pending: &mut Option<u32>, serial: u32) -> bool {
 }
 
 impl Ferese {
+    fn confirm_portal_logout(
+        &mut self,
+        shell: &FereseShellV1,
+        serial: u32,
+        token: u32,
+        revision: u32,
+        force: bool,
+    ) {
+        if self.logout_owner.as_ref() != Some(&shell.id())
+            || !logout_confirmation_matches(self.pending_logout, self.logout_query, serial, token)
+        {
+            return;
+        }
+        match self.portal_session.commit_end(token, revision, force) {
+            Ok(()) => {
+                consume_logout_confirmation(&mut self.pending_logout, serial);
+                self.logout_owner = None;
+                self.logout_query = None;
+                self.end_portal_session();
+            }
+            Err(error) => {
+                tracing::debug!(%error, "logout requires a new confirmation");
+                self.cancel_logout_confirmation();
+                self.request_logout_confirmation();
+            }
+        }
+    }
+
     pub(crate) fn request_logout_confirmation(&mut self) {
         if self.session_lock.active {
             return;
@@ -216,6 +266,7 @@ impl Ferese {
         self.cancel_logout_confirmation();
         let serial = u32::from(smithay::utils::SERIAL_COUNTER.next_serial());
         let shell = &shells[0];
+        self.logout_query = Some(self.portal_session.begin_query());
         self.pending_logout = Some(serial);
         self.logout_owner = Some(shell.id());
         let output_name = self
@@ -225,6 +276,9 @@ impl Ferese {
     }
 
     pub(crate) fn cancel_logout_confirmation(&mut self) {
+        if let Some(token) = self.logout_query.take() {
+            self.portal_session.cancel_query(token);
+        }
         if let Some(serial) = self.pending_logout.take() {
             for shell in self
                 .shell_resources
@@ -507,6 +561,18 @@ fn send_request_failed(shell: &FereseShellV1, request: ferese_shell_v1::FailedRe
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn logout_serial_cannot_authorize_a_different_session_query() {
+        assert!(super::logout_confirmation_matches(Some(42), Some(9), 42, 9));
+        assert!(!super::logout_confirmation_matches(
+            Some(42),
+            Some(9),
+            42,
+            10
+        ));
+        assert!(!super::logout_confirmation_matches(None, Some(9), 42, 9));
+    }
+
     #[test]
     fn logout_requires_the_current_confirmation_and_can_be_cancelled() {
         let mut pending = Some(42);

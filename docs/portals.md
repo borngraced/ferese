@@ -41,6 +41,12 @@ standard file, print and application dialogs. Install both backends.
   Closing a session or losing its compositor connection releases its shortcuts;
   shortcuts do not activate on the lock screen. Saved choices are offered for
   future sessions, with explicit approval before registering them.
+- **Inhibit:** connection-scoped logout, suspend and idle inhibitors, backed by
+  logind descriptors and compositor idle inhibition. Native session monitors
+  report lock state and Running/QueryEnd/Ending transitions. Ending queries wait
+  for acknowledgements for up to one second. Power confirmations list blockers
+  and recheck them before acting; authentication failure cancels the query.
+  UserSwitch is recorded, but Ferese currently has no user-switch operation.
 - **ScreenCast:** monitor sharing with a native picker and PipeWire streams.
   See [screen sharing](screen-sharing.md) for lifetime and recording details.
 
@@ -70,11 +76,11 @@ Matching D-Bus signatures does not establish complete feature parity.
 | Background | Native application state, per-instance consent and XDG autostart |
 | Usb | Native consent; standard frontend handles enumeration and device descriptors |
 | GlobalShortcuts | Native sessions, configurable keyboard triggers, conflict checks and activation/release signals |
-| RemoteDesktop | Missing authorized input injection and EIS transport |
-| Clipboard | Missing remote-session clipboard transfer |
+| RemoteDesktop | Deferred: authorized input injection and EIS transport |
+| Clipboard | Deferred with RemoteDesktop |
 | InputCapture | Missing zones, pointer barriers and EIS transport |
 | Lockdown | Native seven-property policy provider with persisted configuration and change signals |
-| Inhibit | GTK's GNOME-session/ScreenSaver integration does not provide complete Ferese session inhibition |
+| Inhibit | Native inhibitors and session monitors; UserSwitch recorded until a switch operation exists |
 
 The frontend supplies additional APIs such as OpenURI, network monitoring,
 document export and permission storage. Adding a similarly named backend service
@@ -117,3 +123,13 @@ XML, verifies appearance changes and invalid-save retention, and checks that
 sensitive methods reject callers outside the portal frontend. It does not open
 consent dialogs or capture the host desktop. Interactive consent, fractional-scale
 capture, polkit and hotplug still require a live session test.
+
+Check native inhibitor lifetimes, acknowledgement generations and session-ending
+transitions against a mock logind in an isolated nested compositor:
+
+```sh
+FERESE_TEST_INHIBIT=1 python3 scripts/tests/test_inhibit_isolated.py
+```
+
+The shell now requires version 4 of Ferese's shell protocol; rebuild the shell
+and compositor together when upgrading.

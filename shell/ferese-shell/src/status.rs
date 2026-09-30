@@ -523,14 +523,19 @@ fn notifications(bus: &mut StatusBus) -> Option<Notifications> {
     Some(Notifications { count, dnd })
 }
 
-pub(super) fn execute_power(action: Action) -> Result<(), String> {
+pub(super) fn execute_power(action: Action, force: bool) -> Result<(), String> {
     let action = match action {
         Action::Poweroff => "poweroff",
         Action::Reboot => "reboot",
         Action::Suspend => "suspend",
         _ => return Err("Invalid power action".to_owned()),
     };
-    run_with_timeout("systemctl", &[action], "120s").map(|_| ())
+    let check = if force {
+        "--check-inhibitors=no"
+    } else {
+        "--check-inhibitors=yes"
+    };
+    run_with_timeout("systemctl", &[check, action], "120s").map(|_| ())
 }
 
 fn execute(action: &Action, settings: Option<&[String]>) -> Result<(), String> {

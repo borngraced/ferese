@@ -123,6 +123,7 @@ impl SessionLockHandler for Ferese {
         }
         self.cancel_logout_confirmation();
         self.session_lock.active = true;
+        self.portal_session.set_locked(true);
         self.session_lock.owner = Some(confirmation.ext_session_lock().clone());
         self.session_lock.confirmation = Some(confirmation);
         for capture in self.pending_screencopies.drain(..) {
@@ -165,6 +166,7 @@ impl SessionLockHandler for Ferese {
 
     fn unlock(&mut self) {
         self.session_lock = Lock::default();
+        self.portal_session.set_locked(false);
         self.restore_keyboard_focus();
         crate::backends::direct::render_all(self);
         tracing::info!("session unlocked by lock owner");

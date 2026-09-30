@@ -65,6 +65,7 @@ pub(super) struct SystemModal {
     surfaces: Vec<ModalSurface>,
     pub(super) motion: motion::PopupMotion,
     error: Option<String>,
+    inhibitors: Option<compositor_ipc::Approval>,
 }
 
 impl SystemModal {
@@ -183,13 +184,63 @@ impl FereseShell {
             );
             tasks.push(cosmic::task::message(cosmic::Action::Surface(action)));
         }
+        let mode = match content {
+            Content::Power(PowerAction::Suspend) => Some(compositor_ipc::Mode::Suspend),
+            Content::Power(PowerAction::Logout(_)) => Some(compositor_ipc::Mode::Logout),
+            Content::Power(_) => Some(compositor_ipc::Mode::Shutdown),
+            Content::Guide(_) => None,
+        };
+        if let Some(mode) = mode {
+            let id = surfaces[0].id;
+            tasks.push(Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || compositor_ipc::inhibitors(mode))
+                        .await
+                        .map_err(|error| error.to_string())
+                        .and_then(|result| result)
+                },
+                move |result| cosmic::Action::App(Message::SystemInhibitors(id, result)),
+            ));
+        }
         self.system_modal = Some(SystemModal {
             content,
             surfaces,
             motion: motion::PopupMotion::new(self.config.animations),
             error: None,
+            inhibitors: mode.is_none().then(compositor_ipc::Approval::default),
         });
         Task::batch(tasks)
+    }
+
+    pub(super) fn set_system_inhibitors(
+        &mut self,
+        id: window::Id,
+        result: Result<compositor_ipc::Approval, String>,
+    ) -> Task<Message> {
+        if let Some(modal) = &mut self.system_modal
+            && modal.contains(id)
+            && matches!(modal.content, Content::Power(_))
+            && !modal.motion.closing()
+        {
+            match result {
+                Ok(inhibitors) => modal.inhibitors = Some(inhibitors),
+                Err(error) => {
+                    modal.error = Some(error);
+                }
+            }
+        } else if let Ok(approval) = result {
+            return Self::cancel_query(approval);
+        }
+        Task::none()
+    }
+
+    fn cancel_query(approval: compositor_ipc::Approval) -> Task<Message> {
+        Task::perform(
+            async move {
+                let _ = tokio::task::spawn_blocking(move || approval.cancel()).await;
+            },
+            |_| cosmic::Action::App(Message::AnimatePower),
+        )
     }
 
     pub(super) fn attach_power_material(
@@ -232,7 +283,13 @@ impl FereseShell {
             {
                 control.cancel_logout(serial);
             }
+            let cancel = modal
+                .inhibitors
+                .take()
+                .map(Self::cancel_query)
+                .unwrap_or_else(Task::none);
             modal.motion.retarget(0.0, Instant::now());
+            return Task::batch([cancel, self.animate_system_modal()]);
         }
         self.animate_system_modal()
     }
@@ -259,12 +316,15 @@ impl FereseShell {
         {
             control.cancel_logout(serial);
         }
-        Task::batch(
-            modal
-                .surfaces
-                .into_iter()
-                .map(|surface| destroy_layer_surface(surface.id)),
-        )
+        let mut tasks = modal
+            .surfaces
+            .into_iter()
+            .map(|surface| destroy_layer_surface(surface.id))
+            .collect::<Vec<_>>();
+        if cancel && let Some(approval) = modal.inhibitors {
+            tasks.push(Self::cancel_query(approval));
+        }
+        Task::batch(tasks)
     }
 
     pub(super) fn cancel_logout_modal(&mut self, serial: u32) -> Task<Message> {
@@ -283,16 +343,22 @@ impl FereseShell {
         let Some(modal) = &mut self.system_modal else {
             return Task::none();
         };
-        if modal.motion.closing() || self.pending_power.is_some() {
+        if modal.motion.closing() || self.pending_power.is_some() || modal.inhibitors.is_none() {
             return Task::none();
         }
         let Content::Power(power) = modal.content else {
             return self.close_system_modal();
         };
+        let approval = modal.inhibitors.as_ref().unwrap().clone();
         let action = match power {
             PowerAction::Logout(serial) => {
                 if let Some(control) = &self.control {
-                    control.confirm_logout(serial);
+                    control.confirm_logout(
+                        serial,
+                        approval.revision,
+                        approval.token,
+                        approval.force(),
+                    );
                     return self.destroy_system_modal(false);
                 }
                 modal.error = Some("Ferese shell control is unavailable".to_owned());
@@ -307,10 +373,18 @@ impl FereseShell {
         let destroy = self.destroy_system_modal(false);
         let execute = Task::perform(
             async move {
-                tokio::task::spawn_blocking(move || status::execute_power(action))
-                    .await
-                    .map_err(|error| error.to_string())
-                    .and_then(|result| result)
+                tokio::task::spawn_blocking(move || {
+                    let result = approval
+                        .prepare()
+                        .and_then(|()| status::execute_power(action, approval.force()));
+                    if result.is_err() {
+                        approval.cancel();
+                    }
+                    result
+                })
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|result| result)
             },
             move |result| cosmic::Action::App(Message::PowerCompleted(id, result)),
         );
@@ -369,6 +443,33 @@ impl FereseShell {
                             .class(theme::Text::Color(palette.muted)),
                     ]
                     .spacing(12);
+                    if let Some(inhibitors) = &modal.inhibitors
+                        && !inhibitors.reasons.is_empty()
+                    {
+                        rows = rows.push(
+                            text("Applications requested that this action be prevented:")
+                                .font(shell_font())
+                                .size(13)
+                                .class(theme::Text::Color(palette.muted)),
+                        );
+                        let items = inhibitors.reasons.iter().fold(
+                            column::with_capacity(inhibitors.reasons.len()).spacing(6),
+                            |rows, reason| rows.push(text(reason).font(shell_font()).size(13)),
+                        );
+                        rows = rows.push(
+                            container(cosmic::widget::scrollable(items).height(Length::Shrink))
+                                .max_height(160),
+                        );
+                    }
+                    let label = if modal
+                        .inhibitors
+                        .as_ref()
+                        .is_some_and(|approval| approval.force())
+                    {
+                        format!("{} anyway", action.label())
+                    } else {
+                        action.label().to_owned()
+                    };
                     if let Some(error) = &modal.error {
                         rows = rows.push(text(error).size(13));
                     }
@@ -378,9 +479,14 @@ impl FereseShell {
                             button::text("Cancel")
                                 .class(ferese_theme::controls::button_style(palette, false))
                                 .on_press(cosmic::Action::App(Message::CancelPower)),
-                            button::text(action.label())
+                            button::text(label)
                                 .class(ferese_theme::controls::button_style(palette, true))
-                                .on_press(cosmic::Action::App(Message::ExecutePower)),
+                                .on_press_maybe(
+                                    modal
+                                        .inhibitors
+                                        .is_some()
+                                        .then_some(cosmic::Action::App(Message::ExecutePower))
+                                ),
                         ]
                         .spacing(10),
                     )

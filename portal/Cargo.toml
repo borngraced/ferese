@@ -31,7 +31,7 @@ memmap2 = "0.9"
 pipewire = { version = "0.10.1", features = ["v0_3_65"] }
 serde.workspace = true
 serde_json.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "process", "io-util", "net"] }
 wayland-client.workspace = true
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
 wayland-protocols-wlr.workspace = true
