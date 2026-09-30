@@ -443,24 +443,7 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
                 collector.0.push(content.bounds());
             }
         }
-        let origin = layout.bounds().position();
-        let translation = self.translation();
-        let regions = collector
-            .0
-            .into_iter()
-            .take(32)
-            .filter(|r| r.width > 0.0 && r.height > 0.0)
-            .map(|r| {
-                [
-                    (r.x - origin.x + translation.x).round() as i32,
-                    (r.y - origin.y + translation.y).round() as i32,
-                    r.width.round() as i32,
-                    r.height.round() as i32,
-                    self.radius.round().max(0.0) as i32,
-                ]
-            })
-            .collect();
-        *self.regions.lock().unwrap() = regions;
+        *self.regions.lock().unwrap() = collector.into_regions(self.translation(), self.radius);
         let cursor = self.cursor(cursor);
         self.content.as_widget_mut().update(
             tree, event, layout, cursor, renderer, clipboard, shell, viewport,
@@ -523,6 +506,26 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
 }
 
 struct CollectRegions(Vec<Rectangle>);
+
+impl CollectRegions {
+    fn into_regions(self, translation: Vector, radius: f32) -> Vec<[i32; 5]> {
+        self.0
+            .into_iter()
+            .take(32)
+            .filter(|r| r.width > 0.0 && r.height > 0.0)
+            .map(|r| {
+                [
+                    (r.x + translation.x).round() as i32,
+                    (r.y + translation.y).round() as i32,
+                    r.width.round() as i32,
+                    r.height.round() as i32,
+                    radius.round().max(0.0) as i32,
+                ]
+            })
+            .collect()
+    }
+}
+
 impl widget::Operation for CollectRegions {
     fn traverse(&mut self, children: &mut dyn FnMut(&mut dyn widget::Operation)) {
         children(self);
@@ -549,6 +552,22 @@ impl widget::Operation for CollectRegions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn centered_modal_material_tracks_surface_position_and_animation() {
+        let mut collector = CollectRegions(Vec::new());
+        let card = Rectangle::new((380.0, 420.0).into(), (440.0, 220.0).into());
+        widget::Operation::container(
+            &mut collector,
+            Some(&widget::Id::new("ferese-blur-card")),
+            card,
+        );
+        assert_eq!(
+            collector.into_regions(Vector::new(0.0, -2.0), 14.0),
+            vec![[380, 418, 440, 220, 14]]
+        );
+    }
+
     #[test]
     fn popup_waits_for_configuration_then_opens_and_closes_faster() {
         let now = std::time::Instant::now();

@@ -1416,7 +1416,10 @@ fn output_elements(
                 behavior,
             ));
             let source = window.geometry().size;
-            if !scale_content && (source.w < constrain.size.w || source.h < constrain.size.h) {
+            if material_surface.is_none()
+                && !scale_content
+                && (source.w < constrain.size.w || source.h < constrain.size.h)
+            {
                 let mut color = state.theme_settings.surface_base_color.0;
                 color[3] = close_alpha;
                 if let Some(fill) = window_tint_element(
