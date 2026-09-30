@@ -104,6 +104,7 @@ impl cosmic::Application for Consent {
         core.window.show_headerbar = false;
         core.window.border_padding = Some(0);
         core.window.content_container = false;
+        core.window.use_template = false;
         let app = Self {
             core,
             prompt,

@@ -24,6 +24,25 @@ pub struct Prompt {
     pub rememberable: Vec<String>,
 }
 
+impl Prompt {
+    fn source_list_height(&self) -> f32 {
+        let visible = &self.sources[..self.sources.len().min(4)];
+        let mut sections = 0;
+        let mut previous_kind = None;
+        if !self.window_capture {
+            for source in visible {
+                let is_window = source.window_id().is_some();
+                if previous_kind != Some(is_window) {
+                    sections += 1;
+                    previous_kind = Some(is_window);
+                }
+            }
+        }
+        let rows = visible.len();
+        (rows * 64 + rows.saturating_sub(1) * 6 + sections * 24) as f32
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Selection {
@@ -76,9 +95,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (theme, font, background, palette) = appearance();
-    let height = 180.
-        + (prompt.sources.len().min(4) as f32 * 56.)
-        + if prompt.persist_mode > 0 { 64. } else { 0. };
+    let height =
+        180. + prompt.source_list_height() + if prompt.persist_mode > 0 { 64. } else { 0. };
     cosmic::app::run::<Picker>(
         Settings::default()
             .size(cosmic::iced::Size::new(400., height))
@@ -120,6 +138,7 @@ impl cosmic::Application for Picker {
         core.window.show_headerbar = false;
         core.window.border_padding = Some(0);
         core.window.content_container = false;
+        core.window.use_template = false;
         // No preselected source: clicking Share must be a deliberate choice.
         let mut app = Self {
             core,
@@ -310,9 +329,8 @@ impl cosmic::Application for Picker {
                     .on_press(Message::Select(index)),
             );
         }
-        content = content.push(scrollable(sources).height(Length::Fixed(
-            (self.prompt.sources.len().min(4) * 56) as f32,
-        )));
+        content = content
+            .push(scrollable(sources).height(Length::Fixed(self.prompt.source_list_height())));
         content = content.push(
             self.text(if self.prompt.window_capture {
                 "Only the selected window will be captured."

@@ -216,6 +216,7 @@ impl cosmic::Application for Prompt {
         core.window.show_headerbar = false;
         core.window.border_padding = Some(0);
         core.window.content_container = false;
+        core.window.use_template = false;
         let height = content_height(&description, None);
         let bounds = core
             .main_window_id()
