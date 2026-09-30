@@ -110,6 +110,23 @@ def private_bus_checks():
                                          GLib.Variant("(su)", ("org.freedesktop.portal.Desktop", 0)), GLib.VariantType.new("(u)"),
                                          Gio.DBusCallFlags.NONE, 5000, None).unpack()[0]
             assert request_name == 1
+            version, = call("org.freedesktop.DBus.Properties", "Get", GLib.Variant("(ss)", ("org.freedesktop.impl.portal.ScreenCast", "version")), "(v)")
+            assert version == 4
+            for mode in (0, 1, 2):
+                session = PATH + f"/session/test/persist{mode}"
+                handle = PATH + f"/request/test/persist{mode}"
+                assert call("org.freedesktop.impl.portal.ScreenCast", "CreateSession", GLib.Variant("(oosa{sv})", (handle, session, "org.test.Share", {})), "(ua{sv})") == (0, {})
+                options = {"persist_mode": GLib.Variant("u", mode), "restore_data": GLib.Variant("(suv)", ("Other", 9, GLib.Variant("s", "foreign data")))}
+                assert call("org.freedesktop.impl.portal.ScreenCast", "SelectSources", GLib.Variant("(oosa{sv})", (handle, session, "org.test.Share", options)), "(ua{sv})") == (0, {})
+                bus.call_sync(NAME, session, "org.freedesktop.impl.portal.Session", "Close", None, None, Gio.DBusCallFlags.NONE, 5000, None)
+            session = PATH + "/session/test/badpersist"
+            handle = PATH + "/request/test/badpersist"
+            call("org.freedesktop.impl.portal.ScreenCast", "CreateSession", GLib.Variant("(oosa{sv})", (handle, session, "org.test.Share", {})))
+            try:
+                call("org.freedesktop.impl.portal.ScreenCast", "SelectSources", GLib.Variant("(oosa{sv})", (handle, session, "org.test.Share", {"persist_mode": GLib.Variant("u", 3)})))
+                raise AssertionError("Invalid persistence mode succeeded")
+            except GLib.Error as error:
+                assert "InvalidArgs" in str(error), error
             response, values = call("org.freedesktop.impl.portal.Screenshot", "Screenshot", params, "(ua{sv})")
             assert response == 2 and values == {}
 

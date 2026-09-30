@@ -1,19 +1,15 @@
 //! ScreenCast portal backend. Only the portal frontend may create sessions;
-//! consent never survives a session, a process restart, or a capture failure.
+//! saved monitor consent is restored only through the frontend permission store.
 use crate::{
     capture::{Capture, Source},
     picker::Prompt,
     stream::Ready,
 };
-use std::{
-    collections::HashMap,
-    process::Stdio,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
+use std::{collections::HashMap, process::Stdio, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
@@ -25,43 +21,49 @@ use zbus::{
     object_server::SignalEmitter,
     zvariant::{OwnedObjectPath, OwnedValue, Value},
 };
-pub(crate) type Options = HashMap<String, OwnedValue>;
 
+pub(crate) type Options = HashMap<String, OwnedValue>;
 pub(crate) static CONFIG_TRANSACTION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+const FRONTEND: &str = "org.freedesktop.portal.Desktop";
+const PATH: &str = "/org/freedesktop/portal/desktop";
 
 #[derive(Debug)]
 enum StartError {
     Cancelled,
     Failed(String),
 }
+
 impl From<String> for StartError {
     fn from(message: String) -> Self {
         Self::Failed(message)
     }
 }
+
 impl From<&str> for StartError {
     fn from(message: &str) -> Self {
         Self::Failed(message.into())
     }
 }
-const FRONTEND: &str = "org.freedesktop.portal.Desktop";
-const PATH: &str = "/org/freedesktop/portal/desktop";
+
 #[derive(Default)]
 pub(crate) struct Cancel {
     pub(crate) stopped: AtomicBool,
     changed: Notify,
 }
+
 impl Cancel {
     pub(crate) fn stop(&self) {
         self.stopped.store(true, Ordering::SeqCst);
         self.changed.notify_one();
     }
+
     pub(crate) async fn wait(&self) {
         if !self.stopped.load(Ordering::SeqCst) {
             self.changed.notified().await;
         }
     }
 }
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Phase {
     Created,
@@ -69,6 +71,7 @@ enum Phase {
     Starting,
     Running,
 }
+
 struct Session {
     owner: String,
     app: String,
@@ -76,15 +79,20 @@ struct Session {
     multiple: bool,
     cursor: bool,
     bar_controlled: bool,
+    persist_mode: u32,
+    restore: Option<crate::restore::Restore>,
     cancel: Arc<Cancel>,
 }
+
 #[derive(Clone, Default)]
 pub struct Backend {
     sessions: Arc<Mutex<HashMap<String, Session>>>,
 }
+
 // This private interface only transfers stop controls to the shell's own recorder.
 // The ordinary portal picker and all session revocation rules still apply.
 struct RecorderControl(Backend);
+
 #[zbus::interface(name = "org.ferese.ScreenRecorder")]
 impl RecorderControl {
     async fn use_bar_controls(
@@ -121,12 +129,14 @@ impl RecorderControl {
         Ok(())
     }
 }
+
 fn owns_session(sender: &str, path: &str) -> bool {
     let Some(sender) = sender.strip_prefix(':') else {
         return false;
     };
     path.starts_with(&format!("{PATH}/session/{}/", sender.replace('.', "_")))
 }
+
 fn shell_recorder(pid: u32) -> bool {
     use std::os::unix::fs::MetadataExt;
     let matches_binary = |pid: u32, name: &str| -> Option<bool> {
@@ -166,11 +176,14 @@ pub(crate) async fn authorize(
             "Use the desktop portal".into(),
         ));
     }
+
     Ok(sender.to_string())
 }
+
 fn error(message: &str) -> zbus::fdo::Error {
     zbus::fdo::Error::InvalidArgs(message.into())
 }
+
 fn source_options(options: &Options) -> zbus::fdo::Result<(bool, bool)> {
     let number = |key: &str, default| {
         options
@@ -194,8 +207,10 @@ fn source_options(options: &Options) -> zbus::fdo::Result<(bool, bool)> {
         .transpose()
         .map_err(|_| error("Invalid multiple option"))?
         .unwrap_or(false);
+
     Ok((multiple, cursor == 2))
 }
+
 impl Backend {
     async fn end(&self, connection: &Connection, path: &str) {
         let session = self.sessions.lock().await.remove(path);
@@ -216,20 +231,24 @@ impl Backend {
         }
     }
 }
+
 #[zbus::interface(name = "org.freedesktop.impl.portal.ScreenCast")]
 impl Backend {
     #[zbus(property, name = "version")]
     fn version(&self) -> u32 {
-        3
+        4
     }
+
     #[zbus(property)]
     fn available_source_types(&self) -> u32 {
         1
     }
+
     #[zbus(property)]
     fn available_cursor_modes(&self) -> u32 {
         3
     }
+
     async fn create_session(
         &self,
         _handle: OwnedObjectPath,
@@ -276,11 +295,14 @@ impl Backend {
                 multiple: false,
                 cursor: false,
                 bar_controlled: false,
+                persist_mode: 0,
+                restore: None,
                 cancel: Arc::default(),
             },
         );
         Ok((0, Options::new()))
     }
+
     async fn select_sources(
         &self,
         _handle: OwnedObjectPath,
@@ -291,19 +313,25 @@ impl Backend {
         #[zbus(header)] header: Header<'_>,
     ) -> zbus::fdo::Result<(u32, Options)> {
         let owner = authorize(connection, &header).await?;
-        let settings = source_options(&options);
+        let settings = source_options(&options).and_then(|(multiple, cursor)| {
+            Ok((multiple, cursor, crate::restore::persist_mode(&options)?))
+        });
         let mut sessions = self.sessions.lock().await;
         let session = sessions
             .get_mut(session_handle.as_str())
             .ok_or_else(|| error("Unknown session"))?;
+
         if session.owner != owner
             || session.app != app_id
             || !matches!(session.phase, Phase::Created | Phase::Selected)
         {
             return Err(error("Invalid session state"));
         }
+
         match settings {
-            Ok((multiple, cursor)) => {
+            Ok((multiple, cursor, persist_mode)) => {
+                session.persist_mode = persist_mode;
+                session.restore = crate::restore::Restore::read(&options);
                 session.multiple = multiple;
                 session.cursor = cursor;
                 session.phase = Phase::Selected;
@@ -316,6 +344,7 @@ impl Backend {
             }
         }
     }
+
     #[allow(clippy::too_many_arguments)] // ScreenCast D-Bus method signature.
     async fn start(
         &self,
@@ -328,25 +357,31 @@ impl Backend {
         #[zbus(header)] header: Header<'_>,
     ) -> zbus::fdo::Result<(u32, Options)> {
         let owner = authorize(connection, &header).await?;
+
         if !handle
             .as_str()
             .starts_with("/org/freedesktop/portal/desktop/request/")
         {
             return Err(error("Invalid request path"));
         }
-        let (multiple, cursor, bar_controlled, cancel) = {
+
+        let (multiple, cursor, bar_controlled, persist_mode, restore, cancel) = {
             let mut sessions = self.sessions.lock().await;
             let session = sessions
                 .get_mut(session_handle.as_str())
                 .ok_or_else(|| error("Unknown session"))?;
+
             if session.owner != owner || session.app != app_id || session.phase != Phase::Selected {
                 return Err(error("Select sources before starting a session"));
             }
+
             session.phase = Phase::Starting;
             (
                 session.multiple,
                 session.cursor,
                 session.bar_controlled,
+                session.persist_mode,
+                session.restore.clone(),
                 session.cancel.clone(),
             )
         };
@@ -360,6 +395,7 @@ impl Backend {
                 },
             )
             .await;
+
         match inserted {
             Ok(true) => (),
             result => {
@@ -370,32 +406,46 @@ impl Backend {
                 });
             }
         }
+
+        let sharing = start_streams(
+            &app_id,
+            &parent_window,
+            multiple,
+            cursor,
+            persist_mode,
+            restore,
+            bar_controlled,
+        );
         let result = tokio::select! {
             _ = cancel.wait() => Err(StartError::Cancelled),
-            result = tokio::time::timeout(Duration::from_secs(120), start_streams(if bar_controlled { "Ferese" } else { &app_id }, &parent_window, multiple, cursor)) => result.unwrap_or_else(|_| Err(StartError::Failed("Sharing request timed out".into()))),
+            result = tokio::time::timeout(Duration::from_secs(120), sharing) => {
+                result.unwrap_or_else(|_| Err(StartError::Failed("Sharing request timed out".into())))
+            }
         };
         let _ = connection
             .object_server()
             .remove::<Request, _>(handle)
             .await;
+
         match result {
-            Ok((children, streams)) if !cancel.stopped.load(Ordering::SeqCst) => {
+            Ok((children, streams, mut reply)) if !cancel.stopped.load(Ordering::SeqCst) => {
                 if let Some(session) = self.sessions.lock().await.get_mut(session_handle.as_str()) {
                     session.phase = Phase::Running;
                 }
                 let backend = self.clone();
                 let connection = connection.clone();
                 let path = session_handle.to_string();
+
                 tokio::spawn(async move {
                     supervise(children, cancel).await;
                     backend.end(&connection, &path).await;
                 });
-                let mut reply = Options::new();
                 reply.insert(
                     "streams".into(),
                     OwnedValue::try_from(Value::from(streams))
                         .map_err(|e| error(&e.to_string()))?,
                 );
+
                 Ok((0, reply))
             }
             result => {
@@ -412,27 +462,37 @@ impl Backend {
         }
     }
 }
+
 pub(crate) struct Request {
     pub(crate) cancel: Arc<Cancel>,
     pub(crate) owner: String,
 }
+
 #[zbus::interface(name = "org.freedesktop.impl.portal.Request")]
 impl Request {
     fn close(&self, #[zbus(header)] header: Header<'_>) -> zbus::fdo::Result<()> {
         if header.sender().map(|s| s.as_str()) != Some(self.owner.as_str()) {
             return Err(zbus::fdo::Error::AccessDenied("Wrong request owner".into()));
         }
+
         self.cancel.stop();
         Ok(())
     }
 }
+
 struct SessionObject {
     backend: Backend,
     path: String,
     owner: String,
 }
+
 #[zbus::interface(name = "org.freedesktop.impl.portal.Session")]
 impl SessionObject {
+    #[zbus(property, name = "version")]
+    fn version(&self) -> u32 {
+        1
+    }
+
     async fn close(
         &self,
         #[zbus(connection)] connection: &Connection,
@@ -441,12 +501,15 @@ impl SessionObject {
         if header.sender().map(|s| s.as_str()) != Some(self.owner.as_str()) {
             return Err(zbus::fdo::Error::AccessDenied("Wrong session owner".into()));
         }
+
         self.backend.end(connection, &self.path).await;
         Ok(())
     }
+
     #[zbus(signal)]
     async fn closed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
+
 // All helpers die with the service, including a picker awaiting user input.
 pub(crate) fn child_command() -> Result<Command, String> {
     child_command_for(std::env::current_exe().map_err(|e| e.to_string())?)
@@ -467,9 +530,11 @@ pub(crate) fn child_command_for(program: impl AsRef<std::ffi::OsStr>) -> Result<
             Ok(())
         });
     }
+
     command.kill_on_drop(true);
     Ok(command)
 }
+
 async fn picker(prompt: &Prompt) -> Result<Child, String> {
     let mut child = child_command()?
         .arg("--picker")
@@ -485,44 +550,104 @@ async fn picker(prompt: &Prompt) -> Result<Child, String> {
         .await
         .map_err(|e| e.to_string())?;
     drop(input);
+
     Ok(child)
 }
+
 async fn start_streams(
     app: &str,
     parent: &str,
     multiple: bool,
     cursor: bool,
-) -> Result<(Vec<Child>, Vec<(u32, Options)>), StartError> {
-    let sources = tokio::task::spawn_blocking(|| {
-        Capture::connect(&AtomicBool::new(false)).map(|capture| capture.sources())
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    let prompt = Prompt {
-        app: app.to_owned(),
-        sources,
-        multiple,
-        parent: parent.into(),
-        window_capture: false,
+    requested_persistence: u32,
+    restore: Option<crate::restore::Restore>,
+    bar_controlled: bool,
+) -> Result<(Vec<Child>, Vec<(u32, Options)>, Options), StartError> {
+    let mut discovery = tokio::task::spawn_blocking(|| Capture::connect(&AtomicBool::new(false)))
+        .await
+        .map_err(|e| e.to_string())??;
+    let sources = discovery.sources();
+    let outputs = crate::desktop::ipc("get-outputs", serde_json::json!({})).await?;
+    let rememberable = sources
+        .iter()
+        .filter(|source| {
+            crate::restore::Restore::create(app, cursor, std::slice::from_ref(*source), &outputs, 1)
+                .is_some()
+        })
+        .map(|source| source.name.clone())
+        .collect::<Vec<_>>();
+    let restored = restore.and_then(|restore| {
+        let selected = restore.resolve(app, cursor, multiple, &sources, &outputs)?;
+        Some((selected, restore.effective_mode(requested_persistence)))
+    });
+    let (selected, persist_mode) = if let Some(restored) = restored {
+        restored
+    } else {
+        let prompt = Prompt {
+            app: if bar_controlled { "Ferese" } else { app }.to_owned(),
+            sources,
+            multiple,
+            rememberable: rememberable.clone(),
+            parent: parent.into(),
+            window_capture: false,
+            persist_mode: if rememberable.is_empty() {
+                0
+            } else {
+                requested_persistence
+            },
+        };
+        let picker = picker(&prompt).await?;
+        let picker_pid = picker.id().ok_or("Missing picker process ID")?;
+        let selection = picker.wait_with_output().await.map_err(|e| e.to_string())?;
+        if !selection.status.success() {
+            return Err(StartError::Cancelled);
+        }
+        let selection: crate::picker::Selection =
+            serde_json::from_slice(&selection.stdout).map_err(|_| StartError::Cancelled)?;
+        if selection.persist_mode > prompt.persist_mode {
+            return Err("Invalid persistence selection".into());
+        }
+        let selected = validate_selection(&prompt.sources, &selection.names, multiple)?;
+        crate::desktop::wait_for_surface_removal(picker_pid).await?;
+
+        (selected, selection.persist_mode)
     };
-    let picker = picker(&prompt).await?;
-    let picker_pid = picker.id().ok_or("Missing picker process ID")?;
-    let selection = picker.wait_with_output().await.map_err(|e| e.to_string())?;
-    if !selection.status.success() {
-        return Err(StartError::Cancelled);
+
+    let mut reply = Options::new();
+    let fresh_outputs = crate::desktop::ipc("get-outputs", serde_json::json!({})).await?;
+
+    if !crate::restore::selection_unchanged(&selected, &outputs, &fresh_outputs) {
+        return Err("A selected display changed while approval was pending".into());
     }
-    let names: Vec<String> =
-        serde_json::from_slice(&selection.stdout).map_err(|_| StartError::Cancelled)?;
-    let selected = validate_selection(&prompt.sources, &names, multiple)?;
-    crate::desktop::wait_for_surface_removal(picker_pid).await?;
+
+    let approved = crate::restore::Restore::create(app, cursor, &selected, &outputs, persist_mode);
+    let effective_persistence = if let Some(approved) = approved.filter(|_| persist_mode > 0) {
+        reply.insert("restore_data".into(), approved.value()?);
+        persist_mode
+    } else {
+        0
+    };
+    reply.insert("persist_mode".into(), effective_persistence.into());
+
+    let generations = selected
+        .iter()
+        .map(|source| {
+            discovery
+                .generation(&source.name)
+                .map(|generation| (source.name.clone(), generation))
+                .ok_or("A selected display disconnected before startup")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut children = Vec::new();
     let mut streams = Vec::new();
-    for source in &selected {
+
+    for (source, (_, generation)) in selected.iter().zip(&generations) {
         let mut child = child_command()?
             .args([
                 "--stream",
                 &source.name,
                 if cursor { "embedded" } else { "hidden" },
+                &generation.to_string(),
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -541,26 +666,39 @@ async fn start_streams(
         .map_err(|e| e.to_string())?;
         let ready: Ready =
             serde_json::from_str(&line).map_err(|_| "PipeWire stream could not start")?;
+
         if ready.node == u32::MAX {
             return Err("Invalid PipeWire node".into());
         }
+
         streams.push((source.name.clone(), ready));
         children.push(child);
     }
-    let outputs = crate::desktop::ipc("get-outputs", serde_json::json!({})).await?;
+
+    tokio::task::spawn_blocking(move || discovery.validate_sources(&generations))
+        .await
+        .map_err(|error| error.to_string())??;
+
+    let final_outputs = crate::desktop::ipc("get-outputs", serde_json::json!({})).await?;
+    if !crate::restore::selection_unchanged(&selected, &outputs, &final_outputs) {
+        return Err("A selected display changed during stream startup".into());
+    }
+
     if children
         .iter_mut()
         .any(|child| !matches!(child.try_wait(), Ok(None)))
     {
         return Err("A selected stream ended during startup".into());
     }
+
     let streams = streams
         .into_iter()
         .map(|(name, ready)| {
-            monitor_metadata(&outputs, &name, &ready).map(|metadata| (ready.node, metadata))
+            monitor_metadata(&final_outputs, &name, &ready).map(|metadata| (ready.node, metadata))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok((children, streams))
+
+    Ok((children, streams, reply))
 }
 
 fn monitor_metadata(
@@ -598,15 +736,18 @@ fn monitor_metadata(
             .and_then(|value| u32::try_from(value).ok())
             .ok_or("Invalid physical output height")?,
     );
+
     if matches!(
         output["transform"].as_str(),
         Some("rotate_90" | "rotate_270" | "flipped_90" | "flipped_270")
     ) {
         physical = (physical.1, physical.0);
     }
+
     if (ready.width, ready.height) != physical {
         return Err("Selected monitor changed mode during startup".into());
     }
+
     Ok(HashMap::from([
         ("source_type".into(), 1u32.into()),
         (
@@ -632,6 +773,7 @@ fn validate_selection(
     if names.is_empty() || names.len() > sources.len() || (!multiple && names.len() != 1) {
         return Err("Invalid display selection".into());
     }
+
     let mut selected = Vec::new();
     for name in names {
         if selected.iter().any(|s: &Source| &s.name == name) {
@@ -645,8 +787,10 @@ fn validate_selection(
                 .clone(),
         );
     }
+
     Ok(selected)
 }
+
 async fn supervise(mut children: Vec<Child>, cancel: Arc<Cancel>) {
     loop {
         if cancel.stopped.load(Ordering::SeqCst)
@@ -658,11 +802,14 @@ async fn supervise(mut children: Vec<Child>, cancel: Arc<Cancel>) {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
+
     cancel.stop();
+
     for child in &mut children {
         let _ = child.kill().await;
     }
 }
+
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let backend = Backend::default();
     let settings = crate::settings::Settings::new();
@@ -688,11 +835,13 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         )?
         .build()
         .await?;
+
     tokio::spawn(settings.watch(connection.clone()));
     tokio::spawn(background.watch(connection.clone()));
     tokio::spawn(lockdown.watch(connection.clone()));
     tokio::spawn(inhibit.clone().watch(connection.clone()));
     tokio::spawn(inhibit.clone().watch_logind());
+
     // Frontend death must revoke every stream, even if Session.Close never arrives.
     loop {
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -707,6 +856,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         requests.revoke_stale(owner.as_deref()).await;
         shortcuts.revoke_stale(&connection, owner.as_deref()).await;
         inhibit.revoke_stale(&connection, owner.as_deref()).await;
+
         let stale: Vec<_> = backend
             .sessions
             .lock()
@@ -720,6 +870,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,6 +890,7 @@ mod tests {
         ));
         assert!(!shell_recorder(std::process::id()));
     }
+
     #[test]
     fn rejects_unimplemented_sources_and_cursor_modes() {
         assert_eq!(source_options(&Options::new()).unwrap(), (false, false));
@@ -753,6 +905,7 @@ mod tests {
         }
         assert!(source_options(&HashMap::from([("cursor_mode".into(), 4u32.into())])).is_err());
     }
+
     #[test]
     fn monitor_metadata_uses_logical_fractional_scale_geometry() {
         let outputs = serde_json::json!([{"name":"display","enabled":true,"x":-1440,"y":20,"width":2560,"height":1440,"scale":1.5,"current_mode":{"width":3840,"height":2160}}]);

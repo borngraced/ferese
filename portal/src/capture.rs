@@ -73,6 +73,7 @@ pub struct Capture {
     connection: Connection,
     queue: EventQueue<State>,
     state: State,
+    selected_output: Option<u32>,
 }
 
 impl Capture {
@@ -84,6 +85,7 @@ impl Capture {
             connection,
             queue,
             state: State::default(),
+            selected_output: None,
         };
         // Two syncs deliver registry bindings and output metadata without an
         // uninterruptible roundtrip on a stalled compositor.
@@ -103,6 +105,32 @@ impl Capture {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !done.load(Ordering::Relaxed) {
             self.dispatch(stop, deadline)?;
+        }
+        Ok(())
+    }
+
+    pub fn generation(&self, name: &str) -> Option<u32> {
+        self.state
+            .outputs
+            .iter()
+            .find(|output| output.source.name == name)
+            .map(|output| output.global)
+    }
+
+    pub fn pin_output(&mut self, name: &str, generation: u32) -> Result<(), String> {
+        if self.generation(name) != Some(generation) {
+            return Err("Shared monitor was replaced".into());
+        }
+        self.selected_output = Some(generation);
+        Ok(())
+    }
+
+    pub fn validate_sources(&mut self, selected: &[(String, u32)]) -> Result<(), String> {
+        self.sync(&AtomicBool::new(false))?;
+        for (name, generation) in selected {
+            if self.generation(name) != Some(*generation) {
+                return Err("A selected display disconnected during approval".into());
+            }
         }
         Ok(())
     }
@@ -134,6 +162,14 @@ impl Capture {
             .iter()
             .find(|o| o.source.name == name)
             .ok_or("Shared monitor disconnected")?;
+
+        if self
+            .selected_output
+            .is_some_and(|selected| selected != output.global)
+        {
+            return Err("Shared monitor was replaced".into());
+        }
+        self.selected_output = Some(output.global);
 
         let transform = output.transform;
         self.state.result = None;

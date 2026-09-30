@@ -18,6 +18,17 @@ pub struct Prompt {
     pub parent: String,
     #[serde(default)]
     pub window_capture: bool,
+    #[serde(default)]
+    pub persist_mode: u32,
+    #[serde(default)]
+    pub rememberable: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Selection {
+    pub names: Vec<String>,
+    pub persist_mode: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -33,6 +44,7 @@ enum Message {
         >,
     ),
     Select(usize),
+    Remember,
     Share,
     Cancel,
 }
@@ -43,6 +55,7 @@ struct Picker {
     parent: Option<std::sync::Arc<crate::parent::Parent>>,
     prompt: Prompt,
     selected: Vec<usize>,
+    remember: bool,
     background: cosmic::iced::Color,
     palette: ferese_theme::Palette,
     font: cosmic::font::Font,
@@ -65,7 +78,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (theme, font, background, palette) = appearance();
-    let height = 180. + (prompt.sources.len().min(4) as f32 * 56.);
+    let height = 180.
+        + (prompt.sources.len().min(4) as f32 * 56.)
+        + if prompt.persist_mode > 0 { 64. } else { 0. };
     cosmic::app::run::<Picker>(
         Settings::default()
             .size(cosmic::iced::Size::new(400., height))
@@ -114,6 +129,7 @@ impl cosmic::Application for Picker {
             parent: None,
             prompt,
             selected: Vec::new(),
+            remember: false,
             background,
             palette,
             font,
@@ -176,14 +192,28 @@ impl cosmic::Application for Picker {
                     }
                     self.selected.push(index);
                 }
+                self.remember &= self.can_remember();
             }
+            Message::Remember if self.can_remember() => self.remember = !self.remember,
             Message::Share if !self.selected.is_empty() => {
                 let names: Vec<_> = self
                     .selected
                     .iter()
                     .map(|i| &self.prompt.sources[*i].name)
                     .collect();
-                println!("{}", serde_json::to_string(&names).unwrap());
+                if self.prompt.window_capture {
+                    println!("{}", serde_json::to_string(&names).unwrap());
+                } else {
+                    let selection = Selection {
+                        names: names.into_iter().cloned().collect(),
+                        persist_mode: if self.remember && self.can_remember() {
+                            self.prompt.persist_mode
+                        } else {
+                            0
+                        },
+                    };
+                    println!("{}", serde_json::to_string(&selection).unwrap());
+                }
                 let _ = std::io::stdout().flush();
                 return cosmic::iced::exit();
             }
@@ -280,6 +310,28 @@ impl cosmic::Application for Picker {
             .size(12)
             .width(Length::Fill),
         );
+        if self.prompt.persist_mode > 0 && !self.prompt.window_capture {
+            let label = if !self.can_remember() {
+                "This selection needs approval each time"
+            } else if self.prompt.persist_mode == 1 {
+                "Allow without asking while this app is running"
+            } else {
+                "Allow this selection without asking again"
+            };
+            content = content.push(
+                button::custom(ferese_theme::menus::row(
+                    label,
+                    ferese_theme::menus::switch(self.remember, self.palette, 1.),
+                    self.font,
+                ))
+                .class(ferese_theme::controls::navigation_style(
+                    self.palette,
+                    false,
+                ))
+                .width(Length::Fill)
+                .on_press_maybe(self.can_remember().then_some(Message::Remember)),
+            );
+        }
         let mut share = button::custom(
             row![
                 self.text(if self.prompt.window_capture {
@@ -311,6 +363,16 @@ impl cosmic::Application for Picker {
 }
 
 impl Picker {
+    fn can_remember(&self) -> bool {
+        !self.selected.is_empty()
+            && self.selected.len() <= 16
+            && self.selected.iter().all(|index| {
+                self.prompt
+                    .rememberable
+                    .contains(&self.prompt.sources[*index].name)
+            })
+    }
+
     fn text<'a>(
         &self,
         content: impl Into<std::borrow::Cow<'a, str>> + 'a,

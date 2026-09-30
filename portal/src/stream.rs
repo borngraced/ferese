@@ -110,7 +110,11 @@ fn pod(object: spa::pod::Object) -> Vec<u8> {
     .into_inner()
 }
 
-pub fn run(name: String, cursor: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(
+    name: String,
+    cursor: bool,
+    generation: Option<u32>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let stop = Arc::new(AtomicBool::new(false));
     let pipe_stop = stop.clone();
     std::thread::spawn(move || {
@@ -119,6 +123,9 @@ pub fn run(name: String, cursor: bool) -> Result<(), Box<dyn std::error::Error>>
         pipe_stop.store(true, Ordering::Relaxed);
     });
     let mut capture = Capture::connect(&stop)?;
+    if let Some(generation) = generation {
+        capture.pin_output(&name, generation)?;
+    }
     let first = capture.frame(&name, cursor, &stop, Vec::new())?;
     let (width, height) = (first.width, first.height);
     let latest = Arc::new(Mutex::new(first));

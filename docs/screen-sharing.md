@@ -38,7 +38,14 @@ windows accessible after display selection. The command-line recorder keeps the
 sharing window when it is not launched by the shell. Press **Stop sharing** or
 close the sharing window to revoke an ordinary application’s session. Closing the requesting application,
 locking Ferese, disconnecting the selected display, or changing its capture size
-also ends sharing. A new request needs fresh consent; selections are not saved.
+also ends sharing. By default, each request asks for consent. If an application requests saved
+permissions, the picker offers an **Allow without asking** switch, off by default.
+Permissions can last while the application runs or until revoked, as requested
+by the app. The standard portal frontend owns permission storage and revocation.
+A changed or missing display, different app, or changed cursor options asks again.
+Displays without a reliable EDID identity, including nested previews, always need
+fresh consent. Stopping a stream ends that stream; it does not erase a previously
+saved permission.
 Everything visible on a shared display, including notifications, is included.
 
 ## Installation
@@ -75,7 +82,7 @@ configuration is preserved during installation.
 - Wayland parent-window relationships for the consent picker.
 - Bounded frame storage and reusable shared-memory buffers.
 - Cancellation during selection, an explicit stop control, and process cleanup.
-- ScreenCast backend version 3, without persistent or automatic consent.
+- ScreenCast backend version 4 with explicit opt-in saved display permissions.
 
 Window-only sharing, region selection, and audio capture in Ferese’s recorder
 are not implemented yet. Other recording applications can handle audio separately.

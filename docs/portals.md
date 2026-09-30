@@ -47,7 +47,9 @@ standard file, print and application dialogs. Install both backends.
   for acknowledgements for up to one second. Power confirmations list blockers
   and recheck them before acting; authentication failure cancels the query.
   UserSwitch is recorded, but Ferese currently has no user-switch operation.
-- **ScreenCast:** monitor sharing with a native picker and PipeWire streams.
+- **ScreenCast:** monitor sharing with a native picker, PipeWire streams and explicit opt-in
+  saved permissions. The frontend stores and revokes saved choices. Invalid
+  restore data or changed display identity requires fresh consent.
   See [screen sharing](screen-sharing.md) for lifetime and recording details.
 
 Native request dialogs use Ferese's theme and are floating windows. Screenshot,
@@ -71,7 +73,7 @@ Matching D-Bus signatures does not establish complete feature parity.
 | Settings | Native, including appearance change signals |
 | Screenshot | Native screen/area/window/active-window capture and PickColor |
 | Wallpaper | Native desktop, lock-screen and combined targets |
-| ScreenCast | Native monitors with logical geometry metadata; window sources and persistence remain missing |
+| ScreenCast | Native v4 monitors with logical geometry and opt-in saved permissions; window sources remain missing |
 | Access, Account, AppChooser, DynamicLauncher, FileChooser, Notification, Print | Delegated to GTK |
 | Background | Native application state, per-instance consent and XDG autostart |
 | Usb | Native consent; standard frontend handles enumeration and device descriptors |
@@ -133,3 +135,11 @@ FERESE_TEST_INHIBIT=1 python3 scripts/tests/test_inhibit_isolated.py
 
 The shell now requires version 4 of Ferese's shell protocol; rebuild the shell
 and compositor together when upgrading.
+
+Check restored sharing, mode downgrade, stale-data fallback, output-generation
+validation and frontend-disconnect cleanup with synthetic monitor identities on
+an isolated bus and nested compositor:
+
+```sh
+FERESE_TEST_RESTORE=1 python3 scripts/tests/test_restore_isolated.py
+```

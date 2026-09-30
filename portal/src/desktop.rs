@@ -474,6 +474,8 @@ async fn select_window(app: &str, parent: &str) -> Result<Option<u64>, String> {
         multiple: false,
         parent: parent.into(),
         window_capture: true,
+        persist_mode: 0,
+        rememberable: Vec::new(),
     };
     let mut child = crate::backend::child_command()?
         .arg("--picker")

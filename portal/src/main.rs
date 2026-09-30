@@ -8,6 +8,7 @@ mod lockdown;
 mod parent;
 mod permissions;
 mod picker;
+mod restore;
 mod settings;
 mod shortcuts;
 mod stream;
@@ -17,8 +18,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.as_slice() {
         [flag, name, cursor] if flag == "--stream" => {
-            stream::run(name.clone(), cursor == "embedded")
+            stream::run(name.clone(), cursor == "embedded", None)
         }
+        [flag, name, cursor, generation] if flag == "--stream" => stream::run(
+            name.clone(),
+            cursor == "embedded",
+            Some(generation.parse()?),
+        ),
         [flag] if flag == "--sources" => {
             let capture = capture::Capture::connect(&std::sync::atomic::AtomicBool::new(false))?;
             println!("{}", serde_json::to_string(&capture.sources())?);
