@@ -13,7 +13,7 @@ windows, and a shared theme for its desktop tools.
 
 `Super` is usually the Windows key. All these shortcuts can be changed in Settings.
 
-| Shortcut | Action |
+| Control | Action |
 | --- | --- |
 | Super + Enter | Open a terminal |
 | Super + H / J / K / L | Focus left / down / up / right |
@@ -24,13 +24,14 @@ windows, and a shared theme for its desktop tools.
 | Print Screen | Capture the active monitor and open Satty |
 | Super + Shift + S | Select a screenshot area |
 | Super + Shift + E | Ask to log out |
+| Super + left-button drag | Move a floating window |
+| Super + right-button drag | Resize a floating window |
+| Three-finger swipe up / down | Next / previous workspace |
+| Three-finger swipe left / right | Focus the window to the right / left |
+| Login shortcut guide | Appears at login; disable in Settings → Shortcuts |
 
 See [all shortcuts and mouse actions](shortcuts.md), including Super-drag to move
 and Super-right-drag to resize floating windows.
-
-Three-finger swipes up/down switch workspaces; left/right focus windows.
-Change gestures in **Settings → Shortcuts**. The login shortcut guide can be
-disabled there too.
 
 ## Desktop guides
 

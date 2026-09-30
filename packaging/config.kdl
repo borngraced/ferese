@@ -1,25 +1,129 @@
+// Commands run directly, without a shell. Install optional apps before using them.
 commands {
     terminal "foot"
+    browser "firefox"
+    editor "zed"
+    lock "ferese-lock"
     screenshot "ferese-screenshot"
     screenshot-full "ferese-screenshot" "--full"
+
+    brightness-up "brightnessctl" "set" "2%+"
+    brightness-down "brightnessctl" "set" "2%-"
+    volume-up "wpctl" "set-volume" "-l" "1.0" "@DEFAULT_AUDIO_SINK@" "5%+"
+    volume-down "wpctl" "set-volume" "-l" "1.0" "@DEFAULT_AUDIO_SINK@" "5%-"
+    mute "wpctl" "set-mute" "@DEFAULT_AUDIO_SINK@" "toggle"
+    mic-mute "wpctl" "set-mute" "@DEFAULT_AUDIO_SOURCE@" "toggle"
 }
+
+// These supplement the built-in shortcuts listed in docs/shortcuts.md.
+binding "Super+B" "spawn" "browser"
+binding "Super+Z" "spawn" "editor"
+binding "Super+Alt+L" "spawn" "lock"
+binding "XF86MonBrightnessUp" "spawn" "brightness-up"
+binding "XF86MonBrightnessDown" "spawn" "brightness-down"
+binding "XF86AudioRaiseVolume" "spawn" "volume-up"
+binding "XF86AudioLowerVolume" "spawn" "volume-down"
+binding "XF86AudioMute" "spawn" "mute"
+binding "XF86AudioMicMute" "spawn" "mic-mute"
+
+binding "Super+Left" "focus" "left"
+binding "Super+Down" "focus" "down"
+binding "Super+Up" "focus" "up"
+binding "Super+Right" "focus" "right"
+binding "Super+Ctrl+Left" "move" "left"
+binding "Super+Ctrl+Down" "move" "down"
+binding "Super+Ctrl+Up" "move" "up"
+binding "Super+Ctrl+Right" "move" "right"
+binding "Super+Alt+Left" "resize" "left"
+binding "Super+Alt+Down" "resize" "down"
+binding "Super+Alt+Up" "resize" "up"
+binding "Super+Alt+Right" "resize" "right"
+
+// Replace a swipe action with "toggle-overview", "move" "left", or another action.
+binding "Swipe3Up" "workspace-next"
+binding "Swipe3Down" "workspace-previous"
+binding "Swipe3Left" "focus" "right"
+binding "Swipe3Right" "focus" "left"
 
 input {
     xkb-layout "us"
+    xkb-variant ""
+    xkb-options
     focus-follows-mouse #false
+    repeat-rate 25
+    repeat-delay-ms 600
 
     touchpad {
+        tap #true
+        natural-scroll #true
+        disable-while-typing #true
         swipe-threshold 80
     }
 }
 
 layout {
+    mode "scrolling"
+    inner-gap 4
+    outer-gap 4
     smart-gaps #false
 }
 
+scrolling {
+    default-column-width 0.5
+    focus-strategy "paged"
+    width-presets 0.33333 0.5 0.66667 "full"
+}
+
+animations {
+    enabled #true
+    reduced-motion #false
+    speed 0.9
+}
+
+appearance {
+    inactive-dim {
+        enabled #false
+        amount 0.15
+        duration-ms 150
+    }
+}
+
 theme {
+    background {
+        mode "fill"
+        // path "/absolute/path/to/wallpaper.png"
+    }
+    colors {
+        accent "#3D7BE6"
+        surface-base "#111821"
+        text-primary "#F4F7FB"
+        text-muted "#8793A2"
+        border "#FFFFFF18"
+        shadow "#00000055"
+    }
     material {
-        opacity 0.95
+        style "translucent"
+        opacity 0.78
+        blur-radius 25
+    }
+    geometry {
+        window-radius 12
+        shell-radius 12
+        border-width 1
+        focus-ring-width 1
+        top-bar-height 30
+        top-bar-margin-horizontal 18
+        top-bar-margin-top 6
+        top-bar-window-gap 4
+        panel-padding 12
+        control-gap 12
+    }
+    shadow {
+        soft {
+            blur 10
+            offset-y 2
+            opacity 0.07
+        }
     }
     surface {
         bar {
@@ -28,22 +132,48 @@ theme {
             text-muted "#8793A2"
         }
     }
+    // typography { font-family "JetBrainsMono Nerd Font"; }
+}
+
+status {
+    keybinding-guide #true
+    window-title #true
+    battery-percentage #true
+    low-battery-threshold 20
 }
 
 window-rule app-id="dev.ferese.Settings" floating=#true
 window-rule app-id="dev.ferese.ScreenShare" floating=#true
+window-rule app-id="dev.ferese.Authentication" floating=#true
+window-rule app-id="org.gnome.Calculator" floating=#true
+window-rule app-id="org.pulseaudio.pavucontrol" floating=#true
+window-rule title="Picture-in-Picture" floating=#true
 window-rule title="Choose a wallpaper" floating=#true
 
 desktop-widgets {
-    clock {
+    clock enabled=#false {
         style "pixel"
-        enabled #false
         anchor "top_left"
         margin-x 64
         margin-y 80
-        time-size 128.0
-        date-size 18.0
+        width 440
+        height 320
+        time-size 128
+        date-size 18
+        time-format "%H:%M"
+        date-format "%a, %b %-d"
+        show-date #true
         opacity 0.9
+    }
+    note "today" enabled=#false {
+        title "Today"
+        text "Review the project\nTake a break"
+        anchor "top_right"
+        margin-x 48
+        margin-y 80
+        width 320
+        height 240
+        text-size 16
     }
 }
 
@@ -52,3 +182,23 @@ notifications {
     do-not-disturb #false
     timeout-ms 6000
 }
+
+lock-screen {
+    clock-format "12h"
+    background-dim 0.26
+    background-blur 14
+    dim-after-seconds 30
+    sleep-after-seconds 120
+}
+
+// Install swayidle and test unlocking before enabling automatic locking.
+// autostart "swayidle" "-w" "timeout" "300" "ferese-lock" "before-sleep" "ferese-lock" "lock" "ferese-lock"
+
+// Find display names with feresectl get-outputs, then adjust and uncomment.
+// output-profile "docked" {
+//     output "HDMI-A-1" scale=1.5 { position 0 0; }
+//     output "eDP-1" scale=1.5 { position 2560 0; }
+// }
+// output-profile "laptop" {
+//     output "eDP-1" scale=1.5
+// }

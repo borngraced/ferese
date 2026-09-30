@@ -1,7 +1,10 @@
 # Configuration
 
 Edit `~/.config/ferese/config.kdl` (or `$XDG_CONFIG_HOME/ferese/config.kdl`),
-or open **Control Center → Settings**. Start with the [example](../packaging/config.kdl).
+or open **Control Center → Settings**. Start with the [example](../packaging/config.kdl),
+which includes app and media shortcuts, appearance, widgets, and optional startup
+and display settings. Its browser/editor shortcuts need Firefox/Zed; brightness
+keys need `brightnessctl` and audio keys need `wpctl`.
 This reference covers layouts, appearance, input, and desktop behavior.
 See [Desktop widgets](desktop-widgets.md), [Notifications](notifications.md),
 and [Desktop portals](portals.md) for their additional options.
