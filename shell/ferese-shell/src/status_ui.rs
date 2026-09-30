@@ -252,11 +252,10 @@ impl FereseShell {
     pub fn view_status_bar(&self) -> Element<'_, cosmic::Action<Message>> {
         let theme = self.config.theme.for_bar();
         let metrics = BarMetrics::from(theme);
-        let mut controls = row::with_capacity(7).spacing(1).align_y(Alignment::Center);
+        let mut controls = row::with_capacity(6).spacing(1).align_y(Alignment::Center);
         for kind in [
             Menu::System,
             Menu::Network,
-            Menu::Bluetooth,
             Menu::Audio,
             Menu::Recording,
             Menu::Notifications,

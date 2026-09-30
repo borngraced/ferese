@@ -170,6 +170,16 @@ fn account_picture(user: &str) -> Option<image::Handle> {
 mod tests {
     use super::*;
     #[test]
+    fn portal_wallpaper_loads_without_a_filename_extension() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        ::image::RgbaImage::from_pixel(3, 2, ::image::Rgba([32, 80, 160, 255]))
+            .save_with_format(file.path(), ::image::ImageFormat::Png)
+            .unwrap();
+        assert!(load_wallpaper(file.path(), 0.).is_ok());
+        assert!(load_wallpaper(file.path(), 2.).is_ok());
+    }
+
+    #[test]
     fn lock_options_share_shell_style_without_changing_security() {
         let directory = tempfile::tempdir().unwrap();
         let config = directory.path().join("config.kdl");
@@ -211,11 +221,22 @@ mod tests {
 }
 
 pub fn load_wallpaper(path: &std::path::Path, blur: f32) -> Result<image::Handle, String> {
-    let (width, height) = ::image::image_dimensions(path).map_err(|e| e.to_string())?;
+    use ::image::ImageDecoder;
+    let mut reader = ::image::ImageReader::open(path)
+        .map_err(|e| e.to_string())?
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let mut limits = ::image::Limits::default();
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    let decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+    let (width, height) = decoder.dimensions();
     if u64::from(width) * u64::from(height) * 4 > 256 * 1024 * 1024 {
         return Err("Lock wallpaper exceeds the decode limit".into());
     }
-    let pixels = ::image::open(path).map_err(|e| e.to_string())?.into_rgba8();
+    let pixels = ::image::DynamicImage::from_decoder(decoder)
+        .map_err(|e| e.to_string())?
+        .into_rgba8();
     let pixels = if blur > 0. {
         ::image::imageops::blur(&::image::imageops::thumbnail(&pixels, 640, 640), blur)
     } else {

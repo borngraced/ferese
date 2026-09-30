@@ -83,11 +83,20 @@ impl WallpaperState {
             let wakeup = wakeup.clone();
             std::thread::spawn(move || {
                 let load = || -> Result<image::RgbaImage, String> {
-                    let (width, height) = image::image_dimensions(&path).map_err(|e| e.to_string())?;
+                    use image::ImageDecoder;
+                    let mut reader = image::ImageReader::open(&path)
+                        .map_err(|e| e.to_string())?
+                        .with_guessed_format()
+                        .map_err(|e| e.to_string())?;
+                    let mut limits = image::Limits::default();
+                    limits.max_alloc = Some(256 * 1024 * 1024);
+                    reader.limits(limits);
+                    let decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+                    let (width, height) = decoder.dimensions();
                     if u64::from(width) * u64::from(height) * 4 > 256 * 1024 * 1024 {
                         return Err("wallpaper exceeds the 256 MiB decode limit".into());
                     }
-                    image::open(path)
+                    image::DynamicImage::from_decoder(decoder)
                         .map(|image| image.into_rgba8())
                         .map_err(|e| e.to_string())
                 };
@@ -328,6 +337,28 @@ fn image_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portal_wallpaper_decodes_without_a_filename_extension() {
+        let directory = tempfile::tempdir().unwrap();
+        let expected = image::RgbaImage::from_pixel(3, 2, image::Rgba([32, 80, 160, 255]));
+        for name in ["wallpaper-portal", "wallpaper.jpg"] {
+            let path = directory.path().join(name);
+            expected.save_with_format(&path, image::ImageFormat::Png).unwrap();
+            let mut state = WallpaperState::new(WallpaperConfig {
+                path: Some(path),
+                mode: WallpaperMode::Fill,
+            });
+            let decoded = state
+                .receiver
+                .take()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap();
+            assert_eq!(decoded, expected);
+        }
+    }
 
     #[test]
     fn failed_upload_retry_wakes_idle_loop_and_does_not_spin_when_output_is_inactive() {

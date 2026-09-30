@@ -26,3 +26,6 @@ serde_json.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 xcursor.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
