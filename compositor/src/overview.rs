@@ -104,6 +104,7 @@ type OverviewStateLabel = HashMap<
 pub(crate) struct OverviewState {
     active: bool,
     selected: Option<WindowId>,
+    selection_workspace: Option<WorkspaceId>,
     presentations: HashMap<WindowId, AnimatedRect>,
     opacity: AnimatedValue,
     exit_transition: Option<(f64, f64)>,
@@ -119,6 +120,7 @@ impl Default for OverviewState {
         Self {
             active: false,
             selected: None,
+            selection_workspace: None,
             presentations: HashMap::new(),
             opacity: AnimatedValue::new(0.0),
             exit_transition: None,
@@ -137,14 +139,6 @@ pub(crate) struct WorkspaceCard {
     pub rect: Rect,
     pub selected: bool,
     pub windows: Vec<(WindowId, Rect)>,
-}
-
-impl WorkspaceCard {
-    fn window_at(&self, point: Point<f64, Logical>) -> Option<WindowId> {
-        self.windows
-            .iter()
-            .find_map(|(id, rect)| contains(*rect, point).then_some(*id))
-    }
 }
 
 pub(crate) fn workspace_strip(bounds: Rect) -> Rect {
@@ -291,6 +285,21 @@ impl OverviewState {
         self.opacity.current.clamp(0.0, 1.0) as f32
     }
 
+    fn select_workspace_windows(&mut self, windows: &[WindowId], preferred: Option<WindowId>) {
+        let visible = |id: &WindowId| windows.contains(id) && self.presentations.contains_key(id);
+        self.selected = self
+            .selected
+            .filter(visible)
+            .or_else(|| preferred.filter(visible))
+            .or_else(|| {
+                windows
+                    .iter()
+                    .copied()
+                    .filter(visible)
+                    .min_by_key(|id| id.0)
+            });
+    }
+
     pub(crate) fn selected(&self) -> Option<WindowId> {
         self.selected
     }
@@ -322,6 +331,7 @@ impl OverviewState {
             return false;
         };
 
+        self.selection_workspace = None;
         self.selected = Some(next);
         true
     }
@@ -359,6 +369,7 @@ impl OverviewState {
             }
         }
         self.exit_transition = None;
+        self.selection_workspace = None;
         self.active = true;
         self.opacity.retarget_preserving_motion(1.0);
         if !animations_enabled {
@@ -484,6 +495,7 @@ impl Ferese {
             .and_then(|w| self.window_ids.get(&w).copied());
 
         if selected.is_some() && self.overview.selected != selected {
+            self.overview.selection_workspace = None;
             self.overview.selected = selected;
             crate::backends::direct::render_all(self);
         }
@@ -595,6 +607,23 @@ impl Ferese {
 
         let targets = self.overview_targets();
         self.overview.retarget(targets, self.animations_enabled());
+        if self.overview.selection_workspace.is_some() {
+            let id = self.workspaces.active_id();
+            self.overview.selection_workspace = Some(id);
+            let windows = self
+                .workspaces
+                .workspace(id)
+                .map(|workspace| {
+                    workspace
+                        .layout
+                        .window_ids()
+                        .chain(workspace.floating.iter().copied())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            self.overview
+                .select_workspace_windows(&windows, self.focused_window);
+        }
     }
 
     pub(crate) fn presented_window_rect(&self, id: WindowId) -> Option<Rect> {
@@ -732,12 +761,6 @@ impl Ferese {
             .into_iter()
             .find(|card| contains(card.rect, point));
         if let Some(card) = card {
-            if let Some(id) = card.window_at(point) {
-                if self.activate_managed_window(id) {
-                    self.set_overview_active(false);
-                }
-                return true;
-            }
             let Some(output_id) = self.output_id(&output) else {
                 return true;
             };
@@ -749,6 +772,7 @@ impl Ferese {
                 // Existing monitor ownership wins; never steal another output's workspace.
                 self.restore_output_focus();
                 self.overview.strip_offsets.clear();
+                self.overview.selection_workspace = Some(card.workspace);
                 self.relayout();
                 self.restore_keyboard_focus();
             }
@@ -1164,19 +1188,27 @@ mod tests {
     }
 
     #[test]
-    fn workspace_thumbnail_hit_selects_the_clicked_window_not_workspace_focus() {
-        let card = WorkspaceCard {
-            workspace: WorkspaceId(1),
-            rect: Rect::new(0.0, 0.0, 160.0, 100.0),
-            selected: true,
-            windows: vec![
-                (WindowId(1), Rect::new(5.0, 5.0, 70.0, 65.0)),
-                (WindowId(2), Rect::new(85.0, 5.0, 70.0, 65.0)),
-            ],
-        };
-        assert_eq!(card.window_at((120.0, 35.0).into()), Some(WindowId(2)));
-        assert_eq!(card.window_at((30.0, 35.0).into()), Some(WindowId(1)));
-        assert_eq!(card.window_at((80.0, 85.0).into()), None);
+    fn workspace_selection_replaces_other_output_selection_and_keeps_empty_selection() {
+        let old = WindowId(1);
+        let new = WindowId(2);
+        let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let targets = HashMap::from([(old, (rect, rect)), (new, (rect, rect))]);
+        let mut overview = OverviewState::default();
+        overview.enter(targets.clone(), Some(old), false);
+
+        overview.retarget(targets.clone(), false);
+        overview.select_workspace_windows(&[new], Some(new));
+        assert!(overview.is_active());
+        assert_eq!(overview.selected(), Some(new));
+
+        overview.retarget(targets.clone(), false);
+        overview.select_workspace_windows(&[], None);
+        assert_eq!(overview.selected(), None);
+        assert!(overview.is_active());
+
+        overview.retarget(targets, false);
+        overview.select_workspace_windows(&[new], None);
+        assert_eq!(overview.selected(), Some(new));
     }
 
     #[test]
