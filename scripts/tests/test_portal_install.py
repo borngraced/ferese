@@ -57,6 +57,41 @@ class PortalInstallTest(unittest.TestCase):
                                        'replace_portal_config': str(replace).lower()},
                                   capture_output=True, text=True)
 
+    def user_override(self, content, backup=False):
+        script = (REPO / 'scripts/install.sh').read_text()
+        helpers = script[script.index('check_user_portal_override()'):script.index('fail() {')]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            override = root / 'override.conf'
+            if content is not None:
+                override.write_text(content.replace('USER_HOME', directory))
+            command = 'backup_user_portal_override' if backup else 'check_user_portal_override'
+            result = subprocess.run(['bash', '-eu', '-c', helpers +
+                                     f'\n{command} "$TEST_ROOT/override.conf" "$TEST_ROOT" test-release'],
+                                    env={'TEST_ROOT': directory}, capture_output=True, text=True)
+            saved = root / 'override.conf.before-test-release'
+            return result, override.exists(), saved.read_text() if saved.exists() else None
+
+    def test_user_development_override_is_backed_up(self):
+        content = '[Service]\nExecStart=\nExecStart=USER_HOME/.local/libexec/ferese/xdg-desktop-portal-ferese\n'
+        result, exists, saved = self.user_override(content, backup=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(exists)
+        self.assertIn('/.local/libexec/ferese/xdg-desktop-portal-ferese', saved)
+
+    def test_custom_user_override_is_preserved_and_reported(self):
+        result, exists, saved = self.user_override('[Service]\nExecStart=/custom/portal\n', backup=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(exists)
+        self.assertIsNone(saved)
+        self.assertIn('takes precedence', result.stderr)
+
+    def test_missing_user_override_needs_no_backup(self):
+        result, exists, saved = self.user_override(None, backup=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(exists)
+        self.assertIsNone(saved)
+
     def test_existing_development_install_requires_explicit_replacement(self):
         portal = ('[portal]\nDBusName=org.freedesktop.impl.portal.desktop.ferese\n'
                   'Interfaces=org.freedesktop.impl.portal.ScreenCast;\nUseIn=Ferese;\n')

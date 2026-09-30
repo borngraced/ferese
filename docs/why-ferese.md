@@ -10,7 +10,7 @@ Scrolling columns let you keep windows at useful widths and move through them
 horizontally. Tree tiling divides the screen into nested splits. Floating windows
 work alongside either layout, and overview shows windows across workspaces.
 
-![Ferese Overview showing windows and workspaces](images/ferese-overview.webp)
+![Ferese Overview showing windows and workspaces](images/screenshots/ferese-blue-overview.png)
 
 ## Change the desktop together
 
@@ -18,7 +18,7 @@ Choose a theme in Settings, then adjust the wallpaper, colors, font, corners,
 and motion. Changes apply live. Window corners and shell corners can be set
 independently.
 
-![Ferese Settings and Control Center in Gruvbox](images/ferese-gruvbox.webp)
+![Ferese Settings and Control Center in Rosé Pine](images/screenshots/rose-pine-desktop.png)
 
 For example, this changes shell corners:
 

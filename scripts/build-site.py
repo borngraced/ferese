@@ -13,6 +13,7 @@ OUTPUT = ROOT / 'build' / 'site'
 REPO = 'https://github.com/ferese-wm/ferese'
 PAGES = [
     ('index', 'Introduction', ROOT / 'site/content/index.md'),
+    ('screenshots', 'Screenshots', ROOT / 'docs/screenshots.md'),
     ('why-ferese', 'Why Ferese', ROOT / 'docs/why-ferese.md'),
     ('installation', 'Installation', ROOT / 'docs/installation.md'),
     ('configuration', 'Configuration', ROOT / 'docs/configuration.md'),
@@ -27,7 +28,9 @@ PAGES = [
     ('development', 'Development', ROOT / 'docs/development.md'),
 ]
 md = MarkdownIt('commonmark', {'html': False}).enable('table')
-OUTPUT.mkdir(parents=True, exist_ok=True)
+if OUTPUT.exists():
+    shutil.rmtree(OUTPUT)
+OUTPUT.mkdir(parents=True)
 for name in ('index.html', 'styles.css', 'app.js'):
     shutil.copy2(ROOT / 'site' / name, OUTPUT / name)
 (OUTPUT / 'assets').mkdir(exist_ok=True)
@@ -46,7 +49,10 @@ def rewrite_link(href, source):
     basename = Path(url.path).stem
     if url.path.endswith('.md') and basename in {page[0] for page in PAGES}:
         return f'{basename}.html' + (f'#{url.fragment}' if url.fragment else '')
-    destination = (source.parent / url.path).resolve().relative_to(ROOT)
+    path = (source.parent / url.path).resolve()
+    if path.is_relative_to(ROOT / 'docs/images'):
+        return '../assets/' + path.relative_to(ROOT / 'docs/images').as_posix()
+    destination = path.relative_to(ROOT)
     return f'{REPO}/blob/main/{destination}' + (f'#{url.fragment}' if url.fragment else '')
 
 

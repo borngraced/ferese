@@ -310,7 +310,12 @@ impl cosmic::Application for Picker {
                     .class(if selected {
                         ferese_theme::accent_button()
                     } else {
-                        ferese_theme::controls::navigation_style(self.palette, false)
+                        ferese_theme::controls::notification_button(
+                            self.palette.text,
+                            self.palette.text.scale_alpha(0.06),
+                            self.palette.radius.min(9.),
+                            false,
+                        )
                     })
                     .padding(8)
                     .width(Length::Fill)

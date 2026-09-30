@@ -21,6 +21,27 @@ authentication is requested only after a successful build.
 EOF
 }
 
+check_user_portal_override() {
+    local override=$1 user_home=$2
+    [[ -f $override ]] || return 0
+    if ! cmp -s -- <(printf '%s\n' '[Service]' 'ExecStart=' \
+        "ExecStart=$user_home/.local/libexec/ferese/xdg-desktop-portal-ferese") "$override"; then
+        echo "Custom portal override takes precedence over the installation: $override" >&2
+        echo 'Update its ExecStart to /usr/local/lib/ferese/current/xdg-desktop-portal-ferese before installing.' >&2
+        return 1
+    fi
+}
+
+backup_user_portal_override() {
+    local override=$1 user_home=$2 release=$3
+    [[ -f $override ]] || return 0
+    check_user_portal_override "$override" "$user_home" || return 1
+    local backup="$override.before-$release"
+    [[ ! -e $backup ]] || { echo "Portal override backup already exists: $backup" >&2; return 1; }
+    mv -- "$override" "$backup"
+    echo "Backed up old development portal override: $backup"
+}
+
 fail() { echo "ferese installer: $*" >&2; exit 1; }
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 release_id="$(date -u +%Y%m%d-%H%M%S)-$$"
@@ -49,6 +70,10 @@ for tool in desktop-file-validate dbus-run-session; do
     command -v "$tool" >/dev/null || fail "required command not found: $tool"
 done
 desktop-file-validate "$repo_dir/packaging/ferese.desktop"
+user_portal_override="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/xdg-desktop-portal-ferese.service.d/override.conf"
+if ((EUID != 0)); then
+    check_user_portal_override "$user_portal_override" "$HOME" || fail 'portal service override needs attention'
+fi
 
 build=(cargo build --manifest-path "$repo_dir/Cargo.toml"
     --target-dir "$repo_dir/target" --release --locked
@@ -83,4 +108,8 @@ for name in ferese ferese-shell ferese-settings feresectl ferese-lock ferese-pol
     [[ -x $repo_dir/target/release/$name ]] || fail "missing release binary: $name"
 done
 "${installer[@]}"
+if ((EUID != 0)) && [[ -f $user_portal_override ]]; then
+    backup_user_portal_override "$user_portal_override" "$HOME" "$release_id" || fail 'could not update portal override'
+    systemctl --user daemon-reload || fail 'could not reload the user portal service configuration'
+fi
 echo 'Installation complete. Log out and select Ferese at your login screen, or run ferese-session from a local TTY.'

@@ -3,6 +3,8 @@
 Ferese is a Linux Wayland desktop with scrolling columns, tree tiling, floating
 windows, and a shared theme for its desktop tools.
 
+[Browse screenshots](screenshots.md) of the desktop, themes and shell controls.
+
 ## Get started
 
 1. [Install Ferese](installation.md), or try a [nested preview](installation.md#preview-and-logs).

@@ -7,6 +7,7 @@
 <p align="center">
   <a href="docs/installation.md">Install</a> ·
   <a href="docs/configuration.md">Configure</a> ·
+  <a href="docs/screenshots.md">Screenshots</a> ·
   <a href="docs/README.md">Documentation</a>
 </p>
 
@@ -14,7 +15,9 @@ Ferese is a Linux desktop with scrolling columns, tree tiling, and floating
 windows. It includes a top bar, Settings, notifications, desktop widgets, a
 lock screen, and screen sharing. Change themes and settings without restarting.
 
-![Ferese Blue desktop with Settings, Control Center, and a clock widget](docs/images/ferese-desktop.webp)
+![Ferese Blue desktop with Settings and Control Center](docs/images/screenshots/ferese-main-hero.png)
+
+[View all screenshots](docs/screenshots.md).
 
 ## Features
 
@@ -25,7 +28,6 @@ lock screen, and screen sharing. Change themes and settings without restarting.
 - Clock and sticky-note widgets.
 - Screenshots with Satty editing, screen sharing, and top-bar recording.
 
-![Ferese Overview showing windows and workspaces](docs/images/ferese-overview.webp)
 
 ## Install
 
@@ -46,8 +48,6 @@ See [Installation](docs/installation.md) for previews, updates, and recovery.
 
 Open **Control Center → Settings**, or edit `~/.config/ferese/config.kdl`.
 Changes reload automatically; invalid edits keep the last working configuration.
-
-![Ferese Settings and Control Center in Gruvbox](docs/images/ferese-gruvbox.webp)
 
 See the [configuration reference](docs/configuration.md) and
 [example config](packaging/config.kdl).

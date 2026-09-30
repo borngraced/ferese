@@ -306,6 +306,9 @@ greeter's configuration. Reinstalling restores the desktop session entry.
 
 ## Screen sharing and recording
 
-The installer includes Ferese’s native ScreenCast portal. See
+The installer includes Ferese’s native ScreenCast portal. It backs up the old
+user service override that points to `~/.local/libexec/ferese`, so new sessions
+use the installed release. Custom overrides are preserved and reported before
+building. See
 [Screen sharing](screen-sharing.md) for consent, PipeWire setup, supported sources,
 and current recording limitations.

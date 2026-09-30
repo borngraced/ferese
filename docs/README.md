@@ -6,6 +6,8 @@
 - [Configuration](configuration.md): KDL syntax, layouts, input, shortcuts, and displays.
 - [Why Ferese](why-ferese.md): layouts and the shared desktop theme.
 
+- [Screenshots](screenshots.md): desktop themes, overview and shell controls.
+
 ## Use the desktop
 
 - [Shortcuts and gestures](shortcuts.md): keyboard navigation, Super-drag, resize, and window grouping.
