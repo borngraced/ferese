@@ -11,40 +11,35 @@ mod status;
 mod status_ui;
 mod system_modal;
 
-use cosmic::Element;
-use cosmic::app::{Core, Settings, Task};
-use cosmic::iced::alignment;
-use cosmic::iced::event::{self, PlatformSpecific, wayland};
-use cosmic::iced::platform_specific::{
-    runtime::wayland::layer_surface::{IcedMargin, IcedOutput, SctkLayerSurfaceSettings},
-    shell::commands::layer_surface::{Anchor, KeyboardInteractivity, Layer},
-    shell::commands::layer_surface::{
-        destroy_layer_surface, set_anchor, set_exclusive_zone, set_input_zone, set_margin, set_size,
-    },
-};
-use cosmic::iced::{
-    Background, Border, Color, ContentFit, Event, Length, Limits, Subscription, window,
-};
-use cosmic::theme;
-use cosmic::widget::{button, container, icon, image, row};
-use ferese_protocols::effects::v1::client::{
-    ferese_effects_manager_v1::FereseEffectsManagerV1,
-    ferese_surface_effects_v1::{self, FereseSurfaceEffectsV1},
-};
-use jiff::Zoned;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
-use wayland_client::{
-    Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop,
-    globals::{GlobalListContents, registry_queue_init},
-    protocol::{wl_output, wl_registry, wl_surface},
+
+use cosmic::app::{Core, Settings, Task};
+use cosmic::iced::event::{PlatformSpecific, wayland};
+use cosmic::iced::platform_specific::runtime::wayland::layer_surface::{
+    IcedMargin, IcedOutput, SctkLayerSurfaceSettings,
 };
+use cosmic::iced::platform_specific::shell::commands::layer_surface::{
+    Anchor, KeyboardInteractivity, Layer, destroy_layer_surface, set_anchor, set_exclusive_zone, set_input_zone,
+    set_margin, set_size,
+};
+use cosmic::iced::{
+    Background, Border, Color, ContentFit, Event, Length, Limits, Subscription, alignment, event, window,
+};
+use cosmic::widget::{button, container, icon, image, row};
+use cosmic::{Element, theme};
+use ferese_protocols::effects::v1::client::ferese_effects_manager_v1::FereseEffectsManagerV1;
+use ferese_protocols::effects::v1::client::ferese_surface_effects_v1;
+use ferese_protocols::effects::v1::client::ferese_surface_effects_v1::FereseSurfaceEffectsV1;
+use ferese_theme::calendar::{format_bar_time, stacked_digits as stacked_clock_digits};
+use ferese_theme::icons::{accented as accented_icon, tinted as bar_icon};
+use jiff::Zoned;
+use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::{wl_output, wl_registry, wl_surface};
+use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop};
 
 use crate::config::{ShellConfig, ShellTheme, WallpaperMode};
 use crate::control::{ShellControl, ShellSnapshot};
-use ferese_theme::calendar::format_bar_time;
-use ferese_theme::calendar::stacked_digits as stacked_clock_digits;
-use ferese_theme::icons::{accented as accented_icon, tinted as bar_icon};
 
 const APP_ID: &str = "dev.ferese.Shell";
 
@@ -52,8 +47,7 @@ const APP_ID: &str = "dev.ferese.Shell";
 // that compatibility path gated; current backends use Window::Opened and
 // window::run to retrieve handles without updates at the display refresh rate.
 static EFFECT_FRAME_PENDING: AtomicBool = AtomicBool::new(true);
-static SHELL_FONT: std::sync::OnceLock<std::sync::RwLock<cosmic::font::Font>> =
-    std::sync::OnceLock::new();
+static SHELL_FONT: std::sync::OnceLock<std::sync::RwLock<cosmic::font::Font>> = std::sync::OnceLock::new();
 
 fn configured_font(family: Option<&str>) -> cosmic::font::Font {
     ferese_theme::font(family)
@@ -133,12 +127,9 @@ fn main() -> cosmic::iced::Result {
     let wallpaper = config.wallpaper.path.clone().map(|path| {
         let (sender, receiver) = cosmic::iced::futures::channel::oneshot::channel();
         std::thread::spawn(move || {
-            let result =
-                cosmic::iced::advanced::graphics::image::load(&image::Handle::from_path(path))
-                    .map(|pixels| {
-                        image::Handle::from_rgba(pixels.width(), pixels.height(), pixels.into_raw())
-                    })
-                    .map_err(|error| format!("{error:?}"));
+            let result = cosmic::iced::advanced::graphics::image::load(&image::Handle::from_path(path))
+                .map(|pixels| image::Handle::from_rgba(pixels.width(), pixels.height(), pixels.into_raw()))
+                .map_err(|error| format!("{error:?}"));
             let _ = sender.send(result);
         });
         receiver
@@ -155,8 +146,7 @@ fn main() -> cosmic::iced::Result {
     cosmic::app::run::<FereseShell>(settings, (config, wallpaper))
 }
 
-type WallpaperLoad =
-    cosmic::iced::futures::channel::oneshot::Receiver<Result<image::Handle, String>>;
+type WallpaperLoad = cosmic::iced::futures::channel::oneshot::Receiver<Result<image::Handle, String>>;
 
 struct FereseShell {
     core: Core,
@@ -231,10 +221,7 @@ enum Message {
     NotesStored(Result<(), String>),
     WallpaperLoaded(Result<image::Handle, String>),
     Event(Event, window::Id),
-    NativeSurface(
-        window::Id,
-        Result<(Connection, wl_surface::WlSurface), String>,
-    ),
+    NativeSurface(window::Id, Result<(Connection, wl_surface::WlSurface), String>),
     Tick,
     ActivateWorkspace(u64),
     ToggleOverview,
@@ -284,11 +271,7 @@ impl cosmic::Application for FereseShell {
 
     fn init(core: Core, (config, wallpaper): Self::Flags) -> (Self, Task<Self::Message>) {
         let bar_surface_id = window::Id::unique();
-        let desktop_clock = config
-            .desktop_widgets
-            .clock
-            .labels(&Zoned::now())
-            .unwrap_or_default();
+        let desktop_clock = config.desktop_widgets.clock.labels(&Zoned::now()).unwrap_or_default();
         let app = Self {
             core,
             bar_surface_id,
@@ -328,9 +311,7 @@ impl cosmic::Application for FereseShell {
         let wallpaper_task = match wallpaper {
             Some(receiver) => cosmic::task::future(async move {
                 cosmic::Action::App(Message::WallpaperLoaded(
-                    receiver
-                        .await
-                        .unwrap_or_else(|error| Err(error.to_string())),
+                    receiver.await.unwrap_or_else(|error| Err(error.to_string())),
                 ))
             }),
             None => Task::none(),
@@ -350,40 +331,30 @@ impl cosmic::Application for FereseShell {
             } else {
                 Subscription::none()
             },
-            self.notifications
-                .subscription()
-                .map(Message::NotificationEvent),
+            self.notifications.subscription().map(Message::NotificationEvent),
             if self.notifications.has_toasts() {
-                cosmic::iced::time::every(Duration::from_millis(
-                    if self.notifications.animating() {
-                        16
-                    } else {
-                        250
-                    },
-                ))
+                cosmic::iced::time::every(Duration::from_millis(if self.notifications.animating() {
+                    16
+                } else {
+                    250
+                }))
                 .map(|_| Message::NotificationTick)
             } else {
                 Subscription::none()
             },
             event::listen_with(|event, _status, id| match &event {
-                Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(..))) => {
-                    EFFECT_FRAME_PENDING
-                        .load(Ordering::Relaxed)
-                        .then_some(Message::Event(event, id))
-                }
+                Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(..))) => EFFECT_FRAME_PENDING
+                    .load(Ordering::Relaxed)
+                    .then_some(Message::Event(event, id)),
                 Event::Keyboard(_)
                 | Event::Window(window::Event::Opened { .. } | window::Event::Closed)
                 | Event::PlatformSpecific(PlatformSpecific::Wayland(
-                    wayland::Event::Popup(..)
-                    | wayland::Event::Layer(..)
-                    | wayland::Event::Output(..),
+                    wayland::Event::Popup(..) | wayland::Event::Layer(..) | wayland::Event::Output(..),
                 )) => Some(Message::Event(event, id)),
                 _ => None,
             }),
             cosmic::iced::time::every(Duration::from_millis(500)).map(|_| Message::Tick),
-            self.status_service
-                .subscription()
-                .map(Message::StatusUpdated),
+            self.status_service.subscription().map(Message::StatusUpdated),
             if self.config.desktop_widgets.clock.enabled
                 || self
                     .config
@@ -441,13 +412,7 @@ impl cosmic::Application for FereseShell {
             Message::BeginNoteEdit(id) => {
                 let mut tasks = vec![self.finish_note_edit()];
 
-                if let Some(note) = self
-                    .config
-                    .desktop_widgets
-                    .notes
-                    .iter()
-                    .find(|note| note.id == id)
-                {
+                if let Some(note) = self.config.desktop_widgets.notes.iter().find(|note| note.id == id) {
                     self.note_editor = Some(DesktopNoteEditor {
                         id,
                         content: cosmic::widget::text_editor::Content::with_text(&note.text),
@@ -514,9 +479,7 @@ impl cosmic::Application for FereseShell {
             }
             Message::NativeSurface(id, result) => {
                 match result {
-                    Ok((_connection, surface))
-                        if self.outputs.iter().any(|entry| entry.bar == id) =>
-                    {
+                    Ok((_connection, surface)) if self.outputs.iter().any(|entry| entry.bar == id) => {
                         self.attach_effects(id, &surface)
                     }
                     Ok((_connection, surface)) => {
@@ -527,9 +490,7 @@ impl cosmic::Application for FereseShell {
                         {
                             match EffectsBinding::attach_role(&surface, None, 1.0) {
                                 Ok(binding) => entry.effects = Some(binding),
-                                Err(error) => eprintln!(
-                                    "ferese-shell: notification effects unavailable: {error}"
-                                ),
+                                Err(error) => eprintln!("ferese-shell: notification effects unavailable: {error}"),
                             }
                         }
 
@@ -537,11 +498,7 @@ impl cosmic::Application for FereseShell {
                             && menu.id == id
                             && menu.effects.is_none()
                         {
-                            match EffectsBinding::attach_role(
-                                &surface,
-                                menu.kind.material_role(),
-                                menu.progress(),
-                            ) {
+                            match EffectsBinding::attach_role(&surface, menu.kind.material_role(), menu.progress()) {
                                 Ok(binding) => menu.effects = Some(binding),
                                 Err(error) => {
                                     eprintln!("ferese-shell: popover material unavailable: {error}")
@@ -676,10 +633,7 @@ impl cosmic::Application for FereseShell {
                         if let Err(error) = result {
                             eprintln!("ferese-shell: keybinding guide unavailable: {error}");
                         }
-                        if self.guide_attempts < 5
-                            && self.config.status.keybinding_guide
-                            && !self.guide_shown
-                        {
+                        if self.guide_attempts < 5 && self.config.status.keybinding_guide && !self.guide_shown {
                             Task::perform(
                                 async {
                                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -717,10 +671,7 @@ impl cosmic::Application for FereseShell {
                 }
 
                 if let status::Action::PowerProfile(profile) = action {
-                    self.status_error = self
-                        .status_service
-                        .send(status::Action::PowerProfile(profile))
-                        .err();
+                    self.status_error = self.status_service.send(status::Action::PowerProfile(profile)).err();
 
                     if self.status_error.is_none()
                         && let Some(profiles) = &mut self.status.power_profiles
@@ -740,10 +691,7 @@ impl cosmic::Application for FereseShell {
                             return Task::none();
                         }
                         status::Action::Notifications => {
-                            return Task::batch([
-                                self.close_menu(),
-                                self.toggle_notification_history(),
-                            ]);
+                            return Task::batch([self.close_menu(), self.toggle_notification_history()]);
                         }
                         _ => {}
                     }
@@ -755,10 +703,7 @@ impl cosmic::Application for FereseShell {
                     self.optimistic_status(&action);
                 }
 
-                if matches!(
-                    action,
-                    status::Action::Notifications | status::Action::Settings
-                ) {
+                if matches!(action, status::Action::Notifications | status::Action::Settings) {
                     return self.close_menu();
                 }
 
@@ -817,10 +762,7 @@ impl cosmic::Application for FereseShell {
                             {
                                 eprintln!("ferese-shell: could not update panel material: {error}");
                             }
-                            tasks.push(set_input_zone(
-                                entry.bar,
-                                if hidden { Some(Vec::new()) } else { None },
-                            ));
+                            tasks.push(set_input_zone(entry.bar, if hidden { Some(Vec::new()) } else { None }));
                         }
                         if self.bar_hidden(self.bar_surface_id) {
                             tasks.push(self.destroy_menu());
@@ -833,10 +775,7 @@ impl cosmic::Application for FereseShell {
                     if let Some((serial, output)) = poll.logout {
                         reload_task = Task::batch([
                             reload_task,
-                            self.open_system_modal(
-                                system_modal::PowerAction::Logout(serial),
-                                Some(&output),
-                            ),
+                            self.open_system_modal(system_modal::PowerAction::Logout(serial), Some(&output)),
                         ]);
                     }
                 }
@@ -908,10 +847,7 @@ impl FereseShell {
         let old_notes = &self.config.desktop_widgets.notes;
         let new_notes = &config.desktop_widgets.notes;
         let notes_changed = old_notes.len() != new_notes.len()
-            || old_notes
-                .iter()
-                .zip(new_notes)
-                .any(|(old, new)| !old.same_surface(new));
+            || old_notes.iter().zip(new_notes).any(|(old, new)| !old.same_surface(new));
         let new_clock = &config.desktop_widgets.clock;
         let clock_changed = old_clock.enabled != new_clock.enabled
             || old_clock.outputs != new_clock.outputs
@@ -939,12 +875,7 @@ impl FereseShell {
             Task::none()
         }];
 
-        if !self.config.status.keybinding_guide
-            && self
-                .system_modal
-                .as_ref()
-                .is_some_and(|modal| modal.is_guide())
-        {
+        if !self.config.status.keybinding_guide && self.system_modal.as_ref().is_some_and(|modal| modal.is_guide()) {
             tasks.push(self.destroy_system_modal(false));
         }
 
@@ -952,12 +883,7 @@ impl FereseShell {
             tasks.push(cosmic::command::set_theme(theme.palette().native_theme()));
         }
 
-        if clock_changed
-            && self
-                .note_drag
-                .as_ref()
-                .is_some_and(|drag| drag.id.is_none())
-        {
+        if clock_changed && self.note_drag.as_ref().is_some_and(|drag| drag.id.is_none()) {
             tasks.push(self.finish_note_drag(false));
         }
 
@@ -977,11 +903,7 @@ impl FereseShell {
         }
 
         for entry in self.outputs.iter().filter(|_| geometry_changed) {
-            tasks.push(set_size(
-                entry.bar,
-                None,
-                Some(theme.bar_height.round() as u32),
-            ));
+            tasks.push(set_size(entry.bar, None, Some(theme.bar_height.round() as u32)));
             tasks.push(set_margin(
                 entry.bar,
                 theme.bar_margin_top,
@@ -998,11 +920,7 @@ impl FereseShell {
         Task::batch(tasks)
     }
 
-    fn output_event(
-        &mut self,
-        event: wayland::OutputEvent,
-        output: wl_output::WlOutput,
-    ) -> Task<Message> {
+    fn output_event(&mut self, event: wayland::OutputEvent, output: wl_output::WlOutput) -> Task<Message> {
         if matches!(event, wayland::OutputEvent::Removed) {
             if let Some(index) = self.outputs.iter().position(|entry| entry.output == output) {
                 let entry = self.outputs.remove(index);
@@ -1012,14 +930,9 @@ impl FereseShell {
                     Task::none()
                 };
 
-                let mut tasks = vec![
-                    destroy_layer_surface(entry.bar),
-                    menu,
-                    self.rebuild_system_modal(),
-                ];
+                let mut tasks = vec![destroy_layer_surface(entry.bar), menu, self.rebuild_system_modal()];
                 if self.note_drag.as_ref().is_some_and(|drag| {
-                    entry.clock == Some(drag.source)
-                        || entry.notes.iter().any(|(_, id)| *id == drag.source)
+                    entry.clock == Some(drag.source) || entry.notes.iter().any(|(_, id)| *id == drag.source)
                 }) {
                     tasks.push(self.finish_note_drag(false));
                 }
@@ -1137,8 +1050,7 @@ impl FereseShell {
                 size_limits: Limits::NONE,
                 // Reserve breathing room below the visible bar; layer-shell
                 // accounts for the top margin separately.
-                exclusive_zone: (bar.height.round() as i32)
-                    .saturating_add(shell_theme.bar_window_gap),
+                exclusive_zone: (bar.height.round() as i32).saturating_add(shell_theme.bar_window_gap),
             },
             Some(Box::new(move |app| app.view_layer(bar_surface_id))),
         );
@@ -1189,17 +1101,11 @@ impl FereseShell {
     }
 
     fn set_note_text(&mut self, id: &str, value: String) -> Task<Message> {
-        if let Some(note) = self
-            .config
-            .desktop_widgets
-            .notes
-            .iter_mut()
-            .find(|note| note.id == id)
+        if let Some(note) = self.config.desktop_widgets.notes.iter_mut().find(|note| note.id == id)
             && (note.text != value || self.note_error.is_some())
         {
             note.text = value.clone();
-            self.note_pending
-                .push(note_store::Edit::Text(id.to_owned(), value));
+            self.note_pending.push(note_store::Edit::Text(id.to_owned(), value));
         }
         self.flush_note_changes()
     }
@@ -1220,22 +1126,18 @@ impl FereseShell {
         if self.note_drag.is_some() {
             return Task::none();
         }
-        let Some(entry) = self.outputs.iter().find(|entry| {
-            entry.clock == Some(surface) || entry.notes.iter().any(|(_, window)| *window == surface)
-        }) else {
+        let Some(entry) = self
+            .outputs
+            .iter()
+            .find(|entry| entry.clock == Some(surface) || entry.notes.iter().any(|(_, window)| *window == surface))
+        else {
             return Task::none();
         };
         let Some(size) = entry.size else {
             return Task::none();
         };
         let (origin, dimensions) = if let Some(id) = &id {
-            let Some(note) = self
-                .config
-                .desktop_widgets
-                .notes
-                .iter()
-                .find(|note| &note.id == id)
-            else {
+            let Some(note) = self.config.desktop_widgets.notes.iter().find(|note| &note.id == id) else {
                 return Task::none();
             };
             (note_origin(note, size), (note.width, note.height))
@@ -1348,10 +1250,8 @@ impl FereseShell {
                         tasks.push(set_margin(id, clock.margin_y, 0, 0, clock.margin_x));
                     }
                 }
-                self.note_pending.push(note_store::Edit::ClockPosition(
-                    clock.margin_x,
-                    clock.margin_y,
-                ));
+                self.note_pending
+                    .push(note_store::Edit::ClockPosition(clock.margin_x, clock.margin_y));
             }
 
             if let Some(note) = self
@@ -1366,11 +1266,7 @@ impl FereseShell {
                 note.margin_y = drag.position.y.round() as i32;
 
                 for entry in &self.outputs {
-                    if let Some((_, id)) = entry
-                        .notes
-                        .iter()
-                        .find(|(id, _)| Some(id) == drag.id.as_ref())
-                    {
+                    if let Some((_, id)) = entry.notes.iter().find(|(id, _)| Some(id) == drag.id.as_ref()) {
                         tasks.push(set_anchor(*id, Anchor::TOP | Anchor::LEFT));
                         tasks.push(set_margin(*id, note.margin_y, 0, 0, note.margin_x));
                     }
@@ -1400,9 +1296,7 @@ impl FereseShell {
             }
 
             for note in &self.config.desktop_widgets.notes {
-                if !note.on_output(entry.name.as_deref())
-                    || entry.notes.iter().any(|(id, _)| id == &note.id)
-                {
+                if !note.on_output(entry.name.as_deref()) || entry.notes.iter().any(|(id, _)| id == &note.id) {
                     continue;
                 }
 
@@ -1414,8 +1308,7 @@ impl FereseShell {
                 let action = cosmic::surface::action::app_layer_shell::<Self>(
                     |_| Default::default(),
                     move |_| {
-                        let (anchor, margin) =
-                            widget_placement(note.anchor, note.margin_x, note.margin_y);
+                        let (anchor, margin) = widget_placement(note.anchor, note.margin_x, note.margin_y);
                         SctkLayerSurfaceSettings {
                             id,
                             layer: Layer::Bottom,
@@ -1424,11 +1317,7 @@ impl FereseShell {
                             } else {
                                 KeyboardInteractivity::None
                             },
-                            input_zone: if note.interactive {
-                                None
-                            } else {
-                                Some(Vec::new())
-                            },
+                            input_zone: if note.interactive { None } else { Some(Vec::new()) },
                             anchor,
                             margin,
                             output: IcedOutput::Output(output.clone()),
@@ -1454,27 +1343,14 @@ impl FereseShell {
             .as_ref()
             .is_some_and(|drag| drag.id.as_deref() == Some(id))
         {
-            return container(text(""))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into();
+            return container(text("")).width(Length::Fill).height(Length::Fill).into();
         }
 
         self.view_note_content(id, surface)
     }
 
-    fn view_note_content(
-        &self,
-        id: &str,
-        surface: window::Id,
-    ) -> Element<'_, cosmic::Action<Message>> {
-        let Some(note) = self
-            .config
-            .desktop_widgets
-            .notes
-            .iter()
-            .find(|note| note.id == id)
-        else {
+    fn view_note_content(&self, id: &str, surface: window::Id) -> Element<'_, cosmic::Action<Message>> {
+        let Some(note) = self.config.desktop_widgets.notes.iter().find(|note| note.id == id) else {
             return text("").into();
         };
         let alignment = match note.alignment {
@@ -1509,31 +1385,16 @@ impl FereseShell {
             tint.a *= note.opacity;
             Some(Background::Color(tint))
         };
-        let mut body = cosmic::widget::column([])
-            .spacing(note.gap)
-            .align_x(alignment);
+        let mut body = cosmic::widget::column([]).spacing(note.gap).align_x(alignment);
 
         if note.interactive {
-            let title = ferese_theme::text(
-                if note.title.is_empty() {
-                    "⋮⋮"
-                } else {
-                    &note.title
-                },
-                font,
-            )
-            .size(note.title_size)
-            .class(theme::Text::Color(foreground));
+            let title = ferese_theme::text(if note.title.is_empty() { "⋮⋮" } else { &note.title }, font)
+                .size(note.title_size)
+                .class(theme::Text::Color(foreground));
             let header = cosmic::widget::mouse_area(container(title).width(Length::Fill))
                 .interaction(cosmic::iced::mouse::Interaction::Grab)
-                .on_press(cosmic::Action::App(Message::BeginNoteDrag(
-                    id.to_owned(),
-                    surface,
-                )));
-            let editing = self
-                .note_editor
-                .as_ref()
-                .is_some_and(|editor| editor.id == id);
+                .on_press(cosmic::Action::App(Message::BeginNoteDrag(id.to_owned(), surface)));
+            let editing = self.note_editor.as_ref().is_some_and(|editor| editor.id == id);
 
             body = body.push(
                 row([]).push(header).push(motion::button(
@@ -1580,9 +1441,7 @@ impl FereseShell {
                     .height(Length::Fill)
                     .font(font)
                     .size(note.text_size)
-                    .on_action(move |action| {
-                        cosmic::Action::App(Message::NoteAction(id.clone(), action))
-                    }),
+                    .on_action(move |action| cosmic::Action::App(Message::NoteAction(id.clone(), action))),
             );
         } else {
             body = body.push(
@@ -1595,11 +1454,7 @@ impl FereseShell {
         }
 
         if let Some(error) = &self.note_error {
-            body = body.push(
-                text(error.clone())
-                    .size(10)
-                    .class(theme::Text::Color(foreground)),
-            );
+            body = body.push(text(error.clone()).size(10).class(theme::Text::Color(foreground)));
         }
 
         let radius = self.config.theme.material_radius;
@@ -1680,10 +1535,7 @@ impl FereseShell {
             .as_ref()
             .is_some_and(|drag| drag.id.is_none() && drag.source == id)
         {
-            return container(text(""))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into();
+            return container(text("")).width(Length::Fill).height(Length::Fill).into();
         }
 
         cosmic::widget::mouse_area(self.view_clock_content())
@@ -1701,10 +1553,7 @@ impl FereseShell {
             ClockAlignment::Right => alignment::Horizontal::Right,
         };
         let pixel = clock.style == ferese_core::desktop::ClockStyle::Pixel;
-        let custom_font = clock
-            .font_family
-            .as_deref()
-            .filter(|family| !family.trim().is_empty());
+        let custom_font = clock.font_family.as_deref().filter(|family| !family.trim().is_empty());
         let mut font = configured_font(if pixel {
             custom_font.or(Some("Cantarell"))
         } else {
@@ -1717,22 +1566,13 @@ impl FereseShell {
         }
         let date_font = configured_font(custom_font.or(self.config.font_family.as_deref()));
         let tint = |custom: &Option<String>, fallback| {
-            let mut tint = color(
-                custom
-                    .as_deref()
-                    .and_then(config::parse_color)
-                    .unwrap_or(fallback),
-            );
+            let mut tint = color(custom.as_deref().and_then(config::parse_color).unwrap_or(fallback));
             tint.a *= clock.opacity;
             tint
         };
         let foreground = tint(&clock.color, self.config.theme.text_primary);
         let accent = color(self.config.theme.accent);
-        let custom_color = clock
-            .color
-            .as_deref()
-            .and_then(config::parse_color)
-            .is_some();
+        let custom_color = clock.color.as_deref().and_then(config::parse_color).is_some();
         let digit_colors = [0.8, 0.45].map(|text_mix| {
             if custom_color {
                 return foreground;
@@ -1744,9 +1584,7 @@ impl FereseShell {
                 a: foreground.a,
             }
         });
-        let mut labels = cosmic::widget::column([])
-            .spacing(clock.gap)
-            .align_x(alignment);
+        let mut labels = cosmic::widget::column([]).spacing(clock.gap).align_x(alignment);
 
         if pixel && clock.show_date {
             labels = labels.push(
@@ -1759,10 +1597,7 @@ impl FereseShell {
             );
         }
 
-        if let Some(digits) = pixel
-            .then(|| stacked_clock_digits(&self.desktop_clock.0))
-            .flatten()
-        {
+        if let Some(digits) = pixel.then(|| stacked_clock_digits(&self.desktop_clock.0)).flatten() {
             let available_height = (clock.height as f32
                 - clock.padding * 2.0
                 - if clock.show_date {
@@ -1830,15 +1665,11 @@ impl FereseShell {
                     ))),
             );
         }
-        let background = clock
-            .background
-            .as_deref()
-            .and_then(config::parse_color)
-            .map(|rgba| {
-                let mut tint = color(rgba);
-                tint.a *= clock.opacity;
-                Background::Color(tint)
-            });
+        let background = clock.background.as_deref().and_then(config::parse_color).map(|rgba| {
+            let mut tint = color(rgba);
+            tint.a *= clock.opacity;
+            Background::Color(tint)
+        });
         let radius = self.config.theme.material_radius;
 
         container(labels)
@@ -1859,30 +1690,21 @@ impl FereseShell {
     }
 
     fn output_for_bar(&self, id: window::Id) -> Option<&control::OutputSnapshot> {
-        let name = self
-            .outputs
-            .iter()
-            .find(|entry| entry.bar == id)?
-            .name
-            .as_deref()?;
-        self.snapshot
-            .outputs
-            .iter()
-            .find(|output| output.name == name)
+        let name = self.outputs.iter().find(|entry| entry.bar == id)?.name.as_deref()?;
+        self.snapshot.outputs.iter().find(|output| output.name == name)
     }
 
     fn bar_hidden(&self, id: window::Id) -> bool {
-        output_bar_hidden(
-            &self.snapshot,
-            self.output_for_bar(id).map(|output| output.id),
-        )
+        output_bar_hidden(&self.snapshot, self.output_for_bar(id).map(|output| output.id))
     }
 
     fn handle_event(&mut self, event: Event, id: window::Id) -> Task<Message> {
         if let Event::Mouse(mouse) = &event {
-            if !self.outputs.iter().any(|entry| {
-                entry.clock == Some(id) || entry.notes.iter().any(|(_, surface)| *surface == id)
-            }) {
+            if !self
+                .outputs
+                .iter()
+                .any(|entry| entry.clock == Some(id) || entry.notes.iter().any(|(_, surface)| *surface == id))
+            {
                 return Task::none();
             }
 
@@ -1907,17 +1729,8 @@ impl FereseShell {
                         };
 
                         if let Some(dimensions) = dimensions {
-                            let requested = clamp_note_position(
-                                drag.origin + delta,
-                                drag.output_size,
-                                dimensions,
-                            );
-                            drag.position = avoid_widget_overlap(
-                                drag.position,
-                                requested,
-                                dimensions,
-                                &drag.obstacles,
-                            );
+                            let requested = clamp_note_position(drag.origin + delta, drag.output_size, dimensions);
+                            drag.position = avoid_widget_overlap(drag.position, requested, dimensions, &drag.obstacles);
                             // Move a compact, cached buffer in the compositor instead of
                             // repainting an output-sized buffer for every pointer event.
                             return set_margin(
@@ -1932,10 +1745,7 @@ impl FereseShell {
                 }
 
                 cosmic::iced::mouse::Event::ButtonReleased(cosmic::iced::mouse::Button::Left)
-                    if self
-                        .note_drag
-                        .as_ref()
-                        .is_some_and(|drag| drag.source == id) =>
+                    if self.note_drag.as_ref().is_some_and(|drag| drag.source == id) =>
                 {
                     return self.finish_note_drag(true);
                 }
@@ -1966,17 +1776,13 @@ impl FereseShell {
         }
 
         match event {
-            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Output(
-                event,
-                output,
-            ))) => self.output_event(event, output),
+            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Output(event, output))) => {
+                self.output_event(event, output)
+            }
             Event::Window(window::Event::Opened { .. })
                 if self.outputs.iter().any(|entry| entry.bar == id)
                     || self.menu.as_ref().is_some_and(|menu| menu.id == id)
-                    || self
-                        .system_modal
-                        .as_ref()
-                        .is_some_and(|modal| modal.contains(id))
+                    || self.system_modal.as_ref().is_some_and(|modal| modal.contains(id))
                     || self
                         .notification_surface
                         .as_ref()
@@ -2000,11 +1806,7 @@ impl FereseShell {
                 key: cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::Escape),
                 ..
             }) if self.menu.is_some() => self.close_menu(),
-            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Popup(
-                event,
-                surface,
-                popup_id,
-            ))) => {
+            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Popup(event, surface, popup_id))) => {
                 if let Some(menu) = &mut self.menu
                     && menu.id == popup_id
                 {
@@ -2020,15 +1822,10 @@ impl FereseShell {
                         }
                         wayland::PopupEvent::Focused => {
                             if menu.effects.is_none() {
-                                match EffectsBinding::attach_role(
-                                    &surface,
-                                    menu.kind.material_role(),
-                                    menu.progress(),
-                                ) {
+                                match EffectsBinding::attach_role(&surface, menu.kind.material_role(), menu.progress())
+                                {
                                     Ok(binding) => menu.effects = Some(binding),
-                                    Err(error) => eprintln!(
-                                        "ferese-shell: popover material unavailable: {error}"
-                                    ),
+                                    Err(error) => eprintln!("ferese-shell: popover material unavailable: {error}"),
                                 }
                                 EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
                             }
@@ -2036,15 +1833,10 @@ impl FereseShell {
                         wayland::PopupEvent::Configured { .. } => {
                             menu.motion.begin(Instant::now());
                             if menu.effects.is_none() {
-                                match EffectsBinding::attach_role(
-                                    &surface,
-                                    menu.kind.material_role(),
-                                    menu.progress(),
-                                ) {
+                                match EffectsBinding::attach_role(&surface, menu.kind.material_role(), menu.progress())
+                                {
                                     Ok(binding) => menu.effects = Some(binding),
-                                    Err(error) => eprintln!(
-                                        "ferese-shell: popover material unavailable: {error}"
-                                    ),
+                                    Err(error) => eprintln!("ferese-shell: popover material unavailable: {error}"),
                                 }
                                 EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
                             }
@@ -2057,35 +1849,24 @@ impl FereseShell {
                 }
                 Task::none()
             }
-            Event::Window(window::Event::Closed)
-                if self.menu.as_ref().is_some_and(|menu| menu.id == id) =>
-            {
+            Event::Window(window::Event::Closed) if self.menu.as_ref().is_some_and(|menu| menu.id == id) => {
                 self.menu = None;
                 EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
                 Task::none()
             }
             Event::Window(window::Event::Closed)
-                if self
-                    .system_modal
-                    .as_ref()
-                    .is_some_and(|modal| modal.contains(id)) =>
+                if self.system_modal.as_ref().is_some_and(|modal| modal.contains(id)) =>
             {
                 self.close_system_modal()
             }
             Event::Window(window::Event::Closed) => Task::none(),
-            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(
-                _,
-                surface,
-                frame_id,
-            ))) if self.menu.as_ref().is_some_and(|menu| menu.id == frame_id) => {
+            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(_, surface, frame_id)))
+                if self.menu.as_ref().is_some_and(|menu| menu.id == frame_id) =>
+            {
                 if let Some(menu) = &mut self.menu
                     && menu.effects.is_none()
                 {
-                    match EffectsBinding::attach_role(
-                        &surface,
-                        menu.kind.material_role(),
-                        menu.progress(),
-                    ) {
+                    match EffectsBinding::attach_role(&surface, menu.kind.material_role(), menu.progress()) {
                         Ok(binding) => menu.effects = Some(binding),
                         Err(error) => {
                             eprintln!("ferese-shell: popover material unavailable: {error}")
@@ -2095,22 +1876,17 @@ impl FereseShell {
                 }
                 Task::none()
             }
-            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(
-                _,
-                surface,
-                frame_id,
-            ))) if self.outputs.iter().any(|entry| entry.bar == frame_id) => {
+            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(_, surface, frame_id)))
+                if self.outputs.iter().any(|entry| entry.bar == frame_id) =>
+            {
                 self.attach_effects(frame_id, &surface);
                 Task::none()
             }
-            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Layer(
-                _,
-                surface,
-                layer_id,
-            ))) if self
-                .notification_surface
-                .as_ref()
-                .is_some_and(|entry| entry.id == layer_id) =>
+            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Layer(_, surface, layer_id)))
+                if self
+                    .notification_surface
+                    .as_ref()
+                    .is_some_and(|entry| entry.id == layer_id) =>
             {
                 let entry = self.notification_surface.as_mut().unwrap();
 
@@ -2124,11 +1900,9 @@ impl FereseShell {
                 }
                 Task::none()
             }
-            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Layer(
-                _,
-                surface,
-                layer_id,
-            ))) if self.outputs.iter().any(|entry| entry.bar == layer_id) => {
+            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Layer(_, surface, layer_id)))
+                if self.outputs.iter().any(|entry| entry.bar == layer_id) =>
+            {
                 self.attach_effects(layer_id, &surface);
                 self.attach_power_material(layer_id, &surface);
                 Task::none()
@@ -2157,10 +1931,7 @@ impl FereseShell {
 
     fn view_layer(&self, id: window::Id) -> Element<'_, cosmic::Action<Message>> {
         if self.bar_hidden(id) {
-            return container(text(""))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into();
+            return container(text("")).width(Length::Fill).height(Length::Fill).into();
         }
 
         let focused_output = self.output_for_bar(id);
@@ -2210,9 +1981,7 @@ impl FereseShell {
                 ))
                 .height(bar.control_height)
                 .padding(0)
-                .on_press(cosmic::Action::App(Message::ActivateWorkspace(
-                    workspace.id,
-                )));
+                .on_press(cosmic::Action::App(Message::ActivateWorkspace(workspace.id)));
 
             let selector = motion::button(
                 workspace_button,
@@ -2229,9 +1998,11 @@ impl FereseShell {
             // accessible button name, without an overlay stealing its target.
             workspace_buttons = workspace_buttons.push(selector);
         }
-        workspace_row = workspace_row.push(container(workspace_buttons).padding([0, 3]).class(
-            theme::Container::custom(move |_| bar_group_style(shell_theme)),
-        ));
+        workspace_row = workspace_row.push(
+            container(workspace_buttons)
+                .padding([0, 3])
+                .class(theme::Container::custom(move |_| bar_group_style(shell_theme))),
+        );
 
         let foreground = color(shell_theme.text_primary);
         let left = cosmic::iced::widget::scrollable(workspace_row)
@@ -2249,9 +2020,7 @@ impl FereseShell {
                     text(date)
                         .size(12)
                         .class(theme::Text::Color(color(shell_theme.text_muted))),
-                    text(time)
-                        .size(bar.text_size)
-                        .class(theme::Text::Color(foreground)),
+                    text(time).size(bar.text_size).class(theme::Text::Color(foreground)),
                 ]
                 .spacing(8)
                 .align_y(cosmic::iced::Alignment::Center),
@@ -2279,9 +2048,7 @@ impl FereseShell {
         ))
         .height(bar.control_height)
         .align_y(alignment::Vertical::Center)
-        .class(theme::Container::custom(move |_| {
-            bar_group_style(shell_theme)
-        }));
+        .class(theme::Container::custom(move |_| bar_group_style(shell_theme)));
         let right = row![
             self.view_status_bar().map(move |action| match action {
                 cosmic::Action::App(Message::OpenMenu(kind, anchor)) =>
@@ -2376,10 +2143,7 @@ impl FereseShell {
     }
 }
 
-fn overview_control(
-    bar: BarMetrics,
-    foreground: Color,
-) -> Element<'static, cosmic::Action<Message>> {
+fn overview_control(bar: BarMetrics, foreground: Color) -> Element<'static, cosmic::Action<Message>> {
     container(bar_icon(
         ferese_theme::icons::FERESE,
         bar.overview_icon_size,
@@ -2448,10 +2212,7 @@ fn workspace_indicator(
     .into()
 }
 
-fn focused_bar_title<'a>(
-    snapshot: &'a ShellSnapshot,
-    output: Option<&control::OutputSnapshot>,
-) -> &'a str {
+fn focused_bar_title<'a>(snapshot: &'a ShellSnapshot, output: Option<&control::OutputSnapshot>) -> &'a str {
     let Some(output) = output else {
         return "";
     };
@@ -2480,15 +2241,9 @@ fn workspace_selector_style(
 ) -> container::Style {
     container::Style {
         background: if active {
-            Some(Background::Color(color_with_opacity(
-                shell_theme.accent,
-                0.16,
-            )))
+            Some(Background::Color(color_with_opacity(shell_theme.accent, 0.16)))
         } else if occupied {
-            Some(Background::Color(color_with_opacity(
-                shell_theme.text_primary,
-                0.04,
-            )))
+            Some(Background::Color(color_with_opacity(shell_theme.text_primary, 0.04)))
         } else {
             None
         },
@@ -2536,18 +2291,10 @@ fn avoid_widget_overlap(
     position
 }
 
-fn clamp_note_position(
-    position: cosmic::iced::Point,
-    output: (i32, i32),
-    size: (u32, u32),
-) -> cosmic::iced::Point {
+fn clamp_note_position(position: cosmic::iced::Point, output: (i32, i32), size: (u32, u32)) -> cosmic::iced::Point {
     cosmic::iced::Point::new(
-        position
-            .x
-            .clamp(0., (output.0 as f32 - size.0 as f32).clamp(0., 8192.)),
-        position
-            .y
-            .clamp(0., (output.1 as f32 - size.1 as f32).clamp(0., 8192.)),
+        position.x.clamp(0., (output.0 as f32 - size.0 as f32).clamp(0., 8192.)),
+        position.y.clamp(0., (output.1 as f32 - size.1 as f32).clamp(0., 8192.)),
     )
 }
 
@@ -2571,16 +2318,12 @@ fn widget_origin(
     use ferese_core::desktop::Anchor as A;
     let x = match anchor {
         A::TopLeft | A::CenterLeft | A::BottomLeft => margin_x as f32,
-        A::TopRight | A::CenterRight | A::BottomRight => {
-            output.0 as f32 - size.0 as f32 - margin_x as f32
-        }
+        A::TopRight | A::CenterRight | A::BottomRight => output.0 as f32 - size.0 as f32 - margin_x as f32,
         _ => (output.0 as f32 - size.0 as f32) / 2.,
     };
     let y = match anchor {
         A::TopLeft | A::TopCenter | A::TopRight => margin_y as f32,
-        A::BottomLeft | A::BottomCenter | A::BottomRight => {
-            output.1 as f32 - size.1 as f32 - margin_y as f32
-        }
+        A::BottomLeft | A::BottomCenter | A::BottomRight => output.1 as f32 - size.1 as f32 - margin_y as f32,
         _ => (output.1 as f32 - size.1 as f32) / 2.,
     };
     clamp_note_position(cosmic::iced::Point::new(x, y), output, size)
@@ -2590,11 +2333,7 @@ fn clock_placement(clock: &ferese_core::desktop::Clock) -> (Anchor, IcedMargin) 
     widget_placement(clock.anchor, clock.margin_x, clock.margin_y)
 }
 
-fn widget_placement(
-    position: ferese_core::desktop::Anchor,
-    margin_x: i32,
-    margin_y: i32,
-) -> (Anchor, IcedMargin) {
+fn widget_placement(position: ferese_core::desktop::Anchor, margin_x: i32, margin_y: i32) -> (Anchor, IcedMargin) {
     use ferese_core::desktop::Anchor as Position;
     let horizontal = match position {
         Position::TopLeft | Position::CenterLeft | Position::BottomLeft => Anchor::LEFT,
@@ -2610,21 +2349,9 @@ fn widget_placement(
         horizontal | vertical,
         IcedMargin {
             top: if vertical == Anchor::TOP { margin_y } else { 0 },
-            bottom: if vertical == Anchor::BOTTOM {
-                margin_y
-            } else {
-                0
-            },
-            left: if horizontal == Anchor::LEFT {
-                margin_x
-            } else {
-                0
-            },
-            right: if horizontal == Anchor::RIGHT {
-                margin_x
-            } else {
-                0
-            },
+            bottom: if vertical == Anchor::BOTTOM { margin_y } else { 0 },
+            left: if horizontal == Anchor::LEFT { margin_x } else { 0 },
+            right: if horizontal == Anchor::RIGHT { margin_x } else { 0 },
         },
     )
 }
@@ -2638,8 +2365,7 @@ fn shell_surface_style(theme: ShellTheme) -> cosmic::iced::theme::Style {
 }
 
 fn bar_style(theme: ShellTheme, compositor_material: bool) -> container::Style {
-    let mut style =
-        ferese_theme::controls::surface_appearance(color(theme.bar_background), theme.bar_radius);
+    let mut style = ferese_theme::controls::surface_appearance(color(theme.bar_background), theme.bar_radius);
     if compositor_material {
         style.background = None;
     }
@@ -2651,10 +2377,7 @@ fn bar_style(theme: ShellTheme, compositor_material: bool) -> container::Style {
 
 fn bar_group_style(theme: ShellTheme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(color_with_opacity(
-            theme.text_primary,
-            0.035,
-        ))),
+        background: Some(Background::Color(color_with_opacity(theme.text_primary, 0.035))),
         border: Border {
             color: color_with_opacity(theme.text_muted, 0.12),
             width: 1.0,
@@ -2690,28 +2413,21 @@ fn native_wayland_surface(
     use cosmic::iced::window::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
     let display = window.display_handle().map_err(|error| error.to_string())?;
     let handle = window.window_handle().map_err(|error| error.to_string())?;
-    let (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(handle)) =
-        (display.as_raw(), handle.as_raw())
+    let (RawDisplayHandle::Wayland(display), RawWindowHandle::Wayland(handle)) = (display.as_raw(), handle.as_raw())
     else {
         return Err("shell material requires a Wayland surface".to_owned());
     };
     // SAFETY: iced lends matching, live Wayland handles for this callback.
     // This backend borrows the display; it never disconnects iced's connection.
     // Both handles belong to the runtime, which outlives the shell bindings.
-    let backend = unsafe {
-        wayland_client::backend::Backend::from_foreign_display(display.display.as_ptr().cast())
-    };
+    let backend = unsafe { wayland_client::backend::Backend::from_foreign_display(display.display.as_ptr().cast()) };
     let connection = Connection::from_backend(backend);
     // SAFETY: raw-window-handle identifies this pointer as a live wl_surface.
     let id = unsafe {
-        wayland_client::backend::ObjectId::from_ptr(
-            wl_surface::WlSurface::interface(),
-            handle.surface.as_ptr().cast(),
-        )
+        wayland_client::backend::ObjectId::from_ptr(wl_surface::WlSurface::interface(), handle.surface.as_ptr().cast())
     }
     .map_err(|error| error.to_string())?;
-    let surface =
-        wl_surface::WlSurface::from_id(&connection, id).map_err(|error| error.to_string())?;
+    let surface = wl_surface::WlSurface::from_id(&connection, id).map_err(|error| error.to_string())?;
     Ok((connection, surface))
 }
 
@@ -2725,10 +2441,7 @@ struct EffectsBinding {
 }
 
 impl EffectsBinding {
-    fn attach(
-        surface: &wl_surface::WlSurface,
-        visible: bool,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    fn attach(surface: &wl_surface::WlSurface, visible: bool) -> Result<Self, Box<dyn std::error::Error>> {
         Self::attach_role(
             surface,
             visible.then_some(ferese_surface_effects_v1::Role::Panel),
@@ -2803,8 +2516,7 @@ impl EffectsBinding {
     fn set_visible(&self, visible: bool) -> Result<(), Box<dyn std::error::Error>> {
         self.set_opacity(1.0)?;
         if visible {
-            self.surface
-                .set_role(ferese_surface_effects_v1::Role::Panel);
+            self.surface.set_role(ferese_surface_effects_v1::Role::Panel);
         } else {
             self.surface.clear_role();
         }
@@ -2855,48 +2567,23 @@ mod tests {
             height: 100.,
         }];
         assert_eq!(
-            super::avoid_widget_overlap(
-                Point::new(0., 0.),
-                Point::new(300., 0.),
-                (20, 20),
-                &obstacles
-            ),
+            super::avoid_widget_overlap(Point::new(0., 0.), Point::new(300., 0.), (20, 20), &obstacles),
             Point::new(80., 0.)
         );
         assert_eq!(
-            super::avoid_widget_overlap(
-                Point::new(80., 0.),
-                Point::new(120., 50.),
-                (20, 20),
-                &obstacles
-            ),
+            super::avoid_widget_overlap(Point::new(80., 0.), Point::new(120., 50.), (20, 20), &obstacles),
             Point::new(80., 50.)
         );
         assert_eq!(
-            super::avoid_widget_overlap(
-                Point::new(160., 0.),
-                Point::new(0., 0.),
-                (20, 20),
-                &obstacles
-            ),
+            super::avoid_widget_overlap(Point::new(160., 0.), Point::new(0., 0.), (20, 20), &obstacles),
             Point::new(140., 0.)
         );
         assert_eq!(
-            super::avoid_widget_overlap(
-                Point::new(100., 120.),
-                Point::new(100., 0.),
-                (20, 20),
-                &obstacles
-            ),
+            super::avoid_widget_overlap(Point::new(100., 120.), Point::new(100., 0.), (20, 20), &obstacles),
             Point::new(100., 100.)
         );
         assert_eq!(
-            super::avoid_widget_overlap(
-                Point::new(0., 100.),
-                Point::new(200., 100.),
-                (20, 20),
-                &obstacles
-            ),
+            super::avoid_widget_overlap(Point::new(0., 100.), Point::new(200., 100.), (20, 20), &obstacles),
             Point::new(200., 100.)
         );
     }
@@ -2905,15 +2592,9 @@ mod tests {
     fn note_drag_origin_and_bounds_use_logical_output_coordinates() {
         use cosmic::iced::Point;
         let mut note = ferese_core::desktop::StickyNote::default();
-        assert_eq!(
-            super::note_origin(&note, (1920, 1080)),
-            Point::new(1552., 80.)
-        );
+        assert_eq!(super::note_origin(&note, (1920, 1080)), Point::new(1552., 80.));
         note.anchor = ferese_core::desktop::Anchor::Center;
-        assert_eq!(
-            super::note_origin(&note, (1920, 1080)),
-            Point::new(800., 420.)
-        );
+        assert_eq!(super::note_origin(&note, (1920, 1080)), Point::new(800., 420.));
         assert_eq!(
             super::clamp_note_position(Point::new(-20., 1200.), (1920, 1080), (320, 240)),
             Point::new(0., 840.)
@@ -2935,19 +2616,13 @@ mod tests {
         };
         let (anchor, margin) = super::clock_placement(&clock);
         assert_eq!(anchor, super::Anchor::BOTTOM | super::Anchor::RIGHT);
-        assert_eq!(
-            (margin.top, margin.right, margin.bottom, margin.left),
-            (0, 30, 40, 0)
-        );
+        assert_eq!((margin.top, margin.right, margin.bottom, margin.left), (0, 30, 40, 0));
         let (anchor, margin) = super::clock_placement(&Clock {
             anchor: Position::Center,
             ..clock
         });
         assert!(anchor.is_empty());
-        assert_eq!(
-            (margin.top, margin.right, margin.bottom, margin.left),
-            (0, 0, 0, 0)
-        );
+        assert_eq!((margin.top, margin.right, margin.bottom, margin.left), (0, 0, 0, 0));
     }
 
     #[test]
@@ -2994,31 +2669,20 @@ mod tests {
     #[test]
     fn startup_surface_clear_is_transparent_and_bar_fallback_is_dark() {
         let theme = ShellTheme::default();
-        assert_eq!(
-            shell_surface_style(theme).background_color,
-            Color::TRANSPARENT
-        );
-        let Some(Background::Color(background)) = bar_style(theme.for_bar(), false).background
-        else {
+        assert_eq!(shell_surface_style(theme).background_color, Color::TRANSPARENT);
+        let Some(Background::Color(background)) = bar_style(theme.for_bar(), false).background else {
             panic!("first frame needs a fallback fill before material attachment");
         };
         assert!(background.r < 0.15 && background.g < 0.15 && background.b < 0.20);
         assert!(background.a > 0.9);
-        assert!(
-            theme.bar_text_primary[..3]
-                .iter()
-                .all(|channel| *channel > 220)
-        );
+        assert!(theme.bar_text_primary[..3].iter().all(|channel| *channel > 220));
     }
 
     #[test]
     fn bar_fallback_uses_the_matching_dark_palette_and_geometry() {
         let theme = ShellTheme::default().for_bar();
         let style = bar_style(theme, false);
-        assert_eq!(
-            style.background,
-            Some(Background::Color(color(theme.bar_background)))
-        );
+        assert_eq!(style.background, Some(Background::Color(color(theme.bar_background))));
         assert_eq!(style.text_color, Some(color(theme.bar_text_primary)));
         assert_eq!(style.border.radius, theme.bar_radius.into());
         assert_eq!(style.shadow, cosmic::iced::Shadow::default());
@@ -3084,10 +2748,7 @@ mod tests {
     #[test]
     fn bar_title_tracks_focus_and_the_outputs_active_workspace() {
         let mut snapshot = snapshot_with_fullscreen_window(7);
-        assert_eq!(
-            focused_bar_title(&snapshot, snapshot.outputs.first()),
-            "Test"
-        );
+        assert_eq!(focused_bar_title(&snapshot, snapshot.outputs.first()), "Test");
         snapshot.windows[0].focused = false;
         assert_eq!(focused_bar_title(&snapshot, snapshot.outputs.first()), "");
         snapshot.windows[0].focused = true;

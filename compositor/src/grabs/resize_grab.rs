@@ -1,20 +1,16 @@
 use std::cell::RefCell;
 
-use smithay::{
-    desktop::Window,
-    input::pointer::{
-        AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
-        GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent,
-        GestureSwipeEndEvent, GestureSwipeUpdateEvent, GrabStartData, MotionEvent, PointerGrab,
-        PointerInnerHandle, RelativeMotionEvent,
-    },
-    reexports::{
-        wayland_protocols::xdg::shell::server::xdg_toplevel,
-        wayland_server::protocol::wl_surface::WlSurface,
-    },
-    utils::{Logical, Point, Rectangle, Size},
-    wayland::{compositor::with_states, shell::xdg::SurfaceCachedState},
+use smithay::desktop::Window;
+use smithay::input::pointer::{
+    AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent, GesturePinchEndEvent,
+    GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent, GrabStartData,
+    MotionEvent, PointerGrab, PointerInnerHandle, RelativeMotionEvent,
 };
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Logical, Point, Rectangle, Size};
+use smithay::wayland::compositor::with_states;
+use smithay::wayland::shell::xdg::SurfaceCachedState;
 
 use crate::Ferese;
 
@@ -31,9 +27,7 @@ impl ResizeEdge {
     fn left(self) -> bool {
         matches!(
             self.0,
-            xdg_toplevel::ResizeEdge::Left
-                | xdg_toplevel::ResizeEdge::TopLeft
-                | xdg_toplevel::ResizeEdge::BottomLeft
+            xdg_toplevel::ResizeEdge::Left | xdg_toplevel::ResizeEdge::TopLeft | xdg_toplevel::ResizeEdge::BottomLeft
         )
     }
 
@@ -49,9 +43,7 @@ impl ResizeEdge {
     fn top(self) -> bool {
         matches!(
             self.0,
-            xdg_toplevel::ResizeEdge::Top
-                | xdg_toplevel::ResizeEdge::TopLeft
-                | xdg_toplevel::ResizeEdge::TopRight
+            xdg_toplevel::ResizeEdge::Top | xdg_toplevel::ResizeEdge::TopLeft | xdg_toplevel::ResizeEdge::TopRight
         )
     }
 
@@ -82,16 +74,8 @@ impl ResizeSurfaceGrab {
         initial_rect: Rectangle<i32, Logical>,
     ) -> Self {
         ResizeState::with(
-            window
-                .toplevel()
-                .expect("managed window has a toplevel")
-                .wl_surface(),
-            |state| {
-                *state = ResizeState::Resizing {
-                    edges,
-                    initial_rect,
-                }
-            },
+            window.toplevel().expect("managed window has a toplevel").wl_surface(),
+            |state| *state = ResizeState::Resizing { edges, initial_rect },
         );
         Self {
             start_data,
@@ -114,17 +98,13 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
     ) {
         handle.motion(data, None, event);
         let delta = event.location - self.start_data.location;
-        let surface = self
-            .window
-            .toplevel()
-            .expect("managed window has a toplevel");
+        let surface = self.window.toplevel().expect("managed window has a toplevel");
         let (minimum, maximum) = with_states(surface.wl_surface(), |states| {
             let mut cached = states.cached_state.get::<SurfaceCachedState>();
             let state = cached.current();
             (state.min_size, state.max_size)
         });
-        self.last_size =
-            constrained_size(self.initial_rect.size, delta, self.edges, minimum, maximum);
+        self.last_size = constrained_size(self.initial_rect.size, delta, self.edges, minimum, maximum);
         let rect = resized_rect(self.initial_rect, self.last_size, self.edges);
         data.set_floating_window_geometry(&self.window, rect.loc, rect.size);
 
@@ -145,20 +125,12 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
         handle.relative_motion(data, focus, event);
     }
 
-    fn button(
-        &mut self,
-        data: &mut Ferese,
-        handle: &mut PointerInnerHandle<'_, Ferese>,
-        event: &ButtonEvent,
-    ) {
+    fn button(&mut self, data: &mut Ferese, handle: &mut PointerInnerHandle<'_, Ferese>, event: &ButtonEvent) {
         handle.button(data, event);
         if handle.current_pressed().is_empty() {
             self.finished = true;
             handle.unset_grab(self, data, event.serial, event.time, true);
-            let surface = self
-                .window
-                .toplevel()
-                .expect("managed window has a toplevel");
+            let surface = self.window.toplevel().expect("managed window has a toplevel");
             surface.with_pending_state(|state| {
                 state.states.unset(xdg_toplevel::State::Resizing);
                 state.size = Some(self.last_size);
@@ -173,12 +145,7 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
         }
     }
 
-    fn axis(
-        &mut self,
-        data: &mut Ferese,
-        handle: &mut PointerInnerHandle<'_, Ferese>,
-        frame: AxisFrame,
-    ) {
+    fn axis(&mut self, data: &mut Ferese, handle: &mut PointerInnerHandle<'_, Ferese>, frame: AxisFrame) {
         handle.axis(data, frame);
     }
 
@@ -267,21 +234,14 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
             return;
         }
 
-        let surface = self
-            .window
-            .toplevel()
-            .expect("managed window has a toplevel");
+        let surface = self.window.toplevel().expect("managed window has a toplevel");
         surface.with_pending_state(|state| {
             state.states.unset(xdg_toplevel::State::Resizing);
             state.size = Some(self.initial_rect.size);
         });
         surface.send_pending_configure();
         ResizeState::with(surface.wl_surface(), |state| *state = ResizeState::Idle);
-        data.set_floating_window_geometry(
-            &self.window,
-            self.initial_rect.loc,
-            self.initial_rect.size,
-        );
+        data.set_floating_window_geometry(&self.window, self.initial_rect.loc, self.initial_rect.size);
     }
 }
 
@@ -316,14 +276,8 @@ impl ResizeState {
     fn commit(&mut self) -> Option<(ResizeEdge, Rectangle<i32, Logical>)> {
         match *self {
             Self::Idle => None,
-            Self::Resizing {
-                edges,
-                initial_rect,
-            } => Some((edges, initial_rect)),
-            Self::WaitingForFinalCommit {
-                edges,
-                initial_rect,
-            } => {
+            Self::Resizing { edges, initial_rect } => Some((edges, initial_rect)),
+            Self::WaitingForFinalCommit { edges, initial_rect } => {
                 *self = Self::Idle;
                 Some((edges, initial_rect))
             }

@@ -1,11 +1,9 @@
 use std::time::Duration;
 
-use smithay::{
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::SERIAL_COUNTER,
-    wayland::xdg_activation::{
-        XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
-    },
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::SERIAL_COUNTER;
+use smithay::wayland::xdg_activation::{
+    XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
 };
 
 use crate::Ferese;
@@ -21,12 +19,7 @@ impl XdgActivationHandler for Ferese {
         data.serial.is_some() && data.timestamp.elapsed() <= TOKEN_MAX_AGE
     }
 
-    fn request_activation(
-        &mut self,
-        token: XdgActivationToken,
-        data: XdgActivationTokenData,
-        surface: WlSurface,
-    ) {
+    fn request_activation(&mut self, token: XdgActivationToken, data: XdgActivationTokenData, surface: WlSurface) {
         if self.session_lock.active || self.input_capture.captures(1) {
             return;
         }

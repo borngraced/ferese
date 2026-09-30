@@ -63,12 +63,7 @@ pub fn validate(configured: &[WindowRuleConfig]) -> Result<Vec<WindowRule>, Stri
         .collect()
 }
 
-pub fn resolve(
-    rules: &[WindowRule],
-    app_id: Option<&str>,
-    title: Option<&str>,
-    transient: bool,
-) -> WindowRuleResult {
+pub fn resolve(rules: &[WindowRule], app_id: Option<&str>, title: Option<&str>, transient: bool) -> WindowRuleResult {
     let app_id = app_id.map(normalize_app_id);
     let mut result = WindowRuleResult::default();
     if matches!(
@@ -88,10 +83,7 @@ pub fn resolve(
             .app_id
             .as_deref()
             .is_none_or(|expected| app_id.as_deref() == Some(expected));
-        let title_matches = rule
-            .title
-            .as_deref()
-            .is_none_or(|expected| title == Some(expected));
+        let title_matches = rule.title.as_deref().is_none_or(|expected| title == Some(expected));
         let transient_matches = rule.transient.is_none_or(|expected| expected == transient);
         if !app_id_matches || !title_matches || !transient_matches {
             continue;
@@ -109,14 +101,10 @@ pub fn resolve(
 
 fn validate_rule(index: usize, rule: &WindowRuleConfig) -> Result<WindowRule, String> {
     if rule.app_id.is_none() && rule.title.is_none() && rule.transient.is_none() {
-        return Err(format!(
-            "window_rules[{index}] must match app_id, title, or transient"
-        ));
+        return Err(format!("window_rules[{index}] must match app_id, title, or transient"));
     }
     if rule.workspace == Some(0) {
-        return Err(format!(
-            "window_rules[{index}].workspace must be greater than zero"
-        ));
+        return Err(format!("window_rules[{index}].workspace must be greater than zero"));
     }
 
     let app_id = rule
@@ -157,11 +145,7 @@ fn nonempty_matcher(value: &str) -> Result<&str, &'static str> {
     }
 }
 
-fn positive_dimension(
-    value: Option<f64>,
-    index: usize,
-    field: &'static str,
-) -> Result<Option<f64>, String> {
+fn positive_dimension(value: Option<f64>, index: usize, field: &'static str) -> Result<Option<f64>, String> {
     if value.is_none_or(|value| value.is_finite() && value > 0.0) {
         Ok(value)
     } else {
@@ -193,9 +177,7 @@ mod tests {
         assert_eq!(removed.floating, Some(false));
         assert_eq!(removed.fullscreen, Some(false));
         assert_eq!(
-            super::live_result(old, Default::default(), true)
-                .unwrap()
-                .floating,
+            super::live_result(old, Default::default(), true).unwrap().floating,
             Some(true)
         );
         let new = super::WindowRuleResult {
@@ -234,15 +216,9 @@ mod tests {
                 ..config(app_id)
             }])
             .unwrap();
-            assert_eq!(
-                resolve(&rules, Some(app_id), None, false).floating,
-                Some(false)
-            );
+            assert_eq!(resolve(&rules, Some(app_id), None, false).floating, Some(false));
         }
-        assert_eq!(
-            resolve(&[], Some("org.example.Editor"), None, false).floating,
-            None
-        );
+        assert_eq!(resolve(&[], Some("org.example.Editor"), None, false).floating, None);
     }
 
     #[test]

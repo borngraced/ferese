@@ -93,8 +93,7 @@ impl Default for ShellTheme {
 
 impl ShellTheme {
     pub(crate) fn palette(self) -> ferese_theme::Palette {
-        let color =
-            |[r, g, b, a]: [u8; 4]| cosmic::iced::Color::from_rgba8(r, g, b, f32::from(a) / 255.);
+        let color = |[r, g, b, a]: [u8; 4]| cosmic::iced::Color::from_rgba8(r, g, b, f32::from(a) / 255.);
         let surface = color(self.surface_base);
         ferese_theme::Palette {
             background: surface,
@@ -330,14 +329,8 @@ pub(crate) fn load() -> ShellConfig {
 pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, ferese_config::Error> {
     match ferese_config::from_str::<FereseConfig>(source) {
         Ok(config) => {
-            config
-                .notifications
-                .validate()
-                .map_err(ferese_config::Error::from)?;
-            config
-                .desktop_widgets
-                .validate()
-                .map_err(ferese_config::Error::from)?;
+            config.notifications.validate().map_err(ferese_config::Error::from)?;
+            config.desktop_widgets.validate().map_err(ferese_config::Error::from)?;
             let mut theme = shell_theme(&config.theme);
             theme.material_radius = nonnegative_or(
                 config
@@ -387,19 +380,15 @@ fn shell_theme(theme: &ThemeConfig) -> ShellTheme {
     ShellTheme {
         material_radius: defaults.material_radius,
         bar_background: {
-            let mut background =
-                parse_color(&theme.surface.bar.background).unwrap_or(defaults.bar_background);
+            let mut background = parse_color(&theme.surface.bar.background).unwrap_or(defaults.bar_background);
             background[3] = alpha;
             background
         },
-        bar_text_primary: parse_color(&theme.surface.bar.text_primary)
-            .unwrap_or(defaults.bar_text_primary),
-        bar_text_muted: parse_color(&theme.surface.bar.text_muted)
-            .unwrap_or(defaults.bar_text_muted),
+        bar_text_primary: parse_color(&theme.surface.bar.text_primary).unwrap_or(defaults.bar_text_primary),
+        bar_text_muted: parse_color(&theme.surface.bar.text_muted).unwrap_or(defaults.bar_text_muted),
         surface_base: parse_color(&theme.colors.surface_base).unwrap_or(defaults.surface_base),
         surface_popover: {
-            let mut color =
-                parse_color(&theme.colors.surface_base).unwrap_or(defaults.surface_base);
+            let mut color = parse_color(&theme.colors.surface_base).unwrap_or(defaults.surface_base);
             color[3] = alpha;
             color
         },
@@ -424,8 +413,7 @@ fn shell_theme(theme: &ThemeConfig) -> ShellTheme {
         control_gap: nonnegative_or(theme.geometry.control_gap, defaults.control_gap),
         shadow_offset_y: finite_or(theme.shadow.soft.offset_y, defaults.shadow_offset_y),
         shadow_blur: nonnegative_or(theme.shadow.soft.blur, defaults.shadow_blur),
-        shadow_opacity: finite_or(theme.shadow.soft.opacity, defaults.shadow_opacity)
-            .clamp(0.0, 1.0),
+        shadow_opacity: finite_or(theme.shadow.soft.opacity, defaults.shadow_opacity).clamp(0.0, 1.0),
     }
 }
 
@@ -556,16 +544,8 @@ mod tests {
         .clock;
         assert!(clock.enabled);
         assert_eq!(clock.anchor, ferese_core::desktop::Anchor::BottomRight);
-        assert!(
-            super::parse_source("desktop-widgets {\n    clock {\n        opacity 1.1\n    }\n}\n")
-                .is_err()
-        );
-        assert!(
-            super::parse_source(
-                "desktop-widgets {\n    clock {\n        time-format \"%\"\n    }\n}\n"
-            )
-            .is_err()
-        );
+        assert!(super::parse_source("desktop-widgets {\n    clock {\n        opacity 1.1\n    }\n}\n").is_err());
+        assert!(super::parse_source("desktop-widgets {\n    clock {\n        time-format \"%\"\n    }\n}\n").is_err());
     }
     use super::*;
 
@@ -603,10 +583,7 @@ theme {
             config.theme.typography.font_family.as_deref(),
             Some("JetBrainsMono Nerd Font")
         );
-        assert_eq!(
-            config.theme.background.path,
-            Some(PathBuf::from("/tmp/wallpaper.png"))
-        );
+        assert_eq!(config.theme.background.path, Some(PathBuf::from("/tmp/wallpaper.png")));
         assert_eq!(config.theme.background.mode, WallpaperMode::Fit);
     }
 

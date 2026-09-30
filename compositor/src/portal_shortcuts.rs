@@ -1,7 +1,5 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    time::Instant,
-};
+use std::collections::{HashMap, VecDeque};
+use std::time::Instant;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -28,9 +26,7 @@ struct Registration {
 
 impl Registration {
     fn timestamp(&self) -> u64 {
-        self.latest
-            .0
-            .saturating_add(self.latest.1.elapsed().as_millis() as u64)
+        self.latest.0.saturating_add(self.latest.1.elapsed().as_millis() as u64)
     }
 
     fn release_all(&mut self) {
@@ -57,11 +53,7 @@ impl PortalShortcuts {
             return Err("Shortcut limit reached".into());
         }
         let keymap = crate::config::physical_keymap(input).map_err(|error| error.to_string())?;
-        if self
-            .0
-            .get(&owner)
-            .is_some_and(|registration| registration.closed)
-        {
+        if self.0.get(&owner).is_some_and(|registration| registration.closed) {
             return Err("Shortcut session has ended".into());
         }
         let mut parsed: Vec<(Shortcut, Binding)> = Vec::new();
@@ -70,17 +62,11 @@ impl PortalShortcuts {
                 .trigger
                 .split('+')
                 .any(|part| part.trim().eq_ignore_ascii_case("num"));
-            if shortcut.id.is_empty()
-                || shortcut.id.len() > 256
-                || shortcut.id.chars().any(char::is_control)
-            {
+            if shortcut.id.is_empty() || shortcut.id.len() > 256 || shortcut.id.chars().any(char::is_control) {
                 return Err("Invalid shortcut identifier".into());
             }
-            let binding =
-                Binding::portal_trigger(&shortcut.trigger).map_err(|error| error.to_string())?;
-            if configured
-                .iter()
-                .any(|other| binding.conflicts(other, &keymap))
+            let binding = Binding::portal_trigger(&shortcut.trigger).map_err(|error| error.to_string())?;
+            if configured.iter().any(|other| binding.conflicts(other, &keymap))
                 || parsed
                     .iter()
                     .any(|(other, key)| other.id == shortcut.id || binding.conflicts(key, &keymap))
@@ -120,9 +106,9 @@ impl PortalShortcuts {
             return;
         };
         for registration in self.0.values_mut() {
-            registration.shortcuts.retain(|(_, binding)| {
-                !configured.iter().any(|key| binding.conflicts(key, &keymap))
-            });
+            registration
+                .shortcuts
+                .retain(|(_, binding)| !configured.iter().any(|key| binding.conflicts(key, &keymap)));
             let active_ids = registration
                 .shortcuts
                 .iter()
@@ -158,13 +144,7 @@ impl PortalShortcuts {
         })
     }
 
-    pub(crate) fn press(
-        &mut self,
-        key: Keycode,
-        symbols: &[u32],
-        modifiers: &ModifiersState,
-        timestamp: u64,
-    ) -> bool {
+    pub(crate) fn press(&mut self, key: Keycode, symbols: &[u32], modifiers: &ModifiersState, timestamp: u64) -> bool {
         for registration in self.0.values_mut() {
             let Some((shortcut, _)) = registration.shortcuts.iter().find(|(shortcut, binding)| {
                 (!shortcut.num_required || modifiers.num_lock)
@@ -212,8 +192,9 @@ impl PortalShortcuts {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use smithay::input::keyboard::keysyms;
+
+    use super::*;
 
     fn shortcut(id: &str, trigger: &str) -> Shortcut {
         Shortcut {
@@ -244,10 +225,7 @@ mod tests {
                 .register(1, vec![shortcut("one", "Super+q")], &configured, &input)
                 .is_err()
         );
-        assert_eq!(
-            shortcuts.poll(1, false)["shortcuts"][0]["trigger"],
-            "Ctrl+Alt+a"
-        );
+        assert_eq!(shortcuts.poll(1, false)["shortcuts"][0]["trigger"], "Ctrl+Alt+a");
         shortcuts.remove(1);
         assert_eq!(shortcuts.poll(1, false)["closed"], true);
         shortcuts
@@ -296,12 +274,7 @@ mod tests {
             .register(1, vec![shortcut("one", "Ctrl+Alt+a")], &[], &input)
             .unwrap();
         shortcuts.reconcile(&[Binding::portal_trigger("Ctrl+Alt+a").unwrap()], &input);
-        assert!(
-            shortcuts.poll(1, false)["shortcuts"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
+        assert!(shortcuts.poll(1, false)["shortcuts"].as_array().unwrap().is_empty());
         assert!(Binding::portal_trigger("Ctrl+Alt+Escape").is_err());
         assert!(Binding::portal_trigger("Ctrl+Alt+F3").is_err());
     }
@@ -332,10 +305,9 @@ mod tests {
 
     #[test]
     fn physical_conflicts_include_secondary_layouts_and_num_modifier_is_honored() {
-        let config = crate::config::Config::parse_source(
-            "binding keys=\"Ctrl+AD01\" match=\"physical\" action=\"none\"\n",
-        )
-        .unwrap();
+        let config =
+            crate::config::Config::parse_source("binding keys=\"Ctrl+AD01\" match=\"physical\" action=\"none\"\n")
+                .unwrap();
         let mut input = config.input_settings().unwrap();
         input.xkb_layout = "us,fr".into();
         let configured = config.bindings(&input).unwrap();

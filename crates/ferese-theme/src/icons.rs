@@ -1,9 +1,7 @@
 //! Canonical SVG assets, sizing and semantic tint rules for native Ferese UIs.
-use cosmic::{
-    iced::{Color, ContentFit, Length},
-    theme,
-    widget::icon,
-};
+use cosmic::iced::{Color, ContentFit, Length};
+use cosmic::theme;
+use cosmic::widget::icon;
 
 pub const ARROW: &[u8] = include_bytes!("../assets/icons/arrow.svg");
 pub const BATTERY: &[u8] = include_bytes!("../assets/icons/battery.svg");
@@ -18,8 +16,7 @@ pub const BATTERY_75: &[u8] = include_bytes!("../assets/icons/status/battery-75.
 pub const BATTERY_CHARGING: &[u8] = include_bytes!("../assets/icons/status/battery-charging.svg");
 pub const BATTERY_EMPTY: &[u8] = include_bytes!("../assets/icons/status/battery-empty.svg");
 pub const BATTERY_FULL: &[u8] = include_bytes!("../assets/icons/status/battery-full.svg");
-pub const BLUETOOTH_CONNECTED: &[u8] =
-    include_bytes!("../assets/icons/status/bluetooth-connected.svg");
+pub const BLUETOOTH_CONNECTED: &[u8] = include_bytes!("../assets/icons/status/bluetooth-connected.svg");
 pub const BLUETOOTH_OFF: &[u8] = include_bytes!("../assets/icons/status/bluetooth-off.svg");
 pub const BLUETOOTH_ON: &[u8] = include_bytes!("../assets/icons/status/bluetooth-on.svg");
 pub const BRIGHTNESS: &[u8] = include_bytes!("../assets/icons/status/brightness.svg");
@@ -67,10 +64,7 @@ pub fn tinted(source: &'static [u8], size: u16, foreground: Color) -> icon::Icon
 }
 
 pub fn symbolic(source: &'static [u8], size: u16) -> icon::Icon {
-    icon::from_svg_bytes(source)
-        .symbolic(true)
-        .icon()
-        .size(size)
+    icon::from_svg_bytes(source).symbolic(true).icon().size(size)
 }
 
 pub fn accented(source: &'static [u8], size: u16, foreground: Color, accent: Color) -> icon::Icon {
@@ -88,8 +82,8 @@ pub fn accented(source: &'static [u8], size: u16, foreground: Color, accent: Col
         .size(size)
         .width(Length::Fixed(f32::from(size) * aspect))
         .content_fit(ContentFit::Contain)
-        .class(theme::Svg::custom(move |_| {
-            cosmic::iced::widget::svg::Style { color: None }
+        .class(theme::Svg::custom(move |_| cosmic::iced::widget::svg::Style {
+            color: None,
         }))
 }
 

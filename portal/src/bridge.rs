@@ -1,5 +1,8 @@
+use std::os::unix::net::UnixStream;
+use std::sync::Arc;
+use std::time::Duration;
+
 use serde_json::Value as Json;
-use std::{os::unix::net::UnixStream, sync::Arc, time::Duration};
 
 #[derive(Clone)]
 pub(crate) struct Bridge(Arc<BridgeInner>);
@@ -41,17 +44,9 @@ impl Bridge {
     async fn request(&self, command: &'static str, args: Json, wait: bool) -> Result<Json, String> {
         let bridge = self.clone();
         tokio::task::spawn_blocking(move || {
-            let mut stream = bridge
-                .0
-                .stream
-                .lock()
-                .map_err(|_| "Compositor connection failed")?;
+            let mut stream = bridge.0.stream.lock().map_err(|_| "Compositor connection failed")?;
             stream
-                .set_read_timeout(if wait {
-                    None
-                } else {
-                    Some(Duration::from_secs(2))
-                })
+                .set_read_timeout(if wait { None } else { Some(Duration::from_secs(2)) })
                 .map_err(|error| error.to_string())?;
             let request = ferese_ipc::Request {
                 version: ferese_ipc::VERSION,
@@ -73,12 +68,8 @@ impl Bridge {
     }
 
     pub(crate) async fn capture_watch(&self, session: u64) -> Result<Json, String> {
-        self.request(
-            "input-capture-watch",
-            serde_json::json!({"session":session}),
-            true,
-        )
-        .await
+        self.request("input-capture-watch", serde_json::json!({"session":session}), true)
+            .await
     }
 
     pub(crate) async fn closed(&self) {

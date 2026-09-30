@@ -1,6 +1,13 @@
-use std::{borrow::Cow, collections::HashMap, sync::Arc, time::Duration};
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
 use tokio::sync::RwLock;
-use zbus::{Connection, message::Header, object_server::SignalEmitter, zvariant::Value};
+use zbus::Connection;
+use zbus::message::Header;
+use zbus::object_server::SignalEmitter;
+use zbus::zvariant::Value;
 
 const PATH: &str = "/org/freedesktop/portal/desktop";
 const KEYS: [&str; 7] = [
@@ -55,8 +62,7 @@ impl Lockdown {
         connection: &Connection,
         header: Option<Header<'_>>,
     ) -> zbus::fdo::Result<()> {
-        let header =
-            header.ok_or_else(|| zbus::fdo::Error::AccessDenied("Missing policy caller".into()))?;
+        let header = header.ok_or_else(|| zbus::fdo::Error::AccessDenied("Missing policy caller".into()))?;
         crate::backend::authorize(connection, &header).await?;
         let mut current = self.0.write().await;
         store(index, value).map_err(zbus::fdo::Error::Failed)?;
@@ -209,8 +215,7 @@ fn store(index: usize, value: bool) -> Result<(), String> {
         Err(error) => return Err(error.to_string()),
         _ => return Err("Configuration is too large".into()),
     };
-    let mut document =
-        ferese_config::Document::parse(&source).map_err(|error| error.to_string())?;
+    let mut document = ferese_config::Document::parse(&source).map_err(|error| error.to_string())?;
     if values(&document).is_none() {
         return Err("Invalid lockdown policy".into());
     }
@@ -223,11 +228,8 @@ fn store(index: usize, value: bool) -> Result<(), String> {
     let directory = path.parent().ok_or("Invalid config path")?;
     std::fs::create_dir_all(directory).map_err(|error| error.to_string())?;
     let mut file = tempfile::NamedTempFile::new_in(directory).map_err(|error| error.to_string())?;
-    std::io::Write::write_all(&mut file, document.to_string().as_bytes())
-        .map_err(|error| error.to_string())?;
-    file.as_file()
-        .sync_all()
-        .map_err(|error| error.to_string())?;
+    std::io::Write::write_all(&mut file, document.to_string().as_bytes()).map_err(|error| error.to_string())?;
+    file.as_file().sync_all().map_err(|error| error.to_string())?;
     if std::fs::read_to_string(&path).unwrap_or_default() != source {
         return Err("Configuration changed; please try again".into());
     }
@@ -250,9 +252,7 @@ mod tests {
         let values = values(&enabled).unwrap();
         assert!(values[1] && values[4]);
         assert!(!values[0]);
-        let invalid =
-            ferese_config::Document::parse("portals { lockdown { disable-camera \"yes\"; }; }")
-                .unwrap();
+        let invalid = ferese_config::Document::parse("portals { lockdown { disable-camera \"yes\"; }; }").unwrap();
         assert!(super::values(&invalid).is_none());
         for source in ["portals #false", "portals { lockdown \"bad\"; }"] {
             let invalid = ferese_config::Document::parse(source).unwrap();

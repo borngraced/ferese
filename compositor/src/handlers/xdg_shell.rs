@@ -1,35 +1,23 @@
-use smithay::{
-    desktop::{
-        PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, Space, Window,
-        WindowSurfaceType, find_popup_root_surface, get_popup_toplevel_coords,
-    },
-    input::{
-        Seat,
-        pointer::{Focus, GrabStartData},
-    },
-    reexports::wayland_protocols::xdg::{
-        decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode,
-        shell::server::xdg_toplevel::State as ToplevelState,
-    },
-    reexports::wayland_server::{
-        Resource,
-        protocol::{wl_seat, wl_surface::WlSurface},
-    },
-    utils::Serial,
-    wayland::{
-        compositor::with_states,
-        shell::xdg::decoration::XdgDecorationHandler,
-        shell::xdg::{
-            PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-            XdgToplevelSurfaceData,
-        },
-    },
+use smithay::desktop::{
+    PopupKeyboardGrab, PopupKind, PopupManager, PopupPointerGrab, Space, Window, WindowSurfaceType,
+    find_popup_root_surface, get_popup_toplevel_coords,
+};
+use smithay::input::Seat;
+use smithay::input::pointer::{Focus, GrabStartData};
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as ToplevelState;
+use smithay::reexports::wayland_server::Resource;
+use smithay::reexports::wayland_server::protocol::wl_seat;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Logical, Point, Rectangle, Serial};
+use smithay::wayland::compositor::with_states;
+use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
+use smithay::wayland::shell::xdg::{
+    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState, XdgToplevelSurfaceData,
 };
 
-use crate::{
-    Ferese,
-    grabs::{MoveSurfaceGrab, ResizeEdge, ResizeSurfaceGrab, handle_resize_commit},
-};
+use crate::Ferese;
+use crate::grabs::{MoveSurfaceGrab, ResizeEdge, ResizeSurfaceGrab, handle_resize_commit};
 
 impl XdgShellHandler for Ferese {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
@@ -93,12 +81,7 @@ impl XdgShellHandler for Ferese {
         }
     }
 
-    fn reposition_request(
-        &mut self,
-        surface: PopupSurface,
-        positioner: PositionerState,
-        token: u32,
-    ) {
+    fn reposition_request(&mut self, surface: PopupSurface, positioner: PositionerState, token: u32) {
         surface.with_pending_state(|state| {
             state.geometry = positioner.get_geometry();
             state.positioner = positioner;
@@ -273,12 +256,7 @@ impl XdgShellHandler for Ferese {
         };
 
         if let Some(pointer) = seat.get_pointer() {
-            pointer.set_grab(
-                self,
-                PopupPointerGrab::new(&popup_grab),
-                serial,
-                Focus::Keep,
-            );
+            pointer.set_grab(self, PopupPointerGrab::new(&popup_grab), serial, Focus::Keep);
         }
         if let Some(keyboard) = seat.get_keyboard() {
             keyboard.set_grab(self, PopupKeyboardGrab::new(&popup_grab), serial);
@@ -290,21 +268,14 @@ impl XdgShellHandler for Ferese {
     }
 }
 
-fn check_grab(
-    seat: &Seat<Ferese>,
-    surface: &WlSurface,
-    serial: Serial,
-) -> Option<GrabStartData<Ferese>> {
+fn check_grab(seat: &Seat<Ferese>, surface: &WlSurface, serial: Serial) -> Option<GrabStartData<Ferese>> {
     let pointer = seat.get_pointer()?;
     if !pointer.has_grab(serial) {
         return None;
     }
     let start_data = pointer.grab_start_data()?;
     let (focus, _) = start_data.focus.as_ref()?;
-    focus
-        .id()
-        .same_client_as(&surface.id())
-        .then_some(start_data)
+    focus.id().same_client_as(&surface.id()).then_some(start_data)
 }
 
 impl XdgDecorationHandler for Ferese {
@@ -381,9 +352,7 @@ pub fn handle_commit(popups: &mut PopupManager, space: &mut Space<Window>, surfa
     if let Some(PopupKind::Xdg(popup)) = popups.find_popup(surface)
         && !popup.is_initial_configure_sent()
     {
-        popup
-            .send_configure()
-            .expect("initial popup configure is valid");
+        popup.send_configure().expect("initial popup configure is valid");
     }
 }
 
@@ -444,40 +413,82 @@ impl Ferese {
         let Ok(root) = find_popup_root_surface(&PopupKind::Xdg(popup.clone())) else {
             return;
         };
-        let window = self.space.elements().find(|window| {
-            window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == &root)
-        });
+        let window = self
+            .space
+            .elements()
+            .find(|window| window.toplevel().is_some_and(|toplevel| toplevel.wl_surface() == &root));
         let geometry = (|| {
             if let Some(window) = window {
-                let output = self.space.outputs().next()?;
-                let output_geometry = self.space.output_geometry(output)?;
-                let window_geometry = self.space.element_geometry(window)?;
-
-                Some((output_geometry, window_geometry.loc))
-            } else {
-                let layer = self
+                let id = *self.window_ids.get(window)?;
+                let output = self
                     .space
-                    .layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)?;
+                    .outputs()
+                    .find(|output| self.window_belongs_to_output(id, output))?;
+                let output_geometry = self.space.output_geometry(output)?;
+                let presented = self.presented_window_rect(id)?;
+                let location = (presented.x.round() as i32, presented.y.round() as i32).into();
+
+                Some((output_geometry, location))
+            } else {
+                let layer = self.space.layer_for_surface(&root, WindowSurfaceType::TOPLEVEL)?;
 
                 self.space.outputs().find_map(|output| {
                     let output_geometry = self.space.output_geometry(output)?;
-                    let layer_geometry =
-                        smithay::desktop::layer_map_for_output(output).layer_geometry(&layer)?;
+                    let layer_geometry = smithay::desktop::layer_map_for_output(output).layer_geometry(&layer)?;
 
                     Some((output_geometry, output_geometry.loc + layer_geometry.loc))
                 })
             }
         })();
-        let Some((mut target, root_location)) = geometry else {
+        let Some((target, root_location)) = geometry else {
             return;
         };
 
-        target.loc -= get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone()));
-        target.loc -= root_location;
+        let target = popup_constraint_target(
+            target,
+            root_location,
+            get_popup_toplevel_coords(&PopupKind::Xdg(popup.clone())),
+        );
         popup.with_pending_state(|state| {
             state.geometry = state.positioner.get_unconstrained_geometry(target);
         });
+    }
+}
+
+fn popup_constraint_target(
+    mut output: Rectangle<i32, Logical>,
+    root_location: Point<i32, Logical>,
+    parent_offset: Point<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    output.loc -= root_location + parent_offset;
+    output
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_positioner;
+
+    use super::*;
+
+    #[test]
+    fn popup_uses_presented_parent_coordinates_on_an_offset_monitor() {
+        let output = Rectangle::new((1920, -200).into(), (1920, 1080).into());
+        let root = Point::from((2200, -100));
+        let parent = Point::from((40, 30));
+        let target = popup_constraint_target(output, root, parent);
+        assert_eq!(target.loc, Point::from((-320, -130)));
+        let positioner = PositionerState {
+            rect_size: (320, 180).into(),
+            anchor_rect: Rectangle::new((1850, 900).into(), (1, 1).into()),
+            anchor_edges: xdg_positioner::Anchor::BottomRight,
+            gravity: xdg_positioner::Gravity::BottomRight,
+            constraint_adjustment: xdg_positioner::ConstraintAdjustment::SlideX
+                | xdg_positioner::ConstraintAdjustment::SlideY,
+            ..Default::default()
+        };
+        let popup = positioner.get_unconstrained_geometry(target);
+        assert_eq!(popup.loc, Point::from((1280, 770)));
+        let global = Rectangle::new(root + parent + popup.loc, popup.size);
+        assert_eq!(global.intersection(output), Some(global));
     }
 }

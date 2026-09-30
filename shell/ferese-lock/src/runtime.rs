@@ -1,15 +1,12 @@
 //! Startup handshake: the invoking command exits successfully only after the
 //! compositor's confirmation. The UI child remains alive for authentication.
-use std::{
-    io::{BufRead, BufReader},
-    process::{Command, Stdio},
-    time::Duration,
-};
-use wayland_client::{
-    Connection, Dispatch, QueueHandle,
-    globals::{GlobalListContents, registry_queue_init},
-    protocol::wl_registry,
-};
+use std::io::{BufRead, BufReader};
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::wl_registry;
+use wayland_client::{Connection, Dispatch, QueueHandle};
 struct Registry;
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Registry {
     fn event(
@@ -23,10 +20,8 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Registry {
     }
 }
 pub fn check_protocol() -> Result<(), String> {
-    let connection =
-        Connection::connect_to_env().map_err(|e| format!("Wayland connection: {e}"))?;
-    let (globals, _) = registry_queue_init::<Registry>(&connection)
-        .map_err(|e| format!("Wayland registry: {e}"))?;
+    let connection = Connection::connect_to_env().map_err(|e| format!("Wayland connection: {e}"))?;
+    let (globals, _) = registry_queue_init::<Registry>(&connection).map_err(|e| format!("Wayland registry: {e}"))?;
     if globals
         .contents()
         .clone_list()

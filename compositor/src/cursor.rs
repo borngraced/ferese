@@ -1,11 +1,12 @@
-use std::{fs, sync::OnceLock};
+use std::fs;
+use std::sync::OnceLock;
 
-use smithay::{
-    backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
-    input::pointer::CursorIcon,
-    utils::{Buffer, Point, Size, Transform},
-};
-use xcursor::{CursorTheme, parser::Image};
+use smithay::backend::allocator::Fourcc;
+use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
+use smithay::input::pointer::CursorIcon;
+use smithay::utils::{Buffer, Point, Size, Transform};
+use xcursor::CursorTheme;
+use xcursor::parser::Image;
 
 const DEFAULT_CURSOR_SIZE: u32 = 24;
 
@@ -58,26 +59,17 @@ fn load_image(theme: &CursorTheme, name: &str, requested_size: u32) -> Option<Im
     let path = theme.load_icon(name)?;
     let bytes = fs::read(path).ok()?;
 
-    xcursor::parser::parse_xcursor(&bytes)?
-        .into_iter()
-        .min_by_key(|image| {
-            (
-                image.size.abs_diff(requested_size),
-                image.width.abs_diff(requested_size),
-            )
-        })
+    xcursor::parser::parse_xcursor(&bytes)?.into_iter().min_by_key(|image| {
+        (
+            image.size.abs_diff(requested_size),
+            image.width.abs_diff(requested_size),
+        )
+    })
 }
 
 fn cursor_from_image(image: Image) -> NamedCursor {
     let size = Size::<i32, Buffer>::from((image.width as i32, image.height as i32));
-    let buffer = MemoryRenderBuffer::from_slice(
-        &image.pixels_rgba,
-        Fourcc::Abgr8888,
-        size,
-        1,
-        Transform::Normal,
-        None,
-    );
+    let buffer = MemoryRenderBuffer::from_slice(&image.pixels_rgba, Fourcc::Abgr8888, size, 1, Transform::Normal, None);
 
     NamedCursor {
         buffer,
@@ -122,18 +114,9 @@ mod tests {
 
     #[test]
     fn supplies_legacy_fallback_names_for_common_cursors() {
-        assert_eq!(
-            cursor_names(CursorIcon::Default),
-            ["default", "left_ptr", "arrow"]
-        );
-        assert_eq!(
-            cursor_names(CursorIcon::Pointer),
-            ["pointer", "hand2", "left_ptr"]
-        );
-        assert_eq!(
-            cursor_names(CursorIcon::Text),
-            ["text", "xterm", "left_ptr"]
-        );
+        assert_eq!(cursor_names(CursorIcon::Default), ["default", "left_ptr", "arrow"]);
+        assert_eq!(cursor_names(CursorIcon::Pointer), ["pointer", "hand2", "left_ptr"]);
+        assert_eq!(cursor_names(CursorIcon::Text), ["text", "xterm", "left_ptr"]);
     }
 
     #[test]

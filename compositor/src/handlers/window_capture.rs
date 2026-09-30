@@ -1,27 +1,19 @@
-use std::{
-    os::unix::fs::MetadataExt,
-    sync::{Arc, Mutex},
-};
+use std::os::unix::fs::MetadataExt;
+use std::sync::{Arc, Mutex};
 
 use ferese_layout::WindowId;
-use ferese_protocols::window_capture::v1::server::ferese_window_capture_manager_v1::{
-    self as manager, FereseWindowCaptureManagerV1,
-};
-use smithay::{
-    reexports::{
-        wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_frame_v1::{
-            self as frame, ZwlrScreencopyFrameV1,
-        },
-        wayland_server::{
-            Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
-            protocol::{wl_buffer::WlBuffer, wl_shm},
-        },
-    },
-    utils::Rectangle,
-    wayland::shm::with_buffer_contents_mut,
-};
+use ferese_protocols::window_capture::v1::server::ferese_window_capture_manager_v1 as manager;
+use ferese_protocols::window_capture::v1::server::ferese_window_capture_manager_v1::FereseWindowCaptureManagerV1;
+use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_frame_v1 as frame;
+use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1;
+use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+use smithay::reexports::wayland_server::protocol::wl_shm;
+use smithay::reexports::wayland_server::{Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource};
+use smithay::utils::Rectangle;
+use smithay::wayland::shm::with_buffer_contents_mut;
 
-use super::{screencopy::FrameData, screenshot::CaptureBuffer};
+use super::screencopy::FrameData;
+use super::screenshot::CaptureBuffer;
 use crate::Ferese;
 
 const MAX_BYTES: usize = 128 * 1024 * 1024;
@@ -42,10 +34,7 @@ struct Permit {
 impl Permit {
     fn reserve(budget: &Arc<Mutex<Budget>>, bytes: usize) -> Option<Self> {
         let mut available = budget.lock().unwrap();
-        if bytes == 0
-            || bytes > MAX_BYTES.saturating_sub(available.bytes)
-            || available.frames >= MAX_FRAMES
-        {
+        if bytes == 0 || bytes > MAX_BYTES.saturating_sub(available.bytes) || available.frames >= MAX_FRAMES {
             return None;
         }
         available.bytes += bytes;
@@ -79,11 +68,7 @@ pub(crate) struct Global {
 
 pub(crate) fn is_portal(stream: &std::os::unix::net::UnixStream) -> bool {
     use std::os::fd::AsRawFd;
-    let mut credentials = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
+    let mut credentials = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut length = std::mem::size_of_val(&credentials) as libc::socklen_t;
     // SAFETY: the connected socket is live and both out pointers cover their
     // initialized stack allocations. SO_PEERCRED identifies the connecting process.
@@ -101,33 +86,23 @@ pub(crate) fn is_portal(stream: &std::os::unix::net::UnixStream) -> bool {
     }
     let expected = std::env::current_exe()
         .ok()
-        .and_then(|exe| {
-            exe.parent()
-                .map(|dir| dir.join("xdg-desktop-portal-ferese"))
-        })
+        .and_then(|exe| exe.parent().map(|dir| dir.join("xdg-desktop-portal-ferese")))
         .and_then(|exe| std::fs::metadata(exe).ok());
     let actual = std::fs::metadata(format!("/proc/{}/exe", credentials.pid)).ok();
     matches!((expected, actual), (Some(expected), Some(actual)) if expected.dev() == actual.dev() && expected.ino() == actual.ino())
 }
 
 pub(super) fn init_global(display: &DisplayHandle) {
-    display.create_global::<Ferese, FereseWindowCaptureManagerV1, Global>(
-        1,
-        Global {
-            budget: Arc::default(),
-        },
-    );
+    display.create_global::<Ferese, FereseWindowCaptureManagerV1, Global>(1, Global { budget: Arc::default() });
 }
 
 impl GlobalDispatch<FereseWindowCaptureManagerV1, Global> for Ferese {
     fn can_view(client: Client, _: &Global) -> bool {
-        client
-            .get_data::<crate::state::ClientState>()
-            .is_some_and(|state| {
-                state
-                    .capabilities
-                    .contains(crate::private_client::ClientCapabilities::WINDOW_CAPTURE)
-            })
+        client.get_data::<crate::state::ClientState>().is_some_and(|state| {
+            state
+                .capabilities
+                .contains(crate::private_client::ClientCapabilities::WINDOW_CAPTURE)
+        })
     }
 
     fn bind(
@@ -226,8 +201,7 @@ impl Ferese {
             .clone();
         let geometry = window.geometry();
         let scale = output.current_scale().fractional_scale();
-        let size: smithay::utils::Size<i32, smithay::utils::Physical> =
-            geometry.size.to_physical_precise_round(scale);
+        let size: smithay::utils::Size<i32, smithay::utils::Physical> = geometry.size.to_physical_precise_round(scale);
         let bytes = usize::try_from(size.w)
             .ok()?
             .checked_mul(usize::try_from(size.h).ok()?)?
@@ -247,8 +221,7 @@ impl Ferese {
                 }
                 let (x, y) = self.inverse_presented_window_point(id, location.x, location.y)?;
                 let surface_point = smithay::utils::Point::from((x, y)) + geometry.loc.to_f64();
-                let (surface, _) = window
-                    .surface_under(surface_point, smithay::desktop::WindowSurfaceType::ALL)?;
+                let (surface, _) = window.surface_under(surface_point, smithay::desktop::WindowSurfaceType::ALL)?;
                 if pointer.current_focus().as_ref() != Some(&surface) {
                     return None;
                 }
@@ -298,18 +271,10 @@ impl Ferese {
     }
 }
 
-pub(super) fn copy_snapshot(
-    state: &Ferese,
-    resource: &ZwlrScreencopyFrameV1,
-    data: &FrameData,
-    buffer: &WlBuffer,
-) {
+pub(super) fn copy_snapshot(state: &Ferese, resource: &ZwlrScreencopyFrameV1, data: &FrameData, buffer: &WlBuffer) {
     let mut used = data.used.lock().unwrap();
     if *used {
-        resource.post_error(
-            frame::Error::AlreadyUsed,
-            "window capture frame has already been used",
-        );
+        resource.post_error(frame::Error::AlreadyUsed, "window capture frame has already been used");
         return;
     }
     *used = true;
@@ -342,11 +307,7 @@ pub(super) fn copy_snapshot(
         // SAFETY: Smithay owns the writable mapping, validated format/stride and
         // checked offset cover the complete snapshot; the source is separately owned.
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                snapshot.pixels.pixels.as_ptr(),
-                destination.add(offset),
-                bytes,
-            );
+            std::ptr::copy_nonoverlapping(snapshot.pixels.pixels.as_ptr(), destination.add(offset), bytes);
         }
         true
     })

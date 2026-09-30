@@ -3,17 +3,12 @@ mod bluetooth;
 mod dbus_cache;
 mod network;
 
-use std::{
-    env, fs,
-    path::Path,
-    process::{Command, Stdio},
-    sync::{
-        Arc, Condvar, Mutex,
-        mpsc::{self, SyncSender},
-    },
-    thread,
-    time::Duration,
-};
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::sync::mpsc::SyncSender;
+use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::time::Duration;
+use std::{env, fs, thread};
 
 #[derive(Clone, Debug, Default)]
 pub struct Snapshot {
@@ -146,10 +141,7 @@ impl Service {
         let (updates, rx) = tokio::sync::watch::channel(None);
         // Polling and writes have separate workers: a missing D-Bus service must
         // never hold up volume/brightness changes. Publish only coherent polls.
-        let shared = Arc::new((
-            Mutex::new((0u64, false, None::<String>, false)),
-            Condvar::new(),
-        ));
+        let shared = Arc::new((Mutex::new((0u64, false, None::<String>, false)), Condvar::new()));
         let polling = shared.clone();
 
         thread::spawn(move || {
@@ -249,8 +241,7 @@ pub fn available(program: &str) -> bool {
         return executable(Path::new(program));
     }
 
-    env::var_os("PATH")
-        .is_some_and(|paths| env::split_paths(&paths).any(|path| executable(&path.join(program))))
+    env::var_os("PATH").is_some_and(|paths| env::split_paths(&paths).any(|path| executable(&path.join(program))))
 }
 
 fn run(program: &str, args: &[&str]) -> Result<String, String> {
@@ -302,10 +293,7 @@ impl StatusBus {
         }
     }
 
-    fn query<T>(
-        &mut self,
-        query: impl FnOnce(&zbus::blocking::Connection) -> zbus::Result<T>,
-    ) -> Option<T> {
+    fn query<T>(&mut self, query: impl FnOnce(&zbus::blocking::Connection) -> zbus::Result<T>) -> Option<T> {
         if self.connection.is_none() {
             let builder = if self.system {
                 zbus::blocking::connection::Builder::system()
@@ -313,11 +301,7 @@ impl StatusBus {
                 zbus::blocking::connection::Builder::session()
             };
 
-            self.connection = builder
-                .ok()?
-                .method_timeout(Duration::from_secs(2))
-                .build()
-                .ok();
+            self.connection = builder.ok()?.method_timeout(Duration::from_secs(2)).build().ok();
         }
 
         match query(self.connection.as_ref()?) {
@@ -397,8 +381,7 @@ pub fn parse_audio(value: &str) -> Option<(u8, bool)> {
 }
 
 fn audio() -> Option<Audio> {
-    let (volume, muted) =
-        parse_audio(&run("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]).ok()?)?;
+    let (volume, muted) = parse_audio(&run("wpctl", &["get-volume", "@DEFAULT_AUDIO_SINK@"]).ok()?)?;
     let info = run("wpctl", &["inspect", "@DEFAULT_AUDIO_SINK@"]).ok()?;
     let output = info
         .lines()
@@ -406,17 +389,11 @@ fn audio() -> Option<Audio> {
         .map(|s| s.trim_matches('"').to_owned())
         .unwrap_or_else(|| "Default output".into());
 
-    Some(Audio {
-        volume,
-        muted,
-        output,
-    })
+    Some(Audio { volume, muted, output })
 }
 
 fn read(path: &Path, name: &str) -> Option<String> {
-    fs::read_to_string(path.join(name))
-        .ok()
-        .map(|s| s.trim().to_owned())
+    fs::read_to_string(path.join(name)).ok().map(|s| s.trim().to_owned())
 }
 
 fn battery() -> Option<Battery> {
@@ -425,10 +402,7 @@ fn battery() -> Option<Battery> {
     let mut batteries = entries
         .flatten()
         .map(|e| e.path())
-        .filter(|p| {
-            read(p, "type").as_deref() == Some("Battery")
-                && read(p, "scope").as_deref() != Some("Device")
-        })
+        .filter(|p| read(p, "type").as_deref() == Some("Battery") && read(p, "scope").as_deref() != Some("Device"))
         .collect::<Vec<_>>();
 
     batteries.sort();
@@ -447,13 +421,7 @@ fn power_profiles(bus: &mut StatusBus) -> Option<PowerProfiles> {
             "org.freedesktop.UPower.PowerProfiles",
             "/org/freedesktop/UPower/PowerProfiles",
         )
-        .or_else(|_| {
-            read_power_profiles(
-                connection,
-                "net.hadess.PowerProfiles",
-                "/net/hadess/PowerProfiles",
-            )
-        })
+        .or_else(|_| read_power_profiles(connection, "net.hadess.PowerProfiles", "/net/hadess/PowerProfiles"))
     })
 }
 
@@ -464,10 +432,8 @@ fn read_power_profiles(
 ) -> zbus::Result<PowerProfiles> {
     let proxy = zbus::blocking::Proxy::new(connection, destination, path, destination)?;
     let active = proxy.get_property::<String>("ActiveProfile")?;
-    let profiles = proxy
-        .get_property::<Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>>>(
-            "Profiles",
-        )?;
+    let profiles =
+        proxy.get_property::<Vec<std::collections::HashMap<String, zbus::zvariant::OwnedValue>>>("Profiles")?;
     let names = ["power-saver", "balanced", "performance"];
     let available = names.map(|name| {
         profiles.iter().any(|profile| {
@@ -481,13 +447,7 @@ fn read_power_profiles(
 }
 
 fn brightness() -> Option<u8> {
-    parse_brightness(
-        &run(
-            "brightnessctl",
-            &["--class=backlight", "--machine-readable", "info"],
-        )
-        .ok()?,
-    )
+    parse_brightness(&run("brightnessctl", &["--class=backlight", "--machine-readable", "info"]).ok()?)
 }
 
 fn parse_brightness(value: &str) -> Option<u8> {
@@ -501,11 +461,7 @@ fn parse_brightness(value: &str) -> Option<u8> {
     let current = fields.next()?.parse::<f64>().ok()?;
     let _percentage = fields.next()?;
     let max = fields.next()?.parse::<f64>().ok()?;
-    (fields.next().is_none()
-        && max.is_finite()
-        && max > 0.0
-        && current.is_finite()
-        && current >= 0.0)
+    (fields.next().is_none() && max.is_finite() && max > 0.0 && current.is_finite() && current >= 0.0)
         .then(|| (100.0 * current / max).round().clamp(0.0, 100.0) as u8)
 }
 
@@ -554,28 +510,15 @@ fn execute(action: &Action, settings: Option<&[String]>) -> Result<(), String> {
         ),
         Action::Mute(on) => run(
             "wpctl",
-            &[
-                "set-mute",
-                "@DEFAULT_AUDIO_SINK@",
-                if *on { "1" } else { "0" },
-            ],
+            &["set-mute", "@DEFAULT_AUDIO_SINK@", if *on { "1" } else { "0" }],
         ),
         Action::Brightness(value) => run(
             "brightnessctl",
-            &[
-                "--class=backlight",
-                "set",
-                &format!("{}%", value.clamp(&1, &100)),
-            ],
+            &["--class=backlight", "set", &format!("{}%", value.clamp(&1, &100))],
         ),
-        Action::Dnd(on) => run(
-            "swaync-client",
-            &[if *on { "--dnd-on" } else { "--dnd-off" }],
-        ),
+        Action::Dnd(on) => run("swaync-client", &[if *on { "--dnd-on" } else { "--dnd-off" }]),
         Action::Notifications => run("swaync-client", &["--open-panel"]),
-        Action::PowerProfile(profile)
-            if matches!(*profile, "power-saver" | "balanced" | "performance") =>
-        {
+        Action::PowerProfile(profile) if matches!(*profile, "power-saver" | "balanced" | "performance") => {
             run("powerprofilesctl", &["set", profile])
         }
         Action::PowerProfile(_) => return Err("Invalid power profile".to_owned()),
@@ -737,10 +680,7 @@ mod tests {
         assert!(bus.can_power("CanReboot"));
         assert!(!bus.can_power("CanSuspend"));
         mode.store(1, Ordering::Relaxed);
-        assert!(
-            !bus.can_power("CanPowerOff"),
-            "capabilities must not be cached"
-        );
+        assert!(!bus.can_power("CanPowerOff"), "capabilities must not be cached");
         assert!(bus.connection.is_some());
         assert!(!bus.notification_service_owned());
         server.request_name("org.erikreider.swaync").unwrap();
@@ -785,14 +725,11 @@ mod tests {
 
     #[test]
     fn status_stream_retains_latest_result_wakes_and_closes() {
-        use cosmic::iced::futures::{
-            Stream,
-            task::{ArcWake, waker},
-        };
-        use std::{
-            sync::atomic::{AtomicUsize, Ordering},
-            task::{Context, Poll},
-        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::task::{Context, Poll};
+
+        use cosmic::iced::futures::Stream;
+        use cosmic::iced::futures::task::{ArcWake, waker};
 
         #[derive(Default)]
         struct WakeCount(AtomicUsize);
@@ -840,10 +777,7 @@ mod tests {
             panic!("worker result missing");
         };
         assert_eq!(update.generation, 3);
-        assert!(matches!(
-            stream.as_mut().poll_next(&mut context),
-            Poll::Ready(None)
-        ));
+        assert!(matches!(stream.as_mut().poll_next(&mut context), Poll::Ready(None)));
     }
 
     #[test]
@@ -864,10 +798,7 @@ mod tests {
             state.1 = false;
             shared.1.notify_one();
         }
-        assert_eq!(
-            receiver.recv_timeout(Duration::from_secs(2)).unwrap(),
-            Some(8)
-        );
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(2)).unwrap(), Some(8));
         worker.join().unwrap();
     }
 

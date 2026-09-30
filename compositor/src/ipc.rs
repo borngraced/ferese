@@ -1,32 +1,26 @@
-use std::env;
-use std::fs;
-use std::io;
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{
-    Arc,
-    mpsc::{SyncSender, sync_channel},
-};
-use std::thread;
+use std::sync::mpsc::{SyncSender, sync_channel};
 use std::time::Duration;
+use std::{env, fs, io, thread};
 
 use ferese_core::LayoutMode;
 use ferese_ipc::{Request, Response, VERSION, read_frame, write_frame};
 use ferese_layout::Direction;
 use serde_json::{Value, json};
+use smithay::output::Output;
 use smithay::reexports::calloop::{EventLoop, LoopSignal, channel, timer};
 use smithay::utils::Transform;
 
-use crate::handlers::screencopy;
-use crate::handlers::screenshot::{
-    Action, Geometry, OutputLayout, PartOutcome, PartSender, parse_geometry, plan,
-};
-use crate::handlers::screenshot_worker::{self, Encoded, Job, Worker};
-use crate::{Ferese, config::OutputTransform};
-use smithay::output::Output;
+use crate::Ferese;
+use crate::config::OutputTransform;
+use crate::handlers::screenshot::{Action, Geometry, OutputLayout, PartOutcome, PartSender, parse_geometry, plan};
+use crate::handlers::screenshot_worker::{Encoded, Job, Worker};
+use crate::handlers::{screencopy, screenshot_worker};
 
 const REQUEST_QUEUE_CAPACITY: usize = 128;
 const MAX_CONNECTIONS: usize = 64;
@@ -90,18 +84,14 @@ pub(crate) struct IpcSocketGuard {
 impl Drop for IpcSocketGuard {
     fn drop(&mut self) {
         if self.path.symlink_metadata().is_ok_and(|metadata| {
-            metadata.file_type().is_socket()
-                && metadata.dev() == self.device
-                && metadata.ino() == self.inode
+            metadata.file_type().is_socket() && metadata.dev() == self.device && metadata.ino() == self.inode
         }) {
             let _ = fs::remove_file(&self.path);
         }
     }
 }
 
-pub(crate) fn init(
-    event_loop: &mut EventLoop<'static, Ferese>,
-) -> Result<ScreenshotInit, Box<dyn std::error::Error>> {
+pub(crate) fn init(event_loop: &mut EventLoop<'static, Ferese>) -> Result<ScreenshotInit, Box<dyn std::error::Error>> {
     let path = socket_path()?;
     prepare_parent(&path)?;
     let listener = bind_listener(&path)?;
@@ -115,101 +105,88 @@ pub(crate) fn init(
 
     let (sender, receiver): (channel::SyncSender<IpcEvent>, channel::Channel<IpcEvent>) =
         channel::sync_channel(REQUEST_QUEUE_CAPACITY);
-    event_loop
-        .handle()
-        .insert_source(receiver, |event, _, state| {
-            if let channel::Event::Msg(event) = event {
-                let call = match event {
-                    IpcEvent::Call(call) => call,
-                    IpcEvent::Closed(owner) => {
-                        let captured = state.input_capture.active();
-                        state.input_capture.remove_owner(owner);
-                        if captured && !state.input_capture.active() {
-                            state.restore_input_capture_focus();
-                        }
-                        state.portal_shortcuts.remove(owner);
-                        state.portal_session.remove(owner);
-                        state.refresh_idle_inhibition();
-                        return;
+    event_loop.handle().insert_source(receiver, |event, _, state| {
+        if let channel::Event::Msg(event) = event {
+            let call = match event {
+                IpcEvent::Call(call) => call,
+                IpcEvent::Closed(owner) => {
+                    let captured = state.input_capture.active();
+                    state.input_capture.remove_owner(owner);
+                    if captured && !state.input_capture.active() {
+                        state.restore_input_capture_focus();
                     }
-                };
-                if call.request.command.starts_with("input-capture-") && !call.native_portal {
+                    state.portal_shortcuts.remove(owner);
+                    state.portal_session.remove(owner);
+                    state.refresh_idle_inhibition();
+                    return;
+                }
+            };
+            if call.request.command.starts_with("input-capture-") && !call.native_portal {
+                let _ = call.response.try_send(Response::error(
+                    call.request.id,
+                    "access_denied",
+                    "Input capture is restricted to the native portal",
+                ));
+            } else if call.request.command == "input-capture-watch" {
+                if let Err(error) = validate_request(&call.request) {
+                    let _ = call
+                        .response
+                        .try_send(Response::error(call.request.id, error.code, error.message));
+                } else if let Some(id) = call.request.args["session"].as_u64() {
+                    state
+                        .input_capture
+                        .watch(call.owner, call.request.id, id, call.response);
+                } else {
                     let _ = call.response.try_send(Response::error(
                         call.request.id,
-                        "access_denied",
-                        "Input capture is restricted to the native portal",
+                        "invalid_argument",
+                        "Missing capture session",
                     ));
-                } else if call.request.command == "input-capture-watch" {
-                    if let Err(error) = validate_request(&call.request) {
-                        let _ = call.response.try_send(Response::error(
-                            call.request.id,
-                            error.code,
-                            error.message,
-                        ));
-                    } else if let Some(id) = call.request.args["session"].as_u64() {
-                        state
-                            .input_capture
-                            .watch(call.owner, call.request.id, id, call.response);
-                    } else {
-                        let _ = call.response.try_send(Response::error(
-                            call.request.id,
-                            "invalid_argument",
-                            "Missing capture session",
-                        ));
-                    }
-                } else if call.request.command == "session-watch" {
-                    if let Err(error) = validate_request(&call.request) {
-                        let _ = call.response.send(Response::error(
-                            call.request.id,
-                            error.code,
-                            error.message,
-                        ));
-                    } else if let Some(since) = call.request.args["since"].as_u64() {
-                        state.portal_session.watch(
-                            call.owner,
-                            call.request.id,
-                            since,
-                            call.response,
-                        );
-                    } else {
-                        let _ = call.response.send(Response::error(
-                            call.request.id,
-                            "invalid_argument",
-                            "Missing session revision",
-                        ));
-                    }
-                } else if call.request.command == "screenshot-window" {
-                    state.start_window_screenshot(call.request, call.response);
-                } else if call.request.command == "screenshot" {
-                    // Deferred: this path answers the caller itself, exactly
-                    // once, whenever the request finishes or is terminated.
-                    state.start_screenshot(call.request, call.response);
-                } else {
-                    let response = state.handle_ipc_request(call.owner, call.request);
-                    let _ = call.response.send(response);
                 }
+            } else if call.request.command == "session-watch" {
+                if let Err(error) = validate_request(&call.request) {
+                    let _ = call
+                        .response
+                        .send(Response::error(call.request.id, error.code, error.message));
+                } else if let Some(since) = call.request.args["since"].as_u64() {
+                    state
+                        .portal_session
+                        .watch(call.owner, call.request.id, since, call.response);
+                } else {
+                    let _ = call.response.send(Response::error(
+                        call.request.id,
+                        "invalid_argument",
+                        "Missing session revision",
+                    ));
+                }
+            } else if call.request.command == "screenshot-window" {
+                state.start_window_screenshot(call.request, call.response);
+            } else if call.request.command == "screenshot" {
+                // Deferred: this path answers the caller itself, exactly
+                // once, whenever the request finishes or is terminated.
+                state.start_screenshot(call.request, call.response);
+            } else {
+                let response = state.handle_ipc_request(call.owner, call.request);
+                let _ = call.response.send(response);
             }
-        })?;
+        }
+    })?;
 
     // Screenshot readbacks publish parts here, so the loop wakes as soon as a
     // readback lands, whichever backend produced it.
     let (parts, part_events) = channel::channel::<PartOutcome>();
-    event_loop
-        .handle()
-        .insert_source(part_events, |event, _, state| {
-            if let channel::Event::Msg(outcome) = event {
-                state.on_screenshot_part(outcome);
-            }
-        })?;
+    event_loop.handle().insert_source(part_events, |event, _, state| {
+        if let channel::Event::Msg(outcome) = event {
+            state.on_screenshot_part(outcome);
+        }
+    })?;
 
     let (encoded, encoded_events) = channel::sync_channel::<Encoded>(RESULT_QUEUE_CAPACITY);
-    event_loop
-        .handle()
-        .insert_source(encoded_events, |event, _, state| {
-            if let channel::Event::Msg(result) = event {
-                state.on_screenshot_encoded(result);
-            }
-        })?;
+    event_loop.handle().insert_source(encoded_events, |event, _, state| {
+        if let channel::Event::Msg(result) = event {
+            state.on_screenshot_encoded(result);
+        }
+    })?;
     let worker = Worker::spawn(encoded);
 
     let signal = event_loop.get_signal();
@@ -231,9 +208,9 @@ pub(crate) fn init(
     // Readbacks are published by the render path, so a request whose outputs
     // are not redrawn would otherwise wait forever. This re-arms to the exact
     // remaining time whenever a request is outstanding, and idles otherwise.
-    event_loop.handle().insert_source(
-        timer::Timer::from_duration(DEADLINE_IDLE),
-        |_, _, state| {
+    event_loop
+        .handle()
+        .insert_source(timer::Timer::from_duration(DEADLINE_IDLE), |_, _, state| {
             // Abandoned requests have already been answered, so their
             // readbacks are simply dropped: they are not failed, because
             // that would publish into a request that no longer exists.
@@ -244,8 +221,7 @@ pub(crate) fn init(
             }
             let next = state.screenshot.next_deadline().unwrap_or(DEADLINE_IDLE);
             timer::TimeoutAction::ToDuration(next)
-        },
-    )?;
+        })?;
 
     tracing::info!(path = %path.display(), "Ferese IPC is accepting connections");
 
@@ -265,11 +241,7 @@ pub(crate) struct ScreenshotInit {
     pub(crate) _guard: IpcSocketGuard,
 }
 
-fn accept_connections(
-    listener: UnixListener,
-    sender: channel::SyncSender<IpcEvent>,
-    signal: LoopSignal,
-) {
+fn accept_connections(listener: UnixListener, sender: channel::SyncSender<IpcEvent>, signal: LoopSignal) {
     let active_connections = Arc::new(AtomicUsize::new(0));
     let connection_ids = AtomicU64::new(1);
 
@@ -296,10 +268,7 @@ fn accept_connections(
         }
 
         let Some(permit) = try_acquire_connection(&active_connections) else {
-            tracing::warn!(
-                limit = MAX_CONNECTIONS,
-                "rejected IPC connection at worker limit"
-            );
+            tracing::warn!(limit = MAX_CONNECTIONS, "rejected IPC connection at worker limit");
             continue;
         };
         let sender = sender.clone();
@@ -329,17 +298,10 @@ fn try_acquire_connection(active: &Arc<AtomicUsize>) -> Option<ConnectionPermit>
         }
     }
 
-    Some(ConnectionPermit {
-        active: active.clone(),
-    })
+    Some(ConnectionPermit { active: active.clone() })
 }
 
-fn serve_connection(
-    mut stream: UnixStream,
-    sender: channel::SyncSender<IpcEvent>,
-    signal: LoopSignal,
-    owner: u64,
-) {
+fn serve_connection(mut stream: UnixStream, sender: channel::SyncSender<IpcEvent>, signal: LoopSignal, owner: u64) {
     let native_portal = crate::handlers::window_capture::is_portal(&stream);
     let _connection = IpcConnection {
         owner,
@@ -351,9 +313,7 @@ fn serve_connection(
             Err(ferese_ipc::FrameError::Io(error))
                 if matches!(
                     error.kind(),
-                    io::ErrorKind::UnexpectedEof
-                        | io::ErrorKind::ConnectionReset
-                        | io::ErrorKind::BrokenPipe
+                    io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe
                 ) =>
             {
                 return;
@@ -365,8 +325,7 @@ fn serve_connection(
         };
         let (response, receiver) = sync_channel(1);
         let exit_requested = request.command == "exit";
-        let screenshot_requested =
-            matches!(request.command.as_str(), "screenshot" | "screenshot-window");
+        let screenshot_requested = matches!(request.command.as_str(), "screenshot" | "screenshot-window");
         let call = IpcEvent::Call(IpcCall {
             native_portal,
             owner,
@@ -432,10 +391,7 @@ fn u32_arg(args: &Value, key: &str) -> Result<u32, CommandError> {
 
 fn discard_undelivered_screenshot(response: &Response) {
     if response.error.is_none()
-        && let Some(path) = response
-            .result
-            .as_ref()
-            .and_then(|result| result["path"].as_str())
+        && let Some(path) = response.result.as_ref().and_then(|result| result["path"].as_str())
         && let Err(error) = fs::remove_file(path)
         && error.kind() != io::ErrorKind::NotFound
     {
@@ -459,11 +415,7 @@ impl Ferese {
                     | "cancel-session-end"
             )
         {
-            return Response::error(
-                request.id,
-                "session_locked",
-                "IPC unavailable while session is locked",
-            );
+            return Response::error(request.id, "session_locked", "IPC unavailable while session is locked");
         }
         if let Err(error) = validate_request(&request) {
             return Response::error(request.id, error.code, error.message);
@@ -475,12 +427,7 @@ impl Ferese {
         }
     }
 
-    fn dispatch_ipc_command(
-        &mut self,
-        owner: u64,
-        command: &str,
-        args: &Value,
-    ) -> Result<Value, CommandError> {
+    fn dispatch_ipc_command(&mut self, owner: u64, command: &str, args: &Value) -> Result<Value, CommandError> {
         match command {
             "portal-inhibit" => {
                 let inhibition = serde_json::from_value(args.clone())
@@ -522,9 +469,9 @@ impl Ferese {
                     .validate_end(
                         u32_arg(args, "token")?,
                         u32_arg(args, "inhibitor-revision")?,
-                        args["force"].as_bool().ok_or_else(|| {
-                            CommandError::new("invalid_argument", "Missing force confirmation")
-                        })?,
+                        args["force"]
+                            .as_bool()
+                            .ok_or_else(|| CommandError::new("invalid_argument", "Missing force confirmation"))?,
                     )
                     .map_err(|error| CommandError::new("inhibited", error))?;
                 return Ok(json!({}));
@@ -534,17 +481,17 @@ impl Ferese {
                     .commit_end(
                         u32_arg(args, "token")?,
                         u32_arg(args, "inhibitor-revision")?,
-                        args["force"].as_bool().ok_or_else(|| {
-                            CommandError::new("invalid_argument", "Missing force confirmation")
-                        })?,
+                        args["force"]
+                            .as_bool()
+                            .ok_or_else(|| CommandError::new("invalid_argument", "Missing force confirmation"))?,
                     )
                     .map_err(|error| CommandError::new("inhibited", error))?;
                 return Ok(json!({}));
             }
             "logind-session-ending" => {
-                let ending = args["ending"].as_bool().ok_or_else(|| {
-                    CommandError::new("invalid_argument", "Missing shutdown state")
-                })?;
+                let ending = args["ending"]
+                    .as_bool()
+                    .ok_or_else(|| CommandError::new("invalid_argument", "Missing shutdown state"))?;
                 self.portal_session.set_phase(if ending { 3 } else { 1 });
                 return Ok(json!({}));
             }
@@ -573,8 +520,7 @@ impl Ferese {
                     let xkb = state.xkb().lock().unwrap();
                     // SAFETY: the ref-counted keymap does not escape the locked Xkb;
                     // only its owned string is retained for the EIS keyboard.
-                    unsafe { xkb.keymap() }
-                        .get_as_string(smithay::input::keyboard::xkb::KEYMAP_FORMAT_TEXT_V1)
+                    unsafe { xkb.keymap() }.get_as_string(smithay::input::keyboard::xkb::KEYMAP_FORMAT_TEXT_V1)
                 });
                 return Ok(json!({"session":id, "keymap":keymap}));
             }
@@ -583,9 +529,9 @@ impl Ferese {
                 return self
                     .input_capture
                     .zones(
-                        args["session"].as_u64().ok_or_else(|| {
-                            CommandError::new("invalid_capture", "Missing session")
-                        })?,
+                        args["session"]
+                            .as_u64()
+                            .ok_or_else(|| CommandError::new("invalid_capture", "Missing session"))?,
                     )
                     .map_err(|e| CommandError::new("invalid_capture", e));
             }
@@ -642,12 +588,8 @@ impl Ferese {
                 let result = if command == "input-capture-disable" {
                     self.input_capture.disable(id)
                 } else {
-                    self.input_capture.release(
-                        id,
-                        args["activation_id"]
-                            .as_u64()
-                            .and_then(|id| u32::try_from(id).ok()),
-                    )
+                    self.input_capture
+                        .release(id, args["activation_id"].as_u64().and_then(|id| u32::try_from(id).ok()))
                 };
                 result.map_err(|e| CommandError::new("invalid_capture", e))?;
                 if active && !self.input_capture.active() {
@@ -696,9 +638,7 @@ impl Ferese {
                     .get("pid")
                     .and_then(Value::as_u64)
                     .and_then(|pid| u32::try_from(pid).ok())
-                    .ok_or_else(|| {
-                        CommandError::new("invalid_argument", "pid must be an unsigned process ID")
-                    })?;
+                    .ok_or_else(|| CommandError::new("invalid_argument", "pid must be an unsigned process ID"))?;
                 return Ok(json!(self.has_client_surfaces(pid)));
             }
             "get-workspaces" => return Ok(self.workspaces_json()),
@@ -783,10 +723,7 @@ impl Ferese {
                 return;
             }
         };
-        let specs = planned
-            .iter()
-            .map(|part| part.spec(&layouts[part.index]))
-            .collect();
+        let specs = planned.iter().map(|part| part.spec(&layouts[part.index])).collect();
 
         // admit stores the reply only on success, so a clone survives the
         // rejection path and every caller is answered exactly once.
@@ -794,8 +731,7 @@ impl Ferese {
         let id = match self.screenshot.admit(request.id, response, specs) {
             Ok(id) => id,
             Err(message) => {
-                let _ =
-                    fallback.try_send(Response::error(request.id, "screenshot_rejected", message));
+                let _ = fallback.try_send(Response::error(request.id, "screenshot_rejected", message));
                 return;
             }
         };
@@ -819,11 +755,7 @@ impl Ferese {
 
     fn start_window_screenshot(&mut self, request: Request, response: SyncSender<Response>) {
         let reject = |message: String| {
-            let _ = response.try_send(Response::error(
-                request.id,
-                "window_capture_failed",
-                message,
-            ));
+            let _ = response.try_send(Response::error(request.id, "window_capture_failed", message));
         };
         if self.session_lock.active || !screencopy::capture_allowed() {
             reject("Screen capture is unavailable".into());
@@ -877,19 +809,13 @@ impl Ferese {
         let capture = match self.screenshot.admit(request.id, response, vec![spec]) {
             Ok(capture) => capture,
             Err(error) => {
-                let _ =
-                    fallback.try_send(Response::error(request.id, "screenshot_rejected", error));
+                let _ = fallback.try_send(Response::error(request.id, "screenshot_rejected", error));
                 return;
             }
         };
         let result = if let Some(backend) = &self.nested_backend {
             match backend.try_borrow_mut() {
-                Ok(mut backend) => crate::winit::capture_window_buffer(
-                    backend.renderer(),
-                    &window,
-                    geometry,
-                    scale,
-                ),
+                Ok(mut backend) => crate::winit::capture_window_buffer(backend.renderer(), &window, geometry, scale),
                 Err(_) => Err("Window renderer is busy".into()),
             }
         } else if let Some(backend) = &mut self.direct_backend {
@@ -905,9 +831,7 @@ impl Ferese {
     }
 
     pub(crate) fn on_screenshot_part(&mut self, outcome: PartOutcome) {
-        let action = self
-            .screenshot
-            .on_part(outcome.request, outcome.part, outcome.result);
+        let action = self.screenshot.on_part(outcome.request, outcome.part, outcome.result);
         self.apply_screenshot_action(action);
     }
 
@@ -925,8 +849,7 @@ impl Ferese {
                     .as_ref()
                     .is_some_and(|worker| worker.submit(Job { request, frames }).is_ok());
                 if !submitted {
-                    self.screenshot
-                        .reject(request, "Screenshot encoding queue is full");
+                    self.screenshot.reject(request, "Screenshot encoding queue is full");
                 }
             }
             Action::Delivered(path) => {
@@ -955,13 +878,12 @@ impl Ferese {
 
     fn has_client_surfaces(&self, pid: u32) -> bool {
         use smithay::reexports::wayland_server::Resource;
-        let belongs_to =
-            |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface| {
-                surface
-                    .client()
-                    .and_then(|client| client.get_credentials(&self.display_handle).ok())
-                    .is_some_and(|credentials| credentials.pid as u32 == pid)
-            };
+        let belongs_to = |surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface| {
+            surface
+                .client()
+                .and_then(|client| client.get_credentials(&self.display_handle).ok())
+                .is_some_and(|credentials| credentials.pid as u32 == pid)
+        };
         self.window_ids
             .keys()
             .filter_map(|window| window.toplevel())
@@ -974,19 +896,15 @@ impl Ferese {
     }
 
     fn windows_json(&self) -> Value {
-        use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData};
+        use smithay::wayland::compositor::with_states;
+        use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
         let mut windows = self
             .window_ids
             .iter()
             .filter_map(|(window, id)| {
                 let toplevel = window.toplevel()?;
                 let (app_id, title) = with_states(toplevel.wl_surface(), |states| {
-                    let attributes = states
-                        .data_map
-                        .get::<XdgToplevelSurfaceData>()
-                        .unwrap()
-                        .lock()
-                        .unwrap();
+                    let attributes = states.data_map.get::<XdgToplevelSurfaceData>().unwrap().lock().unwrap();
                     (
                         attributes.app_id.clone().unwrap_or_default(),
                         attributes.title.clone().unwrap_or_default(),
@@ -1044,10 +962,7 @@ impl Ferese {
                 .connected_outputs
                 .iter()
                 .map(|info| {
-                    let mapped = self
-                        .space
-                        .outputs()
-                        .find(|output| output.name() == info.connector);
+                    let mapped = self.space.outputs().find(|output| output.name() == info.connector);
                     let id = mapped.and_then(|output| self.output_id(output));
                     let geometry = mapped.and_then(|output| self.space.output_geometry(output));
                     let workspace = id.and_then(|id| self.output_workspaces.active_workspace(id));
@@ -1105,9 +1020,7 @@ impl Ferese {
                     })
                 })
                 .collect::<Vec<_>>();
-            outputs.sort_by(|left, right| {
-                left["connector"].as_str().cmp(&right["connector"].as_str())
-            });
+            outputs.sort_by(|left, right| left["connector"].as_str().cmp(&right["connector"].as_str()));
             return Value::Array(outputs);
         }
 
@@ -1163,9 +1076,7 @@ fn geometry_arg(args: &Value) -> Result<Geometry, String> {
     match args.get("geometry") {
         None | Some(Value::Null) => Ok(Geometry::All),
         Some(value) => {
-            let text = value
-                .as_str()
-                .ok_or("geometry must be a string like \"x,y WxH\"")?;
+            let text = value.as_str().ok_or("geometry must be a string like \"x,y WxH\"")?;
             parse_geometry(text)
         }
     }
@@ -1179,10 +1090,7 @@ fn validate_request(request: &Request) -> Result<(), CommandError> {
         ));
     }
     if request.kind != "command" {
-        return Err(CommandError::new(
-            "invalid_type",
-            "expected type \"command\"",
-        ));
+        return Err(CommandError::new("invalid_type", "expected type \"command\""));
     }
 
     Ok(())
@@ -1247,12 +1155,7 @@ fn workspace_arg(args: &Value) -> Result<u32, CommandError> {
         .and_then(Value::as_u64)
         .and_then(|index| u32::try_from(index).ok())
         .filter(|index| *index > 0)
-        .ok_or_else(|| {
-            CommandError::new(
-                "invalid_argument",
-                "index must be a positive 32-bit integer",
-            )
-        })
+        .ok_or_else(|| CommandError::new("invalid_argument", "index must be a positive 32-bit integer"))
 }
 
 fn socket_path() -> Result<PathBuf, io::Error> {
@@ -1264,9 +1167,7 @@ fn socket_path() -> Result<PathBuf, io::Error> {
 }
 
 fn prepare_parent(socket: &Path) -> Result<(), io::Error> {
-    let parent = socket
-        .parent()
-        .expect("the Ferese control socket always has a parent");
+    let parent = socket.parent().expect("the Ferese control socket always has a parent");
     match fs::symlink_metadata(parent) {
         Ok(metadata) => {
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
@@ -1311,11 +1212,7 @@ fn bind_listener(path: &Path) -> Result<UnixListener, io::Error> {
 }
 
 fn peer_uid(stream: &UnixStream) -> Result<u32, io::Error> {
-    let mut credentials = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
+    let mut credentials = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
 
     // SAFETY: `credentials` and `length` point to initialized, correctly sized
@@ -1361,10 +1258,7 @@ mod tests {
 
     #[test]
     fn parses_direction_arguments() {
-        assert_eq!(
-            direction_arg(&json!({ "direction": "left" })).unwrap(),
-            Direction::Left
-        );
+        assert_eq!(direction_arg(&json!({ "direction": "left" })).unwrap(), Direction::Left);
         assert!(direction_arg(&json!({ "direction": "diagonal" })).is_err());
     }
 
@@ -1402,9 +1296,7 @@ mod tests {
         let worker = thread::spawn(move || serve_connection(server, sender, signal, 1));
         let invalid = b"not-json";
 
-        client
-            .write_all(&(invalid.len() as u32).to_be_bytes())
-            .unwrap();
+        client.write_all(&(invalid.len() as u32).to_be_bytes()).unwrap();
         client.write_all(invalid).unwrap();
         client.shutdown(Shutdown::Write).unwrap();
         client
@@ -1451,10 +1343,7 @@ mod tests {
         let socket = root.join("control.sock");
         let first = bind_listener(&socket).unwrap();
 
-        assert_eq!(
-            bind_listener(&socket).unwrap_err().kind(),
-            io::ErrorKind::AddrInUse
-        );
+        assert_eq!(bind_listener(&socket).unwrap_err().kind(), io::ErrorKind::AddrInUse);
         drop(first);
         let replacement = bind_listener(&socket).unwrap();
 
@@ -1470,10 +1359,7 @@ mod tests {
         let socket = root.join("control.sock");
         fs::write(&socket, b"keep").unwrap();
 
-        assert_eq!(
-            bind_listener(&socket).unwrap_err().kind(),
-            io::ErrorKind::AddrInUse
-        );
+        assert_eq!(bind_listener(&socket).unwrap_err().kind(), io::ErrorKind::AddrInUse);
         assert_eq!(fs::read(&socket).unwrap(), b"keep");
         fs::remove_dir_all(root).unwrap();
     }

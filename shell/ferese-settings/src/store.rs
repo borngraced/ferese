@@ -1,12 +1,11 @@
+use std::fs;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
+
 use ferese_config::Document;
 use serde_json::Value;
-use std::{
-    fs,
-    io::{Read, Write},
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
-    time::{Duration, Instant},
-};
 
 pub const LIMIT: usize = 60 * 1024;
 
@@ -45,10 +44,7 @@ impl Snapshot {
     }
 
     pub fn string(&self, path: &str, fallback: &str) -> String {
-        self.item(path)
-            .and_then(Value::as_str)
-            .unwrap_or(fallback)
-            .to_owned()
+        self.item(path).and_then(Value::as_str).unwrap_or(fallback).to_owned()
     }
 
     pub fn number(&self, path: &str, fallback: f64) -> f64 {
@@ -60,9 +56,7 @@ impl Snapshot {
     }
 
     pub fn records(&self, path: &str) -> usize {
-        self.item(path)
-            .and_then(Value::as_array)
-            .map_or(0, |a| a.len())
+        self.item(path).and_then(Value::as_array).map_or(0, |a| a.len())
     }
 
     pub fn argv(&self, path: &str) -> String {
@@ -172,9 +166,7 @@ fn save_with(
     let snapshot = Snapshot::parse(desired.to_owned())?;
     let unchanged = || -> Result<(), String> {
         if Snapshot::read(path)?.source != expected {
-            return Err(
-                "Your config changed in another app. Reload settings before saving.".into(),
-            );
+            return Err("Your config changed in another app. Reload settings before saving.".into());
         }
         Ok(())
     };
@@ -188,17 +180,13 @@ fn save_with(
             .set_permissions(metadata.permissions())
             .map_err(|e| e.to_string())?;
     }
-    staged
-        .write_all(desired.as_bytes())
-        .map_err(|e| e.to_string())?;
+    staged.write_all(desired.as_bytes()).map_err(|e| e.to_string())?;
     staged.as_file().sync_all().map_err(|e| e.to_string())?;
     validate(staged.path())?;
     unchanged()?;
     // Keep the last working source, including comments and unknown keys.
     let mut backup = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
-    backup
-        .write_all(expected.as_bytes())
-        .map_err(|e| e.to_string())?;
+    backup.write_all(expected.as_bytes()).map_err(|e| e.to_string())?;
     backup.as_file().sync_all().map_err(|e| e.to_string())?;
     backup
         .persist(path.with_extension("kdl.settings-backup"))
@@ -212,8 +200,7 @@ pub fn reload_running() -> bool {
     let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") else {
         return false;
     };
-    let Ok(mut socket) =
-        std::os::unix::net::UnixStream::connect(PathBuf::from(runtime).join("ferese/control.sock"))
+    let Ok(mut socket) = std::os::unix::net::UnixStream::connect(PathBuf::from(runtime).join("ferese/control.sock"))
     else {
         return false;
     };
@@ -293,17 +280,11 @@ window-rule app-id="mine" floating=#true
 
     #[test]
     fn nested_array_edits_and_login_items_roundtrip() {
-        let mut snapshot = Snapshot::parse(
-            "output-profile name=\"desk\" {\n    output match=\"HDMI-A-1\" scale=1.5\n}\n".into(),
-        )
-        .unwrap();
-        snapshot
-            .edit(&set("output_profiles.0.outputs.0.scale", 1.75))
-            .unwrap();
-        assert_eq!(
-            snapshot.number("output_profiles.0.outputs.0.scale", 1.),
-            1.75
-        );
+        let mut snapshot =
+            Snapshot::parse("output-profile name=\"desk\" {\n    output match=\"HDMI-A-1\" scale=1.5\n}\n".into())
+                .unwrap();
+        snapshot.edit(&set("output_profiles.0.outputs.0.scale", 1.75)).unwrap();
+        assert_eq!(snapshot.number("output_profiles.0.outputs.0.scale", 1.), 1.75);
         snapshot
             .edit(&Edit::Add(
                 "autostart".into(),
@@ -331,28 +312,18 @@ window-rule app-id="mine" floating=#true
 
     #[test]
     fn nested_note_lists_keep_existing_clock_settings() {
-        let mut snapshot = Snapshot::parse(
-            "desktop-widgets {\n    clock {\n        enabled #true\n    }\n}\n".into(),
-        )
-        .unwrap();
+        let mut snapshot =
+            Snapshot::parse("desktop-widgets {\n    clock {\n        enabled #true\n    }\n}\n".into()).unwrap();
         snapshot
             .edit(&Edit::Add(
                 "desktop_widgets.notes".into(),
-                vec![
-                    ("id".into(), "first".into()),
-                    ("text".into(), "one\ntwo".into()),
-                ],
+                vec![("id".into(), "first".into()), ("text".into(), "one\ntwo".into())],
             ))
             .unwrap();
         assert_eq!(snapshot.records("desktop_widgets.notes"), 1);
         assert!(snapshot.boolean("desktop_widgets.clock.enabled", false));
-        assert_eq!(
-            snapshot.string("desktop_widgets.notes.0.text", ""),
-            "one\ntwo"
-        );
-        snapshot
-            .edit(&Edit::Remove("desktop_widgets.notes".into(), 0))
-            .unwrap();
+        assert_eq!(snapshot.string("desktop_widgets.notes.0.text", ""), "one\ntwo");
+        snapshot.edit(&Edit::Remove("desktop_widgets.notes".into(), 0)).unwrap();
         assert_eq!(snapshot.records("desktop_widgets.notes"), 0);
     }
 
@@ -364,11 +335,7 @@ window-rule app-id="mine" floating=#true
         let path = directory.path().join("config.kdl");
         let validate = |snapshot: &Snapshot| {
             fs::write(&path, &snapshot.source).unwrap();
-            let result = Command::new(&binary)
-                .arg("--check-config")
-                .arg(&path)
-                .output()
-                .unwrap();
+            let result = Command::new(&binary).arg("--check-config").arg(&path).output().unwrap();
             assert!(
                 result.status.success(),
                 "{}\n{}",
@@ -386,9 +353,7 @@ window-rule app-id="mine" floating=#true
                 let values: Vec<Value> = match field.kind {
                     Kind::Font => vec!["".into(), "sans-serif".into()],
                     Kind::Toggle(_) => vec![true.into(), false.into()],
-                    Kind::Range {
-                        min, max, integer, ..
-                    } => {
+                    Kind::Range { min, max, integer, .. } => {
                         if integer {
                             vec![(min as i64).into(), (max as i64).into()]
                         } else {
@@ -396,9 +361,7 @@ window-rule app-id="mine" floating=#true
                         }
                     }
                     Kind::Text { default, .. } => vec![default.into()],
-                    Kind::Choice { choices, .. } => {
-                        choices.iter().map(|(v, _)| (*v).into()).collect()
-                    }
+                    Kind::Choice { choices, .. } => choices.iter().map(|(v, _)| (*v).into()).collect(),
                 };
                 for value in values {
                     let mut snapshot = Snapshot::parse(String::new()).unwrap();

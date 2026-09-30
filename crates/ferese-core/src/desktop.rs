@@ -81,9 +81,7 @@ impl Default for StickyNote {
 
 impl StickyNote {
     pub fn on_output(&self, name: Option<&str>) -> bool {
-        self.enabled
-            && (self.outputs.is_empty()
-                || name.is_some_and(|name| self.outputs.iter().any(|s| s == name)))
+        self.enabled && (self.outputs.is_empty() || name.is_some_and(|name| self.outputs.iter().any(|s| s == name)))
     }
     /// Text/style changes repaint in place, never remap the desktop card.
     pub fn same_surface(&self, other: &Self) -> bool {
@@ -99,12 +97,7 @@ impl StickyNote {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        let invalid = |field: &str| {
-            Err(format!(
-                "desktop_widgets.notes[{}].{field} is invalid",
-                self.id
-            ))
-        };
+        let invalid = |field: &str| Err(format!("desktop_widgets.notes[{}].{field} is invalid", self.id));
         if self.id.is_empty()
             || self.id.len() > 64
             || !self
@@ -138,9 +131,9 @@ impl StickyNote {
         for color in [&self.color, &self.background].into_iter().flatten() {
             if !color.is_empty()
                 && color != "theme"
-                && !color.strip_prefix('#').is_some_and(|hex| {
-                    matches!(hex.len(), 6 | 8) && hex.bytes().all(|b| b.is_ascii_hexdigit())
-                })
+                && !color
+                    .strip_prefix('#')
+                    .is_some_and(|hex| matches!(hex.len(), 6 | 8) && hex.bytes().all(|b| b.is_ascii_hexdigit()))
             {
                 return invalid("color/background");
             }
@@ -253,8 +246,7 @@ impl Default for Clock {
 impl Clock {
     pub fn on_output(&self, name: Option<&str>) -> bool {
         self.enabled
-            && (self.outputs.is_empty()
-                || name.is_some_and(|name| self.outputs.iter().any(|output| output == name)))
+            && (self.outputs.is_empty() || name.is_some_and(|name| self.outputs.iter().any(|output| output == name)))
     }
 
     pub fn labels(&self, now: &jiff::Zoned) -> Result<(String, String), String> {
@@ -264,10 +256,8 @@ impl Clock {
             }
             _ => now.clone(),
         };
-        let time =
-            jiff::fmt::strtime::format(&self.time_format, &zoned).map_err(|e| e.to_string())?;
-        let date =
-            jiff::fmt::strtime::format(&self.date_format, &zoned).map_err(|e| e.to_string())?;
+        let time = jiff::fmt::strtime::format(&self.time_format, &zoned).map_err(|e| e.to_string())?;
+        let date = jiff::fmt::strtime::format(&self.date_format, &zoned).map_err(|e| e.to_string())?;
         Ok(if self.lowercase {
             (time.to_lowercase(), date.to_lowercase())
         } else {
@@ -295,16 +285,14 @@ impl Clock {
                 return invalid(name);
             }
         }
-        for color in [&self.color, &self.date_color, &self.background]
-            .into_iter()
-            .flatten()
-        {
+        for color in [&self.color, &self.date_color, &self.background].into_iter().flatten() {
             if color.is_empty() {
                 continue;
             }
-            if !color.strip_prefix('#').is_some_and(|hex| {
-                matches!(hex.len(), 6 | 8) && hex.bytes().all(|b| b.is_ascii_hexdigit())
-            }) {
+            if !color
+                .strip_prefix('#')
+                .is_some_and(|hex| matches!(hex.len(), 6 | 8) && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+            {
                 return invalid("color");
             }
         }
@@ -414,9 +402,6 @@ mod tests {
             date_format: "%-d %b".into(),
             ..Clock::default()
         };
-        assert_eq!(
-            clock.labels(&now).unwrap(),
-            ("10:05 pm".into(), "26 sep".into())
-        );
+        assert_eq!(clock.labels(&now).unwrap(), ("10:05 pm".into(), "26 sep".into()));
     }
 }

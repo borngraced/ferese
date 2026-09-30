@@ -1,13 +1,13 @@
-use crate::capture::Source;
-use cosmic::{
-    ApplicationExt, Element,
-    app::{Core, Settings, Task},
-    iced::{Alignment, Length},
-    widget::{button, column, container, row, scrollable},
-};
+use std::io::{Read, Write};
+
+use cosmic::app::{Core, Settings, Task};
+use cosmic::iced::{Alignment, Length};
+use cosmic::widget::{button, column, container, row, scrollable};
+use cosmic::{ApplicationExt, Element};
 use ferese_theme::icons::symbolic as glyph;
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+
+use crate::capture::Source;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Prompt {
@@ -82,9 +82,7 @@ struct Picker {
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();
-    std::io::stdin()
-        .take(256 * 1024 + 1)
-        .read_to_string(&mut input)?;
+    std::io::stdin().take(256 * 1024 + 1).read_to_string(&mut input)?;
     if input.len() > 256 * 1024 {
         return Err("Picker request is too large".into());
     }
@@ -95,8 +93,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (theme, font, background, palette) = appearance();
-    let height =
-        180. + prompt.source_list_height() + if prompt.persist_mode > 0 { 64. } else { 0. };
+    let height = 180. + prompt.source_list_height() + if prompt.persist_mode > 0 { 64. } else { 0. };
     cosmic::app::run::<Picker>(
         Settings::default()
             .size(cosmic::iced::Size::new(400., height))
@@ -114,12 +111,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 impl cosmic::Application for Picker {
     type Executor = cosmic::executor::Default;
-    type Flags = (
-        Prompt,
-        cosmic::iced::Color,
-        ferese_theme::Palette,
-        cosmic::font::Font,
-    );
+    type Flags = (Prompt, cosmic::iced::Color, ferese_theme::Palette, cosmic::font::Font);
     type Message = Message;
     const APP_ID: &'static str = "dev.ferese.ScreenShare";
 
@@ -131,10 +123,7 @@ impl cosmic::Application for Picker {
         &mut self.core
     }
 
-    fn init(
-        mut core: Core,
-        (prompt, background, palette, font): Self::Flags,
-    ) -> (Self, Task<Message>) {
+    fn init(mut core: Core, (prompt, background, palette, font): Self::Flags) -> (Self, Task<Message>) {
         core.window.show_headerbar = false;
         core.window.border_padding = Some(0);
         core.window.content_container = false;
@@ -171,9 +160,7 @@ impl cosmic::Application for Picker {
 
     fn subscription(&self) -> cosmic::iced::Subscription<Message> {
         cosmic::iced::event::listen_with(|event, _, id| match event {
-            cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => {
-                Some(Message::WindowOpened(id))
-            }
+            cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => Some(Message::WindowOpened(id)),
             _ => None,
         })
     }
@@ -183,12 +170,8 @@ impl cosmic::Application for Picker {
             Message::WindowOpened(id) => {
                 let parent = self.prompt.parent.clone();
                 return cosmic::iced::window::run(id, move |window| {
-                    let parent =
-                        crate::parent::Parent::attach(window, &parent)?.map(std::sync::Arc::new);
-                    Ok((
-                        parent,
-                        ferese_theme::material::ModalMaterial::attach(window),
-                    ))
+                    let parent = crate::parent::Parent::attach(window, &parent)?.map(std::sync::Arc::new);
+                    Ok((parent, ferese_theme::material::ModalMaterial::attach(window)))
                 })
                 .map(|result| cosmic::Action::App(Message::Attached(result)));
             }
@@ -216,11 +199,7 @@ impl cosmic::Application for Picker {
             }
             Message::Remember if self.can_remember() => self.remember = !self.remember,
             Message::Share if !self.selected.is_empty() => {
-                let names: Vec<_> = self
-                    .selected
-                    .iter()
-                    .map(|i| &self.prompt.sources[*i].name)
-                    .collect();
+                let names: Vec<_> = self.selected.iter().map(|i| &self.prompt.sources[*i].name).collect();
                 if self.prompt.window_capture {
                     println!("{}", serde_json::to_string(&names).unwrap());
                 } else {
@@ -288,26 +267,20 @@ impl cosmic::Application for Picker {
         for (index, source) in self.prompt.sources.iter().enumerate() {
             let is_window = self.prompt.window_capture || source.window_id().is_some();
             if !self.prompt.window_capture && previous_kind != Some(is_window) {
-                sources = sources.push(
-                    self.text(if is_window { "Windows" } else { "Displays" })
-                        .size(12),
-                );
+                sources = sources.push(self.text(if is_window { "Windows" } else { "Displays" }).size(12));
                 previous_kind = Some(is_window);
             }
             let selected = self.selected.contains(&index);
             let mut entry = row![
                 glyph(ferese_theme::icons::DISPLAY, 24),
                 column![
-                    self.text(
-                        if self.prompt.window_capture || source.window_id().is_some() {
-                            &source.label
-                        } else {
-                            &source.name
-                        }
-                    )
+                    self.text(if self.prompt.window_capture || source.window_id().is_some() {
+                        &source.label
+                    } else {
+                        &source.name
+                    })
                     .size(14),
-                    self.text(format!("{} × {}", source.width, source.height))
-                        .size(12)
+                    self.text(format!("{} × {}", source.width, source.height)).size(12)
                 ]
                 .spacing(3)
                 .width(Length::Fill),
@@ -329,8 +302,7 @@ impl cosmic::Application for Picker {
                     .on_press(Message::Select(index)),
             );
         }
-        content = content
-            .push(scrollable(sources).height(Length::Fixed(self.prompt.source_list_height())));
+        content = content.push(scrollable(sources).height(Length::Fixed(self.prompt.source_list_height())));
         content = content.push(
             self.text(if self.prompt.window_capture {
                 "Only the selected window will be captured."
@@ -354,21 +326,14 @@ impl cosmic::Application for Picker {
                     ferese_theme::menus::switch(self.remember, self.palette, 1.),
                     self.font,
                 ))
-                .class(ferese_theme::controls::navigation_style(
-                    self.palette,
-                    false,
-                ))
+                .class(ferese_theme::controls::navigation_style(self.palette, false))
                 .width(Length::Fill)
                 .on_press_maybe(self.can_remember().then_some(Message::Remember)),
             );
         }
         let mut share = button::custom(
             row![
-                self.text(if self.prompt.window_capture {
-                    "Capture"
-                } else {
-                    "Share"
-                }),
+                self.text(if self.prompt.window_capture { "Capture" } else { "Share" }),
                 glyph(ferese_theme::icons::ARROW, 16)
             ]
             .spacing(8)
@@ -396,11 +361,10 @@ impl Picker {
     fn can_remember(&self) -> bool {
         !self.selected.is_empty()
             && self.selected.len() <= 16
-            && self.selected.iter().all(|index| {
-                self.prompt
-                    .rememberable
-                    .contains(&self.prompt.sources[*index].name)
-            })
+            && self
+                .selected
+                .iter()
+                .all(|index| self.prompt.rememberable.contains(&self.prompt.sources[*index].name))
     }
 
     fn text<'a>(

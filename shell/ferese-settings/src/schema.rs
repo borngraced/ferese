@@ -129,12 +129,7 @@ pub struct Field {
 }
 
 impl Field {
-    pub fn new(
-        path: impl Into<String>,
-        label: impl Into<String>,
-        description: impl Into<String>,
-        kind: Kind,
-    ) -> Self {
+    pub fn new(path: impl Into<String>, label: impl Into<String>, description: impl Into<String>, kind: Kind) -> Self {
         Self {
             path: path.into(),
             label: label.into(),
@@ -180,15 +175,7 @@ pub fn text(
     description: impl Into<String>,
     default: &'static str,
 ) -> Field {
-    Field::new(
-        path,
-        label,
-        description,
-        Kind::Text {
-            default,
-            argv: false,
-        },
-    )
+    Field::new(path, label, description, Kind::Text { default, argv: false })
 }
 
 fn choice(
@@ -400,18 +387,8 @@ pub fn note_fields(index: usize) -> Vec<Field> {
             "Drag the title and edit directly. Off makes the card click-through.",
             Kind::Toggle(true),
         ),
-        Field::new(
-            format!("{prefix}.enabled"),
-            "Show note",
-            "",
-            Kind::Toggle(true),
-        ),
-        text(
-            format!("{prefix}.title"),
-            "Title",
-            "Empty hides the title.",
-            "Note",
-        ),
+        Field::new(format!("{prefix}.enabled"), "Show note", "", Kind::Toggle(true)),
+        text(format!("{prefix}.title"), "Title", "Empty hides the title.", "Note"),
         text(
             format!("{prefix}.anchor"),
             "Position",

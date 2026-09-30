@@ -102,11 +102,7 @@ pub fn parse_color(value: &str) -> Option<Color> {
 }
 
 pub fn mix(a: Color, b: Color, t: f32) -> Color {
-    Color::from_rgb(
-        a.r + (b.r - a.r) * t,
-        a.g + (b.g - a.g) * t,
-        a.b + (b.b - a.b) * t,
-    )
+    Color::from_rgb(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t)
 }
 
 pub fn surface_shade(base: Color) -> Color {
@@ -179,10 +175,8 @@ mod tests {
             ("translucent", 2., 1.),
             ("translucent", -1., 0.),
         ] {
-            let document = Document::parse(&format!(
-                "theme {{ material {{ style {style}; opacity {opacity}; }} }}"
-            ))
-            .unwrap();
+            let document =
+                Document::parse(&format!("theme {{ material {{ style {style}; opacity {opacity}; }} }}")).unwrap();
             assert_eq!(material_opacity(Some(&document)), expected);
         }
     }

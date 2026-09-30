@@ -1,11 +1,7 @@
-use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    sync::{
-        Arc, Mutex,
-        mpsc::{self, SyncSender},
-    },
-    time::{Duration, Instant},
-};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::mpsc::SyncSender;
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::{Duration, Instant};
 
 const PATH: &str = "/org/freedesktop/Notifications";
 const INTERFACE: &str = "org.freedesktop.Notifications";
@@ -97,9 +93,7 @@ impl Server {
         let mut registry = self.registry.lock().unwrap();
         let replacing = registry.live.contains_key(&replaces_id);
         if !replacing && registry.live.len() >= HISTORY_LIMIT {
-            return Err(zbus::fdo::Error::LimitsExceeded(
-                "Too many active notifications".into(),
-            ));
+            return Err(zbus::fdo::Error::LimitsExceeded("Too many active notifications".into()));
         }
         let id = if replacing {
             replaces_id
@@ -201,10 +195,7 @@ impl Service {
         Self::connect(config, None)
     }
 
-    fn connect(
-        config: &ferese_core::notifications::NotificationConfig,
-        address: Option<String>,
-    ) -> Self {
+    fn connect(config: &ferese_core::notifications::NotificationConfig, address: Option<String>) -> Self {
         let timeout = Arc::new(std::sync::atomic::AtomicU32::new(config.timeout_ms));
         let worker_timeout = timeout.clone();
         let (sender, events) = tokio::sync::mpsc::channel(256);
@@ -237,25 +228,13 @@ impl Service {
                         if !registry.lock().unwrap().close(id, revision, reason) {
                             continue;
                         }
-                        connection.emit_signal(
-                            None::<&str>,
-                            PATH,
-                            INTERFACE,
-                            "NotificationClosed",
-                            &(id, reason),
-                        )
+                        connection.emit_signal(None::<&str>, PATH, INTERFACE, "NotificationClosed", &(id, reason))
                     }
                     Command::Action(id, revision, action) => {
                         if registry.lock().unwrap().live.get(&id) != Some(&revision) {
                             continue;
                         }
-                        connection.emit_signal(
-                            None::<&str>,
-                            PATH,
-                            INTERFACE,
-                            "ActionInvoked",
-                            &(id, action),
-                        )
+                        connection.emit_signal(None::<&str>, PATH, INTERFACE, "ActionInvoked", &(id, action))
                     }
                 };
                 if let Err(error) = result {
@@ -337,9 +316,7 @@ impl Center {
             } else {
                 toast.closing.map_or_else(
                     || (toast.born.elapsed().as_secs_f32() / duration.as_secs_f32()).min(1.0),
-                    |closing| {
-                        (1.0 - closing.elapsed().as_secs_f32() / duration.as_secs_f32()).max(0.0)
-                    },
+                    |closing| (1.0 - closing.elapsed().as_secs_f32() / duration.as_secs_f32()).max(0.0),
                 )
             };
             Some((notice, p * p * (3.0 - 2.0 * p)))
@@ -347,18 +324,15 @@ impl Center {
     }
 
     pub fn animating(&self) -> bool {
-        self.toasts.iter().any(|toast| {
-            toast.closing.is_some() || toast.born.elapsed() < super::motion::notification_duration()
-        })
+        self.toasts
+            .iter()
+            .any(|toast| toast.closing.is_some() || toast.born.elapsed() < super::motion::notification_duration())
     }
 
     pub fn popup_groups(&self) -> Vec<(&Notice, f32, usize)> {
         let mut groups: Vec<(&Notice, f32, usize)> = Vec::new();
         for (notice, opacity) in self.visible() {
-            if let Some(group) = groups
-                .iter_mut()
-                .find(|(head, _, _)| head.app == notice.app)
-            {
+            if let Some(group) = groups.iter_mut().find(|(head, _, _)| head.app == notice.app) {
                 group.2 += 1;
             } else {
                 groups.push((notice, opacity, 1));
@@ -451,10 +425,7 @@ impl Center {
     }
 
     pub fn invoke(&mut self, id: u32, action: String) {
-        if let Some(notice) = self
-            .entries
-            .iter()
-            .find(|notice| notice.id == id && notice.live)
+        if let Some(notice) = self.entries.iter().find(|notice| notice.id == id && notice.live)
             && notice.actions.iter().any(|(key, _)| key == &action)
         {
             let resident = notice.resident;
@@ -593,9 +564,9 @@ impl Center {
             self.close(id, 1);
         }
         self.toasts.retain(|toast| {
-            toast.closing.is_none_or(|closing| {
-                now.duration_since(closing) < super::motion::notification_duration()
-            })
+            toast
+                .closing
+                .is_none_or(|closing| now.duration_since(closing) < super::motion::notification_duration())
         });
         let visible: HashSet<_> = self.toasts.iter().map(|toast| toast.id).collect();
         self.entries
@@ -605,8 +576,9 @@ impl Center {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ferese_core::notifications::NotificationConfig;
+
+    use super::*;
 
     fn fixture() -> (Center, std::sync::mpsc::Receiver<Command>) {
         let (_, events) = tokio::sync::mpsc::channel(256);
@@ -736,10 +708,7 @@ mod tests {
         center.last_tick = Instant::now() - Duration::from_secs(10);
         center.tick();
         assert!(!center.entries[0].live);
-        assert!(matches!(
-            commands.try_recv().unwrap(),
-            Command::Close(1, 1, 1)
-        ));
+        assert!(matches!(commands.try_recv().unwrap(), Command::Close(1, 1, 1)));
     }
 
     #[test]
@@ -786,10 +755,7 @@ mod tests {
         center.invoke(1, "invalid".into());
         assert!(commands.try_recv().is_err());
         center.invoke(1, "open".into());
-        assert!(matches!(
-            commands.try_recv().unwrap(),
-            Command::Action(1, 1, _)
-        ));
+        assert!(matches!(commands.try_recv().unwrap(), Command::Action(1, 1, _)));
         assert!(center.entries[0].live);
     }
 
@@ -811,13 +777,7 @@ mod tests {
             ..Default::default()
         });
         assert!(center.dnd);
-        assert_eq!(
-            center
-                .service
-                .timeout
-                .load(std::sync::atomic::Ordering::Relaxed),
-            10000
-        );
+        assert_eq!(center.service.timeout.load(std::sync::atomic::Ordering::Relaxed), 10000);
         center.receive(notice(1));
         center.configure(NotificationConfig {
             show_popups: false,
@@ -870,8 +830,7 @@ mod tests {
             .build()
             .unwrap();
         let proxy = zbus::blocking::Proxy::new(&connection, INTERFACE, PATH, INTERFACE).unwrap();
-        let info: (String, String, String, String) =
-            proxy.call("GetServerInformation", &()).unwrap();
+        let info: (String, String, String, String) = proxy.call("GetServerInformation", &()).unwrap();
         assert_eq!(info.0, "Ferese");
         let notify = |replace| -> u32 {
             proxy
@@ -905,22 +864,14 @@ mod tests {
         let (sender, receiver) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             let signal = signals.next().unwrap();
-            sender
-                .send(signal.body().deserialize::<(u32, u32)>().unwrap())
-                .unwrap();
+            sender.send(signal.body().deserialize::<(u32, u32)>().unwrap()).unwrap();
         });
         proxy.call::<_, _, ()>("CloseNotification", &(id,)).unwrap();
         let Event::Close(closed, revision) = received(&service) else {
             panic!("Expected close");
         };
-        service
-            .commands
-            .send(Command::Close(closed, revision, 3))
-            .unwrap();
-        assert_eq!(
-            receiver.recv_timeout(Duration::from_secs(3)).unwrap(),
-            (id, 3)
-        );
+        service.commands.send(Command::Close(closed, revision, 3)).unwrap();
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(3)).unwrap(), (id, 3));
         worker.join().unwrap();
         assert!(proxy.call::<_, _, ()>("CloseNotification", &(id,)).is_err());
     }

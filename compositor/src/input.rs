@@ -1,53 +1,122 @@
-use smithay::reexports::wayland_server::Resource;
 use std::process::Command;
 
 use ferese_layout::Direction;
-use smithay::{
-    backend::input::{
-        AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent,
-        GestureEndEvent, GestureSwipeUpdateEvent as _, InputBackend, InputEvent, KeyState,
-        KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, Switch,
-        SwitchState, SwitchToggleEvent, TouchEvent,
-    },
-    input::{
-        keyboard::{FilterResult, keysyms},
-        pointer::{
-            AxisFrame, ButtonEvent, Focus, GestureSwipeBeginEvent, GestureSwipeEndEvent,
-            GestureSwipeUpdateEvent, GrabStartData, MotionEvent, PointerHandle,
-            RelativeMotionEvent,
-        },
-        touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent},
-    },
-    reexports::{
-        wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge as XdgResizeEdge,
-        wayland_server::protocol::wl_surface::WlSurface,
-    },
-    utils::{Logical, Point, SERIAL_COUNTER, Serial},
-    wayland::{
-        keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat,
-        pointer_constraints::{PointerConstraint, with_pointer_constraint},
-    },
+use smithay::backend::input::{
+    AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, GestureBeginEvent, GestureEndEvent,
+    GestureSwipeUpdateEvent as _, InputBackend, InputEvent, KeyState, KeyboardKeyEvent, PointerAxisEvent,
+    PointerButtonEvent, PointerMotionEvent, Switch, SwitchState, SwitchToggleEvent, TouchEvent,
 };
+use smithay::input::keyboard::{FilterResult, keysyms};
+use smithay::input::pointer::{
+    AxisFrame, ButtonEvent, Focus, GestureSwipeBeginEvent, GestureSwipeEndEvent, GestureSwipeUpdateEvent,
+    GrabStartData, MotionEvent, PointerHandle, RelativeMotionEvent,
+};
+use smithay::input::touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent};
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge as XdgResizeEdge;
+use smithay::reexports::wayland_server::Resource;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
+use smithay::wayland::keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitorSeat;
+use smithay::wayland::pointer_constraints::{PointerConstraint, with_pointer_constraint};
 
-use crate::{
-    Ferese,
-    config::BindingAction,
-    gestures::SwipeDirection,
-    grabs::{MoveSurfaceGrab, ResizeEdge, ResizeSurfaceGrab},
-};
+use crate::Ferese;
+use crate::config::BindingAction;
+use crate::gestures::SwipeDirection;
+use crate::grabs::{MoveSurfaceGrab, ResizeEdge, ResizeSurfaceGrab};
 
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 
+pub(crate) struct LockedPointerHint {
+    pub(crate) surface: WlSurface,
+    pub(crate) local: Point<f64, Logical>,
+}
+
 impl Ferese {
+    pub(crate) fn pointer_hint_position(
+        &self,
+        surface: &WlSurface,
+        hint: Point<f64, Logical>,
+    ) -> Option<Point<f64, Logical>> {
+        for window in self.space.elements() {
+            let root = window.toplevel()?.wl_surface();
+            let geometry = window.geometry();
+            let Some(local) = surface_tree_position(root, surface, geometry.loc) else {
+                continue;
+            };
+            let id = self.window_ids.get(window)?;
+            let presented = self.presented_window_rect(*id)?;
+            let (scale_x, scale_y) = self.visual_scale_for_window(window)?;
+            let point = local.to_f64() + hint - geometry.loc.to_f64();
+            return Some(Point::from((
+                presented.x + point.x * scale_x,
+                presented.y + point.y * scale_y,
+            )));
+        }
+        for output in self.space.outputs() {
+            let output_geometry = self.space.output_geometry(output)?;
+            let layers = smithay::desktop::layer_map_for_output(output);
+            for layer in layers.layers() {
+                let Some(local) = surface_tree_position(layer.wl_surface(), surface, (0, 0).into()) else {
+                    continue;
+                };
+                let geometry = layers.layer_geometry(layer)?;
+                return Some((output_geometry.loc + geometry.loc + local).to_f64() + hint);
+            }
+        }
+        None
+    }
+
+    pub(crate) fn apply_unlocked_pointer_hint(&mut self) {
+        let Some(hint) = self.locked_pointer_hint.take() else {
+            return;
+        };
+        if !hint.surface.is_alive() || self.session_lock.active || self.input_capture.active() {
+            return;
+        }
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        let locked = with_pointer_constraint(&hint.surface, &pointer, |constraint| {
+            constraint.is_some_and(|constraint| {
+                constraint.is_active() && matches!(&*constraint, PointerConstraint::Locked(_))
+            })
+        });
+        if locked {
+            self.locked_pointer_hint = Some(hint);
+            return;
+        }
+        if pointer.current_focus().is_some_and(|surface| {
+            with_pointer_constraint(&surface, &pointer, |constraint| {
+                constraint.is_some_and(|constraint| constraint.is_active())
+            })
+        }) {
+            return;
+        }
+        let Some(global) = self.pointer_hint_position(&hint.surface, hint.local) else {
+            return;
+        };
+        let location = self.clamp_pointer_position(global);
+        let focus = self.surface_under(location);
+        pointer.motion(
+            self,
+            focus,
+            &MotionEvent {
+                location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time: self.last_pointer_time,
+            },
+        );
+        pointer.frame(self);
+        self.cursor_redraw_pending = true;
+    }
+
     pub fn process_input_event<I: InputBackend>(&mut self, event: InputEvent<I>) {
         let seat = self.seat.clone();
         self.idle_notifier_state.notify_activity(&seat);
         if !matches!(
             &event,
-            InputEvent::DeviceAdded { .. }
-                | InputEvent::DeviceRemoved { .. }
-                | InputEvent::SwitchToggle { .. }
+            InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. } | InputEvent::SwitchToggle { .. }
         ) {
             self.lock_input_activity();
         }
@@ -117,15 +186,13 @@ impl Ferese {
                 if self.swipe.active() {
                     self.swipe.update(event.delta_x(), event.delta_y());
                 } else {
-                    seat.get_pointer()
-                        .expect("seat has a pointer")
-                        .gesture_swipe_update(
-                            self,
-                            &GestureSwipeUpdateEvent {
-                                time: event.time_msec(),
-                                delta: event.delta(),
-                            },
-                        );
+                    seat.get_pointer().expect("seat has a pointer").gesture_swipe_update(
+                        self,
+                        &GestureSwipeUpdateEvent {
+                            time: event.time_msec(),
+                            delta: event.delta(),
+                        },
+                    );
                 }
             }
             InputEvent::GestureSwipeEnd { event } => {
@@ -140,9 +207,7 @@ impl Ferese {
                             .map(|binding| binding.action.clone())
                     {
                         match action {
-                            BindingAction::Focus(
-                                direction @ (Direction::Left | Direction::Right),
-                            ) => {
+                            BindingAction::Focus(direction @ (Direction::Left | Direction::Right)) => {
                                 self.focus_direction_from_swipe(direction);
                             }
                             BindingAction::SwitchRelativeWorkspace(next) => {
@@ -152,16 +217,14 @@ impl Ferese {
                         }
                     }
                 } else {
-                    seat.get_pointer()
-                        .expect("seat has a pointer")
-                        .gesture_swipe_end(
-                            self,
-                            &GestureSwipeEndEvent {
-                                serial: SERIAL_COUNTER.next_serial(),
-                                time: event.time_msec(),
-                                cancelled: event.cancelled(),
-                            },
-                        );
+                    seat.get_pointer().expect("seat has a pointer").gesture_swipe_end(
+                        self,
+                        &GestureSwipeEndEvent {
+                            serial: SERIAL_COUNTER.next_serial(),
+                            time: event.time_msec(),
+                            cancelled: event.cancelled(),
+                        },
+                    );
                 }
             }
             InputEvent::SwitchToggle { event } if event.switch() == Some(Switch::Lid) => {
@@ -301,6 +364,7 @@ impl Ferese {
                 }
             }
             InputEvent::PointerMotionAbsolute { event, .. } => {
+                self.last_pointer_time = event.time_msec();
                 let Some(position) = self.absolute_event_position(&event) else {
                     return;
                 };
@@ -325,6 +389,7 @@ impl Ferese {
                 crate::backends::direct::render_all(self);
             }
             InputEvent::PointerMotion { event, .. } => {
+                self.last_pointer_time = event.time_msec();
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
                 let position = pointer.current_location();
                 let focus = self.surface_under(position);
@@ -346,8 +411,7 @@ impl Ferese {
                     focus,
                     &RelativeMotionEvent {
                         delta: (delta.x / scale_x, delta.y / scale_y).into(),
-                        delta_unaccel: (delta_unaccel.x / scale_x, delta_unaccel.y / scale_y)
-                            .into(),
+                        delta_unaccel: (delta_unaccel.x / scale_x, delta_unaccel.y / scale_y).into(),
                         utime: event.time(),
                     },
                 );
@@ -369,6 +433,7 @@ impl Ferese {
                 crate::backends::direct::render_all(self);
             }
             InputEvent::PointerButton { event, .. } => {
+                self.last_pointer_time = event.time_msec();
                 if self.input_capture.active() {
                     if self.input_capture.captures(2) {
                         self.input_capture.push(serde_json::json!({"type":"button", "button":event.button_code(), "pressed":event.state() == ButtonState::Pressed}));
@@ -392,11 +457,8 @@ impl Ferese {
                     && crate::effects::begin_surface_dismiss(&surface)
                 {
                     let opacity = crate::effects::surface_opacity(&surface);
-                    self.dismissing_popups.push((
-                        root,
-                        popup,
-                        crate::dimming::DimAnimation::new(f64::from(opacity)),
-                    ));
+                    self.dismissing_popups
+                        .push((root, popup, crate::dimming::DimAnimation::new(f64::from(opacity))));
                     pointer.unset_grab(self, serial, event.time_msec());
                     self.focus_window_at(pointer.current_location(), serial, true);
                     crate::backends::direct::render_all(self);
@@ -466,13 +528,14 @@ impl Ferese {
                 pointer.frame(self);
             }
             InputEvent::PointerAxis { event, .. } => {
+                self.last_pointer_time = event.time_msec();
                 let source = event.source();
-                let horizontal = event.amount(Axis::Horizontal).unwrap_or_else(|| {
-                    event.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.0
-                });
-                let vertical = event.amount(Axis::Vertical).unwrap_or_else(|| {
-                    event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.0
-                });
+                let horizontal = event
+                    .amount(Axis::Horizontal)
+                    .unwrap_or_else(|| event.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.0);
+                let vertical = event
+                    .amount(Axis::Vertical)
+                    .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.0);
                 if self.input_capture.active() {
                     if self.input_capture.captures(2) {
                         self.input_capture.push(serde_json::json!({"type":"scroll", "x":horizontal, "y":vertical, "v120_x":event.amount_v120(Axis::Horizontal), "v120_y":event.amount_v120(Axis::Vertical), "stop_x":source == AxisSource::Finger && event.amount(Axis::Horizontal) == Some(0.0), "stop_y":source == AxisSource::Finger && event.amount(Axis::Vertical) == Some(0.0)}));
@@ -482,11 +545,7 @@ impl Ferese {
                 let pointer = self.seat.get_pointer().expect("seat has a pointer");
                 if self.scroll_overview_strip(
                     pointer.current_location(),
-                    if horizontal != 0.0 {
-                        horizontal
-                    } else {
-                        vertical
-                    },
+                    if horizontal != 0.0 { horizontal } else { vertical },
                 ) {
                     return;
                 }
@@ -577,12 +636,7 @@ impl Ferese {
         }
     }
 
-    fn start_floating_pointer_grab(
-        &mut self,
-        pointer: &PointerHandle<Self>,
-        button: u32,
-        serial: Serial,
-    ) -> bool {
+    fn start_floating_pointer_grab(&mut self, pointer: &PointerHandle<Self>, button: u32, serial: Serial) -> bool {
         if self.session_lock.active
             || pointer.is_grabbed()
             || !matches!(button, BTN_LEFT | BTN_RIGHT)
@@ -629,10 +683,8 @@ impl Ferese {
                 Focus::Clear,
             );
         } else {
-            let horizontal_right =
-                location.x >= f64::from(rect.loc.x) + f64::from(rect.size.w) / 2.0;
-            let vertical_bottom =
-                location.y >= f64::from(rect.loc.y) + f64::from(rect.size.h) / 2.0;
+            let horizontal_right = location.x >= f64::from(rect.loc.x) + f64::from(rect.size.w) / 2.0;
+            let vertical_bottom = location.y >= f64::from(rect.loc.y) + f64::from(rect.size.h) / 2.0;
             let edge = match (horizontal_right, vertical_bottom) {
                 (false, false) => XdgResizeEdge::TopLeft,
                 (true, false) => XdgResizeEdge::TopRight,
@@ -655,9 +707,7 @@ impl Ferese {
         I: InputBackend,
         E: AbsolutePositionEvent<I>,
     {
-        let output = self
-            .focused_output()
-            .or_else(|| self.space.outputs().next())?;
+        let output = self.focused_output().or_else(|| self.space.outputs().next())?;
         let geometry = self.space.output_geometry(output)?;
 
         Some(event.position_transformed(geometry.size) + geometry.loc.to_f64())
@@ -666,14 +716,8 @@ impl Ferese {
     fn swipe_navigation_blocked(&self) -> bool {
         self.session_lock.active
             || self.active_shortcuts_inhibitor.is_some()
-            || self
-                .seat
-                .get_pointer()
-                .is_some_and(|pointer| pointer.is_grabbed())
-            || self
-                .seat
-                .get_keyboard()
-                .is_some_and(|keyboard| keyboard.is_grabbed())
+            || self.seat.get_pointer().is_some_and(|pointer| pointer.is_grabbed())
+            || self.seat.get_keyboard().is_some_and(|keyboard| keyboard.is_grabbed())
     }
 
     fn switch_relative_workspace(&mut self, next: bool, slide: Option<SwipeDirection>) {
@@ -689,10 +733,7 @@ impl Ferese {
                 .output_for_workspace(workspace.id)
                 .is_none_or(|owner| owner == output)
         });
-        let Some(index) = candidates
-            .iter()
-            .position(|workspace| workspace.id == current)
-        else {
+        let Some(index) = candidates.iter().position(|workspace| workspace.id == current) else {
             return;
         };
         let index = if next {
@@ -799,11 +840,7 @@ impl Ferese {
         }
     }
 
-    fn focus_window_under_pointer(
-        &mut self,
-        pointer: &PointerHandle<Self>,
-        position: Point<f64, Logical>,
-    ) {
+    fn focus_window_under_pointer(&mut self, pointer: &PointerHandle<Self>, position: Point<f64, Logical>) {
         if self.session_lock.active {
             return;
         }
@@ -813,10 +850,7 @@ impl Ferese {
         }
         // Keep the explicitly selected window focused until Overview's exit
         // animation settles. Moving previews must not steal focus on pointer jitter.
-        if self.overview.is_presenting()
-            || !self.input_settings.focus_follows_mouse
-            || pointer.is_grabbed()
-        {
+        if self.overview.is_presenting() || !self.input_settings.focus_follows_mouse || pointer.is_grabbed() {
             return;
         }
         if self.layer_under(position).is_some() {
@@ -952,9 +986,7 @@ impl Ferese {
             BindingAction::Focus(direction) => self.focus_direction(direction),
             BindingAction::Move(direction) => self.move_direction(direction),
             BindingAction::Resize(direction) => self.resize_direction(direction),
-            BindingAction::SwitchRelativeWorkspace(next) => {
-                self.switch_relative_workspace(next, None)
-            }
+            BindingAction::SwitchRelativeWorkspace(next) => self.switch_relative_workspace(next, None),
             BindingAction::SwitchWorkspace(workspace) => {
                 self.switch_workspace(u32::from(workspace));
             }
@@ -972,6 +1004,55 @@ impl Ferese {
             BindingAction::ToggleOverview => self.toggle_overview(),
         }
     }
+}
+
+fn surface_tree_position(
+    root: &WlSurface,
+    target: &WlSurface,
+    geometry_origin: Point<i32, Logical>,
+) -> Option<Point<i32, Logical>> {
+    use smithay::desktop::PopupManager;
+
+    surface_tree_offset(root, target).or_else(|| {
+        PopupManager::popups_for_surface(root).find_map(|(popup, offset)| {
+            surface_tree_offset(popup.wl_surface(), target)
+                .map(|local| geometry_origin + offset - popup.geometry().loc + local)
+        })
+    })
+}
+
+fn surface_tree_offset(root: &WlSurface, target: &WlSurface) -> Option<Point<i32, Logical>> {
+    use std::cell::Cell;
+
+    use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
+    use smithay::wayland::compositor::{TraversalAction, with_surface_tree_downward};
+
+    let found = Cell::new(None);
+    with_surface_tree_downward(
+        root,
+        Point::<i32, Logical>::default(),
+        |_, states, location| {
+            states
+                .data_map
+                .get::<RendererSurfaceStateUserData>()
+                .and_then(|data| data.lock().unwrap().view())
+                .map_or(TraversalAction::SkipChildren, |view| {
+                    TraversalAction::DoChildren(*location + view.offset)
+                })
+        },
+        |surface, states, location| {
+            if surface == target
+                && let Some(view) = states
+                    .data_map
+                    .get::<RendererSurfaceStateUserData>()
+                    .and_then(|data| data.lock().unwrap().view())
+            {
+                found.set(Some(*location + view.offset));
+            }
+        },
+        |_, _, _| found.get().is_none(),
+    );
+    found.get()
 }
 
 fn virtual_terminal(symbol: u32, ctrl: bool, alt: bool, direct: bool) -> Option<i32> {

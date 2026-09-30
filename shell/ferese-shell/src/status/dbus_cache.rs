@@ -1,12 +1,13 @@
 //! Keep native snapshots until the owning service signals a change.
-use super::StatusBus;
-use cosmic::iced::futures::{FutureExt, StreamExt, channel::oneshot};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
-};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+use cosmic::iced::futures::channel::oneshot;
+use cosmic::iced::futures::{FutureExt, StreamExt};
 use zbus::blocking::{Connection, MessageIterator};
+
+use super::StatusBus;
 
 struct Signals {
     revision: Arc<AtomicU64>,
@@ -44,9 +45,7 @@ impl Signals {
         let (stop, stopped) = oneshot::channel::<()>();
         std::thread::spawn(move || {
             // Enter a runtime for zbus stream cleanup, including cancellation.
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build();
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build();
             if let Ok(runtime) = runtime {
                 // Dropping the blocking wrappers enters zbus' runtime, so do
                 // this before entering our async runtime.
@@ -102,32 +101,19 @@ impl<T: Clone> Cache<T> {
         }
     }
 
-    pub(super) fn read(
-        &mut self,
-        action: u64,
-        read: fn(&Connection) -> zbus::Result<Option<T>>,
-    ) -> Option<T> {
-        if self
-            .signals
-            .as_ref()
-            .is_some_and(|s| !s.alive.load(Ordering::Acquire))
-        {
+    pub(super) fn read(&mut self, action: u64, read: fn(&Connection) -> zbus::Result<Option<T>>) -> Option<T> {
+        if self.signals.as_ref().is_some_and(|s| !s.alive.load(Ordering::Acquire)) {
             self.signals = None;
             self.bus.connection = None;
             self.value = None;
         }
         if self.signals.is_none() {
-            self.signals = self
-                .bus
-                .query(|connection| Signals::new(connection, self.service));
+            self.signals = self.bus.query(|connection| Signals::new(connection, self.service));
             self.revision = 0;
         }
         // If subscription setup fails, read fresh rather than trusting a cache
         // with no invalidation. Retry setup on the next regular status poll.
-        let revision = self
-            .signals
-            .as_ref()
-            .map(|s| s.revision.load(Ordering::Acquire));
+        let revision = self.signals.as_ref().map(|s| s.revision.load(Ordering::Acquire));
         if revision.is_none()
             || revision != Some(self.revision)
             || action != self.action
@@ -149,8 +135,9 @@ impl<T: Clone> Cache<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::{Duration, Instant};
+
+    use super::*;
     struct Counter(Arc<AtomicU64>);
     #[zbus::interface(name = "org.ferese.StatusCounter")]
     impl Counter {
@@ -193,13 +180,7 @@ mod tests {
         assert_eq!(count.load(Ordering::Relaxed), 1);
         assert_eq!(cache.read(1, read_counter), Some(2));
         server
-            .emit_signal(
-                None::<&str>,
-                "/test",
-                "org.ferese.StatusCounter",
-                "Changed",
-                &(),
-            )
+            .emit_signal(None::<&str>, "/test", "org.ferese.StatusCounter", "Changed", &())
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         while cache.read(1, read_counter) != Some(3) {
@@ -247,13 +228,7 @@ mod tests {
         };
         let before = signals.revision.load(Ordering::Acquire);
         server
-            .emit_signal(
-                None::<&str>,
-                "/test",
-                "org.ferese.StatusTest",
-                "Changed",
-                &(),
-            )
+            .emit_signal(None::<&str>, "/test", "org.ferese.StatusTest", "Changed", &())
             .unwrap();
         wait(before);
         let before = signals.revision.load(Ordering::Acquire);

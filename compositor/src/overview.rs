@@ -1,23 +1,17 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, mpsc},
-    time::Duration,
-};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
 
+use ab_glyph::{Font, FontArc, FontVec, ScaleFont};
 use ferese_animation::{AnimatedRect, AnimatedValue, SpringConfig};
 use ferese_core::{OutputId, WorkspaceId};
 use ferese_layout::{Direction, Rect, WindowId};
-use smithay::{
-    output::Output,
-    utils::{Logical, Point},
-};
+use smithay::backend::allocator::Fourcc;
+use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
+use smithay::output::Output;
+use smithay::utils::{Logical, Point, Transform};
 
 use crate::Ferese;
-use ab_glyph::{Font, FontArc, FontVec, ScaleFont};
-use smithay::{
-    backend::{allocator::Fourcc, renderer::element::memory::MemoryRenderBuffer},
-    utils::Transform,
-};
 
 const OVERVIEW_MARGIN: f64 = 48.0;
 const OVERVIEW_GAP: f64 = 40.0;
@@ -46,16 +40,14 @@ pub(crate) fn init_font_loader(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use smithay::reexports::calloop::channel;
     let (results, source) = channel::sync_channel::<(String, Option<FontArc>)>(1);
-    event_loop
-        .handle()
-        .insert_source(source, |event, _, state| {
-            if let channel::Event::Msg((family, font)) = event
-                && state.overview.complete_font_load(&family, font)
-                && state.overview.is_presenting()
-            {
-                crate::backends::direct::render_all(state);
-            }
-        })?;
+    event_loop.handle().insert_source(source, |event, _, state| {
+        if let channel::Event::Msg((family, font)) = event
+            && state.overview.complete_font_load(&family, font)
+            && state.overview.is_presenting()
+        {
+            crate::backends::direct::render_all(state);
+        }
+    })?;
     let latest = Arc::new(Mutex::new(state.overview.font_family.clone()));
     let worker_latest = latest.clone();
     let (wake, requests) = mpsc::sync_channel(1);
@@ -92,13 +84,8 @@ pub(crate) fn init_font_loader(
     Ok(())
 }
 
-type OverviewStateLabel = HashMap<
-    (String, u64, [u32; 4]),
-    (
-        MemoryRenderBuffer,
-        smithay::utils::Size<i32, smithay::utils::Buffer>,
-    ),
->;
+type OverviewStateLabel =
+    HashMap<(String, u64, [u32; 4]), (MemoryRenderBuffer, smithay::utils::Size<i32, smithay::utils::Buffer>)>;
 
 #[derive(Debug)]
 pub(crate) struct OverviewState {
@@ -154,19 +141,11 @@ pub(crate) fn workspace_strip(bounds: Rect) -> Rect {
 fn window_area(bounds: Rect) -> Rect {
     let strip = workspace_strip(bounds);
     let top = strip.y + strip.height + 16.0;
-    Rect::new(
-        bounds.x,
-        top,
-        bounds.width,
-        (bounds.y + bounds.height - top).max(1.0),
-    )
+    Rect::new(bounds.x, top, bounds.width, (bounds.y + bounds.height - top).max(1.0))
 }
 
 fn contains(rect: Rect, point: Point<f64, Logical>) -> bool {
-    point.x >= rect.x
-        && point.x < rect.x + rect.width
-        && point.y >= rect.y
-        && point.y < rect.y + rect.height
+    point.x >= rect.x && point.x < rect.x + rect.width && point.y >= rect.y && point.y < rect.y + rect.height
 }
 
 fn strip_capacity(strip: Rect) -> usize {
@@ -212,10 +191,7 @@ impl OverviewState {
         text: &str,
         scale: f64,
         color: [f32; 4],
-    ) -> Option<(
-        MemoryRenderBuffer,
-        smithay::utils::Size<i32, smithay::utils::Buffer>,
-    )> {
+    ) -> Option<(MemoryRenderBuffer, smithay::utils::Size<i32, smithay::utils::Buffer>)> {
         let key = (text.to_owned(), scale.to_bits(), color.map(f32::to_bits));
         if let Some(buffer) = self.labels.get(&key) {
             return Some(buffer.clone());
@@ -234,10 +210,7 @@ impl OverviewState {
         let mut pen = 2.0;
         for ch in text.chars() {
             let id = font.glyph_id(ch);
-            let glyph = id.with_scale_and_position(
-                scaled.scale(),
-                ab_glyph::point(pen, scaled.ascent() + 1.0),
-            );
+            let glyph = id.with_scale_and_position(scaled.scale(), ab_glyph::point(pen, scaled.ascent() + 1.0));
             pen += scaled.h_advance(id);
             if let Some(outline) = font.outline_glyph(glyph) {
                 let bounds = outline.px_bounds();
@@ -257,14 +230,8 @@ impl OverviewState {
                 });
             }
         }
-        let buffer = MemoryRenderBuffer::from_slice(
-            &pixels,
-            Fourcc::Abgr8888,
-            (width, height),
-            1,
-            Transform::Normal,
-            None,
-        );
+        let buffer =
+            MemoryRenderBuffer::from_slice(&pixels, Fourcc::Abgr8888, (width, height), 1, Transform::Normal, None);
         if self.labels.len() >= 128 {
             self.labels.clear();
         }
@@ -291,13 +258,7 @@ impl OverviewState {
             .selected
             .filter(visible)
             .or_else(|| preferred.filter(visible))
-            .or_else(|| {
-                windows
-                    .iter()
-                    .copied()
-                    .filter(visible)
-                    .min_by_key(|id| id.0)
-            });
+            .or_else(|| windows.iter().copied().filter(visible).min_by_key(|id| id.0));
     }
 
     pub(crate) fn selected(&self) -> Option<WindowId> {
@@ -319,13 +280,9 @@ impl OverviewState {
             .filter(|(id, _)| Some(**id) != self.selected)
             .filter_map(|(id, presentation)| {
                 let center = rect_center(presentation.current);
-                directional_distance(direction, current_center, center)
-                    .map(|distance| (*id, distance))
+                directional_distance(direction, current_center, center).map(|distance| (*id, distance))
             })
-            .min_by(|(left_id, left), (right_id, right)| {
-                left.total_cmp(right)
-                    .then_with(|| left_id.0.cmp(&right_id.0))
-            })
+            .min_by(|(left_id, left), (right_id, right)| left.total_cmp(right).then_with(|| left_id.0.cmp(&right_id.0)))
             .map(|(id, _)| id);
         let Some(next) = next else {
             return false;
@@ -396,10 +353,7 @@ impl OverviewState {
                 presentation.snap();
             }
         }
-        if self
-            .selected
-            .is_none_or(|id| !self.presentations.contains_key(&id))
-        {
+        if self.selected.is_none_or(|id| !self.presentations.contains_key(&id)) {
             self.selected = self.presentations.keys().copied().min_by_key(|id| id.0);
         }
     }
@@ -429,12 +383,7 @@ impl OverviewState {
         }
     }
 
-    pub(crate) fn advance(
-        &mut self,
-        delta: Duration,
-        spring: SpringConfig,
-        animations_enabled: bool,
-    ) -> bool {
+    pub(crate) fn advance(&mut self, delta: Duration, spring: SpringConfig, animations_enabled: bool) -> bool {
         if let Some((elapsed, initial_opacity)) = self.exit_transition {
             let elapsed = if animations_enabled {
                 elapsed + delta.as_secs_f64()
@@ -506,18 +455,12 @@ impl Ferese {
         window: &smithay::desktop::Window,
         scale: f64,
         width: f64,
-    ) -> Option<(
-        MemoryRenderBuffer,
-        smithay::utils::Size<i32, smithay::utils::Buffer>,
-    )> {
-        use smithay::wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData};
+    ) -> Option<(MemoryRenderBuffer, smithay::utils::Size<i32, smithay::utils::Buffer>)> {
+        use smithay::wayland::compositor::with_states;
+        use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
         let surface = window.toplevel()?.wl_surface();
         let title = with_states(surface, |states| {
-            let data = states
-                .data_map
-                .get::<XdgToplevelSurfaceData>()?
-                .lock()
-                .ok()?;
+            let data = states.data_map.get::<XdgToplevelSurfaceData>()?.lock().ok()?;
             data.title
                 .clone()
                 .filter(|title| !title.trim().is_empty())
@@ -539,10 +482,7 @@ impl Ferese {
         &mut self,
         workspace: WorkspaceId,
         scale: f64,
-    ) -> Option<(
-        MemoryRenderBuffer,
-        smithay::utils::Size<i32, smithay::utils::Buffer>,
-    )> {
+    ) -> Option<(MemoryRenderBuffer, smithay::utils::Size<i32, smithay::utils::Buffer>)> {
         let name = self.workspaces.workspace(workspace)?.name.clone();
         self.overview
             .label(&name, scale, self.theme_settings.text_primary_color.0)
@@ -621,8 +561,7 @@ impl Ferese {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            self.overview
-                .select_workspace_windows(&windows, self.focused_window);
+            self.overview.select_workspace_windows(&windows, self.focused_window);
         }
     }
 
@@ -637,12 +576,7 @@ impl Ferese {
         Some(presented)
     }
 
-    pub(crate) fn inverse_presented_window_point(
-        &self,
-        id: WindowId,
-        x: f64,
-        y: f64,
-    ) -> Option<(f64, f64)> {
+    pub(crate) fn inverse_presented_window_point(&self, id: WindowId, x: f64, y: f64) -> Option<(f64, f64)> {
         let geometry = self.window_geometry.get(&id)?;
         if !self.overview.is_presenting() {
             let presented = self.presented_window_rect(id)?;
@@ -651,11 +585,7 @@ impl Ferese {
         let source = geometry.client.committed_size?;
         let presented = self.overview.presented_rect(id, geometry.visual.current);
 
-        if source.width <= 0
-            || source.height <= 0
-            || presented.width <= 0.0
-            || presented.height <= 0.0
-        {
+        if source.width <= 0 || source.height <= 0 || presented.width <= 0.0 || presented.height <= 0.0 {
             return None;
         }
 
@@ -692,10 +622,9 @@ impl Ferese {
             .copied()
             .unwrap_or_else(|| selected_index.saturating_sub(capacity - 1))
             .min(max_offset);
-        let card_width =
-            ((strip.width - 24.0 - WORKSPACE_CARD_GAP * capacity.saturating_sub(1) as f64)
-                / capacity as f64)
-                .clamp(1.0, 160.0);
+        let card_width = ((strip.width - 24.0 - WORKSPACE_CARD_GAP * capacity.saturating_sub(1) as f64)
+            / capacity as f64)
+            .clamp(1.0, 160.0);
         let visible_count = workspaces.len().saturating_sub(offset).min(capacity);
         let start_x = centered_row_start(strip, visible_count, card_width);
         workspaces
@@ -726,9 +655,7 @@ impl Ferese {
                     (rect.width - 12.0).max(1.0),
                     (rect.height - 26.0).max(1.0),
                 );
-                let windows = preview_layout(preview_bounds, &windows, 4.0, 4.0)
-                    .into_iter()
-                    .collect();
+                let windows = preview_layout(preview_bounds, &windows, 4.0, 4.0).into_iter().collect();
                 WorkspaceCard {
                     workspace: workspace.id,
                     rect,
@@ -796,11 +723,7 @@ impl Ferese {
         let ordered = self.workspaces.ordered();
         let current = cards
             .first()
-            .and_then(|card| {
-                ordered
-                    .iter()
-                    .position(|workspace| workspace.id == card.workspace)
-            })
+            .and_then(|card| ordered.iter().position(|workspace| workspace.id == card.workspace))
             .unwrap_or(0);
         let next = if delta > 0.0 {
             current.saturating_add(1)
@@ -863,12 +786,7 @@ fn overview_layout(bounds: Rect, windows: &[(WindowId, Rect)]) -> HashMap<Window
     preview_layout(bounds, windows, OVERVIEW_MARGIN, OVERVIEW_GAP)
 }
 
-fn preview_layout(
-    bounds: Rect,
-    windows: &[(WindowId, Rect)],
-    margin: f64,
-    gap: f64,
-) -> HashMap<WindowId, Rect> {
+fn preview_layout(bounds: Rect, windows: &[(WindowId, Rect)], margin: f64, gap: f64) -> HashMap<WindowId, Rect> {
     if windows.is_empty() {
         return HashMap::new();
     }
@@ -881,10 +799,8 @@ fn preview_layout(
     let cell_size = |columns: usize| {
         let rows = windows.len().div_ceil(columns);
         (
-            ((content_width - gap * columns.saturating_sub(1) as f64) / columns as f64)
-                .clamp(1.0, 480.0),
-            ((content_height - gap * rows.saturating_sub(1) as f64) / rows as f64)
-                .clamp(1.0, 420.0),
+            ((content_width - gap * columns.saturating_sub(1) as f64) / columns as f64).clamp(1.0, 480.0),
+            ((content_height - gap * rows.saturating_sub(1) as f64) / rows as f64).clamp(1.0, 420.0),
         )
     };
     let score = |columns: usize| {
@@ -926,10 +842,8 @@ fn preview_layout(
             let width = (source.width * scale).max(1.0);
             let height = (source.height * scale).max(1.0);
             let row_count = (windows.len() - row * columns).min(columns);
-            let row_width =
-                cell_width * row_count as f64 + gap * row_count.saturating_sub(1) as f64;
-            let cell_x =
-                bounds.x + (bounds.width - row_width) * 0.5 + column as f64 * (cell_width + gap);
+            let row_width = cell_width * row_count as f64 + gap * row_count.saturating_sub(1) as f64;
+            let cell_x = bounds.x + (bounds.width - row_width) * 0.5 + column as f64 * (cell_width + gap);
             let cell_y = origin_y + row as f64 * (cell_height + gap);
             let target = Rect::new(
                 cell_x + (cell_width - width) / 2.0,
@@ -947,11 +861,7 @@ fn rect_center(rect: Rect) -> (f64, f64) {
     (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0)
 }
 
-fn directional_distance(
-    direction: Direction,
-    current: (f64, f64),
-    candidate: (f64, f64),
-) -> Option<f64> {
+fn directional_distance(direction: Direction, current: (f64, f64), candidate: (f64, f64)) -> Option<f64> {
     let delta_x = candidate.0 - current.0;
     let delta_y = candidate.1 - current.1;
     let (primary, secondary) = match direction {
@@ -1001,10 +911,7 @@ mod tests {
             requests.request(family);
         }
         receiver.try_recv().unwrap();
-        assert!(matches!(
-            receiver.try_recv(),
-            Err(mpsc::TryRecvError::Empty)
-        ));
+        assert!(matches!(receiver.try_recv(), Err(mpsc::TryRecvError::Empty)));
         assert_eq!(*requests.latest.lock().unwrap(), "third");
         drop(requests);
         assert!(matches!(receiver.recv(), Err(mpsc::RecvError)));
@@ -1024,9 +931,7 @@ mod tests {
             let strip = Rect::new(origin + 24.0, 64.0, 1552.0, 132.0);
             for count in [1, 3, 8] {
                 let start = centered_row_start(strip, count, 160.0);
-                let end = start
-                    + count as f64 * 160.0
-                    + count.saturating_sub(1) as f64 * WORKSPACE_CARD_GAP;
+                let end = start + count as f64 * 160.0 + count.saturating_sub(1) as f64 * WORKSPACE_CARD_GAP;
                 assert!((start - strip.x - (strip.x + strip.width - end)).abs() < 0.001);
             }
         }
@@ -1043,11 +948,7 @@ mod tests {
             assert!(strip.height < bounds.height / 2.0);
             assert!(area.y > strip.y + strip.height);
             let windows = [(WindowId(1), Rect::new(0.0, 0.0, 800.0, 900.0))];
-            assert!(
-                overview_layout(area, &windows)
-                    .values()
-                    .all(|rect| rect.y >= area.y)
-            );
+            assert!(overview_layout(area, &windows).values().all(|rect| rect.y >= area.y));
         }
     }
 
@@ -1146,10 +1047,7 @@ mod tests {
     #[test]
     fn overview_grid_preserves_preview_aspect_ratio() {
         let source = Rect::new(0.0, 0.0, 1200.0, 800.0);
-        let layout = overview_layout(
-            Rect::new(0.0, 0.0, 1920.0, 1080.0),
-            &[(WindowId(1), source)],
-        );
+        let layout = overview_layout(Rect::new(0.0, 0.0, 1920.0, 1080.0), &[(WindowId(1), source)]);
         let preview = layout[&WindowId(1)];
 
         assert!((preview.width / preview.height - source.width / source.height).abs() < 0.001);
@@ -1235,10 +1133,7 @@ mod tests {
         let mut overview = OverviewState::default();
 
         overview.enter(
-            HashMap::from([
-                (left, (left_rect, left_rect)),
-                (right, (right_rect, right_rect)),
-            ]),
+            HashMap::from([(left, (left_rect, left_rect)), (right, (right_rect, right_rect))]),
             Some(left),
             false,
         );

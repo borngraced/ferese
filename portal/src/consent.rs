@@ -1,13 +1,13 @@
-use cosmic::{
-    Element,
-    app::{Core, Settings, Task},
-    iced::{Alignment, Length},
-    widget::{button, column, container, image, row, scrollable, text_input},
-};
-use ferese_theme::{Palette, accent_button, controls, material::ModalMaterial, text};
-use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::sync::Arc;
+
+use cosmic::Element;
+use cosmic::app::{Core, Settings, Task};
+use cosmic::iced::{Alignment, Length};
+use cosmic::widget::{button, column, container, image, row, scrollable, text_input};
+use ferese_theme::material::ModalMaterial;
+use ferese_theme::{Palette, accent_button, controls, text};
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct Prompt {
@@ -30,15 +30,7 @@ pub(crate) struct ShortcutField {
 #[derive(Clone, Debug)]
 enum Message {
     Opened(cosmic::iced::window::Id),
-    Attached(
-        Result<
-            (
-                Option<Arc<crate::parent::Parent>>,
-                Result<ModalMaterial, String>,
-            ),
-            String,
-        >,
-    ),
+    Attached(Result<(Option<Arc<crate::parent::Parent>>, Result<ModalMaterial, String>), String>),
     Accept,
     Cancel,
     Shortcut(usize, String),
@@ -56,9 +48,7 @@ struct Consent {
 
 pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut input = String::new();
-    std::io::stdin()
-        .take(256 * 1024 + 1)
-        .read_to_string(&mut input)?;
+    std::io::stdin().take(256 * 1024 + 1).read_to_string(&mut input)?;
 
     if input.len() > 256 * 1024 {
         return Err("Consent request is too large".into());
@@ -124,9 +114,7 @@ impl cosmic::Application for Consent {
 
     fn subscription(&self) -> cosmic::iced::Subscription<Message> {
         cosmic::iced::event::listen_with(|event, _, id| match event {
-            cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => {
-                Some(Message::Opened(id))
-            }
+            cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => Some(Message::Opened(id)),
             cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
                 key: cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::Escape),
                 ..

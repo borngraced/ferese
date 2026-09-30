@@ -1,6 +1,7 @@
-use super::*;
 use cosmic::iced::widget::Space;
 use cosmic::widget::column;
+
+use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PowerAction {
@@ -79,26 +80,17 @@ impl SystemModal {
 }
 
 impl FereseShell {
-    pub(super) fn open_system_modal(
-        &mut self,
-        action: PowerAction,
-        output_name: Option<&str>,
-    ) -> Task<Message> {
+    pub(super) fn open_system_modal(&mut self, action: PowerAction, output_name: Option<&str>) -> Task<Message> {
         self.open_modal(Content::Power(action), output_name)
     }
 
     pub(super) fn rebuild_system_modal(&mut self) -> Task<Message> {
-        let guide = self
-            .system_modal
-            .as_ref()
-            .and_then(|modal| match &modal.content {
-                Content::Guide(entries)
-                    if !modal.motion.closing() && self.config.status.keybinding_guide =>
-                {
-                    Some(entries.clone())
-                }
-                _ => None,
-            });
+        let guide = self.system_modal.as_ref().and_then(|modal| match &modal.content {
+            Content::Guide(entries) if !modal.motion.closing() && self.config.status.keybinding_guide => {
+                Some(entries.clone())
+            }
+            _ => None,
+        });
         let destroy = self.destroy_system_modal(true);
         if let Some(entries) = guide {
             if self.outputs.is_empty() {
@@ -139,11 +131,7 @@ impl FereseShell {
                     .iter()
                     .position(|output| output.name.as_deref() == Some(name))
             })
-            .or_else(|| {
-                self.outputs
-                    .iter()
-                    .position(|output| output.bar == self.bar_surface_id)
-            })
+            .or_else(|| self.outputs.iter().position(|output| output.bar == self.bar_surface_id))
             .unwrap_or(0);
         let mut tasks = vec![
             self.destroy_system_modal(true),
@@ -243,11 +231,7 @@ impl FereseShell {
         )
     }
 
-    pub(super) fn attach_power_material(
-        &mut self,
-        id: window::Id,
-        surface: &wl_surface::WlSurface,
-    ) {
+    pub(super) fn attach_power_material(&mut self, id: window::Id, surface: &wl_surface::WlSurface) {
         let Some(modal) = &mut self.system_modal else {
             return;
         };
@@ -268,8 +252,7 @@ impl FereseShell {
             for entry in &modal.surfaces {
                 if let Some(effects) = &entry.effects {
                     let regions = entry.regions.lock().unwrap().clone();
-                    let _ = effects
-                        .set_material_regions(&regions, ferese_surface_effects_v1::Role::Modal);
+                    let _ = effects.set_material_regions(&regions, ferese_surface_effects_v1::Role::Modal);
                     let _ = effects.set_opacity(modal.motion.progress());
                 }
             }
@@ -353,12 +336,7 @@ impl FereseShell {
         let action = match power {
             PowerAction::Logout(serial) => {
                 if let Some(control) = &self.control {
-                    control.confirm_logout(
-                        serial,
-                        approval.revision,
-                        approval.token,
-                        approval.force(),
-                    );
+                    control.confirm_logout(serial, approval.revision, approval.token, approval.force());
                     return self.destroy_system_modal(false);
                 }
                 modal.error = Some("Ferese shell control is unavailable".to_owned());
@@ -391,11 +369,7 @@ impl FereseShell {
         Task::batch([destroy, execute])
     }
 
-    pub(super) fn finish_power_action(
-        &mut self,
-        id: window::Id,
-        result: Result<(), String>,
-    ) -> Task<Message> {
+    pub(super) fn finish_power_action(&mut self, id: window::Id, result: Result<(), String>) -> Task<Message> {
         let Some((pending_id, action)) = self.pending_power else {
             return Task::none();
         };
@@ -454,16 +428,10 @@ impl FereseShell {
                             column::with_capacity(inhibitors.reasons.len()).spacing(6),
                             |rows, reason| rows.push(text(reason).size(13)),
                         );
-                        rows = rows.push(
-                            container(cosmic::widget::scrollable(items).height(Length::Shrink))
-                                .max_height(160),
-                        );
+                        rows = rows
+                            .push(container(cosmic::widget::scrollable(items).height(Length::Shrink)).max_height(160));
                     }
-                    let label = if modal
-                        .inhibitors
-                        .as_ref()
-                        .is_some_and(|approval| approval.force())
-                    {
+                    let label = if modal.inhibitors.as_ref().is_some_and(|approval| approval.force()) {
                         format!("{} anyway", action.label())
                     } else {
                         action.label().to_owned()
@@ -474,20 +442,14 @@ impl FereseShell {
                     rows.push(
                         row![
                             Space::new().width(Length::Fill),
-                            ferese_theme::controls::text_button(
-                                "Cancel",
-                                shell_font(),
-                                palette,
-                                false
-                            )
-                            .on_press(cosmic::Action::App(Message::CancelPower)),
-                            ferese_theme::controls::text_button(label, shell_font(), palette, true)
-                                .on_press_maybe(
-                                    modal
-                                        .inhibitors
-                                        .is_some()
-                                        .then_some(cosmic::Action::App(Message::ExecutePower))
-                                ),
+                            ferese_theme::controls::text_button("Cancel", shell_font(), palette, false)
+                                .on_press(cosmic::Action::App(Message::CancelPower)),
+                            ferese_theme::controls::text_button(label, shell_font(), palette, true).on_press_maybe(
+                                modal
+                                    .inhibitors
+                                    .is_some()
+                                    .then_some(cosmic::Action::App(Message::ExecutePower))
+                            ),
                         ]
                         .spacing(10),
                     )
@@ -498,9 +460,7 @@ impl FereseShell {
                         bindings = bindings.push(
                             row![
                                 text(&entry.keys).size(13).width(Length::FillPortion(1)),
-                                text(&entry.description)
-                                    .size(13)
-                                    .width(Length::FillPortion(1)),
+                                text(&entry.description).size(13).width(Length::FillPortion(1)),
                             ]
                             .spacing(16),
                         );
@@ -516,26 +476,16 @@ impl FereseShell {
                         .clamp(40, 400) as f32;
                     column![
                         text("Welcome to Ferese").size(23),
-                        ferese_theme::menus::section_label(
-                            "Your active shortcuts",
-                            shell_font(),
-                            palette.muted,
-                        )
-                        .size(14),
-                        container(cosmic::widget::scrollable(bindings).height(Length::Shrink))
-                            .max_height(height),
+                        ferese_theme::menus::section_label("Your active shortcuts", shell_font(), palette.muted,)
+                            .size(14),
+                        container(cosmic::widget::scrollable(bindings).height(Length::Shrink)).max_height(height),
                         text("Disable this guide in Settings → Shortcuts. It appears at each login until disabled.")
                             .size(12)
                             .class(theme::Text::Color(palette.muted)),
                         row![
                             Space::new().width(Length::Fill),
-                            ferese_theme::controls::text_button(
-                                "Got it",
-                                shell_font(),
-                                palette,
-                                true,
-                            )
-                            .on_press(cosmic::Action::App(Message::CancelPower)),
+                            ferese_theme::controls::text_button("Got it", shell_font(), palette, true,)
+                                .on_press(cosmic::Action::App(Message::CancelPower)),
                         ],
                     ]
                     .spacing(14)
@@ -547,10 +497,8 @@ impl FereseShell {
                 .max_width(if modal.is_guide() { 600 } else { 440 })
                 .padding(24)
                 .class(theme::Container::custom(move |_| container::Style {
-                    background: (!material).then_some(Background::Color(color_with_opacity(
-                        theme.surface_popover,
-                        alpha,
-                    ))),
+                    background: (!material)
+                        .then_some(Background::Color(color_with_opacity(theme.surface_popover, alpha))),
                     text_color: Some(palette.text),
                     icon_color: Some(palette.text),
                     border: Border {
@@ -582,12 +530,7 @@ impl FereseShell {
             .align_x(cosmic::iced::Alignment::Center)
             .align_y(cosmic::iced::Alignment::Center)
             .class(theme::Container::custom(move |_| container::Style {
-                background: Some(Background::Color(Color::from_rgba(
-                    0.0,
-                    0.0,
-                    0.0,
-                    0.34 * progress,
-                ))),
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.34 * progress))),
                 ..Default::default()
             }));
         centered.into()
@@ -612,10 +555,7 @@ mod tests {
             PowerAction::from_status(status::Action::Suspend),
             Some(PowerAction::Suspend)
         );
-        assert_eq!(
-            PowerAction::from_status(status::Action::Brightness(50)),
-            None
-        );
+        assert_eq!(PowerAction::from_status(status::Action::Brightness(50)), None);
         assert_eq!(PowerAction::Logout(1).label(), "Log out");
     }
 }

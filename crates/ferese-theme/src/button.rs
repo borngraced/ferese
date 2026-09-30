@@ -1,9 +1,8 @@
+use cosmic::iced::{Background, Color};
+use cosmic::theme;
+use cosmic::widget::button;
+
 use crate::{composite, foreground};
-use cosmic::{
-    iced::{Background, Color},
-    theme,
-    widget::button,
-};
 
 #[derive(Clone, Copy)]
 pub(crate) enum State {
@@ -13,11 +12,7 @@ pub(crate) enum State {
     Disabled,
 }
 
-pub(crate) fn accent_button_style(
-    theme: &cosmic::Theme,
-    state: State,
-    focused: bool,
-) -> button::Style {
+pub(crate) fn accent_button_style(theme: &cosmic::Theme, state: State, focused: bool) -> button::Style {
     let native = theme.cosmic();
     let component = &native.accent_button;
     let fill: Color = match state {

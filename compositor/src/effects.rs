@@ -1,27 +1,23 @@
-use std::sync::{
-    Mutex,
-    atomic::{AtomicBool, AtomicU64, Ordering},
-};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use ferese_protocols::effects::v1::server::{
-    ferese_effects_manager_v1::{self, FereseEffectsManagerV1},
-    ferese_surface_effects_v1::{self, FereseSurfaceEffectsV1},
+use ferese_protocols::effects::v1::server::ferese_effects_manager_v1::FereseEffectsManagerV1;
+use ferese_protocols::effects::v1::server::ferese_surface_effects_v1::FereseSurfaceEffectsV1;
+use ferese_protocols::effects::v1::server::{ferese_effects_manager_v1, ferese_surface_effects_v1};
+use ferese_protocols::material::v1::server::ferese_material_manager_v1::FereseMaterialManagerV1;
+use ferese_protocols::material::v1::server::ferese_surface_material_v1::FereseSurfaceMaterialV1;
+use ferese_protocols::material::v1::server::{ferese_material_manager_v1, ferese_surface_material_v1};
+use smithay::reexports::wayland_server::backend::ClientId;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::{
+    Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum, Weak,
 };
-use ferese_protocols::material::v1::server::{
-    ferese_material_manager_v1::{self, FereseMaterialManagerV1},
-    ferese_surface_material_v1::{self, FereseSurfaceMaterialV1},
-};
-use smithay::{
-    reexports::wayland_server::{
-        Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum, Weak,
-        backend::ClientId, protocol::wl_surface::WlSurface,
-    },
-    wayland::compositor::with_states,
-};
+use smithay::wayland::compositor::with_states;
 
-use crate::{
-    Ferese, config::MaterialStyle, private_client::ClientCapabilities, state::ClientState,
-};
+use crate::Ferese;
+use crate::config::MaterialStyle;
+use crate::private_client::ClientCapabilities;
+use crate::state::ClientState;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SemanticRole {
@@ -41,16 +37,10 @@ pub(crate) struct ResolvedMaterial {
     pub shadow: [f64; 3],
 }
 
-pub(crate) fn resolve_material(
-    role: SemanticRole,
-    style: MaterialStyle,
-    opacity: f32,
-) -> ResolvedMaterial {
+pub(crate) fn resolve_material(role: SemanticRole, style: MaterialStyle, opacity: f32) -> ResolvedMaterial {
     let shadow = match role {
         SemanticRole::Panel => [1.0, 5.0, 0.04],
-        SemanticRole::PanelElevated | SemanticRole::Popover | SemanticRole::Menu => {
-            [2.0, 8.0, 0.07]
-        }
+        SemanticRole::PanelElevated | SemanticRole::Popover | SemanticRole::Menu => [2.0, 8.0, 0.07],
         SemanticRole::Hud => [1.0, 4.0, 0.04],
         SemanticRole::Notification | SemanticRole::Modal => [3.0, 10.0, 0.09],
     };
@@ -58,11 +48,7 @@ pub(crate) fn resolve_material(
         MaterialStyle::Solid => 1.0,
         MaterialStyle::Translucent => opacity.clamp(0.0, 1.0),
     };
-    ResolvedMaterial {
-        style,
-        opacity,
-        shadow,
-    }
+    ResolvedMaterial { style, opacity, shadow }
 }
 
 #[derive(Debug)]
@@ -145,9 +131,7 @@ impl Dispatch<FereseMaterialManagerV1, ()> for Ferese {
         match request {
             ferese_material_manager_v1::Request::GetSurfaceMaterial { id, surface } => {
                 let attached = with_states(&surface, |states| {
-                    states
-                        .data_map
-                        .insert_if_missing_threadsafe(SurfaceEffectsState::new);
+                    states.data_map.insert_if_missing_threadsafe(SurfaceEffectsState::new);
                     let effects = states.data_map.get::<SurfaceEffectsState>().unwrap();
                     effects.attached.swap(true, Ordering::AcqRel)
                 });
@@ -220,13 +204,9 @@ fn decode_regions(bytes: &[u8]) -> Option<Vec<[i32; 5]>> {
         .0
         .iter()
         .map(|tuple| {
-            let values: [i32; 5] =
-                std::array::from_fn(|index| i32::from_ne_bytes(tuple.as_chunks::<4>().0[index]));
-            (values[2] > 0
-                && values[3] > 0
-                && values[4] >= 0
-                && values.iter().all(|v| v.abs_diff(0) <= 32768))
-            .then_some(values)
+            let values: [i32; 5] = std::array::from_fn(|index| i32::from_ne_bytes(tuple.as_chunks::<4>().0[index]));
+            (values[2] > 0 && values[3] > 0 && values[4] >= 0 && values.iter().all(|v| v.abs_diff(0) <= 32768))
+                .then_some(values)
         })
         .collect()
 }
@@ -273,9 +253,7 @@ impl Dispatch<FereseEffectsManagerV1, ()> for Ferese {
         match request {
             ferese_effects_manager_v1::Request::GetSurfaceEffects { id, surface } => {
                 let already_attached = with_states(&surface, |states| {
-                    states
-                        .data_map
-                        .insert_if_missing_threadsafe(SurfaceEffectsState::new);
+                    states.data_map.insert_if_missing_threadsafe(SurfaceEffectsState::new);
                     states
                         .data_map
                         .get::<SurfaceEffectsState>()
@@ -346,14 +324,10 @@ impl Dispatch<FereseSurfaceEffectsV1, SurfaceEffectsUserData> for Ferese {
             ferese_surface_effects_v1::Request::SetRole { role } => {
                 let role = match role {
                     WEnum::Value(ferese_surface_effects_v1::Role::Panel) => SemanticRole::Panel,
-                    WEnum::Value(ferese_surface_effects_v1::Role::PanelElevated) => {
-                        SemanticRole::PanelElevated
-                    }
+                    WEnum::Value(ferese_surface_effects_v1::Role::PanelElevated) => SemanticRole::PanelElevated,
                     WEnum::Value(ferese_surface_effects_v1::Role::Popover) => SemanticRole::Popover,
                     WEnum::Value(ferese_surface_effects_v1::Role::Menu) => SemanticRole::Menu,
-                    WEnum::Value(ferese_surface_effects_v1::Role::Notification) => {
-                        SemanticRole::Notification
-                    }
+                    WEnum::Value(ferese_surface_effects_v1::Role::Notification) => SemanticRole::Notification,
                     WEnum::Value(ferese_surface_effects_v1::Role::Hud) => SemanticRole::Hud,
                     WEnum::Value(ferese_surface_effects_v1::Role::Modal) => SemanticRole::Modal,
                     WEnum::Unknown(_) | WEnum::Value(_) => return,
@@ -437,22 +411,17 @@ pub(crate) fn surface_opacity(surface: &WlSurface) -> f32 {
         states
             .data_map
             .get::<SurfaceEffectsState>()
-            .map_or(1.0, |effects| {
-                *effects.opacity.lock().unwrap() as f32 / 1000.0
-            })
+            .map_or(1.0, |effects| *effects.opacity.lock().unwrap() as f32 / 1000.0)
     })
 }
 
 pub(crate) fn begin_surface_dismiss(surface: &WlSurface) -> bool {
     with_states(surface, |states| {
-        states
-            .data_map
-            .get::<SurfaceEffectsState>()
-            .is_some_and(|effects| {
-                effects.presentation_supported.load(Ordering::Acquire)
-                    && effects.attached.load(Ordering::Acquire)
-                    && !effects.dismissing.swap(true, Ordering::AcqRel)
-            })
+        states.data_map.get::<SurfaceEffectsState>().is_some_and(|effects| {
+            effects.presentation_supported.load(Ordering::Acquire)
+                && effects.attached.load(Ordering::Acquire)
+                && !effects.dismissing.swap(true, Ordering::AcqRel)
+        })
     })
 }
 
@@ -477,20 +446,8 @@ mod tests {
         assert_eq!(decode_regions(&[]), Some(vec![]));
         assert!(decode_regions(&bytes[..19]).is_none());
         assert!(decode_regions(&bytes.repeat(33)).is_none());
-        for invalid in [
-            [0_i32, 0, 0, 48, 11],
-            [0, 0, 120, 48, -1],
-            [i32::MIN, 0, 120, 48, 11],
-        ] {
-            assert!(
-                decode_regions(
-                    &invalid
-                        .into_iter()
-                        .flat_map(i32::to_ne_bytes)
-                        .collect::<Vec<_>>()
-                )
-                .is_none()
-            );
+        for invalid in [[0_i32, 0, 0, 48, 11], [0, 0, 120, 48, -1], [i32::MIN, 0, 120, 48, 11]] {
+            assert!(decode_regions(&invalid.into_iter().flat_map(i32::to_ne_bytes).collect::<Vec<_>>()).is_none());
         }
     }
 

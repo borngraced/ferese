@@ -1,9 +1,10 @@
 //! Session-owned services. Never grant shell/effects privileges to daemons.
-use crate::{Ferese, config::DaemonConfig, private_client::ClientCapabilities};
-use std::{
-    process::Child,
-    time::{Duration, Instant},
-};
+use std::process::Child;
+use std::time::{Duration, Instant};
+
+use crate::Ferese;
+use crate::config::DaemonConfig;
+use crate::private_client::ClientCapabilities;
 
 struct Service {
     config: DaemonConfig,
@@ -17,15 +18,8 @@ pub(crate) struct Runner(Vec<Service>);
 impl Runner {
     pub fn reconcile(&mut self, configs: &[DaemonConfig], nested: bool) {
         let mut previous = std::mem::take(&mut self.0);
-        for config in configs
-            .iter()
-            .filter(|c| c.enabled && (!nested || c.nested))
-        {
-            if self
-                .0
-                .iter()
-                .any(|service| service.config.command == config.command)
-            {
+        for config in configs.iter().filter(|c| c.enabled && (!nested || c.nested)) {
+            if self.0.iter().any(|service| service.config.command == config.command) {
                 continue;
             }
             if let Some(index) = previous
@@ -132,12 +126,7 @@ mod tests {
             nested: false,
         };
         let mut runner = Runner::new(&[config.clone()], false);
-        runner.0[0].child = Some(
-            std::process::Command::new("/bin/sleep")
-                .arg("30")
-                .spawn()
-                .unwrap(),
-        );
+        runner.0[0].child = Some(std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap());
         let pid = runner.0[0].child.as_ref().unwrap().id();
         config.restart = true;
         runner.reconcile(&[config.clone()], false);
@@ -150,10 +139,7 @@ mod tests {
         assert!(runner.0.is_empty());
         let deadline = Instant::now() + Duration::from_secs(2);
         while unsafe { libc::kill(pid as i32, 0) } == 0 {
-            assert!(
-                Instant::now() < deadline,
-                "removed service was not stopped/reaped"
-            );
+            assert!(Instant::now() < deadline, "removed service was not stopped/reaped");
             std::thread::sleep(Duration::from_millis(10));
         }
     }

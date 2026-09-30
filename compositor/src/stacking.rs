@@ -1,12 +1,8 @@
-use ferese_layout::WindowId;
 use std::collections::HashMap;
 
-pub(crate) fn layer_priority(
-    floating: bool,
-    zooming: bool,
-    fullscreen: bool,
-    above_fullscreen: bool,
-) -> u8 {
+use ferese_layout::WindowId;
+
+pub(crate) fn layer_priority(floating: bool, zooming: bool, fullscreen: bool, above_fullscreen: bool) -> u8 {
     if above_fullscreen {
         4
     } else if fullscreen {
@@ -97,18 +93,10 @@ mod tests {
 
     #[test]
     fn floating_windows_stay_above_tiled_and_maximized_windows() {
-        assert!(
-            layer_priority(true, false, false, false) > layer_priority(false, true, false, false)
-        );
-        assert!(
-            layer_priority(false, true, false, false) > layer_priority(false, false, false, false)
-        );
-        assert!(
-            layer_priority(false, false, true, false) > layer_priority(true, false, false, false)
-        );
-        assert!(
-            layer_priority(true, false, false, true) > layer_priority(false, false, true, false)
-        );
+        assert!(layer_priority(true, false, false, false) > layer_priority(false, true, false, false));
+        assert!(layer_priority(false, true, false, false) > layer_priority(false, false, false, false));
+        assert!(layer_priority(false, false, true, false) > layer_priority(true, false, false, false));
+        assert!(layer_priority(true, false, false, true) > layer_priority(false, false, true, false));
     }
 
     #[test]

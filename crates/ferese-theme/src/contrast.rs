@@ -76,27 +76,12 @@ pub fn apply(native: &mut cosmic::cosmic_theme::Theme, preferred: Color) {
     let surface: Color = native.primary(false).base.into();
     for component in [&mut native.accent, &mut native.accent_button] {
         let (base, on) = accent_pair(composite(component.base.into(), surface), preferred);
-        component.hover = rgba(readable_fill(
-            composite(component.hover.into(), surface),
-            base,
-            on,
-        ));
-        component.pressed = rgba(readable_fill(
-            composite(component.pressed.into(), surface),
-            base,
-            on,
-        ));
-        component.selected = rgba(readable_fill(
-            composite(component.selected.into(), surface),
-            base,
-            on,
-        ));
+        component.hover = rgba(readable_fill(composite(component.hover.into(), surface), base, on));
+        component.pressed = rgba(readable_fill(composite(component.pressed.into(), surface), base, on));
+        component.selected = rgba(readable_fill(composite(component.selected.into(), surface), base, on));
         component.base = rgba(base);
         component.on = rgba(on);
-        component.selected_text = rgba(foreground(
-            composite(component.selected.into(), surface),
-            on,
-        ));
+        component.selected_text = rgba(foreground(composite(component.selected.into(), surface), on));
         component.disabled = rgba(composite(Color { a: 0.5, ..base }, surface));
         component.on_disabled = rgba(foreground(composite(Color { a: 0.5, ..base }, surface), on));
     }
@@ -125,9 +110,10 @@ fn rgba(c: Color) -> cosmic::cosmic_theme::palette::Srgba {
 
 #[cfg(test)]
 mod tests {
+    use cosmic::iced::Background;
+
     use super::*;
     use crate::button::{State, accent_button_style};
-    use cosmic::iced::Background;
     #[test]
     fn reference_contrast_values_use_linear_srgb() {
         assert!((contrast(Color::BLACK, Color::WHITE) - 21.).abs() < 0.00001);
@@ -139,10 +125,7 @@ mod tests {
         let preferred = Color::from_rgb8(240, 242, 246);
         assert_eq!(foreground(Color::BLACK, preferred), preferred);
         assert_eq!(foreground(Color::WHITE, preferred), Color::BLACK);
-        assert_eq!(
-            foreground(Color::from_rgb8(61, 123, 230), preferred),
-            Color::BLACK
-        );
+        assert_eq!(foreground(Color::from_rgb8(61, 123, 230), preferred), Color::BLACK);
     }
 
     #[test]
@@ -170,12 +153,7 @@ mod tests {
             .build();
         apply(&mut native, preferred);
         let theme = cosmic::Theme::custom(std::sync::Arc::new(native));
-        for state in [
-            State::Active,
-            State::Hovered,
-            State::Pressed,
-            State::Disabled,
-        ] {
+        for state in [State::Active, State::Hovered, State::Pressed, State::Disabled] {
             let actual = accent_button_style(&theme, state, false);
             assert_eq!(actual.text_color, Some(preferred));
             assert_eq!(actual.icon_color, Some(preferred));
@@ -223,20 +201,11 @@ mod tests {
                     for fill in [component.base, component.hover, component.pressed] {
                         assert!(contrast(fill.into(), component.on.into()) >= 4.5);
                     }
-                    assert!(
-                        contrast(component.selected.into(), component.selected_text.into()) >= 4.5
-                    );
-                    assert!(
-                        contrast(component.disabled.into(), component.on_disabled.into()) >= 4.5
-                    );
+                    assert!(contrast(component.selected.into(), component.selected_text.into()) >= 4.5);
+                    assert!(contrast(component.disabled.into(), component.on_disabled.into()) >= 4.5);
                 }
                 let theme = cosmic::Theme::custom(std::sync::Arc::new(native));
-                for state in [
-                    State::Active,
-                    State::Hovered,
-                    State::Pressed,
-                    State::Disabled,
-                ] {
+                for state in [State::Active, State::Hovered, State::Pressed, State::Disabled] {
                     let style = accent_button_style(&theme, state, false);
                     let Some(Background::Color(fill)) = style.background else {
                         panic!("No fill")

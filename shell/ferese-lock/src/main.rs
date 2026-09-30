@@ -4,22 +4,15 @@ mod appearance;
 mod auth;
 mod runtime;
 
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+use cosmic::app::{Core, Settings, Task};
+use cosmic::iced::event::{PlatformSpecific, wayland};
 use cosmic::iced::platform_specific::shell::commands::session_lock;
-use cosmic::{
-    Element,
-    app::{Core, Settings, Task},
-    iced::{
-        self, Event, Length, Subscription,
-        event::{self, PlatformSpecific, wayland},
-        window,
-    },
-    theme,
-    widget::{self, column, container, image, row},
-};
-use std::{
-    collections::HashMap,
-    time::{Duration, Instant},
-};
+use cosmic::iced::{Event, Length, Subscription, event, window};
+use cosmic::widget::{column, container, image, row};
+use cosmic::{Element, iced, theme, widget};
 use wayland_client::protocol::wl_output::WlOutput;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -31,8 +24,7 @@ fn main() -> iced::Result {
         );
         return Ok(());
     }
-    let preview = args == ["--preview"]
-        || (args.len() == 3 && args[0] == "--preview" && args[1] == "--config");
+    let preview = args == ["--preview"] || (args.len() == 3 && args[0] == "--preview" && args[1] == "--config");
     let config = if preview && args.len() == 3 {
         Some(std::path::PathBuf::from(&args[2]))
     } else {
@@ -201,9 +193,7 @@ impl cosmic::Application for Locker {
                     wayland::Event::Output(..) | wayland::Event::SessionLock(..),
                 ))
                 | Event::Window(window::Event::Opened { .. })
-                | Event::Keyboard(iced::keyboard::Event::ModifiersChanged(_)) => {
-                    Some(Message::Event(Box::new(event)))
-                }
+                | Event::Keyboard(iced::keyboard::Event::ModifiersChanged(_)) => Some(Message::Event(Box::new(event))),
                 _ => None,
             }),
             iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick),
@@ -212,9 +202,7 @@ impl cosmic::Application for Locker {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Event(box Event::Keyboard(iced::keyboard::Event::ModifiersChanged(
-                modifiers,
-            ))) => {
+            Message::Event(box Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers))) => {
                 self.caps_lock = modifiers.contains(iced::keyboard::Modifiers::CAPS_LOCK);
             }
             Message::Tick => {
@@ -222,8 +210,7 @@ impl cosmic::Application for Locker {
                 self.clock = now.strftime(self.appearance.clock_format()).to_string();
                 self.date = now.strftime("%A, %B %-d").to_string();
 
-                if matches!(self.state, AuthState::Rejected(at) if at.elapsed() >= Duration::from_secs(2))
-                {
+                if matches!(self.state, AuthState::Rejected(at) if at.elapsed() >= Duration::from_secs(2)) {
                     self.state = AuthState::Ready;
                 }
             }
@@ -242,10 +229,7 @@ impl cosmic::Application for Locker {
                     return focus();
                 }
 
-                if !self.confirmation.confirmed()
-                    || !self.state.may_submit()
-                    || self.password.is_empty()
-                {
+                if !self.confirmation.confirmed() || !self.state.may_submit() || self.password.is_empty() {
                     return Task::none();
                 }
 
@@ -269,9 +253,10 @@ impl cosmic::Application for Locker {
                 self.status = "Password not accepted. Try again.";
                 return focus();
             }
-            Message::Event(box Event::PlatformSpecific(PlatformSpecific::Wayland(
-                wayland::Event::Output(event, output),
-            ))) if !self.preview => {
+            Message::Event(box Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Output(
+                event,
+                output,
+            )))) if !self.preview => {
                 if matches!(event, wayland::OutputEvent::Removed) {
                     if let Some(id) = self.outputs.remove(&output) {
                         return session_lock::destroy_lock_surface(id);
@@ -284,9 +269,9 @@ impl cosmic::Application for Locker {
                     }
                 }
             }
-            Message::Event(box Event::PlatformSpecific(PlatformSpecific::Wayland(
-                wayland::Event::SessionLock(event),
-            ))) if !self.preview => match event {
+            Message::Event(box Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::SessionLock(
+                event,
+            )))) if !self.preview => match event {
                 wayland::SessionLockEvent::Locked => {
                     if self.confirmation.observe() {
                         use std::io::Write;
@@ -296,9 +281,11 @@ impl cosmic::Application for Locker {
                     }
                     if !self.started {
                         self.started = true;
-                        return Task::batch(self.outputs.iter().map(|(output, id)| {
-                            session_lock::get_lock_surface(*id, output.clone())
-                        }));
+                        return Task::batch(
+                            self.outputs
+                                .iter()
+                                .map(|(output, id)| session_lock::get_lock_surface(*id, output.clone())),
+                        );
                     }
                 }
                 wayland::SessionLockEvent::Focused(..) => return focus(),
@@ -353,14 +340,7 @@ impl Locker {
     fn screen_content(&self, size: iced::Size) -> Element<'_, Message> {
         let avatar_size = (size.height * 0.08).clamp(56., 88.);
         let clock_size = (size.height * 0.165)
-            .min(
-                size.width
-                    * if self.appearance.twelve_hour {
-                        0.075
-                    } else {
-                        0.12
-                    },
-            )
+            .min(size.width * if self.appearance.twelve_hour { 0.075 } else { 0.12 })
             .clamp(40., 180.) as u16;
         let margin = if size.width < 640. { 24. } else { 36. };
         let top = (size.height * 0.09).max(24.);
@@ -368,9 +348,7 @@ impl Locker {
         let mut input = widget::text_input("Password", self.password.as_str())
             .password()
             .padding([6, 12])
-            .style(ferese_theme::controls::lock_input(
-                a.radius, a.accent, a.panel,
-            ))
+            .style(ferese_theme::controls::lock_input(a.radius, a.accent, a.panel))
             .font(a.font)
             .id(widget::Id::new("password"));
 
@@ -422,15 +400,8 @@ impl Locker {
             self.label(&self.user, 16).class(iced::Color::WHITE),
             widget::Space::new().height(6),
             input,
-            self.label(
-                if self.caps_lock {
-                    "Caps Lock is on"
-                } else {
-                    self.status
-                },
-                12
-            )
-            .class(iced::Color::WHITE.scale_alpha(0.68)),
+            self.label(if self.caps_lock { "Caps Lock is on" } else { self.status }, 12)
+                .class(iced::Color::WHITE.scale_alpha(0.68)),
         ]
         .spacing(12)
         .align_x(iced::Alignment::Center)
@@ -453,17 +424,10 @@ impl Locker {
         }
 
         if a.show_date {
-            clock = clock.push(
-                self.label(&self.date, 18)
-                    .class(iced::Color::WHITE.scale_alpha(0.72)),
-            );
+            clock = clock.push(self.label(&self.date, 18).class(iced::Color::WHITE.scale_alpha(0.72)));
         }
 
-        let clock_height = if a.show_clock {
-            clock_size as f32 * 1.3
-        } else {
-            0.
-        } + if a.show_date { 24. } else { 0. };
+        let clock_height = if a.show_clock { clock_size as f32 * 1.3 } else { 0. } + if a.show_date { 24. } else { 0. };
         let gap = (size.height * 0.44 - top - clock_height).max(24.);
         let foreground = container(
             column![
@@ -497,14 +461,12 @@ impl Locker {
         })
         .width(Length::Fill)
         .height(Length::Fill)
-        .class(theme::Container::custom(move |_| {
-            widget::container::Style {
-                text_color: Some(iced::Color::WHITE.scale_alpha(0.65)),
-                background: Some(iced::Background::Color(iced::Color::from_rgba(
-                    0.025, 0.035, 0.06, a.dim,
-                ))),
-                ..Default::default()
-            }
+        .class(theme::Container::custom(move |_| widget::container::Style {
+            text_color: Some(iced::Color::WHITE.scale_alpha(0.65)),
+            background: Some(iced::Background::Color(iced::Color::from_rgba(
+                0.025, 0.035, 0.06, a.dim,
+            ))),
+            ..Default::default()
         }));
         let background: Element<'_, Message> = image(a.wallpaper.clone())
             .width(Length::Fill)
@@ -524,10 +486,7 @@ fn line_icon(path: &str, size: u16) -> widget::icon::Icon {
 
 fn ferese_symbol() -> widget::icon::Icon {
     widget::icon(
-        widget::icon::from_svg_bytes(
-            include_bytes!("../../../packaging/icons/ferese.svg").as_slice(),
-        )
-        .symbolic(true),
+        widget::icon::from_svg_bytes(include_bytes!("../../../packaging/icons/ferese.svg").as_slice()).symbolic(true),
     )
     .size(30)
 }

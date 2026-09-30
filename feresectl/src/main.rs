@@ -1,11 +1,10 @@
 mod autostart;
 
-use std::env;
 use std::error::Error;
-use std::fs;
-use std::io::{self, Write};
+use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+use std::{env, fs, io};
 
 use ferese_ipc::{Request, Response, VERSION, read_frame, write_frame};
 use serde_json::{Value, json};
@@ -101,10 +100,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(String, Value),
                 ));
             }
         },
-        "toggle-floating" | "toggle-fullscreen" | "toggle-maximized" | "toggle-layout"
-        | "toggle-overview" | "cycle-column-width" | "center-column" | "consume" | "expel"
-        | "close" | "get-focused-window" | "get-windows" | "get-workspaces" | "get-outputs"
-        | "reload-config" | "exit" | "request-logout" => {
+        "toggle-floating" | "toggle-fullscreen" | "toggle-maximized" | "toggle-layout" | "toggle-overview"
+        | "cycle-column-width" | "center-column" | "consume" | "expel" | "close" | "get-focused-window"
+        | "get-windows" | "get-workspaces" | "get-outputs" | "reload-config" | "exit" | "request-logout" => {
             if !positional.is_empty() {
                 return Err(format!("{command} does not accept arguments"));
             }
@@ -152,15 +150,11 @@ mod tests {
     #[test]
     fn parses_direction_and_workspace_commands() {
         assert_eq!(
-            parse_args(["focus".to_owned(), "left".to_owned()])
-                .unwrap()
-                .1,
+            parse_args(["focus".to_owned(), "left".to_owned()]).unwrap().1,
             json!({ "direction": "left" })
         );
         assert_eq!(
-            parse_args(["workspace".to_owned(), "7".to_owned()])
-                .unwrap()
-                .1,
+            parse_args(["workspace".to_owned(), "7".to_owned()]).unwrap().1,
             json!({ "index": 7 })
         );
         assert_eq!(
@@ -203,10 +197,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_or_missing_arguments() {
-        assert_eq!(
-            parse_args(["exit".to_owned()]).unwrap(),
-            ("exit".to_owned(), json!({}))
-        );
+        assert_eq!(parse_args(["exit".to_owned()]).unwrap(), ("exit".to_owned(), json!({})));
         assert!(parse_args(["exit".to_owned(), "extra".to_owned()]).is_err());
         assert!(parse_args(["focus".to_owned()]).is_err());
         assert!(parse_args(["reload-config".to_owned()]).is_ok());

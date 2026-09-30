@@ -1,12 +1,13 @@
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
 use ferese_config::Document;
 use ferese_theme::Palette;
-use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::sync::RwLock;
-use zbus::{
-    Connection,
-    object_server::SignalEmitter,
-    zvariant::{OwnedValue, Value},
-};
+use zbus::Connection;
+use zbus::object_server::SignalEmitter;
+use zbus::zvariant::{OwnedValue, Value};
 
 const APPEARANCE: &str = "org.freedesktop.appearance";
 const PATH: &str = "/org/freedesktop/portal/desktop";
@@ -50,10 +51,7 @@ impl Appearance {
     fn values(self) -> HashMap<String, OwnedValue> {
         HashMap::from([
             ("color-scheme".into(), self.scheme.into()),
-            (
-                "accent-color".into(),
-                Value::from(self.accent).try_to_owned().unwrap(),
-            ),
+            ("accent-color".into(), Value::from(self.accent).try_to_owned().unwrap()),
             ("contrast".into(), 0u32.into()),
             ("reduced-motion".into(), self.reduced_motion.into()),
         ])
@@ -156,12 +154,7 @@ mod tests {
 
     #[test]
     fn namespaces_support_only_trailing_section_wildcards() {
-        for filter in [
-            "",
-            "org.freedesktop.appearance",
-            "org.freedesktop.*",
-            "org.*",
-        ] {
+        for filter in ["", "org.freedesktop.appearance", "org.freedesktop.*", "org.*"] {
             assert!(matches_namespace(&[filter.into()], APPEARANCE));
         }
         for filter in [
@@ -177,7 +170,10 @@ mod tests {
 
     #[test]
     fn reports_ferese_theme_and_reduced_motion() {
-        let doc = Document::parse("theme { colors { surface-base \"#ffffff\"; accent \"#ff8000\"; }; }; animations { enabled #false; }").unwrap();
+        let doc = Document::parse(
+            "theme { colors { surface-base \"#ffffff\"; accent \"#ff8000\"; }; }; animations { enabled #false; }",
+        )
+        .unwrap();
         let appearance = Appearance::from_document(Some(&doc));
         assert_eq!(appearance.scheme, 2);
         assert_eq!(appearance.reduced_motion, 1);

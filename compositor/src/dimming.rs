@@ -1,6 +1,8 @@
-use crate::config::InactiveDimSettings;
-use ferese_layout::WindowId;
 use std::time::Duration;
+
+use ferese_layout::WindowId;
+
+use crate::config::InactiveDimSettings;
 
 pub(crate) fn target(
     settings: InactiveDimSettings,
@@ -60,11 +62,7 @@ impl DimAnimation {
     pub fn advance_visual(&mut self, target: f64, delta: Duration, duration_ms: f64) -> bool {
         self.advance(
             target,
-            if self.target != target {
-                Duration::ZERO
-            } else {
-                delta
-            },
+            if self.target != target { Duration::ZERO } else { delta },
             duration_ms,
         )
     }

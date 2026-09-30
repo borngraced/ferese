@@ -2,20 +2,62 @@
 //! logical pixels. Content, clips and decorations share those exact edges.
 use std::time::{Duration, Instant};
 
-use smithay::{
-    backend::renderer::{
-        element::{Element, Id, Kind, RenderElement},
-        gles::{
-            GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform,
-            element::PixelShaderElement,
-        },
-        utils::{CommitCounter, DamageSet},
-    },
-    utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform},
+use smithay::backend::renderer::element::{
+    Element, Id, Kind, RenderElement, RenderElementPresentationState, RenderElementStates,
 };
+use smithay::backend::renderer::gles::element::PixelShaderElement;
+use smithay::backend::renderer::gles::{GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform};
+use smithay::backend::renderer::utils::{CommitCounter, DamageSet};
+use smithay::desktop::utils::OutputPresentationFeedback;
+use smithay::output::Output;
+use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform};
+use smithay::wayland::compositor::SurfaceData;
 
 pub(crate) const HANDOFF: Duration = Duration::from_millis(80);
 pub(crate) const SNAPSHOT_BUDGET: usize = 64 * 1024 * 1024;
+
+pub(crate) fn take_output_feedback(
+    state: &crate::Ferese,
+    output: &Output,
+    rendered: &RenderElementStates,
+    flags: wp_presentation_feedback::Kind,
+) -> OutputPresentationFeedback {
+    use smithay::desktop::layer_map_for_output;
+    use smithay::desktop::utils::{OutputPresentationFeedback, surface_presentation_feedback_flags_from_states};
+
+    let mut feedback = OutputPresentationFeedback::new(output);
+    let visible_output =
+        |surface: &WlSurface, _: &SurfaceData| rendered_feedback_output(output, surface.into(), rendered);
+    let surface_flags = |surface: &WlSurface, _: &SurfaceData| {
+        flags | surface_presentation_feedback_flags_from_states(surface, rendered)
+    };
+
+    for window in state.space.elements().filter(|window| {
+        state
+            .window_ids
+            .get(*window)
+            .is_some_and(|id| state.window_belongs_to_output(*id, output))
+    }) {
+        window.take_presentation_feedback(&mut feedback, visible_output, surface_flags);
+    }
+
+    for layer in layer_map_for_output(output).layers() {
+        layer.take_presentation_feedback(&mut feedback, visible_output, surface_flags);
+    }
+
+    feedback
+}
+
+fn rendered_feedback_output(output: &Output, id: Id, rendered: &RenderElementStates) -> Option<Output> {
+    rendered
+        .element_render_state(id)
+        .is_some_and(|state| {
+            state.visible_area > 0 && state.presentation_state != RenderElementPresentationState::Skipped
+        })
+        .then(|| output.clone())
+}
 
 #[derive(Default)]
 pub(crate) struct CallbackClock {
@@ -24,8 +66,7 @@ pub(crate) struct CallbackClock {
 
 impl CallbackClock {
     pub(crate) fn deadline(&self, now: Instant, interval: Duration) -> Instant {
-        self.last_sent
-            .map_or(now, |last| (last + interval).max(now))
+        self.last_sent.map_or(now, |last| (last + interval).max(now))
     }
 
     pub(crate) fn sent(&mut self, now: Instant) {
@@ -48,6 +89,7 @@ pub(crate) fn physical_rect(
     let top = ((rect.y - f64::from(origin.y)) * scale).round() as i32;
     let right = ((rect.x + rect.width - f64::from(origin.x)) * scale).round() as i32;
     let bottom = ((rect.y + rect.height - f64::from(origin.y)) * scale).round() as i32;
+
     Rectangle::new(
         (left, top).into(),
         ((right - left).max(1), (bottom - top).max(1)).into(),
@@ -122,11 +164,7 @@ impl Element for PhysicalShaderElement {
         self.geometry
     }
 
-    fn damage_since(
-        &self,
-        _: Scale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
+    fn damage_since(&self, _: Scale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
         if commit == Some(self.current_commit()) {
             DamageSet::default()
         } else {
@@ -187,11 +225,7 @@ impl Element for NativeTextureElement {
         Kind::Unspecified
     }
 
-    fn damage_since(
-        &self,
-        _: Scale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
+    fn damage_since(&self, _: Scale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
         if commit == Some(self.commit) {
             DamageSet::default()
         } else {
@@ -228,25 +262,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn presentation_feedback_excludes_missing_and_occluded_surfaces() {
+        use smithay::backend::renderer::element::RenderElementState;
+        use smithay::output::{PhysicalProperties, Subpixel};
+
+        let output = Output::new(
+            "owner".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "test".into(),
+                model: "test".into(),
+            },
+        );
+        let id = Id::new();
+        let mut states = RenderElementStates::default();
+        assert!(rendered_feedback_output(&output, id.clone(), &states).is_none());
+        for state in [
+            RenderElementState {
+                visible_area: 0,
+                presentation_state: RenderElementPresentationState::Skipped,
+            },
+            RenderElementState {
+                visible_area: 0,
+                presentation_state: RenderElementPresentationState::Rendering { reason: None },
+            },
+        ] {
+            states.states.insert(id.clone(), state);
+            assert!(rendered_feedback_output(&output, id.clone(), &states).is_none());
+        }
+        for presentation_state in [
+            RenderElementPresentationState::Rendering { reason: None },
+            RenderElementPresentationState::ZeroCopy,
+        ] {
+            states.states.insert(
+                id.clone(),
+                RenderElementState {
+                    visible_area: 32,
+                    presentation_state,
+                },
+            );
+            assert_eq!(
+                rendered_feedback_output(&output, id.clone(), &states),
+                Some(output.clone())
+            );
+        }
+    }
+
+    #[test]
     fn reversing_a_grow_replaces_the_smaller_snapshot() {
-        assert!(!snapshot_covers_source(
-            (500, 600).into(),
-            (1000, 600).into(),
-            1.0,
-            1.0
-        ));
-        assert!(snapshot_covers_source(
-            (1000, 600).into(),
-            (500, 600).into(),
-            1.0,
-            1.0
-        ));
-        assert!(!snapshot_covers_source(
-            (1000, 600).into(),
-            (500, 600).into(),
-            1.0,
-            1.8
-        ));
+        assert!(!snapshot_covers_source((500, 600).into(), (1000, 600).into(), 1.0, 1.0));
+        assert!(snapshot_covers_source((1000, 600).into(), (500, 600).into(), 1.0, 1.0));
+        assert!(!snapshot_covers_source((1000, 600).into(), (500, 600).into(), 1.0, 1.8));
     }
 
     #[test]
@@ -347,25 +414,14 @@ mod tests {
     fn fractional_motion_does_not_quantize_to_logical_pixels() {
         let rect = ferese_layout::Rect::new(0.3, 0.3, 100.2, 80.2);
         assert_eq!(physical_rect(rect, (0, 0).into(), 1.8).loc, (1, 1).into());
-        assert_eq!(
-            physical_rect(rect, (0, 0).into(), 1.8).size,
-            (180, 144).into()
-        );
+        assert_eq!(physical_rect(rect, (0, 0).into(), 1.8).size, (180, 144).into());
     }
 
     #[test]
     fn adjacent_frames_share_edges_at_all_output_scales() {
         for scale in [1.0, 1.25, 1.5, 1.8, 2.0] {
-            let left = physical_rect(
-                ferese_layout::Rect::new(13.3, 0.0, 500.4, 800.0),
-                (0, 0).into(),
-                scale,
-            );
-            let right = physical_rect(
-                ferese_layout::Rect::new(513.7, 0.0, 500.4, 800.0),
-                (0, 0).into(),
-                scale,
-            );
+            let left = physical_rect(ferese_layout::Rect::new(13.3, 0.0, 500.4, 800.0), (0, 0).into(), scale);
+            let right = physical_rect(ferese_layout::Rect::new(513.7, 0.0, 500.4, 800.0), (0, 0).into(), scale);
             assert_eq!(left.loc.x + left.size.w, right.loc.x);
         }
     }

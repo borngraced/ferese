@@ -36,9 +36,7 @@ const MAX_CANVAS_BYTES: usize = 128 * 1024 * 1024;
 
 impl Canvas {
     fn new(width: u32, height: u32) -> Option<Self> {
-        let length = (width as usize)
-            .checked_mul(height as usize)?
-            .checked_mul(4)?;
+        let length = (width as usize).checked_mul(height as usize)?.checked_mul(4)?;
         if width == 0 || height == 0 || length > MAX_CANVAS_BYTES {
             return None;
         }
@@ -81,11 +79,7 @@ impl Canvas {
     }
 }
 
-fn scale_and_convert(
-    frame: &OutputFrame,
-    target_width: usize,
-    target_height: usize,
-) -> Option<Vec<u8>> {
+fn scale_and_convert(frame: &OutputFrame, target_width: usize, target_height: usize) -> Option<Vec<u8>> {
     let (upright_width, upright_height) = upright_size(frame);
     if upright_width <= 0 || upright_height <= 0 || target_width == 0 || target_height == 0 {
         return None;
@@ -97,13 +91,8 @@ fn scale_and_convert(
     if upright_width as usize == target_width && upright_height as usize == target_height {
         for row in 0..target_height {
             for column in 0..target_width {
-                let (x, y) = upright_source_pixel(
-                    column as i32,
-                    row as i32,
-                    frame.width,
-                    frame.height,
-                    frame.transform,
-                );
+                let (x, y) =
+                    upright_source_pixel(column as i32, row as i32, frame.width, frame.height, frame.transform);
                 let from = (y as usize)
                     .checked_mul(frame.stride)?
                     .checked_add(x as usize * BYTES_PER_PIXEL)?;
@@ -154,13 +143,7 @@ fn scale_and_convert(
     Some(out)
 }
 
-fn upright_source_pixel(
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    transform: Transform,
-) -> (i32, i32) {
+fn upright_source_pixel(x: i32, y: i32, width: i32, height: i32, transform: Transform) -> (i32, i32) {
     match transform {
         Transform::_90 => (y, height - 1 - x),
         Transform::_180 => (width - 1 - x, height - 1 - y),
@@ -186,10 +169,7 @@ pub(crate) fn compose(frames: &[OutputFrame]) -> Result<Canvas, String> {
     }
 
     let (left, top) = logical_origin(frames).ok_or("Screenshot region is empty")?;
-    let scale = frames
-        .iter()
-        .map(|frame| frame.scale)
-        .fold(0.0_f64, f64::max);
+    let scale = frames.iter().map(|frame| frame.scale).fold(0.0_f64, f64::max);
     if !(scale.is_finite() && scale > 0.0) {
         return Err("Screenshot outputs have an invalid scale".into());
     }
@@ -216,22 +196,15 @@ pub(crate) fn compose(frames: &[OutputFrame]) -> Result<Canvas, String> {
     if width <= 0 || height <= 0 {
         return Err("Screenshot region is empty".into());
     }
-    let mut canvas = Canvas::new(width as u32, height as u32)
-        .ok_or("Screenshot image is too large to encode")?;
+    let mut canvas = Canvas::new(width as u32, height as u32).ok_or("Screenshot image is too large to encode")?;
 
     for (frame, (x0, y0, target_width, target_height)) in frames.iter().zip(placement) {
         if target_width == 0 || target_height == 0 {
             continue;
         }
-        let scaled = scale_and_convert(frame, target_width as usize, target_height as usize)
-            .ok_or("Invalid capture size")?;
-        canvas.blit(
-            &scaled,
-            target_width as usize,
-            target_height as usize,
-            x0,
-            y0,
-        );
+        let scaled =
+            scale_and_convert(frame, target_width as usize, target_height as usize).ok_or("Invalid capture size")?;
+        canvas.blit(&scaled, target_width as usize, target_height as usize, x0, y0);
     }
 
     Ok(canvas)
@@ -292,12 +265,7 @@ fn logical_origin(frames: &[OutputFrame]) -> Option<(i32, i32)> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Geometry {
     All,
-    Region {
-        x: i32,
-        y: i32,
-        width: i32,
-        height: i32,
-    },
+    Region { x: i32, y: i32, width: i32, height: i32 },
 }
 
 impl Geometry {
@@ -307,16 +275,9 @@ impl Geometry {
         if width <= 0 || height <= 0 {
             return Err("Screenshot region must have a positive size".into());
         }
-        x.checked_add(width)
-            .ok_or("screenshot geometry overflows")?;
-        y.checked_add(height)
-            .ok_or("screenshot geometry overflows")?;
-        Ok(Geometry::Region {
-            x,
-            y,
-            width,
-            height,
-        })
+        x.checked_add(width).ok_or("screenshot geometry overflows")?;
+        y.checked_add(height).ok_or("screenshot geometry overflows")?;
+        Ok(Geometry::Region { x, y, width, height })
     }
 }
 
@@ -394,10 +355,7 @@ struct Request {
 
 pub(crate) enum Action {
     None,
-    Encode {
-        request: u64,
-        frames: Vec<OutputFrame>,
-    },
+    Encode { request: u64, frames: Vec<OutputFrame> },
     // The path was already sent to the caller; it must not be cleaned up.
     Delivered(PathBuf),
     // The request is gone, so this file is ours to remove.
@@ -461,10 +419,7 @@ impl Coordinator {
                 response_id,
                 reply,
                 state: RequestState::Collecting,
-                parts: specs
-                    .into_iter()
-                    .map(|spec| (spec, PartState::Pending))
-                    .collect(),
+                parts: specs.into_iter().map(|spec| (spec, PartState::Pending)).collect(),
                 received: 0,
                 deadline: Instant::now() + REQUEST_TIMEOUT,
             },
@@ -485,12 +440,7 @@ impl Coordinator {
         )
     }
 
-    pub(crate) fn on_part(
-        &mut self,
-        request: u64,
-        part: usize,
-        result: Result<CaptureBuffer, String>,
-    ) -> Action {
+    pub(crate) fn on_part(&mut self, request: u64, part: usize, result: Result<CaptureBuffer, String>) -> Action {
         let Some(entry) = self.requests.get_mut(&request) else {
             return Action::None;
         };
@@ -595,10 +545,7 @@ impl Coordinator {
             .map(|(id, _)| *id)
             .collect();
         for id in &expired {
-            self.reject_inner(
-                *id,
-                "Screenshot timed out: an output was not redrawn in time",
-            );
+            self.reject_inner(*id, "Screenshot timed out: an output was not redrawn in time");
         }
         expired
     }
@@ -682,10 +629,7 @@ impl PlannedPart {
 // Turns a requested logical region into the per-output reads that cover it.
 // The logical-to-buffer conversion is shared with the screencopy path so both
 // agree on rounding at fractional scales.
-pub(crate) fn plan(
-    geometry: &Geometry,
-    outputs: &[OutputLayout],
-) -> Result<Vec<PlannedPart>, String> {
+pub(crate) fn plan(geometry: &Geometry, outputs: &[OutputLayout]) -> Result<Vec<PlannedPart>, String> {
     if outputs.is_empty() {
         return Err("No outputs are enabled".into());
     }
@@ -696,8 +640,7 @@ pub(crate) fn plan(
     {
         return Err("Screenshot region must have a positive size".into());
     }
-    let logical_sizes: Vec<Size<i32, Logical>> =
-        outputs.iter().map(OutputLayout::logical_size).collect();
+    let logical_sizes: Vec<Size<i32, Logical>> = outputs.iter().map(OutputLayout::logical_size).collect();
 
     let requested = match geometry {
         Geometry::All => {
@@ -709,10 +652,8 @@ pub(crate) fn plan(
                 };
                 union = Some(match union {
                     Some(current) => {
-                        let top_left = Point::<i32, Logical>::new(
-                            current.loc.x.min(rect.loc.x),
-                            current.loc.y.min(rect.loc.y),
-                        );
+                        let top_left =
+                            Point::<i32, Logical>::new(current.loc.x.min(rect.loc.x), current.loc.y.min(rect.loc.y));
                         let bottom_right = Point::<i32, Logical>::new(
                             (current.loc.x + current.size.w).max(rect.loc.x + rect.size.w),
                             (current.loc.y + current.size.h).max(rect.loc.y + rect.size.h),
@@ -724,12 +665,7 @@ pub(crate) fn plan(
             }
             union.expect("outputs is not empty")
         }
-        Geometry::Region {
-            x,
-            y,
-            width,
-            height,
-        } => Rectangle {
+        Geometry::Region { x, y, width, height } => Rectangle {
             loc: (*x, *y).into(),
             size: (*width, *height).into(),
         },
@@ -757,11 +693,7 @@ pub(crate) fn plan(
         }
         // capture_region_for_geometry works in output-local logical space.
         let local = Rectangle {
-            loc: (
-                clipped.loc.x - output.location.x,
-                clipped.loc.y - output.location.y,
-            )
-                .into(),
+            loc: (clipped.loc.x - output.location.x, clipped.loc.y - output.location.y).into(),
             size: clipped.size,
         };
         // The clip above already intersected against this same logical rect, so
@@ -808,34 +740,19 @@ mod planning {
     }
 
     fn region(x: i32, y: i32, width: i32, height: i32) -> Geometry {
-        Geometry::Region {
-            x,
-            y,
-            width,
-            height,
-        }
+        Geometry::Region { x, y, width, height }
     }
 
     #[test]
     fn a_crop_crossing_a_seam_splits_into_one_part_per_output() {
-        let outputs = [
-            output(0, 0, 1920, 1080, 1.0),
-            output(1920, 0, 1920, 1080, 1.0),
-        ];
+        let outputs = [output(0, 0, 1920, 1080, 1.0), output(1920, 0, 1920, 1080, 1.0)];
         let parts = plan(&region(1800, 0, 200, 100), &outputs).unwrap();
         assert_eq!(parts.len(), 2);
 
         assert_eq!(parts[0].index, 0);
+        assert_eq!((parts[0].logical.loc.x, parts[0].logical.size.w), (1800, 120));
         assert_eq!(
-            (parts[0].logical.loc.x, parts[0].logical.size.w),
-            (1800, 120)
-        );
-        assert_eq!(
-            (
-                parts[1].index,
-                parts[1].logical.loc.x,
-                parts[1].logical.size.w
-            ),
+            (parts[1].index, parts[1].logical.loc.x, parts[1].logical.size.w),
             (1, 1920, 80)
         );
         // The clipped widths must add back up to the request.
@@ -868,14 +785,8 @@ mod planning {
         let outputs = [output(0, 0, 800, 600, 1.0), output(800, 0, 1600, 1200, 1.5)];
         let parts = plan(&region(600, 0, 400, 300), &outputs).unwrap();
         assert_eq!(parts.len(), 2);
-        assert_eq!(
-            (parts[0].logical.loc.x, parts[0].logical.size.w),
-            (600, 200)
-        );
-        assert_eq!(
-            (parts[1].logical.loc.x, parts[1].logical.size.w),
-            (800, 200)
-        );
+        assert_eq!((parts[0].logical.loc.x, parts[0].logical.size.w), (600, 200));
+        assert_eq!((parts[1].logical.loc.x, parts[1].logical.size.w), (800, 200));
         // The 1.5 output reads back at 1.5x while still reporting logical 200.
         let spec = parts[1].spec(&outputs[1]);
         assert_eq!(spec.logical_width, 200);
@@ -885,10 +796,7 @@ mod planning {
 
     #[test]
     fn all_geometry_unions_every_output() {
-        let outputs = [
-            output(0, 0, 1920, 1080, 1.0),
-            output(-1280, -400, 1280, 800, 1.0),
-        ];
+        let outputs = [output(0, 0, 1920, 1080, 1.0), output(-1280, -400, 1280, 800, 1.0)];
         let parts = plan(&Geometry::All, &outputs).unwrap();
         assert_eq!(parts.len(), 2);
         // Neither output is moved into a normalised origin at plan time.
@@ -899,10 +807,7 @@ mod planning {
 
     #[test]
     fn a_crop_misses_outputs_that_do_not_intersect() {
-        let outputs = [
-            output(0, 0, 1920, 1080, 1.0),
-            output(1920, 0, 1920, 1080, 1.0),
-        ];
+        let outputs = [output(0, 0, 1920, 1080, 1.0), output(1920, 0, 1920, 1080, 1.0)];
         let parts = plan(&region(4000, 0, 100, 100), &outputs);
         assert!(parts.is_err(), "a region off the desktop is reported");
     }
@@ -912,17 +817,11 @@ mod planning {
         // The second output starts exactly where the region ends. It contributes
         // nothing, so the capture must still succeed with just the first output
         // rather than failing on a region it does not overlap.
-        let outputs = [
-            output(0, 0, 1920, 1080, 1.0),
-            output(1920, 0, 1920, 1080, 1.0),
-        ];
+        let outputs = [output(0, 0, 1920, 1080, 1.0), output(1920, 0, 1920, 1080, 1.0)];
         let parts = plan(&region(100, 100, 1820, 980), &outputs).expect("captures the overlap");
         assert_eq!(parts.len(), 1, "only the overlapping output is read");
         assert_eq!(parts[0].index, 0);
-        assert_eq!(
-            (parts[0].logical.size.w, parts[0].logical.size.h),
-            (1820, 980)
-        );
+        assert_eq!((parts[0].logical.size.w, parts[0].logical.size.h), (1820, 980));
     }
 
     #[test]
@@ -932,16 +831,10 @@ mod planning {
         // A 90-degree transform turns the 1920x1080 mode into a 1080x1920
         // logical area, and the readback follows the same rotation.
         let parts = plan(&region(0, 0, 1080, 400), std::slice::from_ref(&rotated)).unwrap();
-        assert_eq!(
-            (parts[0].logical.size.w, parts[0].logical.size.h),
-            (1080, 400)
-        );
+        assert_eq!((parts[0].logical.size.w, parts[0].logical.size.h), (1080, 400));
         let spec = parts[0].spec(&rotated);
         assert_eq!(spec.transform, Transform::_90);
-        assert!(
-            spec.buffer_height > spec.buffer_width,
-            "buffer axes are swapped"
-        );
+        assert!(spec.buffer_height > spec.buffer_width, "buffer axes are swapped");
     }
 
     #[test]
@@ -981,10 +874,12 @@ mod planning {
 
 #[cfg(test)]
 mod completion {
+    use std::sync::mpsc::sync_channel;
+
+    use smithay::reexports::calloop::channel::channel as loop_channel;
+
     use super::*;
     use crate::handlers::screencopy::CaptureSink;
-    use smithay::reexports::calloop::channel::channel as loop_channel;
-    use std::sync::mpsc::sync_channel;
 
     fn spec(width: i32, height: i32) -> PartSpec {
         PartSpec {
@@ -1021,10 +916,7 @@ mod completion {
             coordinator
                 .admit(42, reply.clone(), (0..parts).map(|_| spec(2, 2)).collect())
                 .expect("admitted");
-            Self {
-                coordinator,
-                received,
-            }
+            Self { coordinator, received }
         }
 
         fn response(&self) -> Option<Response> {
@@ -1041,21 +933,13 @@ mod completion {
             harness.coordinator.on_part(id, 0, Ok(buffer(2, 2))),
             Action::None
         ));
-        assert!(
-            harness.coordinator.is_live(id),
-            "still collecting after part 0"
-        );
+        assert!(harness.coordinator.is_live(id), "still collecting after part 0");
 
         assert!(matches!(
-            harness
-                .coordinator
-                .on_part(id, 1, Err("readback failed".into())),
+            harness.coordinator.on_part(id, 1, Err("readback failed".into())),
             Action::None
         ));
-        assert!(
-            !harness.coordinator.is_live(id),
-            "one failed part ends the request"
-        );
+        assert!(!harness.coordinator.is_live(id), "one failed part ends the request");
 
         let response = harness.response().expect("caller is always answered");
         assert_eq!(response.id, 42);
@@ -1070,9 +954,7 @@ mod completion {
 
         harness.coordinator.on_part(id, 0, Ok(buffer(2, 2)));
         // Output 1 is removed from the layout, so its pending capture is failed.
-        harness
-            .coordinator
-            .on_part(id, 1, Err("output was removed".into()));
+        harness.coordinator.on_part(id, 1, Err("output was removed".into()));
         assert!(!harness.coordinator.is_live(id));
         assert!(harness.response().unwrap().error.is_some());
 
@@ -1142,9 +1024,7 @@ mod completion {
         // Unlocking does not resurrect the request; the file the worker
         // eventually produces is ours to delete.
         assert!(!harness.coordinator.is_live(id));
-        let action = harness
-            .coordinator
-            .on_encoded(id, Ok(PathBuf::from("/tmp/late.png")));
+        let action = harness.coordinator.on_encoded(id, Ok(PathBuf::from("/tmp/late.png")));
         assert!(matches!(action, Action::DiscardFile(ref path) if path.ends_with("late.png")));
         assert!(harness.response().is_none(), "no late success is delivered");
     }
@@ -1155,9 +1035,7 @@ mod completion {
         let id = harness.coordinator.next_id;
         harness.coordinator.on_part(id, 0, Ok(buffer(2, 2)));
 
-        harness
-            .coordinator
-            .on_encoded(id, Ok(PathBuf::from("/tmp/shot.png")));
+        harness.coordinator.on_encoded(id, Ok(PathBuf::from("/tmp/shot.png")));
         let response = harness.response().expect("success is answered");
         assert_eq!(response.id, 42);
         assert!(response.error.is_none());
@@ -1165,9 +1043,7 @@ mod completion {
 
         // A duplicate completion for the same request has nowhere to go, and
         // its file is an orphan rather than a second delivery.
-        let action = harness
-            .coordinator
-            .on_encoded(id, Ok(PathBuf::from("/tmp/again.png")));
+        let action = harness.coordinator.on_encoded(id, Ok(PathBuf::from("/tmp/again.png")));
         assert!(matches!(action, Action::DiscardFile(_)));
 
         // A delivered path is reported separately so the caller cannot
@@ -1190,9 +1066,7 @@ mod completion {
         let id = harness.coordinator.next_id;
         harness.coordinator.on_part(id, 0, Ok(buffer(2, 2)));
 
-        harness
-            .coordinator
-            .on_encoded(id, Err("encoding failed".into()));
+        harness.coordinator.on_encoded(id, Err("encoding failed".into()));
         let response = harness.response().expect("failure is answered");
         assert_eq!(response.error.unwrap().message, "encoding failed");
         assert!(!harness.coordinator.is_live(id));
@@ -1205,23 +1079,13 @@ mod completion {
         // client would never be answered.
         let mut harness = Harness::new(2);
         let id = harness.coordinator.next_id;
-        harness
-            .coordinator
-            .requests
-            .get_mut(&id)
-            .expect("tracked")
-            .deadline = Instant::now() - Duration::from_secs(1);
+        harness.coordinator.requests.get_mut(&id).expect("tracked").deadline = Instant::now() - Duration::from_secs(1);
 
         assert_eq!(harness.coordinator.expire(), vec![id]);
         let response = harness.response().expect("the caller is answered");
         assert_eq!(response.error.as_ref().unwrap().code, "screenshot_failed");
         assert!(
-            response
-                .error
-                .as_ref()
-                .unwrap()
-                .message
-                .contains("timed out"),
+            response.error.as_ref().unwrap().message.contains("timed out"),
             "the failure explains itself: {:?}",
             response.error.as_ref().unwrap().message
         );
@@ -1302,11 +1166,7 @@ mod completion {
         // buffer that was handed off is never replaced.
         assert!(!sink.publish(buffer(64, 64)));
 
-        let PartOutcome {
-            request,
-            part,
-            result,
-        } = receiver.try_recv().expect("published once");
+        let PartOutcome { request, part, result } = receiver.try_recv().expect("published once");
         assert_eq!((request, part), (7, 1));
         assert_eq!(result.unwrap().width, 2);
         assert!(receiver.try_recv().is_err(), "no second buffer was sent");
@@ -1321,11 +1181,7 @@ mod completion {
         // failure has already been reported.
         assert!(!sink.publish(buffer(2, 2)));
 
-        let PartOutcome {
-            request,
-            part,
-            result,
-        } = receiver.try_recv().expect("answered");
+        let PartOutcome { request, part, result } = receiver.try_recv().expect("answered");
         assert_eq!((request, part), (3, 0));
         assert!(result.is_err());
         assert!(receiver.try_recv().is_err());
@@ -1715,11 +1571,7 @@ mod tests {
         // 9 logical at scale 1.5.
         assert_eq!((canvas.width, canvas.height), (14, 5));
         for column in 0..canvas.width as usize {
-            assert_eq!(
-                canvas.pixels[column * 4 + 3],
-                255,
-                "column {column} has a gap"
-            );
+            assert_eq!(canvas.pixels[column * 4 + 3], 255, "column {column} has a gap");
         }
     }
 
@@ -1751,11 +1603,7 @@ mod tests {
 
         let canvas = compose(&[left, right]).unwrap();
         assert_eq!(canvas.width, 5);
-        assert_eq!(
-            &canvas.pixels[2 * 4..3 * 4],
-            &[0, 0, 0, 0],
-            "gap is transparent"
-        );
+        assert_eq!(&canvas.pixels[2 * 4..3 * 4], &[0, 0, 0, 0], "gap is transparent");
         assert_eq!(canvas.pixels[3], 255);
         assert_eq!(canvas.pixels[3 * 4 + 3], 255);
     }
@@ -1784,11 +1632,7 @@ mod tests {
 
     #[test]
     fn geometry_tolerates_surrounding_whitespace_from_slurp() {
-        for raw in [
-            "100,200 800x600\n",
-            " 100,200 800x600 ",
-            "100,200 800x600\r\n",
-        ] {
+        for raw in ["100,200 800x600\n", " 100,200 800x600 ", "100,200 800x600\r\n"] {
             assert_eq!(
                 parse_geometry(raw).unwrap(),
                 Geometry::Region {

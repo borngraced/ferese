@@ -1,5 +1,7 @@
 //! Atomic, conflict-checked note edits; always called from a worker thread.
-use std::{fs, io::Write, path::Path};
+use std::fs;
+use std::io::Write;
+use std::path::Path;
 
 #[derive(Clone, Debug)]
 pub enum Edit {
@@ -63,13 +65,10 @@ pub fn save(path: &Path, edits: &[Edit]) -> Result<(), String> {
     file.as_file()
         .set_permissions(fs::metadata(path).map_err(|e| e.to_string())?.permissions())
         .map_err(|e| e.to_string())?;
-    file.write_all(updated.as_bytes())
-        .map_err(|e| e.to_string())?;
+    file.write_all(updated.as_bytes()).map_err(|e| e.to_string())?;
     file.as_file().sync_all().map_err(|e| e.to_string())?;
     if fs::read_to_string(path).map_err(|e| e.to_string())? != source {
-        return Err(
-            "Config changed while saving; your note remains open. Edit again to retry.".into(),
-        );
+        return Err("Config changed while saving; your note remains open. Edit again to retry.".into());
     }
     file.persist(path).map_err(|e| e.to_string())?;
     fs::File::open(parent)
@@ -131,10 +130,7 @@ desktop-widgets {
         let source = fs::read_to_string(&path).unwrap();
         assert!(source.contains("// keep this"));
         assert!(source.contains("#123456"));
-        let notes = crate::config::parse_source(&source)
-            .unwrap()
-            .desktop_widgets
-            .notes;
+        let notes = crate::config::parse_source(&source).unwrap().desktop_widgets.notes;
         assert_eq!(notes[0].text, "one\ntwo");
         assert_eq!((notes[0].margin_x, notes[0].margin_y), (50, 60));
         assert_eq!(notes[0].anchor, ferese_core::desktop::Anchor::TopLeft);

@@ -1,8 +1,12 @@
 //! Watch the parent directory so atomic editor saves keep working.
-use crate::{Message, store::Snapshot};
+use std::path::PathBuf;
+use std::time::Duration;
+
 use cosmic::iced::futures::{SinkExt, Stream};
 use notify::{RecursiveMode, Watcher};
-use std::{path::PathBuf, time::Duration};
+
+use crate::Message;
+use crate::store::Snapshot;
 
 pub fn changes(path: &PathBuf) -> impl Stream<Item = Message> + use<> {
     let path = path.clone();
@@ -21,9 +25,7 @@ pub fn changes(path: &PathBuf) -> impl Stream<Item = Message> + use<> {
         let mut watcher = match watcher {
             Ok(watcher) => watcher,
             Err(error) => {
-                let _ = output
-                    .send(Message::ExternalConfig(Err(error.to_string())))
-                    .await;
+                let _ = output.send(Message::ExternalConfig(Err(error.to_string()))).await;
                 return;
             }
         };
@@ -32,9 +34,7 @@ pub fn changes(path: &PathBuf) -> impl Stream<Item = Message> + use<> {
             path.parent().unwrap_or(std::path::Path::new(".")),
             RecursiveMode::NonRecursive,
         ) {
-            let _ = output
-                .send(Message::ExternalConfig(Err(error.to_string())))
-                .await;
+            let _ = output.send(Message::ExternalConfig(Err(error.to_string()))).await;
             return;
         }
 
@@ -44,11 +44,7 @@ pub fn changes(path: &PathBuf) -> impl Stream<Item = Message> + use<> {
             let snapshot = tokio::task::spawn_blocking(move || Snapshot::read(&file))
                 .await
                 .unwrap_or_else(|e| Err(e.to_string()));
-            if output
-                .send(Message::ExternalConfig(snapshot))
-                .await
-                .is_err()
-            {
+            if output.send(Message::ExternalConfig(snapshot)).await.is_err() {
                 return;
             }
             if events.recv().await.is_none() {
@@ -64,8 +60,9 @@ pub fn changes(path: &PathBuf) -> impl Stream<Item = Message> + use<> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use cosmic::iced::futures::{StreamExt, pin_mut};
+
+    use super::*;
 
     #[test]
     fn watches_atomic_replacement_and_retains_subscription_after_bad_kdl() {
@@ -79,10 +76,7 @@ mod tests {
                 std::fs::write(&path, "animations {\n    speed 1\n}\n").unwrap();
                 let stream = changes(&path);
                 pin_mut!(stream);
-                assert!(matches!(
-                    stream.next().await,
-                    Some(Message::ExternalConfig(Ok(_)))
-                ));
+                assert!(matches!(stream.next().await, Some(Message::ExternalConfig(Ok(_)))));
                 for source in ["bad [", "animations {\n    speed 0.75\n}\n"] {
                     let temporary = directory.path().join("replacement");
                     std::fs::write(&temporary, source).unwrap();

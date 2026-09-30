@@ -1,10 +1,8 @@
-use std::fs;
-use std::io;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
-use std::thread;
 use std::time::{Duration, SystemTime};
+use std::{fs, io, thread};
 
 use smithay::reexports::calloop::channel;
 
@@ -125,14 +123,8 @@ fn encode_png(canvas: &Canvas) -> Result<Vec<u8>, String> {
         image::codecs::png::CompressionType::Fast,
         image::codecs::png::FilterType::Adaptive,
     );
-    image::ImageEncoder::write_image(
-        encoder,
-        image.as_raw(),
-        width,
-        height,
-        image::ExtendedColorType::Rgba8,
-    )
-    .map_err(|error| format!("Could not encode screenshot: {error}"))?;
+    image::ImageEncoder::write_image(encoder, image.as_raw(), width, height, image::ExtendedColorType::Rgba8)
+        .map_err(|error| format!("Could not encode screenshot: {error}"))?;
     tracing::debug!(encoded = out.len(), "encoded screenshot");
     Ok(out)
 }
@@ -161,8 +153,8 @@ fn write_private_file(png: &[u8]) -> Result<PathBuf, String> {
 }
 
 fn private_directory() -> Result<PathBuf, String> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .ok_or("XDG_RUNTIME_DIR is not set, so screenshots cannot be staged")?;
+    let runtime =
+        std::env::var_os("XDG_RUNTIME_DIR").ok_or("XDG_RUNTIME_DIR is not set, so screenshots cannot be staged")?;
     let root = PathBuf::from(runtime);
     let directory = root.join("ferese-screenshots");
     match fs::symlink_metadata(&directory) {
@@ -177,9 +169,7 @@ fn private_directory() -> Result<PathBuf, String> {
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             fs::create_dir(&directory)
-                .and_then(|()| {
-                    fs::set_permissions(&directory, fs::Permissions::from_mode(DIR_MODE))
-                })
+                .and_then(|()| fs::set_permissions(&directory, fs::Permissions::from_mode(DIR_MODE)))
                 .map_err(|error| format!("Could not create screenshot directory: {error}"))?;
         }
         Err(error) => return Err(format!("Could not inspect screenshot directory: {error}")),
@@ -189,8 +179,9 @@ fn private_directory() -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use smithay::utils::Transform;
+
+    use super::*;
 
     fn frame(width: i32, height: i32) -> OutputFrame {
         let stride = width as usize * 4;
@@ -237,10 +228,7 @@ mod tests {
         let path = write_private_file(&png).expect("staged");
         use std::os::unix::fs::PermissionsExt;
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(
-            mode, FILE_MODE,
-            "staged screenshots are not group/world readable"
-        );
+        assert_eq!(mode, FILE_MODE, "staged screenshots are not group/world readable");
         fs::remove_file(&path).unwrap();
     }
 
@@ -254,10 +242,7 @@ mod tests {
         fs::write(&other, b"not a screenshot").unwrap();
 
         sweep_stale_files();
-        assert!(
-            fresh.exists(),
-            "a freshly staged screenshot is still in use"
-        );
+        assert!(fresh.exists(), "a freshly staged screenshot is still in use");
         assert!(other.exists(), "unrelated files are left alone");
 
         fs::remove_file(&fresh).unwrap();

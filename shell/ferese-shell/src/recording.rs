@@ -1,13 +1,13 @@
 //! The bar only controls the recorder and consumes bounded status messages.
 //! Encoding and portal negotiation run in the separate ferese-record process.
+use std::io::{BufRead, BufReader, Read};
+use std::path::PathBuf;
+use std::process::{ChildStdin, Command, Stdio};
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
+use std::time::Instant;
+
 use serde::Deserialize;
-use std::{
-    io::{BufRead, BufReader, Read},
-    path::PathBuf,
-    process::{ChildStdin, Command, Stdio},
-    sync::mpsc::{self, Receiver},
-    time::Instant,
-};
 
 #[derive(Debug, Default)]
 pub enum State {
@@ -126,28 +126,22 @@ impl Recorder {
                 match event {
                     Event::Update(update) => match update.state.as_str() {
                         "selecting" if self.control.is_some() => self.state = State::Selecting,
-                        "recording" if self.control.is_some() => {
-                            self.state = State::Recording(Instant::now())
-                        }
+                        "recording" if self.control.is_some() => self.state = State::Recording(Instant::now()),
                         "saving" => self.state = State::Saving,
                         "saved" => {
-                            self.state = update.path.map(State::Saved).unwrap_or_else(|| {
-                                State::Error("Recorder returned no saved file".into())
-                            })
+                            self.state = update
+                                .path
+                                .map(State::Saved)
+                                .unwrap_or_else(|| State::Error("Recorder returned no saved file".into()))
                         }
                         "cancelled" => self.state = State::Idle,
                         "error" => {
-                            self.state = State::Error(
-                                update.message.unwrap_or_else(|| "Recording failed".into()),
-                            )
+                            self.state = State::Error(update.message.unwrap_or_else(|| "Recording failed".into()))
                         }
                         _ => (),
                     },
                     Event::Exited => {
-                        if matches!(
-                            self.state,
-                            State::Selecting | State::Recording(_) | State::Saving
-                        ) {
+                        if matches!(self.state, State::Selecting | State::Recording(_) | State::Saving) {
                             self.state = State::Error("The recorder stopped unexpectedly".into());
                         }
                         done = true;

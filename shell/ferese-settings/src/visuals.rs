@@ -1,18 +1,12 @@
-use crate::{
-    Message,
-    schema::Page,
-    store::{Edit, Snapshot, set},
-};
-use cosmic::{
-    Element,
-    iced::{Color, Length},
-    widget::icon as svg_icon,
-};
-
-pub use ferese_theme::controls::{
-    button_style, navigation_style, settings_input as input_style, surface,
-};
+use cosmic::Element;
+use cosmic::iced::{Color, Length};
+use cosmic::widget::icon as svg_icon;
+pub use ferese_theme::controls::{button_style, navigation_style, settings_input as input_style, surface};
 pub use ferese_theme::{Palette, mix, surface_shade};
+
+use crate::Message;
+use crate::schema::Page;
+use crate::store::{Edit, Snapshot, set};
 
 pub fn color(value: &str, fallback: Color) -> Color {
     ferese_theme::parse_color(value).unwrap_or(fallback)
@@ -32,9 +26,7 @@ pub fn native_theme(snapshot: Option<&Snapshot>) -> cosmic::Theme {
 }
 
 pub fn configured_font(snapshot: &Snapshot) -> cosmic::font::Font {
-    ferese_theme::font(Some(
-        &snapshot.string("theme.typography.font_family", "Inter"),
-    ))
+    ferese_theme::font(Some(&snapshot.string("theme.typography.font_family", "Inter")))
 }
 
 pub fn icon(page: Page, tint: Color) -> svg_icon::Icon {
@@ -91,20 +83,14 @@ pub fn preset_selected(snapshot: &Snapshot, index: usize) -> bool {
         ("theme.surface.bar.text_primary", preset.text, "#F0F3FA"),
         ("theme.surface.bar.text_muted", preset.muted, "#AAB4C7"),
         ("theme.focus_ring.gradient.from", preset.accent, "#3D7BE6"),
-        (
-            "theme.focus_ring.gradient.to",
-            preset.gradient_end,
-            "#3D7BE6",
-        ),
+        ("theme.focus_ring.gradient.to", preset.gradient_end, "#3D7BE6"),
     ]
     .into_iter()
     .all(|(path, expected, fallback)| {
         if index == 0 && snapshot.item(path).is_none() {
             return true;
         }
-        snapshot
-            .string(path, fallback)
-            .eq_ignore_ascii_case(expected)
+        snapshot.string(path, fallback).eq_ignore_ascii_case(expected)
     }) && snapshot.number("theme.focus_ring.gradient.angle", 0.) == 0.
 }
 
@@ -164,19 +150,14 @@ pub fn preview(snapshot: &Snapshot) -> Element<'static, Message> {
     let accent = hex(p.accent);
     let muted = hex(p.muted);
     let gap = snapshot.number("layout.inner_gap", 8.).clamp(0., 32.);
-    let radius = snapshot
-        .number("theme.geometry.window_radius", 14.)
-        .clamp(0., 28.);
+    let radius = snapshot.number("theme.geometry.window_radius", 14.).clamp(0., 28.);
     let bar_y = snapshot.number("theme.geometry.top_bar_margin_top", 0.) * 0.5 + 12.;
     let bar_margin = snapshot.number("theme.geometry.top_bar_margin_horizontal", 0.) * 0.5 + 14.;
     let bar_height = snapshot.number("theme.geometry.top_bar_height", 30.) * 0.65;
     let bar_radius = snapshot.number("theme.geometry.shell_radius", 14.) * 0.65;
     let opacity = if snapshot.string("theme.material.style", "solid") == "translucent" {
         snapshot
-            .number(
-                "theme.material.opacity",
-                ferese_config::DEFAULT_MATERIAL_OPACITY,
-            )
+            .number("theme.material.opacity", ferese_config::DEFAULT_MATERIAL_OPACITY)
             .clamp(0., 1.)
     } else {
         1.
@@ -235,16 +216,8 @@ mod tests {
             let snapshot = configured_preset(index);
             let palette = Palette::from_document(Some(&snapshot.doc));
             for background in [palette.background, palette.sidebar, palette.card] {
-                assert!(
-                    contrast(palette.text, background) >= 4.5,
-                    "{} text",
-                    preset.name
-                );
-                assert!(
-                    contrast(palette.muted, background) >= 4.5,
-                    "{} muted text",
-                    preset.name
-                );
+                assert!(contrast(palette.text, background) >= 4.5, "{} text", preset.name);
+                assert!(contrast(palette.muted, background) >= 4.5, "{} muted text", preset.name);
             }
             for other in PRESETS.iter().skip(index + 1) {
                 assert_ne!(preset.accent, other.accent);
@@ -263,17 +236,12 @@ mod tests {
                 .unwrap();
             assert!(!preset_selected(&snapshot, index));
             let mut snapshot = configured_preset(index);
-            snapshot
-                .edit(&set("theme.focus_ring.gradient.to", "#123456"))
-                .unwrap();
+            snapshot.edit(&set("theme.focus_ring.gradient.to", "#123456")).unwrap();
             assert!(!preset_selected(&snapshot, index));
         }
         assert!(preset_selected(&Snapshot::parse(String::new()).unwrap(), 0));
         assert!(preset(usize::MAX).is_empty());
-        assert!(!preset_selected(
-            &Snapshot::parse(String::new()).unwrap(),
-            usize::MAX
-        ));
+        assert!(!preset_selected(&Snapshot::parse(String::new()).unwrap(), usize::MAX));
     }
 
     #[test]
@@ -283,10 +251,7 @@ mod tests {
 
         for (index, item) in PRESETS.iter().enumerate() {
             let snapshot = configured_preset(index);
-            assert_eq!(
-                native_theme(Some(&snapshot)).cosmic().is_dark,
-                item.name != "Ayu Light"
-            );
+            assert_eq!(native_theme(Some(&snapshot)).cosmic().is_dark, item.name != "Ayu Light");
         }
     }
 }

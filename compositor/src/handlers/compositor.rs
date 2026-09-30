@@ -1,28 +1,23 @@
-use smithay::{
-    backend::{allocator::dmabuf::Dmabuf, renderer::utils::on_commit_buffer_handler},
-    reexports::wayland_server::{
-        Client,
-        protocol::{wl_buffer, wl_surface::WlSurface},
-    },
-    wayland::{
-        buffer::BufferHandler,
-        compositor::{
-            CompositorClientState, CompositorHandler, CompositorState, get_parent,
-            is_sync_subsurface,
-        },
-        dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier},
-        shm::{ShmHandler, ShmState},
-    },
+use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::renderer::utils::on_commit_buffer_handler;
+use smithay::reexports::wayland_server::Client;
+use smithay::reexports::wayland_server::protocol::wl_buffer;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::wayland::buffer::BufferHandler;
+use smithay::wayland::compositor::{
+    CompositorClientState, CompositorHandler, CompositorState, get_parent, is_sync_subsurface,
 };
+use smithay::wayland::dmabuf::{DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier};
+use smithay::wayland::shm::{ShmHandler, ShmState};
 
 use super::{layer_shell, xdg_shell};
-use crate::{Ferese, state::ClientState};
+use crate::Ferese;
+use crate::state::ClientState;
 
 fn layer_affects_backdrop(layer: smithay::wayland::shell::wlr_layer::Layer) -> bool {
     matches!(
         layer,
-        smithay::wayland::shell::wlr_layer::Layer::Background
-            | smithay::wayland::shell::wlr_layer::Layer::Bottom
+        smithay::wayland::shell::wlr_layer::Layer::Background | smithay::wayland::shell::wlr_layer::Layer::Bottom
     )
 }
 
@@ -68,11 +63,7 @@ impl CompositorHandler for Ferese {
             let window = {
                 self.space
                     .elements()
-                    .find(|window| {
-                        window
-                            .toplevel()
-                            .is_some_and(|toplevel| toplevel.wl_surface() == &root)
-                    })
+                    .find(|window| window.toplevel().is_some_and(|toplevel| toplevel.wl_surface() == &root))
                     .cloned()
             };
 
@@ -124,12 +115,7 @@ impl DmabufHandler for Ferese {
         &mut self.dmabuf_state
     }
 
-    fn dmabuf_imported(
-        &mut self,
-        _global: &DmabufGlobal,
-        dmabuf: Dmabuf,
-        notifier: ImportNotifier,
-    ) {
+    fn dmabuf_imported(&mut self, _global: &DmabufGlobal, dmabuf: Dmabuf, notifier: ImportNotifier) {
         self.queue_dmabuf_import(dmabuf, notifier);
         crate::backends::direct::render_all(self);
     }
@@ -143,8 +129,9 @@ impl ShmHandler for Ferese {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use smithay::wayland::shell::wlr_layer::Layer;
+
+    use super::*;
     #[test]
     fn panel_commits_do_not_invalidate_their_own_backdrop() {
         assert!(!layer_affects_backdrop(Layer::Top));

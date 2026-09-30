@@ -1,14 +1,11 @@
 mod prompt;
 mod session;
 
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
-};
 use zbus::zvariant::{OwnedValue, Value};
 
 const AGENT_PATH: &str = "/dev/ferese/PolkitAgent";
@@ -45,9 +42,8 @@ impl Agent {
         cookie: String,
         identities: Vec<Identity>,
     ) -> zbus::fdo::Result<()> {
-        let uid = choose_identity(&identities).ok_or_else(|| {
-            zbus::fdo::Error::Failed("No supported authentication identity".into())
-        })?;
+        let uid = choose_identity(&identities)
+            .ok_or_else(|| zbus::fdo::Error::Failed("No supported authentication identity".into()))?;
         let cancelled = Arc::new(AtomicBool::new(false));
 
         {
@@ -60,9 +56,7 @@ impl Agent {
 
         let result = tokio::task::spawn_blocking({
             let cookie = cookie.clone();
-            move || {
-                session::authenticate(uid, message.chars().take(240).collect(), cookie, cancelled)
-            }
+            move || session::authenticate(uid, message.chars().take(240).collect(), cookie, cancelled)
         })
         .await
         .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
@@ -116,10 +110,7 @@ fn session_subject() -> Result<(String, HashMap<String, Value<'static>>), String
         .map_err(|error| error.to_string())?;
     let mut details = HashMap::new();
     details.insert("pid".to_owned(), Value::from(std::process::id()));
-    details.insert(
-        "uid".to_owned(),
-        Value::from(unsafe { libc::geteuid() } as i32),
-    );
+    details.insert("uid".to_owned(), Value::from(unsafe { libc::geteuid() } as i32));
     details.insert("start-time".to_owned(), Value::from(started));
     Ok(("unix-process".into(), details))
 }
@@ -130,15 +121,11 @@ async fn run_agent() -> Result<(), Box<dyn std::error::Error>> {
         .serve_at(AGENT_PATH, Agent::default())?
         .build()
         .await?;
-    let authority =
-        zbus::Proxy::new(&connection, AUTHORITY, AUTHORITY_PATH, AUTHORITY_INTERFACE).await?;
+    let authority = zbus::Proxy::new(&connection, AUTHORITY, AUTHORITY_PATH, AUTHORITY_INTERFACE).await?;
     let locale = std::env::var("LANG").unwrap_or_default();
 
     authority
-        .call::<_, _, ()>(
-            "RegisterAuthenticationAgent",
-            &(subject, locale, AGENT_PATH),
-        )
+        .call::<_, _, ()>("RegisterAuthenticationAgent", &(subject, locale, AGENT_PATH))
         .await?;
     std::future::pending::<()>().await;
 
@@ -174,9 +161,6 @@ mod tests {
                 HashMap::from([("uid".to_owned(), OwnedValue::from(uid))]),
             )
         };
-        assert_eq!(
-            choose_identity(&[identity(0), identity(current)]),
-            Some(current)
-        );
+        assert_eq!(choose_identity(&[identity(0), identity(current)]), Some(current));
     }
 }

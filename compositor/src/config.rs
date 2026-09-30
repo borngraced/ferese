@@ -1,9 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
-use std::fmt;
-use std::fs;
-use std::io;
 use std::path::PathBuf;
+use std::{fmt, fs, io};
 
 use ferese_animation::SpringConfig;
 use ferese_core::LayoutMode;
@@ -11,7 +9,8 @@ use ferese_layout::{ColumnWidth, Direction, GapConfig, ViewportFocusStrategy};
 use serde::Deserialize;
 use smithay::input::keyboard::{Keycode, keysyms, xkb};
 
-use crate::window_rules::{self, WindowRule, WindowRuleConfig};
+use crate::window_rules;
+use crate::window_rules::{WindowRule, WindowRuleConfig};
 
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
@@ -163,11 +162,7 @@ impl BorderPaintConfig {
                 "focus_ring.gradient.angle",
             )
         } else {
-            (
-                "border.gradient.from",
-                "border.gradient.to",
-                "border.gradient.angle",
-            )
+            ("border.gradient.from", "border.gradient.to", "border.gradient.angle")
         };
         self.gradient
             .as_ref()
@@ -274,18 +269,10 @@ impl Config {
     }
 
     pub(crate) fn runtime_config(&self) -> Result<crate::RuntimeConfig, ConfigError> {
-        self.notifications
-            .validate()
-            .map_err(ConfigError::InvalidBinding)?;
-        self.desktop_widgets
-            .validate()
-            .map_err(ConfigError::InvalidBinding)?;
+        self.notifications.validate().map_err(ConfigError::InvalidBinding)?;
+        self.desktop_widgets.validate().map_err(ConfigError::InvalidBinding)?;
         for daemon in &self.autostart {
-            if daemon
-                .command
-                .first()
-                .is_none_or(|program| program.trim().is_empty())
-            {
+            if daemon.command.first().is_none_or(|program| program.trim().is_empty()) {
                 return Err(ConfigError::InvalidBinding(
                     "autostart command must contain a program".into(),
                 ));
@@ -510,15 +497,10 @@ impl Binding {
         let symbol = parse_keysym(&key)?;
         if (modifiers.ctrl
             && modifiers.alt
-            && matches!(
-                symbol,
-                keysyms::KEY_Escape | keysyms::KEY_F1..=keysyms::KEY_F12
-            ))
+            && matches!(symbol, keysyms::KEY_Escape | keysyms::KEY_F1..=keysyms::KEY_F12))
             || (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&symbol)
         {
-            return Err(ConfigError::InvalidBinding(
-                "Reserved system shortcut".into(),
-            ));
+            return Err(ConfigError::InvalidBinding("Reserved system shortcut".into()));
         }
         Ok(Self {
             modifiers,
@@ -534,34 +516,19 @@ impl Binding {
         match (&self.trigger, &other.trigger) {
             (BindingTrigger::Keysym(left), BindingTrigger::Keysym(right)) => left == right,
             (BindingTrigger::Keysym(symbol), BindingTrigger::Physical(code))
-            | (BindingTrigger::Physical(code), BindingTrigger::Keysym(symbol)) => {
-                (0..map.num_layouts_for_key(*code)).any(|layout| {
+            | (BindingTrigger::Physical(code), BindingTrigger::Keysym(symbol)) => (0..map.num_layouts_for_key(*code))
+                .any(|layout| {
                     map.key_get_syms_by_level(*code, layout, 0)
                         .iter()
                         .any(|key| key.raw() == *symbol)
-                })
-            }
+                }),
             (BindingTrigger::Physical(left), BindingTrigger::Physical(right)) => left == right,
             _ => false,
         }
     }
 
-    pub fn matches(
-        &self,
-        keycode: Keycode,
-        keysyms: &[u32],
-        logo: bool,
-        ctrl: bool,
-        alt: bool,
-        shift: bool,
-    ) -> bool {
-        self.modifiers
-            == BindingModifiers {
-                logo,
-                ctrl,
-                alt,
-                shift,
-            }
+    pub fn matches(&self, keycode: Keycode, keysyms: &[u32], logo: bool, ctrl: bool, alt: bool, shift: bool) -> bool {
+        self.modifiers == BindingModifiers { logo, ctrl, alt, shift }
             && match self.trigger {
                 BindingTrigger::Keysym(expected) => keysyms.contains(&expected),
                 BindingTrigger::Physical(expected) => expected == keycode,
@@ -572,11 +539,7 @@ impl Binding {
     pub(crate) fn guide_entry(&self, keymap: Option<&xkb::Keymap>) -> Option<serde_json::Value> {
         let description = match &self.action {
             BindingAction::None => return None,
-            BindingAction::Spawn(argv)
-                if argv
-                    .first()
-                    .is_some_and(|program| program == "ferese-screenshot") =>
-            {
+            BindingAction::Spawn(argv) if argv.first().is_some_and(|program| program == "ferese-screenshot") => {
                 if argv.iter().any(|arg| arg == "--full") {
                     "Capture whole screen"
                 } else {
@@ -598,12 +561,9 @@ impl Binding {
             BindingAction::Resize(direction) => format!("Resize window {direction:?}"),
             BindingAction::SwitchWorkspace(index) => format!("Go to workspace {index}"),
             BindingAction::MoveToWorkspace(index) => format!("Move window to workspace {index}"),
-            BindingAction::SwitchRelativeWorkspace(next) => if *next {
-                "Next workspace"
-            } else {
-                "Previous workspace"
+            BindingAction::SwitchRelativeWorkspace(next) => {
+                if *next { "Next workspace" } else { "Previous workspace" }.into()
             }
-            .into(),
             BindingAction::ToggleFullscreen => "Toggle fullscreen".into(),
             BindingAction::ToggleMaximized => "Toggle full-width window".into(),
             BindingAction::ToggleLayout => "Switch workspace layout".into(),
@@ -651,11 +611,7 @@ impl Binding {
         matches!(self.trigger, BindingTrigger::Swipe { fingers, .. } if fingers == count)
     }
 
-    pub(crate) fn matches_swipe(
-        &self,
-        count: u32,
-        target: crate::gestures::SwipeDirection,
-    ) -> bool {
+    pub(crate) fn matches_swipe(&self, count: u32, target: crate::gestures::SwipeDirection) -> bool {
         matches!(self.trigger, BindingTrigger::Swipe { fingers, direction } if fingers == count && direction == target)
     }
 }
@@ -1022,11 +978,7 @@ impl Config {
     }
 
     pub fn scrolling_focus_strategy(&self) -> ViewportFocusStrategy {
-        match self
-            .scrolling
-            .focus_strategy
-            .unwrap_or(FocusStrategyValue::Minimal)
-        {
+        match self.scrolling.focus_strategy.unwrap_or(FocusStrategyValue::Minimal) {
             FocusStrategyValue::Minimal => ViewportFocusStrategy::Minimal,
             FocusStrategyValue::CenterOnFocus => ViewportFocusStrategy::Center,
             FocusStrategyValue::Paged => ViewportFocusStrategy::Paged,
@@ -1078,10 +1030,7 @@ impl Config {
     pub fn bindings(&self, input: &InputSettings) -> Result<Vec<Binding>, ConfigError> {
         let mut commands = HashMap::from([
             ("terminal".to_owned(), vec!["foot".to_owned()]),
-            (
-                "screenshot".to_owned(),
-                vec!["ferese-screenshot".to_owned()],
-            ),
+            ("screenshot".to_owned(), vec!["ferese-screenshot".to_owned()]),
             (
                 "screenshot-full".to_owned(),
                 vec!["ferese-screenshot".to_owned(), "--full".to_owned()],
@@ -1197,19 +1146,13 @@ impl Config {
     }
 
     pub fn theme_settings(&self) -> Result<ThemeSettings, ConfigError> {
-        let border_width =
-            nonnegative_theme_value(self.theme.geometry.border_width, "geometry.border_width")?;
-        let focus_ring_width = nonnegative_theme_value(
-            self.theme.geometry.focus_ring_width,
-            "geometry.focus_ring_width",
-        )?;
-        let window_radius =
-            nonnegative_theme_value(self.theme.geometry.window_radius, "geometry.window_radius")?;
-        let shadow_offset_y =
-            finite_theme_value(self.theme.shadow.soft.offset_y, "shadow.soft.offset_y")?;
+        let border_width = nonnegative_theme_value(self.theme.geometry.border_width, "geometry.border_width")?;
+        let focus_ring_width =
+            nonnegative_theme_value(self.theme.geometry.focus_ring_width, "geometry.focus_ring_width")?;
+        let window_radius = nonnegative_theme_value(self.theme.geometry.window_radius, "geometry.window_radius")?;
+        let shadow_offset_y = finite_theme_value(self.theme.shadow.soft.offset_y, "shadow.soft.offset_y")?;
         let shadow_blur = nonnegative_theme_value(self.theme.shadow.soft.blur, "shadow.soft.blur")?;
-        let shadow_opacity =
-            unit_theme_value(self.theme.shadow.soft.opacity, "shadow.soft.opacity")?;
+        let shadow_opacity = unit_theme_value(self.theme.shadow.soft.opacity, "shadow.soft.opacity")?;
 
         let material_radius = nonnegative_theme_value(
             self.theme
@@ -1224,25 +1167,16 @@ impl Config {
             border_width,
             focus_ring_width,
             border_color: parse_color(&self.theme.colors.border, "colors.border")?,
-            text_primary_color: parse_color(
-                &self.theme.colors.text_primary,
-                "colors.text_primary",
-            )?,
+            text_primary_color: parse_color(&self.theme.colors.text_primary, "colors.text_primary")?,
             accent_color: parse_color(&self.theme.colors.accent, "colors.accent")?,
             border_gradient: self.theme.border.settings("border")?,
             focus_ring_gradient: self.theme.focus_ring.settings("focus_ring")?,
             shadow_color: parse_color(&self.theme.colors.shadow, "colors.shadow")?,
-            surface_base_color: parse_color(
-                &self.theme.colors.surface_base,
-                "colors.surface_base",
-            )?,
+            surface_base_color: parse_color(&self.theme.colors.surface_base, "colors.surface_base")?,
             shell_opacity: unit_theme_value(self.theme.material.opacity, "material.opacity")?,
             inactive_dim: InactiveDimSettings {
                 enabled: self.appearance.inactive_dim.enabled,
-                amount: unit_theme_value(
-                    self.appearance.inactive_dim.amount,
-                    "appearance.inactive_dim.amount",
-                )?,
+                amount: unit_theme_value(self.appearance.inactive_dim.amount, "appearance.inactive_dim.amount")?,
                 duration_ms: nonnegative_theme_value(
                     self.appearance.inactive_dim.duration_ms,
                     "appearance.inactive_dim.duration_ms",
@@ -1253,11 +1187,7 @@ impl Config {
             shadow_blur,
             shadow_opacity,
             material_style: self.theme.material.style,
-            backdrop_blur: nonnegative_theme_value(
-                self.theme.material.blur_radius,
-                "material.blur_radius",
-            )?
-            .min(32.0),
+            backdrop_blur: nonnegative_theme_value(self.theme.material.blur_radius, "material.blur_radius")?.min(32.0),
             material_radius,
             panel_radius: material_radius,
         })
@@ -1273,8 +1203,7 @@ impl Config {
 
     pub fn spring_config(&self) -> Result<SpringConfig, ConfigError> {
         let mass = positive_animation_value(self.animations.spring.mass, "spring.mass")?;
-        let stiffness =
-            positive_animation_value(self.animations.spring.stiffness, "spring.stiffness")?;
+        let stiffness = positive_animation_value(self.animations.spring.stiffness, "spring.stiffness")?;
         let damping = self.animations.spring.damping;
         if !damping.is_finite() || damping < 0.0 {
             return Err(ConfigError::InvalidAnimationValue {
@@ -1292,12 +1221,9 @@ impl Config {
     }
 
     pub fn viewport_spring_config(&self) -> Result<SpringConfig, ConfigError> {
-        let mass =
-            positive_animation_value(self.animations.viewport_spring.mass, "viewport_spring.mass")?;
-        let stiffness = positive_animation_value(
-            self.animations.viewport_spring.stiffness,
-            "viewport_spring.stiffness",
-        )?;
+        let mass = positive_animation_value(self.animations.viewport_spring.mass, "viewport_spring.mass")?;
+        let stiffness =
+            positive_animation_value(self.animations.viewport_spring.stiffness, "viewport_spring.stiffness")?;
         let damping_ratio = positive_animation_value(
             self.animations.viewport_spring.damping_ratio,
             "viewport_spring.damping_ratio",
@@ -1322,9 +1248,7 @@ struct BindingIdentity {
 fn validate_commands(commands: &HashMap<String, Vec<String>>) -> Result<(), ConfigError> {
     for (name, argv) in commands {
         if name.trim().is_empty() {
-            return Err(ConfigError::InvalidBinding(
-                "command names cannot be empty".to_owned(),
-            ));
+            return Err(ConfigError::InvalidBinding("command names cannot be empty".to_owned()));
         }
         if argv.is_empty() || argv[0].is_empty() {
             return Err(ConfigError::InvalidBinding(format!(
@@ -1365,9 +1289,10 @@ fn parse_binding(
     }
 
     let identity = binding_identity(configured, keymap)?;
-    let action = configured.action.as_deref().ok_or_else(|| {
-        ConfigError::InvalidBinding(format!("binding {:?} has no action", configured.keys))
-    })?;
+    let action = configured
+        .action
+        .as_deref()
+        .ok_or_else(|| ConfigError::InvalidBinding(format!("binding {:?} has no action", configured.keys)))?;
     let action = parse_action(action, configured.argument.as_deref(), commands)?;
     let trigger = match identity.match_mode {
         BindingMatch::Keysym => BindingTrigger::Keysym(identity.key),
@@ -1390,15 +1315,10 @@ fn parse_binding(
     })
 }
 
-fn binding_identity(
-    configured: &BindingConfig,
-    keymap: &xkb::Keymap,
-) -> Result<BindingIdentity, ConfigError> {
+fn binding_identity(configured: &BindingConfig, keymap: &xkb::Keymap) -> Result<BindingIdentity, ConfigError> {
     let (modifiers, key) = parse_chord(&configured.keys)?;
     if let Some((fingers, direction)) = parse_swipe(&key) {
-        if configured.match_mode == BindingMatch::Physical
-            || modifiers != BindingModifiers::default()
-        {
+        if configured.match_mode == BindingMatch::Physical || modifiers != BindingModifiers::default() {
             return Err(ConfigError::InvalidBinding(
                 "swipes cannot use keyboard modifiers or physical key matching".into(),
             ));
@@ -1438,9 +1358,7 @@ fn binding_identity_for_runtime(binding: &Binding) -> BindingIdentity {
     let (match_mode, key) = match binding.trigger {
         BindingTrigger::Keysym(key) => (BindingMatch::Keysym, key),
         BindingTrigger::Physical(key) => (BindingMatch::Physical, key.raw()),
-        BindingTrigger::Swipe { fingers, direction } => {
-            (BindingMatch::Swipe, fingers * 4 + direction as u32)
-        }
+        BindingTrigger::Swipe { fingers, direction } => (BindingMatch::Swipe, fingers * 4 + direction as u32),
     };
 
     BindingIdentity {
@@ -1456,9 +1374,7 @@ fn parse_chord(chord: &str) -> Result<(BindingModifiers, String), ConfigError> {
 
     for component in chord.split('+').map(str::trim) {
         if component.is_empty() {
-            return Err(ConfigError::InvalidBinding(format!(
-                "invalid key chord {chord:?}"
-            )));
+            return Err(ConfigError::InvalidBinding(format!("invalid key chord {chord:?}")));
         }
 
         let slot = match component.to_ascii_lowercase().as_str() {
@@ -1470,9 +1386,7 @@ fn parse_chord(chord: &str) -> Result<(BindingModifiers, String), ConfigError> {
         };
         if let Some(slot) = slot {
             if *slot {
-                return Err(ConfigError::InvalidBinding(format!(
-                    "duplicate modifier in {chord:?}"
-                )));
+                return Err(ConfigError::InvalidBinding(format!("duplicate modifier in {chord:?}")));
             }
             *slot = true;
         } else if key.replace(component.to_owned()).is_some() {
@@ -1482,9 +1396,7 @@ fn parse_chord(chord: &str) -> Result<(BindingModifiers, String), ConfigError> {
         }
     }
 
-    let key = key.ok_or_else(|| {
-        ConfigError::InvalidBinding(format!("key chord {chord:?} does not contain a key"))
-    })?;
+    let key = key.ok_or_else(|| ConfigError::InvalidBinding(format!("key chord {chord:?} does not contain a key")))?;
     Ok((modifiers, key))
 }
 
@@ -1520,9 +1432,7 @@ fn parse_keysym(name: &str) -> Result<u32, ConfigError> {
         symbol = xkb::keysym_from_name(&normalized, xkb::KEYSYM_CASE_INSENSITIVE);
     }
     if symbol.raw() == keysyms::KEY_NoSymbol {
-        Err(ConfigError::InvalidBinding(format!(
-            "unknown keysym {name:?}"
-        )))
+        Err(ConfigError::InvalidBinding(format!("unknown keysym {name:?}")))
     } else {
         Ok(symbol.raw())
     }
@@ -1542,11 +1452,8 @@ fn parse_action(
             Ok(())
         }
     };
-    let required_argument = || {
-        argument.ok_or_else(|| {
-            ConfigError::InvalidBinding(format!("action {action:?} requires an argument"))
-        })
-    };
+    let required_argument =
+        || argument.ok_or_else(|| ConfigError::InvalidBinding(format!("action {action:?} requires an argument")));
 
     match action {
         "none" => {
@@ -1555,15 +1462,13 @@ fn parse_action(
         }
         "workspace-next" | "workspace-previous" => {
             no_argument()?;
-            Ok(BindingAction::SwitchRelativeWorkspace(
-                action == "workspace-next",
-            ))
+            Ok(BindingAction::SwitchRelativeWorkspace(action == "workspace-next"))
         }
         "spawn" => {
             let command = required_argument()?;
-            let argv = commands.get(command).ok_or_else(|| {
-                ConfigError::InvalidBinding(format!("unknown command {command:?}"))
-            })?;
+            let argv = commands
+                .get(command)
+                .ok_or_else(|| ConfigError::InvalidBinding(format!("unknown command {command:?}")))?;
             Ok(BindingAction::Spawn(argv.clone()))
         }
         "close" => {
@@ -1576,15 +1481,9 @@ fn parse_action(
         }
         "focus" => Ok(BindingAction::Focus(parse_direction(required_argument()?)?)),
         "move" => Ok(BindingAction::Move(parse_direction(required_argument()?)?)),
-        "resize" => Ok(BindingAction::Resize(
-            parse_direction(required_argument()?)?,
-        )),
-        "workspace" => Ok(BindingAction::SwitchWorkspace(parse_workspace(
-            required_argument()?,
-        )?)),
-        "move-to-workspace" => Ok(BindingAction::MoveToWorkspace(parse_workspace(
-            required_argument()?,
-        )?)),
+        "resize" => Ok(BindingAction::Resize(parse_direction(required_argument()?)?)),
+        "workspace" => Ok(BindingAction::SwitchWorkspace(parse_workspace(required_argument()?)?)),
+        "move-to-workspace" => Ok(BindingAction::MoveToWorkspace(parse_workspace(required_argument()?)?)),
         "toggle-maximized" => {
             no_argument()?;
             Ok(BindingAction::ToggleMaximized)
@@ -1621,9 +1520,7 @@ fn parse_action(
             no_argument()?;
             Ok(BindingAction::ToggleOverview)
         }
-        _ => Err(ConfigError::InvalidBinding(format!(
-            "unknown action {action:?}"
-        ))),
+        _ => Err(ConfigError::InvalidBinding(format!("unknown action {action:?}"))),
     }
 }
 
@@ -1633,18 +1530,14 @@ fn parse_direction(argument: &str) -> Result<Direction, ConfigError> {
         "right" => Ok(Direction::Right),
         "up" => Ok(Direction::Up),
         "down" => Ok(Direction::Down),
-        _ => Err(ConfigError::InvalidBinding(format!(
-            "invalid direction {argument:?}"
-        ))),
+        _ => Err(ConfigError::InvalidBinding(format!("invalid direction {argument:?}"))),
     }
 }
 
 fn parse_workspace(argument: &str) -> Result<u8, ConfigError> {
     match argument.parse() {
         Ok(workspace) if workspace > 0 => Ok(workspace),
-        _ => Err(ConfigError::InvalidBinding(format!(
-            "invalid workspace {argument:?}"
-        ))),
+        _ => Err(ConfigError::InvalidBinding(format!("invalid workspace {argument:?}"))),
     }
 }
 
@@ -1672,25 +1565,13 @@ fn default_bindings() -> Vec<BindingConfig> {
 
     for (key, direction) in [("H", "left"), ("J", "down"), ("K", "up"), ("L", "right")] {
         bindings.push(binding("Super+".to_owned() + key, "focus", Some(direction)));
-        bindings.push(binding(
-            "Super+Shift+".to_owned() + key,
-            "move",
-            Some(direction),
-        ));
-        bindings.push(binding(
-            "Super+Ctrl+".to_owned() + key,
-            "resize",
-            Some(direction),
-        ));
+        bindings.push(binding("Super+Shift+".to_owned() + key, "move", Some(direction)));
+        bindings.push(binding("Super+Ctrl+".to_owned() + key, "resize", Some(direction)));
     }
 
     for workspace in 1..=9 {
         let workspace = workspace.to_string();
-        bindings.push(binding(
-            format!("Super+{workspace}"),
-            "workspace",
-            Some(&workspace),
-        ));
+        bindings.push(binding(format!("Super+{workspace}"), "workspace", Some(&workspace)));
         bindings.push(binding(
             format!("Super+Shift+{workspace}"),
             "move-to-workspace",
@@ -1701,11 +1582,7 @@ fn default_bindings() -> Vec<BindingConfig> {
     bindings
 }
 
-fn binding(
-    keys: impl Into<String>,
-    action: impl Into<String>,
-    argument: Option<&str>,
-) -> BindingConfig {
+fn binding(keys: impl Into<String>, action: impl Into<String>, argument: Option<&str>) -> BindingConfig {
     BindingConfig {
         keys: keys.into(),
         match_mode: BindingMatch::Keysym,
@@ -1909,9 +1786,7 @@ fn parse_output_mode(value: &str) -> Result<OutputModeRequest, String> {
     let (size, refresh) = value
         .trim()
         .split_once('@')
-        .map_or((value.trim(), None), |(size, refresh)| {
-            (size, Some(refresh))
-        });
+        .map_or((value.trim(), None), |(size, refresh)| (size, Some(refresh)));
     let (width, height) = size
         .split_once('x')
         .ok_or_else(|| format!("mode {value:?} must use WIDTHxHEIGHT or WIDTHxHEIGHT@REFRESH"))?;
@@ -1944,17 +1819,10 @@ fn parse_output_mode(value: &str) -> Result<OutputModeRequest, String> {
     })
 }
 
-fn parse_column_width(
-    value: &ColumnWidthValue,
-    field: &'static str,
-) -> Result<ColumnWidth, ConfigError> {
+fn parse_column_width(value: &ColumnWidthValue, field: &'static str) -> Result<ColumnWidth, ConfigError> {
     match value {
-        ColumnWidthValue::Proportion(value) if value.is_finite() && *value > 0.0 => {
-            Ok(ColumnWidth::Proportion(*value))
-        }
-        ColumnWidthValue::Named(value) if value.eq_ignore_ascii_case("full") => {
-            Ok(ColumnWidth::Full)
-        }
+        ColumnWidthValue::Proportion(value) if value.is_finite() && *value > 0.0 => Ok(ColumnWidth::Proportion(*value)),
+        ColumnWidthValue::Named(value) if value.eq_ignore_ascii_case("full") => Ok(ColumnWidth::Full),
         value => Err(ConfigError::InvalidColumnWidth {
             field,
             value: match value {
@@ -1982,15 +1850,9 @@ mod tests {
         let source = "input {\n    touchpad {\n        swipe-threshold 96\n    }\n}\nbinding keys=\"Swipe3Up\" action=\"toggle-overview\"\noutput-profile name=\"desk\" {\n    output match=\"DP-1\" scale=1.5 {\n        position 0 0\n    }\n}\ndesktop-widgets {\n    clock {\n        enabled #true\n        outputs \"DP-1\"\n    }\n}\nautostart {\n    command \"program\" \"argument with space\"\n}\n";
         let config = Config::parse_source(source).unwrap();
         config.runtime_config().unwrap();
-        assert_eq!(
-            config.input_settings().unwrap().touchpad.swipe_threshold,
-            96
-        );
+        assert_eq!(config.input_settings().unwrap().touchpad.swipe_threshold, 96);
         assert_eq!(config.desktop_widgets.clock.outputs, ["DP-1"]);
-        assert_eq!(
-            config.output_profiles().unwrap()[0].outputs[0].position,
-            Some([0, 0])
-        );
+        assert_eq!(config.output_profiles().unwrap()[0].outputs[0].position, Some([0, 0]));
     }
 
     #[test]
@@ -2026,10 +1888,7 @@ mod tests {
         let config = parse("");
 
         assert_eq!(config.layout_mode(), LayoutMode::Scrolling);
-        assert_eq!(
-            config.default_column_width().unwrap(),
-            ColumnWidth::Proportion(0.5)
-        );
+        assert_eq!(config.default_column_width().unwrap(), ColumnWidth::Proportion(0.5));
         assert_eq!(config.gap_config().unwrap(), GapConfig::default());
     }
 
@@ -2039,10 +1898,7 @@ mod tests {
         let numeric = parse("scrolling {\n    default-column-width 1.0\n}\n");
 
         assert_eq!(full.default_column_width().unwrap(), ColumnWidth::Full);
-        assert_eq!(
-            numeric.default_column_width().unwrap(),
-            ColumnWidth::Proportion(1.0)
-        );
+        assert_eq!(numeric.default_column_width().unwrap(), ColumnWidth::Proportion(1.0));
     }
 
     #[test]
@@ -2066,19 +1922,10 @@ mod tests {
         let minimal = parse("");
         let centered = parse("scrolling {\n    focus-strategy \"center_on_focus\"\n}\n");
         let paged = parse("scrolling {\n    focus-strategy \"paged\"\n}\n");
-        assert_eq!(
-            paged.scrolling_focus_strategy(),
-            ViewportFocusStrategy::Paged
-        );
+        assert_eq!(paged.scrolling_focus_strategy(), ViewportFocusStrategy::Paged);
 
-        assert_eq!(
-            minimal.scrolling_focus_strategy(),
-            ViewportFocusStrategy::Minimal
-        );
-        assert_eq!(
-            centered.scrolling_focus_strategy(),
-            ViewportFocusStrategy::Center
-        );
+        assert_eq!(minimal.scrolling_focus_strategy(), ViewportFocusStrategy::Minimal);
+        assert_eq!(centered.scrolling_focus_strategy(), ViewportFocusStrategy::Center);
     }
 
     #[test]
@@ -2120,8 +1967,7 @@ mod tests {
 
     #[test]
     fn parses_and_validates_layout_gaps() {
-        let configured =
-            parse("layout {\n    inner-gap 6.0\n    outer-gap 14.0\n    smart-gaps #true\n}\n");
+        let configured = parse("layout {\n    inner-gap 6.0\n    outer-gap 14.0\n    smart-gaps #true\n}\n");
         let invalid = parse("layout {\n    outer-gap -1.0\n}\n");
 
         assert_eq!(
@@ -2159,11 +2005,9 @@ mod tests {
             "theme {\n    colors {\n        border \"#11223344\"\n        accent \"#AABBCC\"\n        shadow \"#01020380\"\n    }\n    geometry {\n        border-width 1.5\n        focus-ring-width 3.0\n        window-radius 12.0\n    }\n    shadow {\n        soft {\n            offset-y -2.0\n            blur 24.0\n            opacity 0.4\n        }\n    }\n    material {\n        style \"translucent\"\n    }\n}\n",
         );
         let invalid_color = parse("theme {\n    colors {\n        accent \"blue\"\n    }\n}\n");
-        let invalid_radius =
-            parse("theme {\n    geometry {\n        window-radius -1.0\n    }\n}\n");
-        let invalid_opacity = parse(
-            "theme {\n    shadow {\n        soft {\n            opacity 1.1\n        }\n    }\n}\n",
-        );
+        let invalid_radius = parse("theme {\n    geometry {\n        window-radius -1.0\n    }\n}\n");
+        let invalid_opacity =
+            parse("theme {\n    shadow {\n        soft {\n            opacity 1.1\n        }\n    }\n}\n");
 
         assert_eq!(
             configured.theme_settings().unwrap(),
@@ -2197,24 +2041,15 @@ mod tests {
         assert!(invalid_radius.theme_settings().is_err());
         assert!(invalid_opacity.theme_settings().is_err());
         assert!(
-            ferese_config::from_str::<Config>(
-                "theme {\n    material {\n        style \"mist\"\n    }\n}\n"
-            )
-            .is_err()
+            ferese_config::from_str::<Config>("theme {\n    material {\n        style \"mist\"\n    }\n}\n").is_err()
         );
     }
 
     #[test]
     fn materials_default_to_solid_and_reject_removed_style() {
-        assert_eq!(
-            parse("").theme_settings().unwrap().material_style,
-            MaterialStyle::Solid
-        );
+        assert_eq!(parse("").theme_settings().unwrap().material_style, MaterialStyle::Solid);
         assert!(
-            ferese_config::from_str::<Config>(
-                "theme {\n    material {\n        style \"glass\"\n    }\n}\n"
-            )
-            .is_err()
+            ferese_config::from_str::<Config>("theme {\n    material {\n        style \"glass\"\n    }\n}\n").is_err()
         );
     }
 
@@ -2249,14 +2084,17 @@ mod tests {
             "from \"#112233\"\nto \"#445566\"\nangle #inf\n",
         ] {
             assert!(
-                Config::parse_source(&format!(
-                    "theme {{ focus-ring {{ gradient {{\n{settings}\n}} }} }}"
-                ))
-                .and_then(|config| config.theme_settings())
-                .is_err()
+                Config::parse_source(&format!("theme {{ focus-ring {{ gradient {{\n{settings}\n}} }} }}"))
+                    .and_then(|config| config.theme_settings())
+                    .is_err()
             );
         }
-        assert!(ferese_config::from_str::<Config>("theme {\n    border {\n        gradient {\n            from \"#112233\"\n        }\n    }\n}\n").is_err());
+        assert!(
+            ferese_config::from_str::<Config>(
+                "theme {\n    border {\n        gradient {\n            from \"#112233\"\n        }\n    }\n}\n"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -2336,11 +2174,9 @@ mod tests {
             ("duration_ms", "#inf"),
         ] {
             assert!(
-                Config::parse_source(&format!(
-                    "appearance {{ inactive-dim {{ {key} {value}; }} }}"
-                ))
-                .and_then(|config| config.theme_settings())
-                .is_err()
+                Config::parse_source(&format!("appearance {{ inactive-dim {{ {key} {value}; }} }}"))
+                    .and_then(|config| config.theme_settings())
+                    .is_err()
             );
         }
     }
@@ -2409,11 +2245,9 @@ mod tests {
         );
         for threshold in [0, 15, 1001] {
             assert!(
-                parse(&format!(
-                    "input {{ touchpad {{ swipe-threshold {threshold}; }} }}"
-                ))
-                .input_settings()
-                .is_err()
+                parse(&format!("input {{ touchpad {{ swipe-threshold {threshold}; }} }}"))
+                    .input_settings()
+                    .is_err()
             );
         }
     }
@@ -2435,9 +2269,8 @@ mod tests {
 
     #[test]
     fn guide_uses_effective_bindings_including_overrides_and_unbindings() {
-        let config = parse(
-            "binding keys=\"Super+Q\" action=\"none\"\nbinding keys=\"Super+Tab\" action=\"toggle-floating\"\n",
-        );
+        let config =
+            parse("binding keys=\"Super+Q\" action=\"none\"\nbinding keys=\"Super+Tab\" action=\"toggle-floating\"\n");
         let input = config.input_settings().unwrap();
         let map = physical_keymap(&input).unwrap();
         let entries = config
@@ -2446,13 +2279,12 @@ mod tests {
             .iter()
             .filter_map(|binding| binding.guide_entry(Some(&map)))
             .collect::<Vec<_>>();
+        assert!(!entries.iter().any(|entry| entry["description"] == "Close window"));
         assert!(
-            !entries
+            entries
                 .iter()
-                .any(|entry| entry["description"] == "Close window")
+                .any(|entry| entry["keys"] == "Super + Tab" && entry["description"] == "Toggle floating window")
         );
-        assert!(entries.iter().any(|entry| entry["keys"] == "Super + Tab"
-            && entry["description"] == "Toggle floating window"));
         assert!(entries.iter().any(|entry| entry["keys"] == "Super + Enter"));
     }
 
@@ -2472,11 +2304,7 @@ mod tests {
                 && binding.trigger == BindingTrigger::Keysym(keysyms::KEY_f)
                 && binding.action == action));
         }
-        assert!(
-            bindings
-                .iter()
-                .any(|binding| binding.action == BindingAction::Exit)
-        );
+        assert!(bindings.iter().any(|binding| binding.action == BindingAction::Exit));
         assert!(bindings.iter().any(|binding| {
             binding.modifiers.logo
                 && binding.trigger == BindingTrigger::Keysym(keysyms::KEY_Return)
@@ -2491,11 +2319,7 @@ mod tests {
         assert!(bindings.iter().any(|binding| {
             binding.trigger == BindingTrigger::Keysym(keysyms::KEY_Print)
                 && binding.modifiers == BindingModifiers::default()
-                && binding.action
-                    == BindingAction::Spawn(vec![
-                        "ferese-screenshot".to_owned(),
-                        "--full".to_owned(),
-                    ])
+                && binding.action == BindingAction::Spawn(vec!["ferese-screenshot".to_owned(), "--full".to_owned()])
         }));
         assert!(bindings.iter().any(|binding| {
             binding.modifiers.logo
@@ -2515,29 +2339,18 @@ mod tests {
         let bindings = replaced.bindings(&input).unwrap();
         assert_eq!(bindings.len(), 48);
         assert!(bindings.iter().any(|binding| {
-            binding.action
-                == BindingAction::Spawn(vec![
-                    "foot".to_owned(),
-                    "--app-id".to_owned(),
-                    "work".to_owned(),
-                ])
+            binding.action == BindingAction::Spawn(vec!["foot".to_owned(), "--app-id".to_owned(), "work".to_owned()])
         }));
 
         let input = unbound.input_settings().unwrap();
         let bindings = unbound.bindings(&input).unwrap();
         assert_eq!(bindings.len(), 47);
-        assert!(
-            !bindings
-                .iter()
-                .any(|binding| binding.action == BindingAction::Close)
-        );
+        assert!(!bindings.iter().any(|binding| binding.action == BindingAction::Close));
     }
 
     #[test]
     fn accepts_physical_xkb_key_names() {
-        let config = parse(
-            "binding keys=\"Super+AD06\" match=\"physical\" action=\"focus\" argument=\"left\"\n",
-        );
+        let config = parse("binding keys=\"Super+AD06\" match=\"physical\" action=\"focus\" argument=\"left\"\n");
         let input = config.input_settings().unwrap();
         let bindings = config.bindings(&input).unwrap();
 
@@ -2549,13 +2362,9 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_or_invalid_user_bindings() {
-        let duplicate = parse(
-            "binding keys=\"Super+Q\" action=\"close\"\nbinding keys=\"logo+q\" action=\"close\"\n",
-        );
-        let missing_command =
-            parse("binding keys=\"Super+Enter\" action=\"spawn\" argument=\"missing\"\n");
-        let invalid_argument =
-            parse("binding keys=\"Super+Q\" action=\"close\" argument=\"left\"\n");
+        let duplicate = parse("binding keys=\"Super+Q\" action=\"close\"\nbinding keys=\"logo+q\" action=\"close\"\n");
+        let missing_command = parse("binding keys=\"Super+Enter\" action=\"spawn\" argument=\"missing\"\n");
+        let invalid_argument = parse("binding keys=\"Super+Q\" action=\"close\" argument=\"left\"\n");
 
         for config in [duplicate, missing_command, invalid_argument] {
             let input = config.input_settings().unwrap();
@@ -2569,12 +2378,7 @@ mod tests {
             "window-rule app-id=\"org.example.Editor\" workspace=3 floating=#true width=900.0 height=600.0 fullscreen=#false\n",
         );
         let rules = config.window_rules().unwrap();
-        let result = window_rules::resolve(
-            &rules,
-            Some("org.example.editor.desktop"),
-            Some("Document"),
-            false,
-        );
+        let result = window_rules::resolve(&rules, Some("org.example.editor.desktop"), Some("Document"), false);
 
         assert_eq!(result.workspace, Some(3));
         assert_eq!(result.floating, Some(true));
@@ -2640,13 +2444,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_output_profiles() {
-        let invalid_scale =
-            parse("output-profile name=\"bad\" {\n    output match=\"eDP-1\" scale=0.0\n}\n");
-        let invalid_mode =
-            parse("output-profile name=\"bad\" {\n    output match=\"eDP-1\" mode=\"native\"\n}\n");
-        let duplicate = parse(
-            "output-profile name=\"bad\" {\n    output match=\"eDP-1\"\n    output match=\"eDP-1\"\n}\n",
-        );
+        let invalid_scale = parse("output-profile name=\"bad\" {\n    output match=\"eDP-1\" scale=0.0\n}\n");
+        let invalid_mode = parse("output-profile name=\"bad\" {\n    output match=\"eDP-1\" mode=\"native\"\n}\n");
+        let duplicate =
+            parse("output-profile name=\"bad\" {\n    output match=\"eDP-1\"\n    output match=\"eDP-1\"\n}\n");
 
         assert!(invalid_scale.output_profiles().is_err());
         assert!(invalid_mode.output_profiles().is_err());

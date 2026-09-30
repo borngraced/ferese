@@ -8,42 +8,31 @@ pub(crate) mod screenshot_worker;
 pub(crate) mod window_capture;
 mod xdg_shell;
 
-use smithay::{
-    desktop::{PopupManager, layer_map_for_output},
-    input::{
-        Seat, SeatHandler, SeatState,
-        pointer::{CursorImageStatus, PointerHandle},
-    },
-    reexports::wayland_server::{Resource, protocol::wl_surface::WlSurface},
-    utils::Point,
-    wayland::{
-        compositor::{TraversalAction, with_states, with_surface_tree_downward},
-        fractional_scale::{FractionalScaleHandler, with_fractional_scale},
-        idle_inhibit::IdleInhibitHandler,
-        idle_notify::{IdleNotifierHandler, IdleNotifierState},
-        keyboard_shortcuts_inhibit::{
-            KeyboardShortcutsInhibitHandler, KeyboardShortcutsInhibitState,
-            KeyboardShortcutsInhibitor, KeyboardShortcutsInhibitorSeat,
-        },
-        output::OutputHandler,
-        pointer_constraints::{
-            PointerConstraint, PointerConstraintsHandler, with_pointer_constraint,
-        },
-        selection::{
-            SelectionHandler,
-            data_device::{
-                ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
-                set_data_device_focus,
-            },
-            primary_selection::{
-                PrimarySelectionHandler, PrimarySelectionState, set_primary_focus,
-            },
-        },
-        tablet_manager::TabletSeatHandler,
-        xdg_foreign::{XdgForeignHandler, XdgForeignState},
-        xdg_toplevel_icon::XdgToplevelIconHandler,
-    },
+use smithay::desktop::{PopupManager, layer_map_for_output};
+use smithay::input::pointer::{CursorImageStatus, PointerHandle};
+use smithay::input::{Seat, SeatHandler, SeatState};
+use smithay::reexports::wayland_server::Resource;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::wayland::compositor::{TraversalAction, with_states, with_surface_tree_downward};
+use smithay::wayland::fractional_scale::{FractionalScaleHandler, with_fractional_scale};
+use smithay::wayland::idle_inhibit::IdleInhibitHandler;
+use smithay::wayland::idle_notify::{IdleNotifierHandler, IdleNotifierState};
+use smithay::wayland::keyboard_shortcuts_inhibit::{
+    KeyboardShortcutsInhibitHandler, KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor,
+    KeyboardShortcutsInhibitorSeat,
 };
+use smithay::wayland::output::OutputHandler;
+use smithay::wayland::pointer_constraints::{PointerConstraint, PointerConstraintsHandler, with_pointer_constraint};
+use smithay::wayland::selection::SelectionHandler;
+use smithay::wayland::selection::data_device::{
+    ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler, set_data_device_focus,
+};
+use smithay::wayland::selection::primary_selection::{
+    PrimarySelectionHandler, PrimarySelectionState, set_primary_focus,
+};
+use smithay::wayland::tablet_manager::TabletSeatHandler;
+use smithay::wayland::xdg_foreign::{XdgForeignHandler, XdgForeignState};
+use smithay::wayland::xdg_toplevel_icon::XdgToplevelIconHandler;
 
 use crate::Ferese;
 
@@ -75,9 +64,7 @@ impl SeatHandler for Ferese {
         {
             inhibitor.inactivate();
         }
-        if let Some(inhibitor) =
-            focused.and_then(|surface| seat.keyboard_shortcuts_inhibitor_for_surface(surface))
-        {
+        if let Some(inhibitor) = focused.and_then(|surface| seat.keyboard_shortcuts_inhibitor_for_surface(surface)) {
             inhibitor.activate();
             self.active_shortcuts_inhibitor = Some(inhibitor);
         }
@@ -137,10 +124,7 @@ impl KeyboardShortcutsInhibitHandler for Ferese {
     }
 
     fn new_inhibitor(&mut self, inhibitor: KeyboardShortcutsInhibitor) {
-        let focused = self
-            .seat
-            .get_keyboard()
-            .and_then(|keyboard| keyboard.current_focus());
+        let focused = self.seat.get_keyboard().and_then(|keyboard| keyboard.current_focus());
 
         if focused.as_ref() == Some(inhibitor.wl_surface()) {
             inhibitor.activate();
@@ -199,7 +183,14 @@ pub(crate) fn set_surface_tree_scale(surface: &WlSurface, scale: f64) {
 }
 
 impl PointerConstraintsHandler for Ferese {
-    fn new_constraint(&mut self, _surface: &WlSurface, pointer: &PointerHandle<Self>) {
+    fn new_constraint(&mut self, surface: &WlSurface, pointer: &PointerHandle<Self>) {
+        if self
+            .locked_pointer_hint
+            .as_ref()
+            .is_some_and(|hint| hint.surface == *surface)
+        {
+            self.locked_pointer_hint = None;
+        }
         self.activate_focused_pointer_constraint(pointer);
     }
 
@@ -218,20 +209,10 @@ impl PointerConstraintsHandler for Ferese {
             return;
         }
 
-        let Some((focused_surface, origin)) = self.surface_under(pointer.current_location()) else {
-            return;
-        };
-        if focused_surface == *surface {
-            let current = pointer.current_location();
-            let (scale_x, scale_y) = self
-                .window_under_visual(current)
-                .and_then(|window| self.visual_scale_for_window(&window))
-                .unwrap_or((1.0, 1.0));
-            let current_surface_location = current - origin;
-            let offset = location - current_surface_location;
-
-            pointer.set_location(current + Point::from((offset.x * scale_x, offset.y * scale_y)));
-        }
+        self.locked_pointer_hint = Some(crate::input::LockedPointerHint {
+            surface: surface.clone(),
+            local: location,
+        });
     }
 }
 

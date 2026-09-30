@@ -1,11 +1,10 @@
 //! Filesystem events wake the loop; only pending edits need a debounce timer.
+use std::io::Read;
+use std::path::PathBuf;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use std::{
-    io::Read,
-    path::PathBuf,
-    sync::mpsc,
-    time::{Duration, Instant},
-};
 
 fn read_source(path: &std::path::Path) -> Result<String, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -40,21 +39,17 @@ impl ConfigMonitor {
         let (sender, events) = mpsc::sync_channel(1);
         let target = path.clone();
         let event_wakeup = wakeup.clone();
-        let mut watcher =
-            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
-                if let Ok(event) = event
-                    && !event.kind.is_access()
-                    && event
-                        .paths
-                        .iter()
-                        .any(|p| p == &target || target.starts_with(p))
-                {
-                    let _ = sender.try_send(());
-                    if let Some(wakeup) = &event_wakeup {
-                        wakeup.wakeup();
-                    }
+        let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            if let Ok(event) = event
+                && !event.kind.is_access()
+                && event.paths.iter().any(|p| p == &target || target.starts_with(p))
+            {
+                let _ = sender.try_send(());
+                if let Some(wakeup) = &event_wakeup {
+                    wakeup.wakeup();
                 }
-            })?;
+            }
+        })?;
         // Watch the directory, not the inode: atomic editor saves replace it.
         let mut directory = path.parent().unwrap_or(std::path::Path::new("."));
         while !directory.is_dir() {
@@ -224,10 +219,7 @@ mod tests {
                 assert_eq!(result.unwrap(), "animations {\n    speed 0.75\n}\n");
                 break;
             }
-            assert!(
-                Instant::now() < deadline,
-                "atomic save notification never settled"
-            );
+            assert!(Instant::now() < deadline, "atomic save notification never settled");
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -242,17 +234,9 @@ mod tests {
         let mut monitor = ConfigMonitor::new(path).unwrap();
         let now = Instant::now();
         monitor.dirty = Some(now);
-        assert_eq!(
-            monitor.next_deadline(),
-            Some(now + Duration::from_millis(120))
-        );
+        assert_eq!(monitor.next_deadline(), Some(now + Duration::from_millis(120)));
         assert!(monitor.poll(now + Duration::from_millis(119)).is_none());
-        assert!(
-            monitor
-                .poll(now + Duration::from_millis(121))
-                .unwrap()
-                .is_ok()
-        );
+        assert!(monitor.poll(now + Duration::from_millis(121)).unwrap().is_ok());
         assert_eq!(monitor.next_deadline(), None);
     }
 }

@@ -28,16 +28,14 @@ mod wallpaper;
 mod window_rules;
 mod winit;
 
-use std::{
-    error::Error,
-    io,
-    process::{Child, Command},
-    thread,
-    time::Duration,
-};
+use std::error::Error;
+use std::process::{Child, Command};
+use std::time::Duration;
+use std::{io, thread};
 
 use calloop::signals::{Signal, Signals};
-use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
+use smithay::reexports::calloop::EventLoop;
+use smithay::reexports::wayland_server::Display;
 pub use state::{Ferese, RuntimeConfig};
 use tracing::{info, warn};
 
@@ -60,8 +58,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let launch = LaunchConfig::from_environment()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let launch =
+        LaunchConfig::from_environment().map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     let initial_source = config::config_path().and_then(|path| std::fs::read_to_string(path).ok());
     let config = match initial_source.as_deref() {
         Some(source) => Config::parse_source(source)?,
@@ -81,15 +79,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     state.config_source = initial_source.filter(|source| source.len() <= 60 * 1024);
     overview::init_font_loader(&mut event_loop, &mut state)?;
     backends::init(launch.backend, &mut event_loop, &mut state)?;
-    let mut monitor = config::config_path().and_then(
-        |path| match reload::ConfigMonitor::with_wakeup(path, Some(event_loop.get_signal())) {
+    let mut monitor = config::config_path().and_then(|path| {
+        match reload::ConfigMonitor::with_wakeup(path, Some(event_loop.get_signal())) {
             Ok(monitor) => Some(monitor),
             Err(error) => {
                 warn!(%error, "automatic config watching unavailable; use feresectl reload-config");
                 None
             }
-        },
-    );
+        }
+    });
     use calloop::timer::{TimeoutAction, Timer};
     info!(socket = ?state.socket_name, backend = ?launch.backend, "Ferese is accepting Wayland clients");
     let mut child = spawn_client(&mut state, launch.client, launch.client_capabilities);
@@ -141,9 +139,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         if state.input_capture.restore_focus {
             state.restore_input_capture_focus();
         }
+        state.apply_unlocked_pointer_hint();
         let wallpaper_retry = state.wallpaper.take_retry_wakeup();
-        if std::mem::take(&mut state.cursor_redraw_pending) || wallpaper_changed || wallpaper_retry
-        {
+        if std::mem::take(&mut state.cursor_redraw_pending) || wallpaper_changed || wallpaper_retry {
             backends::direct::render_all(state);
         }
         if let Err(error) = state
@@ -242,12 +240,11 @@ fn terminate_child(child: &mut Child) {
 
 #[cfg(test)]
 mod startup_tests {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::sync::Arc;
+
     use super::*;
-    use std::{
-        io::{Read, Write},
-        os::unix::net::UnixStream,
-        sync::Arc,
-    };
 
     #[test]
     fn deferred_cursor_redraw_runs_after_input_lock_is_released() {
@@ -295,15 +292,10 @@ mod startup_tests {
         }
         display.dispatch_clients(&mut ()).unwrap();
         display.handle().flush_clients().unwrap();
-        client
-            .set_read_timeout(Some(Duration::from_secs(1)))
-            .unwrap();
+        client.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
         let mut reply = [0u8; 12];
         client.read_exact(&mut reply).unwrap();
         assert_eq!(u32::from_ne_bytes(reply[0..4].try_into().unwrap()), 2);
-        assert_eq!(
-            u32::from_ne_bytes(reply[4..8].try_into().unwrap()) & 0xffff,
-            0
-        );
+        assert_eq!(u32::from_ne_bytes(reply[4..8].try_into().unwrap()) & 0xffff, 0);
     }
 }

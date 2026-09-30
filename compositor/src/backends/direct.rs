@@ -1,57 +1,41 @@
-use std::{
-    collections::{HashMap, HashSet},
-    error::Error,
-    io,
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::io;
+use std::path::Path;
+use std::time::{Duration, Instant};
 
-use smithay::{
-    backend::{
-        allocator::{
-            Fourcc,
-            gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
-        },
-        drm::{
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode, GbmBufferedSurface, NodeType,
-        },
-        egl::{EGLContext, EGLDisplay},
-        input::InputEvent,
-        libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{
-            Bind, Frame, ImportDma, ImportMemWl, Renderer, damage::OutputDamageTracker,
-            gles::GlesRenderer,
-        },
-        session::{Event as SessionEvent, Session, libseat::LibSeatSession},
-        udev::{UdevBackend, UdevEvent, primary_gpu},
-    },
-    desktop::{layer_map_for_output, utils::OutputPresentationFeedback},
-    output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel},
-    reexports::{
-        calloop::{
-            EventLoop, RegistrationToken,
-            timer::{TimeoutAction, Timer},
-        },
-        drm::control::{
-            Device as ControlDevice, Mode as DrmMode, ModeTypeFlags, connector, crtc, property,
-        },
-        input::{Device as LibinputDevice, Libinput},
-        rustix::fs::OFlags,
-        wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind,
-        wayland_server::backend::GlobalId,
-    },
-    utils::{DeviceFd, Monotonic, Time, Transform},
-    wayland::{dmabuf::DmabufFeedbackBuilder, presentation::Refresh},
+use smithay::backend::allocator::Fourcc;
+use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
+use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode, GbmBufferedSurface, NodeType};
+use smithay::backend::egl::{EGLContext, EGLDisplay};
+use smithay::backend::input::InputEvent;
+use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
+use smithay::backend::renderer::damage::OutputDamageTracker;
+use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::{Bind, Frame, ImportDma, ImportMemWl, Renderer};
+use smithay::backend::session::libseat::LibSeatSession;
+use smithay::backend::session::{Event as SessionEvent, Session};
+use smithay::backend::udev::{UdevBackend, UdevEvent, primary_gpu};
+use smithay::desktop::layer_map_for_output;
+use smithay::desktop::utils::OutputPresentationFeedback;
+use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel};
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+use smithay::reexports::calloop::{EventLoop, RegistrationToken};
+use smithay::reexports::drm::control::{
+    Device as ControlDevice, Mode as DrmMode, ModeTypeFlags, connector, crtc, property,
 };
+use smithay::reexports::input::{Device as LibinputDevice, Libinput};
+use smithay::reexports::rustix::fs::OFlags;
+use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind;
+use smithay::reexports::wayland_server::backend::GlobalId;
+use smithay::utils::{DeviceFd, Monotonic, Time, Transform};
+use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
+use smithay::wayland::presentation::Refresh;
 
-use crate::{
-    Ferese,
-    config::{OutputModeRequest, OutputProfile, OutputSettings, OutputTransform},
-    metrics::RenderMetrics,
-    winit::{
-        animated_window_elements, cursorless_window_elements, frame_effect_metrics, redraw_output,
-    },
-};
+use crate::Ferese;
+use crate::config::{OutputModeRequest, OutputProfile, OutputSettings, OutputTransform};
+use crate::metrics::RenderMetrics;
+use crate::winit::{animated_window_elements, cursorless_window_elements, frame_effect_metrics, redraw_output};
 
 pub struct DirectBackendState {
     pub session: LibSeatSession,
@@ -72,14 +56,12 @@ impl DirectBackendState {
         geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
         output: &Output,
         remaining: usize,
-    ) -> Result<Option<crate::winit::ResizeSnapshot>, smithay::backend::renderer::gles::GlesError>
-    {
-        let Some(device) = self.devices.values_mut().find(|device| {
-            device
-                .outputs
-                .values()
-                .any(|candidate| &candidate.output == output)
-        }) else {
+    ) -> Result<Option<crate::winit::ResizeSnapshot>, smithay::backend::renderer::gles::GlesError> {
+        let Some(device) = self
+            .devices
+            .values_mut()
+            .find(|device| device.outputs.values().any(|candidate| &candidate.output == output))
+        else {
             return Ok(None);
         };
         crate::winit::capture_resize_snapshot(
@@ -100,12 +82,7 @@ impl DirectBackendState {
         let device = self
             .devices
             .values_mut()
-            .find(|device| {
-                device
-                    .outputs
-                    .values()
-                    .any(|candidate| &candidate.output == output)
-            })
+            .find(|device| device.outputs.values().any(|candidate| &candidate.output == output))
             .ok_or("Window output is unavailable")?;
         crate::winit::capture_window_buffer(
             &mut device.renderer,
@@ -124,12 +101,7 @@ impl DirectBackendState {
         let device = self
             .devices
             .values_mut()
-            .find(|device| {
-                device
-                    .outputs
-                    .values()
-                    .any(|candidate| &candidate.output == output)
-            })
+            .find(|device| device.outputs.values().any(|candidate| &candidate.output == output))
             .ok_or("Window output is unavailable")?;
         crate::winit::capture_window_frame(
             &mut device.renderer,
@@ -212,12 +184,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
     let seat_name = session.seat();
     let udev_backend = UdevBackend::new(&seat_name)?;
     let primary_path = primary_gpu(&seat_name)?
-        .or_else(|| {
-            udev_backend
-                .device_list()
-                .next()
-                .map(|(_, path)| path.to_owned())
-        })
+        .or_else(|| udev_backend.device_list().next().map(|(_, path)| path.to_owned()))
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no DRM device found"))?;
     let mut libinput_context =
         Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(session.clone().into());
@@ -254,9 +221,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
             }
             InputEvent::DeviceRemoved { device } => {
                 if let Some(backend) = state.direct_backend.as_mut() {
-                    backend
-                        .input_devices
-                        .retain(|candidate| candidate != &device);
+                    backend.input_devices.retain(|candidate| candidate != &device);
                 }
             }
             event => state.process_input_event(event),
@@ -275,8 +240,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                         device.drm.pause();
                         device.outputs.values_mut().for_each(|output| {
                             output.surface.reset_buffers();
-                            output.damage_tracker =
-                                OutputDamageTracker::from_output(&output.output);
+                            output.damage_tracker = OutputDamageTracker::from_output(&output.output);
                             output.frame_pending = false;
                             output.power_off = false;
                         });
@@ -335,20 +299,12 @@ fn configure_libinput_device(state: &Ferese, device: &mut LibinputDevice) {
     if device.config_tap_finger_count() > 0
         && let Err(error) = device.config_tap_set_enabled(settings.tap)
     {
-        tracing::warn!(
-            device = device.name(),
-            ?error,
-            "failed to configure tap-to-click"
-        );
+        tracing::warn!(device = device.name(), ?error, "failed to configure tap-to-click");
     }
     if device.config_scroll_has_natural_scroll()
         && let Err(error) = device.config_scroll_set_natural_scroll_enabled(settings.natural_scroll)
     {
-        tracing::warn!(
-            device = device.name(),
-            ?error,
-            "failed to configure natural scrolling"
-        );
+        tracing::warn!(device = device.name(), ?error, "failed to configure natural scrolling");
     }
     if device.config_dwt_is_available()
         && let Err(error) = device.config_dwt_set_enabled(settings.disable_while_typing)
@@ -383,10 +339,7 @@ pub(crate) fn reload_outputs(state: &mut Ferese) {
     }
 }
 
-pub(crate) fn validate_live_outputs(
-    state: &Ferese,
-    profiles: &[OutputProfile],
-) -> Result<(), String> {
+pub(crate) fn validate_live_outputs(state: &Ferese, profiles: &[OutputProfile]) -> Result<(), String> {
     let Some(backend) = state.direct_backend.as_ref() else {
         return Ok(());
     };
@@ -414,10 +367,7 @@ fn open_primary_device(
         .session
         .clone();
     let node = DrmNode::from_path(path)?;
-    let fd = session.open(
-        path,
-        OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
-    )?;
+    let fd = session.open(path, OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK)?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
     let (mut drm, notifier) = DrmDevice::new(fd.clone(), true)?;
     let gbm = GbmDevice::new(fd)?;
@@ -443,10 +393,7 @@ fn open_primary_device(
     let mut scan = select_outputs(&drm, &state.output_profiles)?;
     apply_lid_policy(
         &mut scan,
-        state
-            .direct_backend
-            .as_ref()
-            .is_some_and(|backend| backend.lid_closed),
+        state.direct_backend.as_ref().is_some_and(|backend| backend.lid_closed),
     );
     if scan.selections.is_empty() {
         return Err(io::Error::new(
@@ -468,9 +415,7 @@ fn open_primary_device(
             mode,
             settings,
         } = selection;
-        let output = create_direct_output(
-            state, &mut drm, &gbm, &renderer, connector, crtc, mode, &settings,
-        )?;
+        let output = create_direct_output(state, &mut drm, &gbm, &renderer, connector, crtc, mode, &settings)?;
         state
             .direct_backend
             .as_mut()
@@ -503,9 +448,7 @@ fn open_primary_device(
                                 None
                             }
                         });
-                    if let (Some(mut feedback), DrmEventTime::Monotonic(time)) =
-                        (feedback, metadata.time)
-                    {
+                    if let (Some(mut feedback), DrmEventTime::Monotonic(time)) = (feedback, metadata.time) {
                         feedback.presented(
                             Time::<Monotonic>::from(time),
                             Refresh::fixed(refresh_duration(state, node, crtc)),
@@ -538,10 +481,7 @@ fn open_primary_device(
                     }
                     state.record_drm_presentation(node, crtc, metadata.time, metadata.sequence);
                     tracing::trace!(?node, ?crtc, sequence = metadata.sequence, "page flip");
-                    let active = state
-                        .direct_backend
-                        .as_ref()
-                        .is_some_and(|backend| backend.active);
+                    let active = state.direct_backend.as_ref().is_some_and(|backend| backend.active);
                     if active {
                         let was_animating = state
                             .direct_backend
@@ -588,11 +528,7 @@ pub(crate) fn sleep_locked_outputs(state: &mut Ferese) {
     let Some(backend) = state.direct_backend.as_mut() else {
         return;
     };
-    for device in backend
-        .devices
-        .values_mut()
-        .filter(|device| device.drm.is_active())
-    {
+    for device in backend.devices.values_mut().filter(|device| device.drm.is_active()) {
         for output in device.outputs.values_mut() {
             if output.power_off || output.frame_pending {
                 continue;
@@ -621,11 +557,7 @@ pub(crate) fn wake_locked_outputs(state: &mut Ferese) {
 }
 
 pub fn render_all(state: &mut Ferese) {
-    if state
-        .direct_backend
-        .as_ref()
-        .is_none_or(|backend| !backend.active)
-    {
+    if state.direct_backend.as_ref().is_none_or(|backend| !backend.active) {
         return;
     }
     let animating = state.advance_animations(Instant::now());
@@ -692,9 +624,7 @@ fn initial_lid_closed() -> bool {
 fn internal_connector(interface: connector::Interface) -> bool {
     matches!(
         interface,
-        connector::Interface::EmbeddedDisplayPort
-            | connector::Interface::LVDS
-            | connector::Interface::DSI
+        connector::Interface::EmbeddedDisplayPort | connector::Interface::LVDS | connector::Interface::DSI
     )
 }
 
@@ -767,8 +697,7 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
         state.process_dmabuf_imports(&mut device.renderer);
         let (mut buffer, age) = output.surface.next_buffer()?;
         let elements = animated_window_elements(state, &mut device.renderer, &output.output);
-        let effects =
-            frame_effect_metrics(&elements, output.output.current_scale().fractional_scale());
+        let effects = frame_effect_metrics(&elements, output.output.current_scale().fractional_scale());
         let mut framebuffer = device.renderer.bind(&mut buffer)?;
         let result = output.damage_tracker.render_output(
             &mut device.renderer,
@@ -778,12 +707,10 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
             [0.035, 0.04, 0.055, 1.0],
         )?;
         let cursorless_capture = state.has_pending_screencopy(&output.output, false);
-        let captured_with_cursor =
-            state.process_screencopies(&mut device.renderer, &framebuffer, &output.output, true);
+        let captured_with_cursor = state.process_screencopies(&mut device.renderer, &framebuffer, &output.output, true);
 
         if cursorless_capture {
-            let cursorless_elements =
-                cursorless_window_elements(state, &mut device.renderer, &output.output);
+            let cursorless_elements = cursorless_window_elements(state, &mut device.renderer, &output.output);
             redraw_output(
                 &mut device.renderer,
                 &mut framebuffer,
@@ -791,22 +718,13 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
                 &cursorless_elements,
             )?;
             state.process_screencopies(&mut device.renderer, &framebuffer, &output.output, false);
-            redraw_output(
-                &mut device.renderer,
-                &mut framebuffer,
-                &output.output,
-                &elements,
-            )?;
+            redraw_output(&mut device.renderer, &mut framebuffer, &output.output, &elements)?;
         } else if captured_with_cursor {
             let _ = device
                 .renderer
                 .render(
                     &mut framebuffer,
-                    output
-                        .output
-                        .current_mode()
-                        .expect("output has a mode")
-                        .size,
+                    output.output.current_mode().expect("output has a mode").size,
                     output.output.current_transform(),
                 )?
                 .finish()?;
@@ -818,34 +736,18 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
             return Ok(false);
         };
 
-        let mut presentation = OutputPresentationFeedback::new(&output.output);
-        state.space.elements().for_each(|window| {
-            window.take_presentation_feedback(
-                &mut presentation,
-                |_, _| Some(output.output.clone()),
-                |_, _| Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
-            );
-        });
-        let layers = layer_map_for_output(&output.output)
-            .layers()
-            .cloned()
-            .collect::<Vec<_>>();
-        layers.iter().for_each(|layer| {
-            layer.take_presentation_feedback(
-                &mut presentation,
-                |_, _| Some(output.output.clone()),
-                |_, _| Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
-            );
-        });
+        let presentation = crate::presentation::take_output_feedback(
+            state,
+            &output.output,
+            &result.states,
+            Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
+        );
         output
             .surface
             .queue_buffer(Some(result.sync), Some(damage.clone()), presentation)?;
-        output.render_metrics.record_frame(
-            render_started.elapsed(),
-            &damage,
-            missed_deadlines,
-            effects,
-        );
+        output
+            .render_metrics
+            .record_frame(render_started.elapsed(), &damage, missed_deadlines, effects);
         output.frame_pending = true;
         output.lock_frame_pending = state.session_lock.active;
         Ok(true)
@@ -893,10 +795,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
             return;
         }
     };
-    let lid_closed = state
-        .direct_backend
-        .as_ref()
-        .is_some_and(|backend| backend.lid_closed);
+    let lid_closed = state.direct_backend.as_ref().is_some_and(|backend| backend.lid_closed);
     apply_lid_policy(&mut scan, lid_closed);
     if let Some(backend) = state.direct_backend.as_mut() {
         backend.connected_outputs = scan.connected_outputs;
@@ -940,9 +839,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
                         Some(Scale::Fractional(output.settings.scale)),
                         Some((position[0], position[1]).into()),
                     );
-                    state
-                        .space
-                        .map_output(&output.output, (position[0], position[1]));
+                    state.space.map_output(&output.output, (position[0], position[1]));
                     if let Some(id) = state.output_id(&output.output)
                         && let Some(g) = state.space.output_geometry(&output.output)
                     {
@@ -1045,10 +942,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
     }
 
     for crtc in deferred_removals {
-        let keep_internal = device
-            .outputs
-            .get(&crtc)
-            .is_some_and(|output| output.internal)
+        let keep_internal = device.outputs.get(&crtc).is_some_and(|output| output.internal)
             && lid_closed
             && state.direct_backend.as_ref().is_some_and(|backend| {
                 device.outputs.get(&crtc).is_some_and(|output| {
@@ -1060,10 +954,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
             })
             && !device.outputs.values().any(|output| !output.internal);
         if keep_internal {
-            tracing::warn!(
-                ?crtc,
-                "keeping laptop panel enabled: external output activation failed"
-            );
+            tracing::warn!(?crtc, "keeping laptop panel enabled: external output activation failed");
             if let Some(output) = device.outputs.get(&crtc)
                 && let Some(backend) = state.direct_backend.as_mut()
                 && let Some(info) = backend
@@ -1116,9 +1007,7 @@ fn remove_device(state: &mut Ferese, node: DrmNode) {
 
     let context = device.renderer.context_id().erased();
     state.wallpaper.forget_context(&context);
-    state
-        .resize_snapshots
-        .retain(|_, snapshot| snapshot.context != context);
+    state.resize_snapshots.retain(|_, snapshot| snapshot.context != context);
     for (crtc, output) in device.outputs {
         state.display_handle.disable_global::<Ferese>(output.global);
         state.unregister_output(&output.output);
@@ -1170,9 +1059,10 @@ fn arm_animation_timer(state: &mut Ferese) {
     match state
         .loop_handle
         .insert_source(Timer::from_deadline(deadline), |_, _, state| {
-            let active = state.direct_backend.as_ref().is_some_and(|backend| {
-                backend.active && backend.animation_active && !state.session_lock.sleeping
-            });
+            let active = state
+                .direct_backend
+                .as_ref()
+                .is_some_and(|backend| backend.active && backend.animation_active && !state.session_lock.sleeping);
             if active {
                 let deadline = state.animation_fallback_deadline(animation_interval(state));
                 if Instant::now() < deadline {
@@ -1184,9 +1074,7 @@ fn arm_animation_timer(state: &mut Ferese) {
                     .as_ref()
                     .is_some_and(|backend| backend.animation_active)
                 {
-                    return TimeoutAction::ToInstant(
-                        state.animation_fallback_deadline(animation_interval(state)),
-                    );
+                    return TimeoutAction::ToInstant(state.animation_fallback_deadline(animation_interval(state)));
                 }
             }
             if let Some(backend) = state.direct_backend.as_mut() {
@@ -1244,12 +1132,7 @@ fn schedule_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handl
     }
 }
 
-fn deliver_frame_callbacks(
-    state: &mut Ferese,
-    node: DrmNode,
-    crtc: crtc::Handle,
-    identity: &Output,
-) {
+fn deliver_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, identity: &Output) {
     let Some(backend) = state.direct_backend.as_mut() else {
         return;
     };
@@ -1286,24 +1169,15 @@ fn send_frame_callbacks(state: &mut Ferese, output: &Output) {
                 .is_some_and(|id| state.window_belongs_to_output(*id, output))
         })
         .for_each(|window| {
-            window.send_frame(
-                output,
-                state.start_time.elapsed(),
-                Some(Duration::ZERO),
-                |_, _| Some(output.clone()),
-            );
+            window.send_frame(output, state.start_time.elapsed(), Some(Duration::ZERO), |_, _| {
+                Some(output.clone())
+            });
         });
-    let layers = layer_map_for_output(output)
-        .layers()
-        .cloned()
-        .collect::<Vec<_>>();
+    let layers = layer_map_for_output(output).layers().cloned().collect::<Vec<_>>();
     layers.iter().for_each(|layer| {
-        layer.send_frame(
-            output,
-            state.start_time.elapsed(),
-            Some(Duration::ZERO),
-            |_, _| Some(output.clone()),
-        );
+        layer.send_frame(output, state.start_time.elapsed(), Some(Duration::ZERO), |_, _| {
+            Some(output.clone())
+        });
     });
     state.send_cursor_frame(output);
     state.space.refresh();
@@ -1365,12 +1239,7 @@ fn select_outputs(drm: &DrmDevice, profiles: &[OutputProfile]) -> io::Result<Out
             profile: active_profile.map(|profile| profile.name.clone()),
             physical_size: connector.size(),
             current_mode: selected_mode.map(connected_mode_info),
-            available_modes: connector
-                .modes()
-                .iter()
-                .copied()
-                .map(connected_mode_info)
-                .collect(),
+            available_modes: connector.modes().iter().copied().map(connected_mode_info).collect(),
             scale: settings.scale,
             transform: settings.transform,
             configured_position: settings.position,
@@ -1438,10 +1307,7 @@ fn default_output_settings(matcher: String) -> OutputSettings {
     }
 }
 
-fn select_mode(
-    connector: &connector::Info,
-    requested: Option<OutputModeRequest>,
-) -> Option<DrmMode> {
+fn select_mode(connector: &connector::Info, requested: Option<OutputModeRequest>) -> Option<DrmMode> {
     let fallback = || {
         connector
             .modes()
@@ -1460,24 +1326,11 @@ fn select_mode(
         .filter(|mode| mode.size() == (requested.width, requested.height));
     let selected = if let Some(refresh) = requested.refresh_millihertz {
         matching
-            .min_by_key(|mode| {
-                OutputMode::from(**mode)
-                    .refresh
-                    .unsigned_abs()
-                    .abs_diff(refresh)
-            })
-            .filter(|mode| {
-                OutputMode::from(**mode)
-                    .refresh
-                    .unsigned_abs()
-                    .abs_diff(refresh)
-                    <= 1_000
-            })
+            .min_by_key(|mode| OutputMode::from(**mode).refresh.unsigned_abs().abs_diff(refresh))
+            .filter(|mode| OutputMode::from(**mode).refresh.unsigned_abs().abs_diff(refresh) <= 1_000)
             .copied()
     } else {
-        matching
-            .max_by_key(|mode| OutputMode::from(**mode).refresh)
-            .copied()
+        matching.max_by_key(|mode| OutputMode::from(**mode).refresh).copied()
     };
     if selected.is_none() {
         tracing::warn!(
@@ -1504,10 +1357,7 @@ fn create_direct_output(
 ) -> Result<DirectOutput, Box<dyn Error>> {
     let identity = connector_identity(drm, &connector);
     let drm_surface = drm.create_surface(crtc, mode, &[connector.handle()])?;
-    let allocator = GbmAllocator::new(
-        gbm.clone(),
-        GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
-    );
+    let allocator = GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
     let surface = GbmBufferedSurface::new(
         drm_surface,
         allocator,
@@ -1602,21 +1452,18 @@ fn output_transform(transform: OutputTransform) -> Transform {
 }
 
 fn connector_identity(drm: &DrmDevice, connector: &connector::Info) -> String {
-    let edid = drm
-        .get_properties(connector.handle())
-        .ok()
-        .and_then(|properties| {
-            properties.iter().find_map(|(handle, raw)| {
-                let info = drm.get_property(*handle).ok()?;
-                if info.name().to_bytes() != b"EDID" {
-                    return None;
-                }
-                match info.value_type().convert_value(*raw) {
-                    property::Value::Blob(blob) if blob != 0 => drm.get_property_blob(blob).ok(),
-                    _ => None,
-                }
-            })
-        });
+    let edid = drm.get_properties(connector.handle()).ok().and_then(|properties| {
+        properties.iter().find_map(|(handle, raw)| {
+            let info = drm.get_property(*handle).ok()?;
+            if info.name().to_bytes() != b"EDID" {
+                return None;
+            }
+            match info.value_type().convert_value(*raw) {
+                property::Value::Blob(blob) if blob != 0 => drm.get_property_blob(blob).ok(),
+                _ => None,
+            }
+        })
+    });
 
     match edid {
         Some(edid) if !edid.is_empty() => format!("drm-edid:{:016x}", stable_hash(&edid)),
@@ -1654,23 +1501,16 @@ impl PresentationClock {
 
     fn set_refresh(&mut self, refresh_millihertz: i32) {
         if refresh_millihertz > 0 {
-            self.refresh_interval = Some(Duration::from_nanos(
-                1_000_000_000_000_u64 / refresh_millihertz as u64,
-            ));
+            self.refresh_interval = Some(Duration::from_nanos(1_000_000_000_000_u64 / refresh_millihertz as u64));
         }
     }
 
     fn record(&mut self, time: DrmEventTime, sequence: u32) -> Option<Duration> {
         let DrmEventTime::Monotonic(time) = time else {
-            tracing::warn!(
-                sequence,
-                "DRM driver reported a realtime page-flip timestamp"
-            );
+            tracing::warn!(sequence, "DRM driver reported a realtime page-flip timestamp");
             return None;
         };
-        let delta = self
-            .last_presentation
-            .map(|previous| time.saturating_sub(previous));
+        let delta = self.last_presentation.map(|previous| time.saturating_sub(previous));
 
         self.last_presentation = Some(time);
         self.presented_frames = self.presented_frames.saturating_add(1);
@@ -1709,9 +1549,7 @@ mod tests {
 
     #[test]
     fn panel_detection_uses_connector_type_not_monitor_name() {
-        assert!(internal_connector(
-            connector::Interface::EmbeddedDisplayPort
-        ));
+        assert!(internal_connector(connector::Interface::EmbeddedDisplayPort));
         assert!(internal_connector(connector::Interface::LVDS));
         assert!(internal_connector(connector::Interface::DSI));
         assert!(!internal_connector(connector::Interface::HDMIA));
@@ -1744,10 +1582,7 @@ mod tests {
     fn presentation_clock_rejects_realtime_timestamps() {
         let mut clock = PresentationClock::default();
 
-        assert_eq!(
-            clock.record(DrmEventTime::Realtime(SystemTime::now()), 1),
-            None
-        );
+        assert_eq!(clock.record(DrmEventTime::Realtime(SystemTime::now()), 1), None);
         assert_eq!(clock.presented_frames, 0);
     }
 
@@ -1770,10 +1605,7 @@ mod tests {
 
         clock.reset_timing();
 
-        assert_eq!(
-            clock.record(DrmEventTime::Monotonic(Duration::from_secs(10)), 2),
-            None
-        );
+        assert_eq!(clock.record(DrmEventTime::Monotonic(Duration::from_secs(10)), 2), None);
         assert_eq!(clock.presented_frames, 2);
         assert_eq!(clock.missed_deadlines, 0);
     }

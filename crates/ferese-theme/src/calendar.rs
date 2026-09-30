@@ -1,10 +1,7 @@
 //! Date/time labels and a calendar grid; callers own navigation and popup behavior.
-use cosmic::{
-    Element,
-    iced::{Alignment, Background, Border, Length},
-    theme,
-    widget::{column, container, row},
-};
+use cosmic::iced::{Alignment, Background, Border, Length};
+use cosmic::widget::{column, container, row};
+use cosmic::{Element, theme};
 use jiff::Zoned;
 
 pub fn format_bar_time(now: &Zoned) -> String {
@@ -41,10 +38,7 @@ pub fn stacked_digits(label: &str) -> Option<[String; 2]> {
     let (hour, minute) = time.split_once(':')?;
     if !(1..=2).contains(&hour.len())
         || minute.len() != 2
-        || !hour
-            .bytes()
-            .chain(minute.bytes())
-            .all(|digit| digit.is_ascii_digit())
+        || !hour.bytes().chain(minute.bytes()).all(|digit| digit.is_ascii_digit())
     {
         return None;
     }
@@ -104,13 +98,9 @@ pub fn grid<'a, M: Clone + 'a>(
     let mut weekdays = row::with_capacity(7).spacing(3);
     for label in ["M", "T", "W", "T", "F", "S", "S"] {
         weekdays = weekdays.push(
-            container(
-                crate::text(label, font)
-                    .size(11)
-                    .class(theme::Text::Color(muted)),
-            )
-            .width(30)
-            .center_x(30),
+            container(crate::text(label, font).size(11).class(theme::Text::Color(muted)))
+                .width(30)
+                .center_x(30),
         );
     }
     grid = grid.push(weekdays);
@@ -118,26 +108,21 @@ pub fn grid<'a, M: Clone + 'a>(
         let mut dates = row::with_capacity(7).spacing(3);
         for weekday in 0..7 {
             let cell = week * 7 + weekday;
-            let day = cell
-                .checked_sub(start)
-                .map(|day| day + 1)
-                .filter(|day| *day <= days);
-            let is_today =
-                year == today.year() && month == today.month() && day == Some(today.day() as usize);
+            let day = cell.checked_sub(start).map(|day| day + 1).filter(|day| *day <= days);
+            let is_today = year == today.year() && month == today.month() && day == Some(today.day() as usize);
             let label = day.map_or(String::new(), |day| day.to_string());
             dates = dates.push(
-                container(
-                    crate::text(label, font)
-                        .size(12)
-                        .class(theme::Text::Color(if is_today { primary } else { muted })),
-                )
+                container(crate::text(label, font).size(12).class(theme::Text::Color(if is_today {
+                    primary
+                } else {
+                    muted
+                })))
                 .width(30)
                 .height(25)
                 .center_x(30)
                 .center_y(25)
                 .class(theme::Container::custom(move |_| container::Style {
-                    background: is_today
-                        .then_some(Background::Color(palette.accent.scale_alpha(0.2 * opacity))),
+                    background: is_today.then_some(Background::Color(palette.accent.scale_alpha(0.2 * opacity))),
                     border: Border {
                         radius: palette.radius.min(12.).into(),
                         ..Default::default()
@@ -155,14 +140,8 @@ pub fn grid<'a, M: Clone + 'a>(
 mod tests {
     #[test]
     fn pixel_clock_stacks_only_hour_and_minute_formats() {
-        assert_eq!(
-            super::stacked_digits("2:45 pm"),
-            Some(["02".into(), "45".into()])
-        );
-        assert_eq!(
-            super::stacked_digits("14:45"),
-            Some(["14".into(), "45".into()])
-        );
+        assert_eq!(super::stacked_digits("2:45 pm"), Some(["02".into(), "45".into()]));
+        assert_eq!(super::stacked_digits("14:45"), Some(["14".into(), "45".into()]));
         assert!(super::stacked_digits("14:45:30").is_none());
         assert!(super::stacked_digits("Today 14:45").is_none());
         assert!(super::stacked_digits("14:45 pm extra").is_none());
@@ -171,18 +150,9 @@ mod tests {
     #[test]
     fn clock_uses_lowercase_date_and_twelve_hour_time() {
         for (stamp, expected) in [
-            (
-                "2026-09-28T21:32:00+01:00[Africa/Lagos]",
-                "28 sept, 9:32 pm",
-            ),
-            (
-                "2026-09-28T00:05:00+01:00[Africa/Lagos]",
-                "28 sept, 12:05 am",
-            ),
-            (
-                "2026-09-28T12:00:00+01:00[Africa/Lagos]",
-                "28 sept, 12:00 pm",
-            ),
+            ("2026-09-28T21:32:00+01:00[Africa/Lagos]", "28 sept, 9:32 pm"),
+            ("2026-09-28T00:05:00+01:00[Africa/Lagos]", "28 sept, 12:05 am"),
+            ("2026-09-28T12:00:00+01:00[Africa/Lagos]", "28 sept, 12:00 pm"),
         ] {
             assert_eq!(super::format_bar_time(&stamp.parse().unwrap()), expected);
         }
@@ -194,10 +164,7 @@ mod tests {
         let (first, start, days) = super::month(february, 0);
         assert_eq!((first.year(), first.month(), start, days), (2024, 2, 3, 29));
         let (first, start, days) = super::month(february, -2);
-        assert_eq!(
-            (first.year(), first.month(), start, days),
-            (2023, 12, 4, 31)
-        );
+        assert_eq!((first.year(), first.month(), start, days), (2023, 12, 4, 31));
         let june = jiff::civil::Date::new(2025, 6, 1).unwrap();
         let (_, start, days) = super::month(june, 0);
         assert_eq!((start, days), (6, 30));

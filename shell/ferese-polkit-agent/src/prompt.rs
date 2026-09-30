@@ -1,18 +1,15 @@
-use crate::PromptEvent;
-use cosmic::{
-    Element,
-    app::{Core, Settings, Task},
-    iced::{Alignment, Color, Length, Size, Subscription, window},
-    theme,
-    widget::{self, button, column, container, row},
-};
-use std::{
-    collections::VecDeque,
-    io::{BufRead, BufReader, Write},
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader, Write};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use cosmic::app::{Core, Settings, Task};
+use cosmic::iced::{Alignment, Color, Length, Size, Subscription, window};
+use cosmic::widget::{button, column, container, row};
+use cosmic::{Element, theme, widget};
 use zeroize::{Zeroize, Zeroizing};
+
+use crate::PromptEvent;
 
 #[derive(Clone)]
 struct Appearance {
@@ -103,9 +100,7 @@ fn content_height(description: &str, status: Option<&str>) -> f32 {
         .lines()
         .map(|line| line.chars().count().div_ceil(48).max(1))
         .sum();
-    let status_height = status.map_or(0, |message| {
-        14 + 18 * message.chars().count().div_ceil(48).clamp(1, 3)
-    });
+    let status_height = status.map_or(0, |message| 14 + 18 * message.chars().count().div_ceil(48).clamp(1, 3));
     (214 + 18 * lines.saturating_sub(1) + status_height).min(360) as f32
 }
 
@@ -163,10 +158,7 @@ fn focus() -> Task<Message> {
 
 impl Prompt {
     fn resize_to_content(&mut self) -> Task<Message> {
-        let height = content_height(
-            &self.description,
-            self.error.as_deref().or(self.info.as_deref()),
-        );
+        let height = content_height(&self.description, self.error.as_deref().or(self.info.as_deref()));
         if (height - self.height).abs() < 1.0 {
             return Task::none();
         }
@@ -180,12 +172,7 @@ impl Prompt {
 
 impl cosmic::Application for Prompt {
     type Executor = cosmic::executor::Default;
-    type Flags = (
-        Arc<Mutex<VecDeque<PromptEvent>>>,
-        String,
-        String,
-        Appearance,
-    );
+    type Flags = (Arc<Mutex<VecDeque<PromptEvent>>>, String, String, Appearance);
     type Message = Message;
     const APP_ID: &'static str = "dev.ferese.Authentication";
 
@@ -198,21 +185,14 @@ impl cosmic::Application for Prompt {
     }
 
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
-        Some(
-            self.appearance
-                .palette()
-                .application_style(if self.material.is_some() {
-                    cosmic::iced::Color::TRANSPARENT
-                } else {
-                    self.appearance.surface
-                }),
-        )
+        Some(self.appearance.palette().application_style(if self.material.is_some() {
+            cosmic::iced::Color::TRANSPARENT
+        } else {
+            self.appearance.surface
+        }))
     }
 
-    fn init(
-        mut core: Core,
-        (incoming, description, user, appearance): Self::Flags,
-    ) -> (Self, Task<Message>) {
+    fn init(mut core: Core, (incoming, description, user, appearance): Self::Flags) -> (Self, Task<Message>) {
         core.window.show_headerbar = false;
         core.window.border_padding = Some(0);
         core.window.content_container = false;
@@ -257,11 +237,8 @@ impl cosmic::Application for Prompt {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::WindowOpened(id) => {
-                return cosmic::iced::window::run(
-                    id,
-                    ferese_theme::material::ModalMaterial::attach,
-                )
-                .map(|result| cosmic::Action::App(Message::MaterialAttached(result)));
+                return cosmic::iced::window::run(id, ferese_theme::material::ModalMaterial::attach)
+                    .map(|result| cosmic::Action::App(Message::MaterialAttached(result)));
             }
             Message::MaterialAttached(result) => {
                 self.material = result.ok();
@@ -323,9 +300,7 @@ impl cosmic::Application for Prompt {
             .id(widget::Id::new("auth-response"))
             .font(palette.font)
             .padding([7, 12])
-            .style(ferese_theme::controls::authentication_input(
-                palette.palette(),
-            ));
+            .style(ferese_theme::controls::authentication_input(palette.palette()));
         if !self.echo {
             input = input.password();
         }
@@ -347,10 +322,7 @@ impl cosmic::Application for Prompt {
                 .height(40)
                 .center_x(40)
                 .center_y(40)
-                .class(ferese_theme::controls::surface(
-                    palette.accent.scale_alpha(0.13),
-                    12.,
-                )),
+                .class(ferese_theme::controls::surface(palette.accent.scale_alpha(0.13), 12.,)),
             column![
                 ferese_theme::text("Authentication required", palette.font).size(18),
                 ferese_theme::text(format!("Confirm as {}", self.user), palette.font)
@@ -384,10 +356,7 @@ impl cosmic::Application for Prompt {
         body = body.push(
             row![
                 button::custom(ferese_theme::text("Cancel", palette.font).size(13))
-                    .class(ferese_theme::controls::button_style(
-                        palette.palette(),
-                        false
-                    ))
+                    .class(ferese_theme::controls::button_style(palette.palette(), false))
                     .padding([8, 14])
                     .on_press(Message::Cancel),
                 action

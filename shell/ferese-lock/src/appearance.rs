@@ -1,4 +1,5 @@
-use cosmic::{iced::Color, widget::image};
+use cosmic::iced::Color;
+use cosmic::widget::image;
 use ferese_config::Document;
 
 #[derive(Clone)]
@@ -89,11 +90,7 @@ impl Appearance {
     }
 
     pub fn clock_format(&self) -> &'static str {
-        if self.twelve_hour {
-            "%I:%M %p"
-        } else {
-            "%H:%M"
-        }
+        if self.twelve_hour { "%I:%M %p" } else { "%H:%M" }
     }
 
     pub fn theme(&self) -> cosmic::Theme {
@@ -112,14 +109,12 @@ impl Appearance {
 }
 
 fn account_picture(user: &str) -> Option<image::Handle> {
-    let mut candidates =
-        vec![std::path::PathBuf::from("/var/lib/AccountsService/icons").join(user)];
+    let mut candidates = vec![std::path::PathBuf::from("/var/lib/AccountsService/icons").join(user)];
     if let Some(home) = std::env::var_os("HOME") {
         candidates.push(std::path::PathBuf::from(home).join(".face"));
     }
     candidates.into_iter().find_map(|path| {
-        let pixels =
-            cosmic::iced::advanced::graphics::image::load(&image::Handle::from_path(path)).ok()?;
+        let pixels = cosmic::iced::advanced::graphics::image::load(&image::Handle::from_path(path)).ok()?;
         let side = pixels.width().min(pixels.height());
         if side == 0 {
             return None;
@@ -132,13 +127,11 @@ fn account_picture(user: &str) -> Option<image::Handle> {
             side,
         )
         .to_image();
-        let mut pixels =
-            ::image::imageops::resize(&square, 256, 256, ::image::imageops::FilterType::Lanczos3);
+        let mut pixels = ::image::imageops::resize(&square, 256, 256, ::image::imageops::FilterType::Lanczos3);
         // Clip the decoded thumbnail, so the avatar stays circular even on
         // renderers that do not support rounded image clipping.
         for (x, y, pixel) in pixels.enumerate_pixels_mut() {
-            let distance =
-                ((x as f32 + 0.5 - 128.).powi(2) + (y as f32 + 0.5 - 128.).powi(2)).sqrt();
+            let distance = ((x as f32 + 0.5 - 128.).powi(2) + (y as f32 + 0.5 - 128.).powi(2)).sqrt();
             let coverage = (128. - distance).clamp(0., 1.);
             pixel[3] = (pixel[3] as f32 * coverage).round() as u8;
         }

@@ -1,14 +1,12 @@
-use std::{
-    io,
-    os::{
-        fd::AsRawFd,
-        unix::{net::UnixStream, process::CommandExt},
-    },
-    process::Command,
-    sync::Arc,
-};
+use std::io;
+use std::os::fd::AsRawFd;
+use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
+use std::process::Command;
+use std::sync::Arc;
 
-use crate::{Ferese, state::ClientState};
+use crate::Ferese;
+use crate::state::ClientState;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ClientCapabilities(u8);
@@ -36,8 +34,8 @@ pub(crate) fn prepare_command(
     command: &mut Command,
     capabilities: ClientCapabilities,
 ) -> io::Result<Vec<UnixStream>> {
-    let split_shell_control = capabilities.contains(ClientCapabilities::EFFECTS)
-        && capabilities.contains(ClientCapabilities::SHELL_CONTROL);
+    let split_shell_control =
+        capabilities.contains(ClientCapabilities::EFFECTS) && capabilities.contains(ClientCapabilities::SHELL_CONTROL);
     let primary_capabilities = if split_shell_control {
         ClientCapabilities::EFFECTS
     } else {
@@ -56,10 +54,7 @@ pub(crate) fn prepare_command(
     if split_shell_control {
         let control = insert_private_client(state, ClientCapabilities::SHELL_CONTROL)?;
 
-        command.env(
-            "FERESE_SHELL_CONTROL_SOCKET",
-            control.as_raw_fd().to_string(),
-        );
+        command.env("FERESE_SHELL_CONTROL_SOCKET", control.as_raw_fd().to_string());
         clients.push(control);
     }
 
@@ -81,10 +76,7 @@ pub(crate) fn prepare_command(
     Ok(clients)
 }
 
-fn insert_private_client(
-    state: &mut Ferese,
-    capabilities: ClientCapabilities,
-) -> io::Result<UnixStream> {
+fn insert_private_client(state: &mut Ferese, capabilities: ClientCapabilities) -> io::Result<UnixStream> {
     let (server, client) = UnixStream::pair()?;
 
     state.display_handle.insert_client(

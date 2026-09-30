@@ -1,6 +1,8 @@
 //! BlueZ status from its object graph; never starts discovery or pairing.
+use zbus::blocking::Connection;
+use zbus::fdo::ManagedObjects;
+
 use super::Bluetooth;
-use zbus::{blocking::Connection, fdo::ManagedObjects};
 
 pub(super) fn read(connection: &Connection) -> zbus::Result<Option<Bluetooth>> {
     let objects: ManagedObjects = connection
@@ -35,10 +37,7 @@ pub(super) fn read(connection: &Connection) -> zbus::Result<Option<Bluetooth>> {
             return Ok(None);
         };
         let Some((path, _)) = adapters.iter().find(|(_, properties)| {
-            properties
-                .get("Address")
-                .and_then(|value| <&str>::try_from(value).ok())
-                == Some(address)
+            properties.get("Address").and_then(|value| <&str>::try_from(value).ok()) == Some(address)
         }) else {
             return Ok(None);
         };
@@ -78,8 +77,9 @@ fn snapshot(objects: &ManagedObjects, selected: Option<&str>) -> Option<Bluetoot
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str};
+
+    use super::*;
     fn graph() -> ManagedObjects {
         let mut graph = ManagedObjects::new();
         for (path, powered) in [("/org/bluez/hci0", true), ("/org/bluez/hci1", false)] {
@@ -93,24 +93,9 @@ mod tests {
             );
         }
         for (path, adapter, connected, alias) in [
-            (
-                "/org/bluez/hci0/dev_a",
-                "/org/bluez/hci0",
-                true,
-                "Headphones",
-            ),
-            (
-                "/org/bluez/hci0/dev_b",
-                "/org/bluez/hci0",
-                false,
-                "Keyboard",
-            ),
-            (
-                "/org/bluez/hci1/dev_a",
-                "/org/bluez/hci1",
-                true,
-                "Other adapter",
-            ),
+            ("/org/bluez/hci0/dev_a", "/org/bluez/hci0", true, "Headphones"),
+            ("/org/bluez/hci0/dev_b", "/org/bluez/hci0", false, "Keyboard"),
+            ("/org/bluez/hci1/dev_a", "/org/bluez/hci1", true, "Other adapter"),
         ] {
             graph.insert(
                 OwnedObjectPath::try_from(path).unwrap(),

@@ -1,17 +1,15 @@
 use ferese_core::{OutputId, WorkspaceId};
 use ferese_layout::WindowId;
-use ferese_protocols::shell::v1::server::{
-    ferese_shell_manager_v1::{self, FereseShellManagerV1},
-    ferese_shell_v1::{self, FereseShellV1},
-};
-use smithay::{
-    reexports::wayland_server::{
-        Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
-    },
-    wayland::{compositor::with_states, shell::xdg::XdgToplevelSurfaceData},
-};
+use ferese_protocols::shell::v1::server::ferese_shell_manager_v1::FereseShellManagerV1;
+use ferese_protocols::shell::v1::server::ferese_shell_v1::FereseShellV1;
+use ferese_protocols::shell::v1::server::{ferese_shell_manager_v1, ferese_shell_v1};
+use smithay::reexports::wayland_server::{Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource};
+use smithay::wayland::compositor::with_states;
+use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 
-use crate::{Ferese, private_client::ClientCapabilities, state::ClientState};
+use crate::Ferese;
+use crate::private_client::ClientCapabilities;
+use crate::state::ClientState;
 
 pub(crate) fn init_global(display: &DisplayHandle) {
     display.create_global::<Ferese, FereseShellManagerV1, _>(4, ());
@@ -52,11 +50,9 @@ impl GlobalDispatch<FereseShellManagerV1, ()> for Ferese {
     }
 
     fn can_view(client: Client, _global_data: &()) -> bool {
-        client.get_data::<ClientState>().is_some_and(|state| {
-            state
-                .capabilities
-                .contains(ClientCapabilities::SHELL_CONTROL)
-        })
+        client
+            .get_data::<ClientState>()
+            .is_some_and(|state| state.capabilities.contains(ClientCapabilities::SHELL_CONTROL))
     }
 }
 
@@ -104,19 +100,13 @@ impl Dispatch<FereseShellV1, ()> for Ferese {
             return;
         }
         match request {
-            ferese_shell_v1::Request::ActivateWindow {
-                window_hi,
-                window_lo,
-            } => state.handle_shell_window_request(
+            ferese_shell_v1::Request::ActivateWindow { window_hi, window_lo } => state.handle_shell_window_request(
                 shell,
                 ferese_shell_v1::FailedRequest::ActivateWindow,
                 join_id(window_hi, window_lo),
                 ShellWindowAction::Activate,
             ),
-            ferese_shell_v1::Request::CloseWindow {
-                window_hi,
-                window_lo,
-            } => state.handle_shell_window_request(
+            ferese_shell_v1::Request::CloseWindow { window_hi, window_lo } => state.handle_shell_window_request(
                 shell,
                 ferese_shell_v1::FailedRequest::CloseWindow,
                 join_id(window_hi, window_lo),
@@ -129,11 +119,7 @@ impl Dispatch<FereseShellV1, ()> for Ferese {
                 let workspace = WorkspaceId(join_u64(workspace_hi, workspace_lo));
 
                 if !state.activate_managed_workspace(workspace) {
-                    send_request_failed(
-                        shell,
-                        ferese_shell_v1::FailedRequest::ActivateWorkspace,
-                        workspace.0,
-                    );
+                    send_request_failed(shell, ferese_shell_v1::FailedRequest::ActivateWorkspace, workspace.0);
                 }
             }
             ferese_shell_v1::Request::ConfirmLogout { serial } => {
@@ -149,36 +135,21 @@ impl Dispatch<FereseShellV1, ()> for Ferese {
                 force,
             } => {
                 if force <= 1 {
-                    state.confirm_portal_logout(
-                        shell,
-                        serial,
-                        query_token,
-                        inhibitor_revision,
-                        force == 1,
-                    );
+                    state.confirm_portal_logout(shell, serial, query_token, inhibitor_revision, force == 1);
                 }
             }
             ferese_shell_v1::Request::CancelLogout { serial } => {
-                if state.logout_owner.as_ref() == Some(&shell.id())
-                    && state.pending_logout == Some(serial)
-                {
+                if state.logout_owner.as_ref() == Some(&shell.id()) && state.pending_logout == Some(serial) {
                     state.cancel_logout_confirmation();
                 }
             }
             ferese_shell_v1::Request::EnterOverview => state.set_overview_active(true),
             ferese_shell_v1::Request::ExitOverview => state.set_overview_active(false),
-            ferese_shell_v1::Request::SelectOverviewWindow {
-                window_hi,
-                window_lo,
-            } => {
+            ferese_shell_v1::Request::SelectOverviewWindow { window_hi, window_lo } => {
                 let id = join_id(window_hi, window_lo);
 
                 if !state.select_overview_window(id) {
-                    send_request_failed(
-                        shell,
-                        ferese_shell_v1::FailedRequest::SelectOverviewWindow,
-                        id.0,
-                    );
+                    send_request_failed(shell, ferese_shell_v1::FailedRequest::SelectOverviewWindow, id.0);
                 }
             }
             ferese_shell_v1::Request::Destroy => {
@@ -202,12 +173,7 @@ impl Dispatch<FereseShellV1, ()> for Ferese {
     }
 }
 
-fn logout_confirmation_matches(
-    pending: Option<u32>,
-    query: Option<u32>,
-    serial: u32,
-    token: u32,
-) -> bool {
+fn logout_confirmation_matches(pending: Option<u32>, query: Option<u32>, serial: u32, token: u32) -> bool {
     pending == Some(serial) && query == Some(token)
 }
 
@@ -221,14 +187,7 @@ fn consume_logout_confirmation(pending: &mut Option<u32>, serial: u32) -> bool {
 }
 
 impl Ferese {
-    fn confirm_portal_logout(
-        &mut self,
-        shell: &FereseShellV1,
-        serial: u32,
-        token: u32,
-        revision: u32,
-        force: bool,
-    ) {
+    fn confirm_portal_logout(&mut self, shell: &FereseShellV1, serial: u32, token: u32, revision: u32, force: bool) {
         if self.logout_owner.as_ref() != Some(&shell.id())
             || !logout_confirmation_matches(self.pending_logout, self.logout_query, serial, token)
         {
@@ -269,9 +228,7 @@ impl Ferese {
         self.logout_query = Some(self.portal_session.begin_query());
         self.pending_logout = Some(serial);
         self.logout_owner = Some(shell.id());
-        let output_name = self
-            .focused_output()
-            .map_or_else(String::new, |output| output.name());
+        let output_name = self.focused_output().map_or_else(String::new, |output| output.name());
         shell.logout_requested(serial, output_name);
     }
 
@@ -280,11 +237,7 @@ impl Ferese {
             self.portal_session.cancel_query(token);
         }
         if let Some(serial) = self.pending_logout.take() {
-            for shell in self
-                .shell_resources
-                .iter()
-                .filter_map(|shell| shell.upgrade().ok())
-            {
+            for shell in self.shell_resources.iter().filter_map(|shell| shell.upgrade().ok()) {
                 if self.logout_owner.as_ref() == Some(&shell.id()) && shell.version() >= 3 {
                     shell.logout_cancelled(serial);
                 }
@@ -294,8 +247,7 @@ impl Ferese {
     }
 
     pub(crate) fn send_shell_snapshots(&mut self) {
-        self.shell_resources
-            .retain(|resource| resource.upgrade().is_ok());
+        self.shell_resources.retain(|resource| resource.upgrade().is_ok());
         if self.shell_resources.is_empty() {
             self.last_shell_snapshot = None;
             return;
@@ -325,8 +277,7 @@ impl Ferese {
         // New subscribers always receive a complete snapshot. Do not update the
         // broadcast cache here: existing subscribers may still need this state.
         self.shell_snapshot_serial = self.shell_snapshot_serial.wrapping_add(1);
-        self.shell_snapshot()
-            .send(shell, self.shell_snapshot_serial);
+        self.shell_snapshot().send(shell, self.shell_snapshot_serial);
     }
 
     fn output_snapshots(&self) -> Vec<OutputSnapshot> {
@@ -354,9 +305,8 @@ impl Ferese {
             .into_iter()
             .map(|workspace| {
                 let output = self.output_workspaces.output_for_workspace(workspace.id);
-                let active = output.is_some_and(|output| {
-                    self.output_workspaces.active_workspace(output) == Some(workspace.id)
-                });
+                let active =
+                    output.is_some_and(|output| self.output_workspaces.active_workspace(output) == Some(workspace.id));
 
                 WorkspaceSnapshot {
                     id: workspace.id,
@@ -479,10 +429,7 @@ impl ShellSnapshot {
         }
         for workspace in &self.workspaces {
             let (workspace_hi, workspace_lo) = split_id(workspace.id.0);
-            let (output_hi, output_lo) = workspace
-                .output
-                .map(|output| split_id(output.0))
-                .unwrap_or_default();
+            let (output_hi, output_lo) = workspace.output.map(|output| split_id(output.0)).unwrap_or_default();
 
             shell.workspace(
                 workspace_hi,
@@ -564,12 +511,7 @@ mod tests {
     #[test]
     fn logout_serial_cannot_authorize_a_different_session_query() {
         assert!(super::logout_confirmation_matches(Some(42), Some(9), 42, 9));
-        assert!(!super::logout_confirmation_matches(
-            Some(42),
-            Some(9),
-            42,
-            10
-        ));
+        assert!(!super::logout_confirmation_matches(Some(42), Some(9), 42, 10));
         assert!(!super::logout_confirmation_matches(None, Some(9), 42, 9));
     }
 
@@ -633,11 +575,7 @@ mod tests {
     fn config_chunks_are_bounded_and_preserve_unicode() {
         let source = "abc🌲é".repeat(9000);
         let chunks = config_chunks(&source);
-        assert!(
-            chunks
-                .iter()
-                .all(|chunk| !chunk.is_empty() && chunk.len() <= 1024)
-        );
+        assert!(chunks.iter().all(|chunk| !chunk.is_empty() && chunk.len() <= 1024));
         assert_eq!(chunks.concat(), source);
         assert!(config_chunks("").is_empty());
     }

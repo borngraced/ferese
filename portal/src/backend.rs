@@ -1,26 +1,22 @@
 //! ScreenCast portal backend. Only the portal frontend may create sessions;
 //! saved monitor consent is restored only through the frontend permission store.
-use crate::{
-    capture::{Capture, Source},
-    picker::Prompt,
-    stream::Ready,
-};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-use std::{collections::HashMap, process::Stdio, time::Duration};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, Command},
-    sync::{Mutex, Notify},
-};
-use zbus::{
-    Connection,
-    message::Header,
-    object_server::SignalEmitter,
-    zvariant::{OwnedObjectPath, OwnedValue, Value},
-};
+use std::collections::HashMap;
+use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, Command};
+use tokio::sync::{Mutex, Notify};
+use zbus::Connection;
+use zbus::message::Header;
+use zbus::object_server::SignalEmitter;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+
+use crate::capture::{Capture, Source};
+use crate::picker::Prompt;
+use crate::stream::Ready;
 
 pub(crate) type Options = HashMap<String, OwnedValue>;
 pub(crate) static CONFIG_TRANSACTION: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -105,18 +101,12 @@ impl RecorderControl {
         #[zbus(connection)] connection: &Connection,
         #[zbus(header)] header: Header<'_>,
     ) -> zbus::fdo::Result<()> {
-        let sender = header
-            .sender()
-            .ok_or_else(|| error("Missing recorder caller"))?;
+        let sender = header.sender().ok_or_else(|| error("Missing recorder caller"))?;
         if !owns_session(sender.as_str(), session_handle.as_str()) {
-            return Err(zbus::fdo::Error::AccessDenied(
-                "Not your recording session".into(),
-            ));
+            return Err(zbus::fdo::Error::AccessDenied("Not your recording session".into()));
         }
         let dbus = zbus::fdo::DBusProxy::new(connection).await?;
-        let pid = dbus
-            .get_connection_unix_process_id(sender.clone().into())
-            .await?;
+        let pid = dbus.get_connection_unix_process_id(sender.clone().into()).await?;
         if !shell_recorder(pid) {
             return Err(zbus::fdo::Error::AccessDenied(
                 "The shell must own the recording controls".into(),
@@ -155,18 +145,14 @@ fn shell_recorder(pid: u32) -> bool {
     let parent = std::fs::read_to_string(format!("/proc/{pid}/status"))
         .ok()
         .and_then(|status| {
-            status.lines().find_map(|line| {
-                line.strip_prefix("PPid:")
-                    .and_then(|s| s.trim().parse::<u32>().ok())
-            })
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix("PPid:").and_then(|s| s.trim().parse::<u32>().ok()))
         });
     parent.is_some_and(|pid| matches_binary(pid, "ferese-shell") == Some(true))
 }
 
-pub(crate) async fn authorize(
-    connection: &Connection,
-    header: &Header<'_>,
-) -> zbus::fdo::Result<String> {
+pub(crate) async fn authorize(connection: &Connection, header: &Header<'_>) -> zbus::fdo::Result<String> {
     let sender = header
         .sender()
         .ok_or_else(|| zbus::fdo::Error::AccessDenied("Missing caller".into()))?;
@@ -176,9 +162,7 @@ pub(crate) async fn authorize(
         .await
         .map_err(|_| zbus::fdo::Error::AccessDenied("Desktop portal is unavailable".into()))?;
     if sender.as_str() != owner.as_str() {
-        return Err(zbus::fdo::Error::AccessDenied(
-            "Use the desktop portal".into(),
-        ));
+        return Err(zbus::fdo::Error::AccessDenied("Use the desktop portal".into()));
     }
 
     Ok(sender.to_string())
@@ -227,10 +211,7 @@ impl Backend {
             let conn = connection.clone();
             let path = path.to_owned();
             tokio::spawn(async move {
-                let _ = conn
-                    .object_server()
-                    .remove::<SessionObject, _>(path.as_str())
-                    .await;
+                let _ = conn.object_server().remove::<SessionObject, _>(path.as_str()).await;
             });
         }
     }
@@ -319,21 +300,14 @@ impl Backend {
     ) -> zbus::fdo::Result<(u32, Options)> {
         let owner = authorize(connection, &header).await?;
         let settings = source_options(&options).and_then(|(multiple, cursor, types)| {
-            Ok((
-                multiple,
-                cursor,
-                types,
-                crate::restore::persist_mode(&options)?,
-            ))
+            Ok((multiple, cursor, types, crate::restore::persist_mode(&options)?))
         });
         let mut sessions = self.sessions.lock().await;
         let session = sessions
             .get_mut(session_handle.as_str())
             .ok_or_else(|| error("Unknown session"))?;
 
-        if session.owner != owner
-            || session.app != app_id
-            || !matches!(session.phase, Phase::Created | Phase::Selected)
+        if session.owner != owner || session.app != app_id || !matches!(session.phase, Phase::Created | Phase::Selected)
         {
             return Err(error("Invalid session state"));
         }
@@ -369,10 +343,7 @@ impl Backend {
     ) -> zbus::fdo::Result<(u32, Options)> {
         let owner = authorize(connection, &header).await?;
 
-        if !handle
-            .as_str()
-            .starts_with("/org/freedesktop/portal/desktop/request/")
-        {
+        if !handle.as_str().starts_with("/org/freedesktop/portal/desktop/request/") {
             return Err(error("Invalid request path"));
         }
 
@@ -435,10 +406,7 @@ impl Backend {
                 result.unwrap_or_else(|_| Err(StartError::Failed("Sharing request timed out".into())))
             }
         };
-        let _ = connection
-            .object_server()
-            .remove::<Request, _>(handle)
-            .await;
+        let _ = connection.object_server().remove::<Request, _>(handle).await;
 
         match result {
             Ok((children, streams, mut reply)) if !cancel.stopped.load(Ordering::SeqCst) => {
@@ -455,8 +423,7 @@ impl Backend {
                 });
                 reply.insert(
                     "streams".into(),
-                    OwnedValue::try_from(Value::from(streams))
-                        .map_err(|e| error(&e.to_string()))?,
+                    OwnedValue::try_from(Value::from(streams)).map_err(|e| error(&e.to_string()))?,
                 );
 
                 Ok((0, reply))
@@ -593,8 +560,7 @@ async fn start_streams(
     let rememberable = sources
         .iter()
         .filter(|source| {
-            crate::restore::Restore::create(app, cursor, std::slice::from_ref(*source), &outputs, 1)
-                .is_some()
+            crate::restore::Restore::create(app, cursor, std::slice::from_ref(*source), &outputs, 1).is_some()
         })
         .map(|source| source.name.clone())
         .collect::<Vec<_>>();
@@ -602,10 +568,7 @@ async fn start_streams(
         let selected = restore.resolve(app, cursor, multiple, &sources, &outputs)?;
         let selected = validate_selection(
             &sources,
-            &selected
-                .iter()
-                .map(|source| source.name.clone())
-                .collect::<Vec<_>>(),
+            &selected.iter().map(|source| source.name.clone()).collect::<Vec<_>>(),
             multiple,
         )
         .ok()?;
@@ -707,15 +670,11 @@ async fn start_streams(
             .map_err(|e| e.to_string())?;
         let mut line = String::new();
         let output = child.stdout.take().unwrap();
-        tokio::time::timeout(
-            Duration::from_secs(10),
-            BufReader::new(output).read_line(&mut line),
-        )
-        .await
-        .map_err(|_| "PipeWire stream startup timed out")?
-        .map_err(|e| e.to_string())?;
-        let ready: Ready =
-            serde_json::from_str(&line).map_err(|_| "PipeWire stream could not start")?;
+        tokio::time::timeout(Duration::from_secs(10), BufReader::new(output).read_line(&mut line))
+            .await
+            .map_err(|_| "PipeWire stream startup timed out")?
+            .map_err(|e| e.to_string())?;
+        let ready: Ready = serde_json::from_str(&line).map_err(|_| "PipeWire stream could not start")?;
 
         if ready.node == u32::MAX {
             return Err("Invalid PipeWire node".into());
@@ -734,10 +693,7 @@ async fn start_streams(
         return Err("A selected display changed during stream startup".into());
     }
 
-    if children
-        .iter_mut()
-        .any(|child| !matches!(child.try_wait(), Ok(None)))
-    {
+    if children.iter_mut().any(|child| !matches!(child.try_wait(), Ok(None))) {
         return Err("A selected stream ended during startup".into());
     }
 
@@ -751,11 +707,10 @@ async fn start_streams(
                     .find(|source| source.name == name)
                     .ok_or("Unknown window stream")?;
                 let id = source.window_id().ok_or("Invalid selected window")?;
-                if !final_windows.as_array().is_some_and(|windows| {
-                    windows
-                        .iter()
-                        .any(|window| window["id"].as_u64() == Some(id))
-                }) {
+                if !final_windows
+                    .as_array()
+                    .is_some_and(|windows| windows.iter().any(|window| window["id"].as_u64() == Some(id)))
+                {
                     return Err("A selected window closed during startup".to_owned());
                 }
                 window_metadata(source, &ready)
@@ -773,9 +728,7 @@ fn window_metadata(source: &Source, ready: &Ready) -> Result<Options, String> {
     if source.window_id().is_none() || ready.width == 0 || ready.height == 0 {
         return Err("Invalid window stream".into());
     }
-    let (width, height) = ready
-        .logical_size
-        .ok_or("Missing captured window geometry")?;
+    let (width, height) = ready.logical_size.ok_or("Missing captured window geometry")?;
     let size = (
         i32::try_from(width).map_err(|_| "Invalid window width")?,
         i32::try_from(height).map_err(|_| "Invalid window height")?,
@@ -787,25 +740,15 @@ fn window_metadata(source: &Source, ready: &Ready) -> Result<Options, String> {
         ("source_type".into(), 2u32.into()),
         (
             "size".into(),
-            Value::from(size)
-                .try_to_owned()
-                .map_err(|e| e.to_string())?,
+            Value::from(size).try_to_owned().map_err(|e| e.to_string())?,
         ),
     ]))
 }
 
-fn monitor_metadata(
-    outputs: &serde_json::Value,
-    name: &str,
-    ready: &Ready,
-) -> Result<Options, String> {
+fn monitor_metadata(outputs: &serde_json::Value, name: &str, ready: &Ready) -> Result<Options, String> {
     let output = outputs
         .as_array()
-        .and_then(|outputs| {
-            outputs
-                .iter()
-                .find(|output| output["name"].as_str() == Some(name))
-        })
+        .and_then(|outputs| outputs.iter().find(|output| output["name"].as_str() == Some(name)))
         .ok_or("Selected monitor is unavailable")?;
     let integer = |key: &str| {
         output[key]
@@ -851,23 +794,13 @@ fn monitor_metadata(
         ),
         (
             "size".into(),
-            Value::from(size)
-                .try_to_owned()
-                .map_err(|error| error.to_string())?,
+            Value::from(size).try_to_owned().map_err(|error| error.to_string())?,
         ),
     ]))
 }
 
-fn validate_selection(
-    sources: &[Source],
-    names: &[String],
-    multiple: bool,
-) -> Result<Vec<Source>, String> {
-    if names.is_empty()
-        || names.len() > 8
-        || names.len() > sources.len()
-        || (!multiple && names.len() != 1)
-    {
+fn validate_selection(sources: &[Source], names: &[String], multiple: bool) -> Result<Vec<Source>, String> {
+    if names.is_empty() || names.len() > 8 || names.len() > sources.len() || (!multiple && names.len() != 1) {
         return Err("Invalid display selection".into());
     }
 
@@ -890,11 +823,7 @@ fn validate_selection(
 
 async fn supervise(mut children: Vec<Child>, cancel: Arc<Cancel>) {
     loop {
-        if cancel.stopped.load(Ordering::SeqCst)
-            || children
-                .iter_mut()
-                .any(|c| !matches!(c.try_wait(), Ok(None)))
-        {
+        if cancel.stopped.load(Ordering::SeqCst) || children.iter_mut().any(|c| !matches!(c.try_wait(), Ok(None))) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -928,10 +857,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .serve_at(PATH, shortcuts.clone())?
         .serve_at(PATH, inhibit.clone())?
         .serve_at(PATH, input_capture.clone())?
-        .serve_at(
-            "/org/ferese/ScreenRecorder",
-            RecorderControl(backend.clone()),
-        )?
+        .serve_at("/org/ferese/ScreenRecorder", RecorderControl(backend.clone()))?
         .build()
         .await?;
 
@@ -955,9 +881,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         requests.revoke_stale(owner.as_deref()).await;
         shortcuts.revoke_stale(&connection, owner.as_deref()).await;
         inhibit.revoke_stale(&connection, owner.as_deref()).await;
-        input_capture
-            .revoke_stale(&connection, owner.as_deref())
-            .await;
+        input_capture.revoke_stale(&connection, owner.as_deref()).await;
 
         let stale: Vec<_> = backend
             .sessions
@@ -1057,10 +981,7 @@ mod tests {
                 scale: 1,
             })
             .collect::<Vec<_>>();
-        let names = sources
-            .iter()
-            .map(|source| source.name.clone())
-            .collect::<Vec<_>>();
+        let names = sources.iter().map(|source| source.name.clone()).collect::<Vec<_>>();
         assert!(validate_selection(&sources, &names[..8], true).is_ok());
         assert!(validate_selection(&sources, &names, true).is_err());
         assert!(validate_selection(&sources, &names[..2], false).is_err());
@@ -1117,10 +1038,7 @@ mod tests {
                 scale: 1,
             })
             .collect::<Vec<_>>();
-        let names = sources
-            .iter()
-            .map(|source| source.name.clone())
-            .collect::<Vec<_>>();
+        let names = sources.iter().map(|source| source.name.clone()).collect::<Vec<_>>();
         assert_eq!(validate_selection(&sources, &names, true).unwrap().len(), 6);
         assert!(validate_selection(&sources, &names, false).is_err());
     }
@@ -1137,22 +1055,8 @@ mod tests {
             scale: 1,
         };
         assert!(validate_selection(std::slice::from_ref(&source), &[], false).is_err());
-        assert!(
-            validate_selection(std::slice::from_ref(&source), &["other".into()], false).is_err()
-        );
-        assert!(
-            validate_selection(
-                std::slice::from_ref(&source),
-                &["test".into(), "test".into()],
-                true
-            )
-            .is_err()
-        );
-        assert_eq!(
-            validate_selection(&[source], &["test".into()], false)
-                .unwrap()
-                .len(),
-            1
-        );
+        assert!(validate_selection(std::slice::from_ref(&source), &["other".into()], false).is_err());
+        assert!(validate_selection(std::slice::from_ref(&source), &["test".into(), "test".into()], true).is_err());
+        assert_eq!(validate_selection(&[source], &["test".into()], false).unwrap().len(), 1);
     }
 }

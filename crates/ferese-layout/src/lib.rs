@@ -54,12 +54,7 @@ pub struct Rect {
 
 impl Rect {
     pub const fn new(x: f64, y: f64, width: f64, height: f64) -> Self {
-        Self {
-            x,
-            y,
-            width,
-            height,
-        }
+        Self { x, y, width, height }
     }
 
     fn center(self) -> (f64, f64) {
@@ -365,11 +360,7 @@ impl LayoutTree {
         Ok(geometry)
     }
 
-    pub fn geometry_with_gaps(
-        &self,
-        bounds: Rect,
-        gaps: GapConfig,
-    ) -> Result<HashMap<WindowId, Rect>, LayoutError> {
+    pub fn geometry_with_gaps(&self, bounds: Rect, gaps: GapConfig) -> Result<HashMap<WindowId, Rect>, LayoutError> {
         let mut geometry = self.geometry(bounds)?;
         apply_gaps(&mut geometry, bounds, gaps);
 
@@ -434,11 +425,7 @@ impl LayoutTree {
         Ok(result)
     }
 
-    pub fn automatic_axis(
-        &self,
-        focused: Option<WindowId>,
-        bounds: Rect,
-    ) -> Result<Axis, LayoutError> {
+    pub fn automatic_axis(&self, focused: Option<WindowId>, bounds: Rect) -> Result<Axis, LayoutError> {
         let Some(root) = self.root else {
             return Ok(Axis::Horizontal);
         };
@@ -516,12 +503,7 @@ impl LayoutTree {
             .map(|(candidate, _, _, _)| candidate))
     }
 
-    pub fn move_window(
-        &mut self,
-        window: WindowId,
-        direction: Direction,
-        bounds: Rect,
-    ) -> Result<bool, LayoutError> {
+    pub fn move_window(&mut self, window: WindowId, direction: Direction, bounds: Rect) -> Result<bool, LayoutError> {
         let Some(neighbor) = self.directional_neighbor(window, direction, bounds)? else {
             return Ok(false);
         };
@@ -545,12 +527,7 @@ impl LayoutTree {
         Ok(true)
     }
 
-    pub fn resize_window(
-        &mut self,
-        window: WindowId,
-        direction: Direction,
-        amount: f64,
-    ) -> Result<bool, LayoutError> {
+    pub fn resize_window(&mut self, window: WindowId, direction: Direction, amount: f64) -> Result<bool, LayoutError> {
         let mut child = self
             .windows
             .get(&window)
@@ -651,9 +628,7 @@ impl LayoutTree {
         match self.nodes.get(&node) {
             Some(Node::Window(_)) => Ok(node),
             Some(Node::Split { first, .. }) => self.first_window(*first),
-            Some(Node::Stack {
-                children, active, ..
-            }) => children
+            Some(Node::Stack { children, active, .. }) => children
                 .get(*active)
                 .copied()
                 .ok_or(LayoutError::InvalidTree("stack active index is invalid"))
@@ -662,12 +637,7 @@ impl LayoutTree {
         }
     }
 
-    fn replace_child(
-        &mut self,
-        parent: NodeId,
-        old: NodeId,
-        new: NodeId,
-    ) -> Result<(), LayoutError> {
+    fn replace_child(&mut self, parent: NodeId, old: NodeId, new: NodeId) -> Result<(), LayoutError> {
         match self.nodes.get_mut(&parent) {
             Some(Node::Split { first, .. }) if *first == old => *first = new,
             Some(Node::Split { second, .. }) if *second == old => *second = new,
@@ -684,12 +654,7 @@ impl LayoutTree {
         Ok(())
     }
 
-    fn collapse_parent(
-        &mut self,
-        parent: NodeId,
-        leaf: NodeId,
-        sibling: NodeId,
-    ) -> Result<(), LayoutError> {
+    fn collapse_parent(&mut self, parent: NodeId, leaf: NodeId, sibling: NodeId) -> Result<(), LayoutError> {
         let window = match self.nodes.get(&leaf) {
             Some(Node::Window(window)) => *window,
             _ => return Err(LayoutError::InvalidTree("removed leaf is not a window")),
@@ -786,21 +751,11 @@ impl LayoutTree {
                 } else {
                     (available - second_required).max(0.0)
                 };
-                let adjusted_ratio = if available > 0.0 {
-                    first_extent / available
-                } else {
-                    0.5
-                };
+                let adjusted_ratio = if available > 0.0 { first_extent / available } else { 0.5 };
                 let (first_bounds, second_bounds) = split_rect(bounds, *axis, adjusted_ratio);
 
                 self.layout_node_constrained(*first, first_bounds, constraints, focused, geometry)?;
-                self.layout_node_constrained(
-                    *second,
-                    second_bounds,
-                    constraints,
-                    focused,
-                    geometry,
-                )?;
+                self.layout_node_constrained(*second, second_bounds, constraints, focused, geometry)?;
             }
             Some(Node::Stack { children, active }) => {
                 let child = children
@@ -826,10 +781,7 @@ impl LayoutTree {
                 Ok((constraint.min_width, constraint.min_height))
             }
             Some(Node::Split {
-                axis,
-                first,
-                second,
-                ..
+                axis, first, second, ..
             }) => {
                 let first = self.minimum_size(*first, constraints)?;
                 let second = self.minimum_size(*second, constraints)?;
@@ -860,9 +812,7 @@ impl LayoutTree {
             Some(Node::Split { first, second, .. }) => {
                 self.contains_window(*first, window) || self.contains_window(*second, window)
             }
-            Some(Node::Stack { children, .. }) => children
-                .iter()
-                .any(|child| self.contains_window(*child, window)),
+            Some(Node::Stack { children, .. }) => children.iter().any(|child| self.contains_window(*child, window)),
             None => false,
         }
     }
@@ -887,15 +837,9 @@ impl LayoutTree {
                 }
             }
             Some(Node::Split {
-                ratio,
-                first,
-                second,
-                ..
+                ratio, first, second, ..
             }) => {
-                if first == second
-                    || !ratio.is_finite()
-                    || !(MIN_SPLIT_RATIO..=MAX_SPLIT_RATIO).contains(ratio)
-                {
+                if first == second || !ratio.is_finite() || !(MIN_SPLIT_RATIO..=MAX_SPLIT_RATIO).contains(ratio) {
                     return Err(LayoutError::InvalidTree("split is invalid"));
                 }
 
@@ -931,11 +875,7 @@ fn valid_gap(gap: f64) -> f64 {
 }
 
 fn valid_resize_amount(amount: f64) -> f64 {
-    if amount.is_finite() {
-        amount.abs()
-    } else {
-        0.0
-    }
+    if amount.is_finite() { amount.abs() } else { 0.0 }
 }
 
 fn normalized_constraints(constraints: SizeConstraints) -> SizeConstraints {
@@ -1029,12 +969,7 @@ fn nearly_equal(left: f64, right: f64) -> bool {
     (left - right).abs() < f64::EPSILON * left.abs().max(right.abs()).max(1.0)
 }
 
-fn intervals_overlap(
-    first_start: f64,
-    first_size: f64,
-    second_start: f64,
-    second_size: f64,
-) -> bool {
+fn intervals_overlap(first_start: f64, first_size: f64, second_start: f64, second_size: f64) -> bool {
     first_start < second_start + second_size && second_start < first_start + first_size
 }
 
@@ -1043,24 +978,14 @@ fn split_rect(bounds: Rect, axis: Axis, ratio: f64) -> (Rect, Rect) {
         Axis::Horizontal => {
             let boundary = bounds.x + bounds.width * ratio;
             let first = Rect::new(bounds.x, bounds.y, boundary - bounds.x, bounds.height);
-            let second = Rect::new(
-                boundary,
-                bounds.y,
-                bounds.x + bounds.width - boundary,
-                bounds.height,
-            );
+            let second = Rect::new(boundary, bounds.y, bounds.x + bounds.width - boundary, bounds.height);
 
             (first, second)
         }
         Axis::Vertical => {
             let boundary = bounds.y + bounds.height * ratio;
             let first = Rect::new(bounds.x, bounds.y, bounds.width, boundary - bounds.y);
-            let second = Rect::new(
-                bounds.x,
-                boundary,
-                bounds.width,
-                bounds.y + bounds.height - boundary,
-            );
+            let second = Rect::new(bounds.x, boundary, bounds.width, bounds.y + bounds.height - boundary);
 
             (first, second)
         }
@@ -1074,43 +999,32 @@ mod tests {
     #[test]
     fn insertion_splits_the_focused_leaf() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
         tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
             .unwrap();
         tree.insert(WindowId(3), Some(WindowId(1)), Axis::Vertical, 0.5)
             .unwrap();
 
         assert!(tree.validate().is_ok());
-        assert_eq!(
-            tree.geometry(Rect::new(0.0, 0.0, 100.0, 80.0))
-                .unwrap()
-                .len(),
-            3
-        );
+        assert_eq!(tree.geometry(Rect::new(0.0, 0.0, 100.0, 80.0)).unwrap().len(), 3);
     }
 
     #[test]
     fn removal_collapses_the_parent_split() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
         tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
             .unwrap();
         tree.remove(WindowId(1)).unwrap();
 
         assert!(tree.validate().is_ok());
-        assert_eq!(
-            tree.node(tree.root().unwrap()),
-            Some(&Node::Window(WindowId(2)))
-        );
+        assert_eq!(tree.node(tree.root().unwrap()), Some(&Node::Window(WindowId(2))));
     }
 
     #[test]
     fn shared_split_boundary_is_exact() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 1.0 / 3.0)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 1.0 / 3.0).unwrap();
         tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 1.0 / 3.0)
             .unwrap();
 
@@ -1125,8 +1039,7 @@ mod tests {
     #[test]
     fn rejects_duplicate_and_unknown_windows() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
 
         assert_eq!(
             tree.insert(WindowId(1), None, Axis::Horizontal, 0.5),
@@ -1147,28 +1060,20 @@ mod tests {
     #[test]
     fn automatic_axis_follows_focused_tile_shape() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
 
         let wide = Rect::new(0.0, 0.0, 1_920.0, 1_080.0);
-        assert_eq!(
-            tree.automatic_axis(Some(WindowId(1)), wide).unwrap(),
-            Axis::Horizontal
-        );
+        assert_eq!(tree.automatic_axis(Some(WindowId(1)), wide).unwrap(), Axis::Horizontal);
 
         tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
             .unwrap();
-        assert_eq!(
-            tree.automatic_axis(Some(WindowId(1)), wide).unwrap(),
-            Axis::Vertical
-        );
+        assert_eq!(tree.automatic_axis(Some(WindowId(1)), wide).unwrap(), Axis::Vertical);
     }
 
     #[test]
     fn gaps_preserve_outer_and_shared_spacing() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
         tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
             .unwrap();
 
@@ -1186,8 +1091,7 @@ mod tests {
     #[test]
     fn smart_gaps_remove_outer_gap_for_one_window() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
 
         let bounds = Rect::new(0.0, 0.0, 100.0, 80.0);
         let geometry = tree
@@ -1206,8 +1110,7 @@ mod tests {
     #[test]
     fn default_gaps_keep_outer_spacing_for_one_window() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
 
         let geometry = tree
             .geometry_with_gaps(Rect::new(0.0, 0.0, 100.0, 80.0), GapConfig::default())
@@ -1219,8 +1122,7 @@ mod tests {
     #[test]
     fn directional_neighbor_prefers_primary_distance() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
         tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
             .unwrap();
         tree.insert(WindowId(3), Some(WindowId(2)), Axis::Vertical, 0.5)
@@ -1233,13 +1135,11 @@ mod tests {
             Some(WindowId(2))
         );
         assert_eq!(
-            tree.directional_neighbor(WindowId(2), Direction::Down, bounds)
-                .unwrap(),
+            tree.directional_neighbor(WindowId(2), Direction::Down, bounds).unwrap(),
             Some(WindowId(3))
         );
         assert_eq!(
-            tree.directional_neighbor(WindowId(1), Direction::Left, bounds)
-                .unwrap(),
+            tree.directional_neighbor(WindowId(1), Direction::Left, bounds).unwrap(),
             None
         );
     }
@@ -1247,16 +1147,12 @@ mod tests {
     #[test]
     fn directional_move_swaps_window_leaves() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
         tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
             .unwrap();
         let bounds = Rect::new(0.0, 0.0, 100.0, 80.0);
 
-        assert!(
-            tree.move_window(WindowId(1), Direction::Right, bounds)
-                .unwrap()
-        );
+        assert!(tree.move_window(WindowId(1), Direction::Right, bounds).unwrap());
 
         let geometry = tree.geometry(bounds).unwrap();
         assert_eq!(geometry[&WindowId(2)].x, 0.0);
@@ -1267,16 +1163,11 @@ mod tests {
     #[test]
     fn directional_move_at_boundary_is_a_noop() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
 
         assert!(
             !tree
-                .move_window(
-                    WindowId(1),
-                    Direction::Left,
-                    Rect::new(0.0, 0.0, 100.0, 80.0),
-                )
+                .move_window(WindowId(1), Direction::Left, Rect::new(0.0, 0.0, 100.0, 80.0),)
                 .unwrap()
         );
     }
@@ -1284,18 +1175,14 @@ mod tests {
     #[test]
     fn directional_resize_changes_the_nearest_matching_split() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
         tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
             .unwrap();
         tree.insert(WindowId(3), Some(WindowId(1)), Axis::Horizontal, 0.5)
             .unwrap();
         let bounds = Rect::new(0.0, 0.0, 100.0, 100.0);
 
-        assert!(
-            tree.resize_window(WindowId(1), Direction::Right, 0.1)
-                .unwrap()
-        );
+        assert!(tree.resize_window(WindowId(1), Direction::Right, 0.1).unwrap());
 
         let geometry = tree.geometry(bounds).unwrap();
         assert_eq!(geometry[&WindowId(1)].width, 30.0);
@@ -1307,23 +1194,15 @@ mod tests {
     #[test]
     fn directional_resize_walks_to_an_ancestor_and_clamps() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
         tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
             .unwrap();
         tree.insert(WindowId(3), Some(WindowId(1)), Axis::Vertical, 0.5)
             .unwrap();
         let bounds = Rect::new(0.0, 0.0, 100.0, 100.0);
 
-        assert!(
-            tree.resize_window(WindowId(3), Direction::Right, 1.0)
-                .unwrap()
-        );
-        assert!(
-            !tree
-                .resize_window(WindowId(3), Direction::Right, 1.0)
-                .unwrap()
-        );
+        assert!(tree.resize_window(WindowId(3), Direction::Right, 1.0).unwrap());
+        assert!(!tree.resize_window(WindowId(3), Direction::Right, 1.0).unwrap());
 
         let geometry = tree.geometry(bounds).unwrap();
         assert_eq!(geometry[&WindowId(2)].x, 95.0);
@@ -1333,26 +1212,16 @@ mod tests {
     #[test]
     fn directional_resize_at_an_outer_edge_is_a_noop() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
 
-        assert!(
-            !tree
-                .resize_window(WindowId(1), Direction::Left, 0.05)
-                .unwrap()
-        );
-        assert!(
-            !tree
-                .resize_window(WindowId(1), Direction::Right, f64::NAN)
-                .unwrap()
-        );
+        assert!(!tree.resize_window(WindowId(1), Direction::Left, 0.05).unwrap());
+        assert!(!tree.resize_window(WindowId(1), Direction::Right, f64::NAN).unwrap());
     }
 
     #[test]
     fn stacking_windows_shows_only_the_active_child() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
         tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
             .unwrap();
         tree.stack_window(WindowId(2), WindowId(1)).unwrap();
@@ -1366,8 +1235,7 @@ mod tests {
     #[test]
     fn activating_a_hidden_stack_child_changes_visible_geometry() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
         tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
             .unwrap();
         tree.stack_window(WindowId(2), WindowId(1)).unwrap();
@@ -1382,8 +1250,7 @@ mod tests {
     #[test]
     fn removing_from_a_stack_collapses_or_preserves_cardinality() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
         tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
             .unwrap();
         tree.stack_window(WindowId(2), WindowId(1)).unwrap();
@@ -1393,10 +1260,7 @@ mod tests {
         tree.remove(WindowId(3)).unwrap();
         tree.remove(WindowId(2)).unwrap();
 
-        assert_eq!(
-            tree.node(tree.root().unwrap()),
-            Some(&Node::Window(WindowId(1)))
-        );
+        assert_eq!(tree.node(tree.root().unwrap()), Some(&Node::Window(WindowId(1))));
         assert!(tree.validate().is_ok());
     }
 
@@ -1409,9 +1273,7 @@ mod tests {
         let bounds = Rect::new(0.0, 0.0, 1_920.0, 1_080.0);
 
         for _ in 0..2_000 {
-            random = random
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1);
+            random = random.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             let operation = random % 6;
 
             match operation {
@@ -1425,8 +1287,7 @@ mod tests {
                         Axis::Vertical
                     };
 
-                    tree.insert(window, focused, axis, ratio_from_random(random))
-                        .unwrap();
+                    tree.insert(window, focused, axis, ratio_from_random(random)).unwrap();
                     windows.push(window);
                 }
                 1 if !windows.is_empty() => {
@@ -1453,8 +1314,7 @@ mod tests {
                 }
                 5 if !windows.is_empty() => {
                     let window = windows[random as usize % windows.len()];
-                    tree.resize_window(window, random_direction(random), 0.03)
-                        .unwrap();
+                    tree.resize_window(window, random_direction(random), 0.03).unwrap();
                 }
                 _ => {}
             }
@@ -1466,8 +1326,7 @@ mod tests {
     #[test]
     fn constraints_adjust_split_boundaries_when_space_is_available() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.2)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.2).unwrap();
         tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.2)
             .unwrap();
         let constraints = HashMap::from([
@@ -1507,8 +1366,7 @@ mod tests {
     #[test]
     fn focused_window_wins_an_impossible_minimum_constraint_conflict() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
         tree.insert(WindowId(2), Some(WindowId(1)), Axis::Horizontal, 0.5)
             .unwrap();
         let constraints = HashMap::from([
@@ -1550,8 +1408,7 @@ mod tests {
     #[test]
     fn maximum_constraints_clip_without_overlapping_neighbors() {
         let mut tree = LayoutTree::default();
-        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5)
-            .unwrap();
+        tree.insert(WindowId(1), None, Axis::Horizontal, 0.5).unwrap();
         let constraints = HashMap::from([(
             WindowId(1),
             SizeConstraints {
@@ -1569,10 +1426,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(
-            result.geometry[&WindowId(1)],
-            Rect::new(4.0, 4.0, 60.0, 40.0)
-        );
+        assert_eq!(result.geometry[&WindowId(1)], Rect::new(4.0, 4.0, 60.0, 40.0));
         assert_eq!(result.warnings.len(), 2);
     }
 

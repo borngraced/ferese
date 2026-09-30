@@ -1,7 +1,5 @@
-use std::{
-    collections::HashMap,
-    sync::{Mutex, OnceLock},
-};
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 pub fn font(family: Option<&str>) -> cosmic::font::Font {
     let Some(family) = family else {

@@ -1,29 +1,21 @@
+use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
+
+use smithay::output::Output;
+use smithay::reexports::calloop::RegistrationToken;
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_manager_v1::ExtSessionLockManagerV1;
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_surface_v1::ExtSessionLockSurfaceV1;
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1;
+use smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1;
+use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
+use smithay::reexports::wayland_server::{Client, DataInit, Dispatch, DisplayHandle, Resource};
+use smithay::utils::{Logical, Point, SERIAL_COUNTER};
+use smithay::wayland::session_lock::{
+    LockSurface, SessionLockHandler, SessionLockManagerState, SessionLockState, SessionLocker,
+};
+
 use crate::Ferese;
-use smithay::reexports::calloop::{
-    RegistrationToken,
-    timer::{TimeoutAction, Timer},
-};
-use smithay::{
-    output::Output,
-    reexports::{
-        wayland_protocols::ext::session_lock::v1::server::{
-            ext_session_lock_manager_v1::ExtSessionLockManagerV1,
-            ext_session_lock_surface_v1::ExtSessionLockSurfaceV1,
-            ext_session_lock_v1::{self, ExtSessionLockV1},
-        },
-        wayland_server::{
-            Client, DataInit, Dispatch, DisplayHandle, Resource, protocol::wl_output::WlOutput,
-        },
-    },
-    utils::{Logical, Point, SERIAL_COUNTER},
-    wayland::session_lock::{
-        LockSurface, SessionLockHandler, SessionLockManagerState, SessionLockState, SessionLocker,
-    },
-};
-use std::{
-    collections::{HashMap, HashSet},
-    time::{Duration, Instant},
-};
 
 #[derive(Clone, Copy, Debug, serde::Deserialize)]
 #[serde(default)]
@@ -54,10 +46,7 @@ impl IdleSettings {
 
     fn next_poll(self, elapsed: Duration, animate: bool) -> Duration {
         let dim_at = Duration::from_secs(self.dim_after_seconds);
-        if animate
-            && self.dim_after_seconds != 0
-            && elapsed >= dim_at
-            && elapsed < dim_at + Duration::from_millis(500)
+        if animate && self.dim_after_seconds != 0 && elapsed >= dim_at && elapsed < dim_at + Duration::from_millis(500)
         {
             return Duration::from_millis(16);
         }
@@ -72,8 +61,7 @@ impl IdleSettings {
     }
 
     fn appearance(self, elapsed: Duration) -> (f32, bool) {
-        let sleeping = self.sleep_after_seconds != 0
-            && elapsed >= Duration::from_secs(self.sleep_after_seconds);
+        let sleeping = self.sleep_after_seconds != 0 && elapsed >= Duration::from_secs(self.sleep_after_seconds);
         let dim = if self.dim_after_seconds == 0 {
             0.0
         } else {
@@ -99,17 +87,13 @@ pub(crate) struct Lock {
     idle_since: Option<Instant>,
     pub(crate) idle_opacity: f32,
     pub(crate) sleeping: bool,
-    pub(crate) idle_overlays:
-        HashMap<Output, smithay::backend::renderer::element::solid::SolidColorBuffer>,
+    pub(crate) idle_overlays: HashMap<Output, smithay::backend::renderer::element::solid::SolidColorBuffer>,
     idle_timer: Option<RegistrationToken>,
 }
 
 impl Lock {
     fn ready_for_idle<'a>(&self, outputs: impl Iterator<Item = &'a Output>) -> bool {
-        self.active
-            && outputs
-                .into_iter()
-                .all(|output| self.presented.contains(output))
+        self.active && outputs.into_iter().all(|output| self.presented.contains(output))
     }
 
     pub(crate) fn output_added(&mut self, output: &Output) {
@@ -146,14 +130,11 @@ impl Ferese {
             return;
         }
         let since = self.session_lock.idle_since.get_or_insert(now);
-        let (mut opacity, sleeping) = self
-            .lock_idle
-            .appearance(now.saturating_duration_since(*since));
+        let (mut opacity, sleeping) = self.lock_idle.appearance(now.saturating_duration_since(*since));
         if !self.animations_enabled() && opacity > 0.0 && !sleeping {
             opacity = 0.65;
         }
-        let changed =
-            opacity != self.session_lock.idle_opacity || sleeping != self.session_lock.sleeping;
+        let changed = opacity != self.session_lock.idle_opacity || sleeping != self.session_lock.sleeping;
         let was_sleeping = self.session_lock.sleeping;
         self.session_lock.idle_opacity = opacity;
         self.session_lock.sleeping = sleeping;
@@ -190,12 +171,7 @@ impl Ferese {
         let surface = self
             .focused_output()
             .and_then(|output| self.session_lock.surfaces.get(output))
-            .or_else(|| {
-                self.session_lock
-                    .surfaces
-                    .values()
-                    .find(|surface| surface.alive())
-            })
+            .or_else(|| self.session_lock.surfaces.values().find(|surface| surface.alive()))
             .filter(|surface| surface.alive())
             .map(|surface| surface.wl_surface().clone());
         self.seat
@@ -234,12 +210,7 @@ impl Ferese {
     }
 
     pub(crate) fn lock_frame_callbacks(&self, output: &Output) {
-        if let Some(surface) = self
-            .session_lock
-            .surfaces
-            .get(output)
-            .filter(|surface| surface.alive())
-        {
+        if let Some(surface) = self.session_lock.surfaces.get(output).filter(|surface| surface.alive()) {
             smithay::desktop::utils::send_frames_surface_tree(
                 surface.wl_surface(),
                 output,
@@ -263,9 +234,9 @@ impl SessionLockHandler for Ferese {
         self.cancel_logout_confirmation();
         self.session_lock.active = true;
         self.session_lock.idle_since = Some(Instant::now());
-        match self.loop_handle.insert_source(
-            Timer::from_duration(Duration::from_secs(1)),
-            |_, _, state| {
+        match self
+            .loop_handle
+            .insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, state| {
                 if !state.session_lock.active {
                     return TimeoutAction::Drop;
                 }
@@ -274,13 +245,8 @@ impl SessionLockHandler for Ferese {
                     .session_lock
                     .idle_since
                     .map_or(Duration::ZERO, |since| since.elapsed());
-                TimeoutAction::ToDuration(
-                    state
-                        .lock_idle
-                        .next_poll(elapsed, state.animations_enabled()),
-                )
-            },
-        ) {
+                TimeoutAction::ToDuration(state.lock_idle.next_poll(elapsed, state.animations_enabled()))
+            }) {
             Ok(token) => self.session_lock.idle_timer = Some(token),
             Err(error) => tracing::warn!(%error, "could not schedule lock screen inactivity"),
         }
@@ -295,10 +261,7 @@ impl SessionLockHandler for Ferese {
         // already encoding has no pending capture left, so it is terminated
         // here and its staged file is discarded when the worker reports back.
         for request in self.screenshot.terminate_all() {
-            tracing::debug!(
-                request,
-                "cancelled an in-flight screenshot for the session lock"
-            );
+            tracing::debug!(request, "cancelled an in-flight screenshot for the session lock");
         }
         self.set_overview_active(false);
         let serial = SERIAL_COUNTER.next_serial();
@@ -345,9 +308,8 @@ impl SessionLockHandler for Ferese {
         if let Some(output) = Output::from_resource(&output)
             && let Some(geometry) = self.space.output_geometry(&output)
         {
-            surface.with_pending_state(|state| {
-                state.size = Some((geometry.size.w as u32, geometry.size.h as u32).into())
-            });
+            surface
+                .with_pending_state(|state| state.size = Some((geometry.size.w as u32, geometry.size.h as u32).into()));
             self.session_lock.surfaces.insert(output, surface);
             self.focus_lock_surface();
         }
@@ -377,10 +339,7 @@ impl Dispatch<ExtSessionLockV1, SessionLockState> for Ferese {
             return;
         }
         if matches!(request, ext_session_lock_v1::Request::GetLockSurface { .. }) && !owner {
-            lock.post_error(
-                ext_session_lock_v1::Error::InvalidUnlock,
-                "not the active lock owner",
-            );
+            lock.post_error(ext_session_lock_v1::Error::InvalidUnlock, "not the active lock owner");
             return;
         }
         <SessionLockManagerState as Dispatch<ExtSessionLockV1, SessionLockState, Ferese>>::request(
@@ -413,10 +372,7 @@ mod tests {
             policy.next_poll(Duration::from_secs(30), true),
             Duration::from_millis(16)
         );
-        assert_eq!(
-            policy.next_poll(Duration::from_secs(30), false),
-            Duration::from_secs(1)
-        );
+        assert_eq!(policy.next_poll(Duration::from_secs(30), false), Duration::from_secs(1));
     }
 
     #[test]
@@ -498,9 +454,7 @@ mod tests {
             .validate()
             .is_err()
         );
-        assert!(
-            crate::config::Config::parse_source("lock-screen { dim-after-seconds -1; }").is_err()
-        );
+        assert!(crate::config::Config::parse_source("lock-screen { dim-after-seconds -1; }").is_err());
         assert!(
             crate::config::Config::parse_source("lock-screen { sleep-after-seconds 90000; }")
                 .unwrap()

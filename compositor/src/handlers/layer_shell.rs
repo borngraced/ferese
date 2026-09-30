@@ -1,16 +1,11 @@
-use smithay::{
-    desktop::{
-        LayerSurface as DesktopLayerSurface, PopupKind, WindowSurfaceType, layer_map_for_output,
-    },
-    output::Output,
-    reexports::wayland_server::protocol::{wl_output::WlOutput, wl_surface::WlSurface},
-    wayland::shell::{
-        wlr_layer::{
-            KeyboardInteractivity, Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState,
-        },
-        xdg::PopupSurface,
-    },
+use smithay::desktop::{LayerSurface as DesktopLayerSurface, PopupKind, WindowSurfaceType, layer_map_for_output};
+use smithay::output::Output;
+use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::wayland::shell::wlr_layer::{
+    KeyboardInteractivity, Layer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState,
 };
+use smithay::wayland::shell::xdg::PopupSurface;
 
 use crate::Ferese;
 
@@ -19,13 +14,7 @@ impl WlrLayerShellHandler for Ferese {
         &mut self.layer_shell_state
     }
 
-    fn new_layer_surface(
-        &mut self,
-        surface: LayerSurface,
-        output: Option<WlOutput>,
-        _layer: Layer,
-        namespace: String,
-    ) {
+    fn new_layer_surface(&mut self, surface: LayerSurface, output: Option<WlOutput>, _layer: Layer, namespace: String) {
         let output = output
             .as_ref()
             .and_then(Output::from_resource)
@@ -42,10 +31,7 @@ impl WlrLayerShellHandler for Ferese {
         }
 
         tracing::debug!(%namespace, output = %output.name(), "mapped layer surface");
-        super::set_surface_tree_scale(
-            layer.wl_surface(),
-            output.current_scale().fractional_scale(),
-        );
+        super::set_surface_tree_scale(layer.wl_surface(), output.current_scale().fractional_scale());
         self.relayout();
         crate::backends::direct::render_all(self);
     }
@@ -89,10 +75,7 @@ impl WlrLayerShellHandler for Ferese {
 }
 
 pub fn handle_commit(state: &mut Ferese, surface: &WlSurface) {
-    let Some(layer) = state
-        .space
-        .layer_for_surface(surface, WindowSurfaceType::TOPLEVEL)
-    else {
+    let Some(layer) = state.space.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL) else {
         return;
     };
     let outputs = state.space.outputs().cloned().collect::<Vec<_>>();
@@ -112,15 +95,11 @@ pub fn handle_commit(state: &mut Ferese, surface: &WlSurface) {
         && policy.keyboard_interactivity == KeyboardInteractivity::Exclusive
         && matches!(policy.layer, Layer::Top | Layer::Overlay)
     {
-        state
-            .seat
-            .get_keyboard()
-            .expect("seat has a keyboard")
-            .set_focus(
-                state,
-                Some(layer.wl_surface().clone()),
-                smithay::utils::SERIAL_COUNTER.next_serial(),
-            );
+        state.seat.get_keyboard().expect("seat has a keyboard").set_focus(
+            state,
+            Some(layer.wl_surface().clone()),
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+        );
     } else if !layer.can_receive_keyboard_focus() && layer_has_keyboard_focus(state, &layer) {
         state.restore_keyboard_focus();
     }
@@ -136,10 +115,6 @@ fn layer_has_keyboard_focus(state: &Ferese, layer: &DesktopLayerSurface) -> bool
         .seat
         .get_keyboard()
         .and_then(|keyboard| keyboard.current_focus())
-        .and_then(|surface| {
-            state
-                .space
-                .layer_for_surface(&surface, WindowSurfaceType::ALL)
-        })
+        .and_then(|surface| state.space.layer_for_surface(&surface, WindowSurfaceType::ALL))
         .is_some_and(|focused| focused == *layer)
 }

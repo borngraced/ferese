@@ -1,9 +1,8 @@
+use cosmic::iced::{Background, Border, Color, Vector};
+use cosmic::widget::{button, container};
+use cosmic::{theme, widget};
+
 use crate::{Palette, mix};
-use cosmic::{
-    iced::{Background, Border, Color, Vector},
-    theme,
-    widget::{self, button, container},
-};
 
 pub fn surface(background: Color, radius: f32) -> theme::Container<'static> {
     theme::Container::custom(move |_| surface_appearance(background, radius))
@@ -85,11 +84,7 @@ fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button 
             icon_color: Some(on),
             border_radius: p.radius.min(9.).into(),
             border_width: if selected { 1. } else { 0. },
-            border_color: if selected {
-                p.accent
-            } else {
-                Color::TRANSPARENT
-            },
+            border_color: if selected { p.accent } else { Color::TRANSPARENT },
             outline_width: 0.,
             outline_color: Color::TRANSPARENT,
             overlay: None,
@@ -136,11 +131,7 @@ pub fn authentication_input(palette: Palette) -> theme::TextInput {
     }
 }
 
-pub fn lock_input(
-    radius: f32,
-    accent: cosmic::iced::Color,
-    surface: cosmic::iced::Color,
-) -> theme::TextInput {
+pub fn lock_input(radius: f32, accent: cosmic::iced::Color, surface: cosmic::iced::Color) -> theme::TextInput {
     let appearance = move |focused: bool| widget::text_input::Appearance {
         background: cosmic::iced::Color::from_rgba(
             (surface.r + 1.) * 0.5,
@@ -190,9 +181,7 @@ pub fn shell_button(
             a: if pressed {
                 0.20 * opacity
             } else {
-                ((if selected { 0.14 } else { 0.0 })
-                    + progress * if selected { 0.02 } else { 0.08 })
-                    * opacity
+                ((if selected { 0.14 } else { 0.0 }) + progress * if selected { 0.02 } else { 0.08 }) * opacity
             },
             ..foreground
         })),
@@ -211,12 +200,7 @@ pub fn surface_appearance(background: Color, radius: f32) -> container::Style {
     }
 }
 
-pub fn notification_button(
-    foreground: Color,
-    hover: Color,
-    radius: f32,
-    filled: bool,
-) -> theme::Button {
+pub fn notification_button(foreground: Color, hover: Color, radius: f32, filled: bool) -> theme::Button {
     let style = move |active: bool| button::Style {
         text_color: Some(foreground),
         icon_color: Some(foreground),

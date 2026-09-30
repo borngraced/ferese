@@ -1,18 +1,13 @@
-use smithay::{
-    desktop::{PopupKind, WindowSurfaceType, layer_map_for_output},
-    reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{Logical, Rectangle},
-    wayland::input_method::{InputMethodHandler, PopupSurface},
-};
+use smithay::desktop::{PopupKind, WindowSurfaceType, layer_map_for_output};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Logical, Rectangle};
+use smithay::wayland::input_method::{InputMethodHandler, PopupSurface};
 
 use crate::Ferese;
 
 impl InputMethodHandler for Ferese {
     fn new_popup(&mut self, surface: PopupSurface) {
-        if let Err(error) = self
-            .popups
-            .track_popup(PopupKind::InputMethod(surface.clone()))
-        {
+        if let Err(error) = self.popups.track_popup(PopupKind::InputMethod(surface.clone())) {
             tracing::warn!(?error, "failed to track input method popup");
         }
         crate::backends::direct::render_all(self);
@@ -38,10 +33,7 @@ impl InputMethodHandler for Ferese {
             return geometry;
         }
 
-        let Some(layer) = self
-            .space
-            .layer_for_surface(parent, WindowSurfaceType::TOPLEVEL)
-        else {
+        let Some(layer) = self.space.layer_for_surface(parent, WindowSurfaceType::TOPLEVEL) else {
             return Rectangle::default();
         };
 

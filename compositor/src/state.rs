@@ -1,85 +1,90 @@
-use std::{
-    collections::{HashMap, HashSet, hash_map::Entry},
-    error::Error,
-    ffi::OsString,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::ffi::OsString;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use calloop::LoopHandle;
 use ferese_animation::{AnimatedValue, ClientSize, PresentationMode, SpringConfig, WindowGeometry};
 use ferese_core::{
-    LayoutMode, OutputGeometry, OutputId, OutputWorkspaceMap, WindowPlacement, WorkspaceId,
-    WorkspaceLayout, WorkspaceSet,
+    LayoutMode, OutputGeometry, OutputId, OutputWorkspaceMap, WindowPlacement, WorkspaceId, WorkspaceLayout,
+    WorkspaceSet,
 };
 use ferese_layout::{
-    Axis, ColumnWidth, Direction, GapConfig, LayoutResult, Rect, SizeConstraints,
-    ViewportFocusStrategy, WindowId,
+    Axis, ColumnWidth, Direction, GapConfig, LayoutResult, Rect, SizeConstraints, ViewportFocusStrategy, WindowId,
 };
+use ferese_protocols::shell::v1::server::ferese_shell_v1::FereseShellV1;
+use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::drm::{DrmEventTime, DrmNode};
+use smithay::backend::input::Keycode;
+use smithay::backend::renderer::{ErasedContextId, ImportDma};
+use smithay::desktop::space::SpaceElement;
+use smithay::desktop::utils::send_frames_surface_tree;
+use smithay::desktop::{LayerSurface, PopupKind, PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output};
+use smithay::input::keyboard::XkbConfig;
+use smithay::input::pointer::{CursorIcon, CursorImageStatus};
+use smithay::input::{Seat, SeatState};
+use smithay::output::Output;
+use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction};
+use smithay::reexports::drm::control::crtc;
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
+use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason, ObjectId};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::{Display, DisplayHandle, Weak};
+use smithay::utils::{Logical, Point, Rectangle, Size};
+use smithay::wayland::alpha_modifier::AlphaModifierState;
+use smithay::wayland::compositor::{CompositorClientState, CompositorState, with_states};
+use smithay::wayland::cursor_shape::CursorShapeManagerState;
+use smithay::wayland::dmabuf::{DmabufState, ImportNotifier};
+use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::idle_inhibit::IdleInhibitManagerState;
+use smithay::wayland::idle_notify::IdleNotifierState;
+use smithay::wayland::input_method::InputMethodManagerState;
+use smithay::wayland::keyboard_shortcuts_inhibit::{KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor};
+use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::pointer_constraints::PointerConstraintsState;
+use smithay::wayland::presentation::PresentationState;
+use smithay::wayland::relative_pointer::RelativePointerManagerState;
+use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::session_lock::SessionLockManagerState;
+use smithay::wayland::shell::wlr_layer::{Layer, WlrLayerShellState};
+use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::shell::xdg::{SurfaceCachedState, XdgShellState, XdgToplevelSurfaceData};
+use smithay::wayland::shm::ShmState;
+use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
+use smithay::wayland::socket::ListeningSocketSource;
+use smithay::wayland::text_input::TextInputManagerState;
+use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::xdg_activation::XdgActivationState;
+use smithay::wayland::xdg_foreign::XdgForeignState;
+use smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager;
 
-use smithay::{
-    backend::{
-        allocator::dmabuf::Dmabuf,
-        drm::{DrmEventTime, DrmNode},
-        renderer::{ErasedContextId, ImportDma},
-    },
-    desktop::{
-        LayerSurface, PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output,
-        space::SpaceElement, utils::send_frames_surface_tree,
-    },
-    input::{
-        Seat, SeatState,
-        keyboard::XkbConfig,
-        pointer::{CursorIcon, CursorImageStatus},
-    },
-    output::Output,
-    reexports::{
-        calloop::{EventLoop, Interest, LoopSignal, Mode, PostAction, generic::Generic},
-        drm::control::crtc,
-        wayland_protocols::xdg::{
-            decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode,
-            shell::server::xdg_toplevel,
-        },
-        wayland_server::{
-            Display, DisplayHandle,
-            backend::{ClientData, ClientId, DisconnectReason},
-            protocol::wl_surface::WlSurface,
-        },
-    },
-    utils::{Logical, Point, Rectangle, Size},
-    wayland::{
-        alpha_modifier::AlphaModifierState,
-        compositor::{CompositorClientState, CompositorState, with_states},
-        cursor_shape::CursorShapeManagerState,
-        dmabuf::{DmabufState, ImportNotifier},
-        fractional_scale::FractionalScaleManagerState,
-        idle_inhibit::IdleInhibitManagerState,
-        idle_notify::IdleNotifierState,
-        input_method::InputMethodManagerState,
-        keyboard_shortcuts_inhibit::{KeyboardShortcutsInhibitState, KeyboardShortcutsInhibitor},
-        output::OutputManagerState,
-        pointer_constraints::PointerConstraintsState,
-        presentation::PresentationState,
-        relative_pointer::RelativePointerManagerState,
-        selection::{data_device::DataDeviceState, primary_selection::PrimarySelectionState},
-        shell::wlr_layer::Layer,
-        shell::wlr_layer::WlrLayerShellState,
-        shell::xdg::decoration::XdgDecorationState,
-        shell::xdg::{SurfaceCachedState, XdgShellState, XdgToplevelSurfaceData},
-        shm::ShmState,
-        single_pixel_buffer::SinglePixelBufferState,
-        socket::ListeningSocketSource,
-        text_input::TextInputManagerState,
-        viewporter::ViewporterState,
-        xdg_activation::XdgActivationState,
-        xdg_foreign::XdgForeignState,
-        xdg_toplevel_icon::XdgToplevelIconManager,
-    },
-};
-
-use crate::{
-    config::{Binding, InputSettings, OutputProfile, ThemeSettings},
-    gestures::SwipeDirection,
-    window_rules::{WindowRule, resolve as resolve_window_rules},
+use crate::backends::direct::DirectBackendState;
+use crate::config::{Binding, DaemonConfig, InputSettings, OutputProfile, ThemeSettings};
+use crate::cursor::NamedCursor;
+use crate::dimming::DimAnimation;
+use crate::gestures::{Swipe, SwipeDirection};
+use crate::handlers::screencopy::PendingScreencopy;
+use crate::handlers::screenshot::{Coordinator, PartSender};
+use crate::handlers::screenshot_worker::Worker;
+use crate::input::LockedPointerHint;
+use crate::input_capture::InputCapture;
+use crate::ipc::IpcSocketGuard;
+use crate::portal_session::PortalSession;
+use crate::portal_shortcuts::PortalShortcuts;
+use crate::resize_transaction::ResizeTransaction;
+use crate::session_lock::{IdleSettings, Lock};
+use crate::shell_control::ShellSnapshot;
+use crate::stacking::WindowStack;
+use crate::wallpaper::WallpaperState;
+use crate::window_rules::{WindowRule, resolve as resolve_window_rules};
+use crate::winit::{
+    BlurProgram, MaterialBuffers, MaterialProgram, NestedBackend, OverviewScrim, ResizeSnapshot, RoundedClipPrograms,
+    WindowBorderBuffers, WindowShadowBuffers,
 };
 
 const CLOSE_ANIMATION_DURATION: Duration = Duration::from_millis(140);
@@ -103,10 +108,7 @@ impl SlideOffset {
     }
 
     fn opposite(self) -> Self {
-        Self {
-            x: -self.x,
-            y: -self.y,
-        }
+        Self { x: -self.x, y: -self.y }
     }
 
     fn between(self, target: Self, progress: f64) -> Self {
@@ -129,12 +131,7 @@ struct WorkspaceSlide {
 }
 
 impl WorkspaceSlide {
-    fn new(
-        previous: Option<Self>,
-        from: WorkspaceId,
-        to: WorkspaceId,
-        direction: SwipeDirection,
-    ) -> Self {
+    fn new(previous: Option<Self>, from: WorkspaceId, to: WorkspaceId, direction: SwipeDirection) -> Self {
         let movement = SlideOffset::for_swipe(direction);
         let mut items = previous
             .map(|slide| {
@@ -212,8 +209,7 @@ impl ClosingAnimation {
             return false;
         }
 
-        self.progress =
-            (self.progress + delta.as_secs_f64() / CLOSE_ANIMATION_DURATION.as_secs_f64()).min(1.0);
+        self.progress = (self.progress + delta.as_secs_f64() / CLOSE_ANIMATION_DURATION.as_secs_f64()).min(1.0);
         if self.progress < 1.0 {
             return false;
         }
@@ -224,17 +220,17 @@ impl ClosingAnimation {
 }
 
 pub struct Ferese {
-    pub(crate) session_lock_state: smithay::wayland::session_lock::SessionLockManagerState,
-    pub(crate) session_lock: crate::session_lock::Lock,
-    pub(crate) lock_idle: crate::session_lock::IdleSettings,
+    pub(crate) session_lock_state: SessionLockManagerState,
+    pub(crate) session_lock: Lock,
+    pub(crate) lock_idle: IdleSettings,
     pub(crate) config_source: Option<String>,
     pub start_time: Instant,
     pub socket_name: OsString,
     pub display_handle: DisplayHandle,
     pub loop_signal: LoopSignal,
-    pub(crate) loop_handle: smithay::reexports::calloop::LoopHandle<'static, Self>,
-    pub(crate) input_capture: crate::input_capture::InputCapture,
-    pub(crate) portal_session: crate::portal_session::PortalSession,
+    pub(crate) loop_handle: LoopHandle<'static, Self>,
+    pub(crate) input_capture: InputCapture,
+    pub(crate) portal_session: PortalSession,
     pub space: Space<Window>,
     pub workspaces: WorkspaceSet,
     pub output_workspaces: OutputWorkspaceMap,
@@ -242,30 +238,30 @@ pub struct Ferese {
     output_identity_ids: HashMap<String, OutputId>,
     pub window_ids: HashMap<Window, WindowId>,
     pub window_geometry: HashMap<WindowId, WindowGeometry>,
-    resize_transactions: HashMap<WindowId, crate::resize_transaction::ResizeTransaction>,
-    pub(crate) resize_snapshots: HashMap<WindowId, crate::winit::ResizeSnapshot>,
-    pub(crate) nested_backend: Option<crate::winit::NestedBackend>,
-    pub(crate) wallpaper: crate::wallpaper::WallpaperState,
+    resize_transactions: HashMap<WindowId, ResizeTransaction>,
+    pub(crate) resize_snapshots: HashMap<WindowId, ResizeSnapshot>,
+    pub(crate) nested_backend: Option<NestedBackend>,
+    pub(crate) wallpaper: WallpaperState,
     maximized_windows: HashSet<WindowId>,
     maximized_column_widths: HashMap<WindowId, ColumnWidth>,
-    window_stack: crate::stacking::WindowStack,
+    window_stack: WindowStack,
     floating_above_fullscreen: HashMap<WindowId, WindowId>,
     natural_floating_pending: HashSet<WindowId>,
-    pub(crate) window_borders: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
-    pub(crate) window_dims: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
-    pub(crate) window_resize_fills: HashMap<WindowId, crate::winit::WindowBorderBuffers>,
-    pub(crate) window_dimming: HashMap<WindowId, crate::dimming::DimAnimation>,
-    pub(crate) window_focus: HashMap<WindowId, crate::dimming::DimAnimation>,
-    pub(crate) window_shadows: HashMap<WindowId, crate::winit::WindowShadowBuffers>,
-    pub(crate) rounded_clip_programs: HashMap<ErasedContextId, crate::winit::RoundedClipPrograms>,
-    pub(crate) overview_scrims: HashMap<OutputId, crate::winit::OverviewScrim>,
-    pub(crate) material_programs: HashMap<ErasedContextId, crate::winit::MaterialProgram>,
-    pub(crate) material_buffers: HashMap<WlSurface, crate::winit::MaterialBuffers>,
-    pub(crate) portal_shortcuts: crate::portal_shortcuts::PortalShortcuts,
+    pub(crate) window_borders: HashMap<WindowId, WindowBorderBuffers>,
+    pub(crate) window_dims: HashMap<WindowId, WindowBorderBuffers>,
+    pub(crate) window_resize_fills: HashMap<WindowId, WindowBorderBuffers>,
+    pub(crate) window_dimming: HashMap<WindowId, DimAnimation>,
+    pub(crate) window_focus: HashMap<WindowId, DimAnimation>,
+    pub(crate) window_shadows: HashMap<WindowId, WindowShadowBuffers>,
+    pub(crate) rounded_clip_programs: HashMap<ErasedContextId, RoundedClipPrograms>,
+    pub(crate) overview_scrims: HashMap<OutputId, OverviewScrim>,
+    pub(crate) material_programs: HashMap<ErasedContextId, MaterialProgram>,
+    pub(crate) material_buffers: HashMap<WlSurface, MaterialBuffers>,
+    pub(crate) portal_shortcuts: PortalShortcuts,
     pub(crate) pending_logout: Option<u32>,
     pub(crate) logout_query: Option<u32>,
-    pub(crate) logout_owner: Option<smithay::reexports::wayland_server::backend::ObjectId>,
-    pub(crate) blur_programs: HashMap<ErasedContextId, crate::winit::BlurProgram>,
+    pub(crate) logout_owner: Option<ObjectId>,
+    pub(crate) blur_programs: HashMap<ErasedContextId, BlurProgram>,
     pub(crate) backdrop_generation: u64,
     closing_windows: HashMap<WindowId, ClosingAnimation>,
     viewport_animations: HashMap<WorkspaceId, AnimatedValue>,
@@ -286,44 +282,38 @@ pub struct Ferese {
     spring_config: SpringConfig,
     viewport_spring_config: SpringConfig,
     pub(crate) output_profiles: Vec<OutputProfile>,
-    pub(crate) autostart: Vec<crate::config::DaemonConfig>,
+    pub(crate) autostart: Vec<DaemonConfig>,
     pub cursor_status: CursorImageStatus,
     // Cursor callbacks may run with Smithay's pointer mutex held. Rendering
     // reads the pointer position, so defer it until event dispatch returns.
     pub(crate) cursor_redraw_pending: bool,
+    pub(crate) locked_pointer_hint: Option<LockedPointerHint>,
+    pub(crate) last_pointer_time: u32,
     pub(crate) cursor_theme: xcursor::CursorTheme,
-    pub(crate) named_cursors: HashMap<CursorIcon, crate::cursor::NamedCursor>,
-    pub intercepted_keys: HashSet<smithay::input::keyboard::Keycode>,
-    pub(crate) swipe: crate::gestures::Swipe,
+    pub(crate) named_cursors: HashMap<CursorIcon, NamedCursor>,
+    pub intercepted_keys: HashSet<Keycode>,
+    pub(crate) swipe: Swipe,
     pub idle_inhibitors: HashMap<WlSurface, usize>,
     pub active_shortcuts_inhibitor: Option<KeyboardShortcutsInhibitor>,
-    pub direct_backend: Option<crate::backends::direct::DirectBackendState>,
-    _ipc_socket: Option<crate::ipc::IpcSocketGuard>,
+    pub direct_backend: Option<DirectBackendState>,
+    _ipc_socket: Option<IpcSocketGuard>,
     pending_dmabuf_imports: Vec<(Dmabuf, ImportNotifier)>,
-    pub(crate) pending_screencopies: Vec<crate::handlers::screencopy::PendingScreencopy>,
+    pub(crate) pending_screencopies: Vec<PendingScreencopy>,
     // Screenshot requests outlive the readback that filled them: the
     // coordinator owns them until encoding finishes and the caller is
     // answered, or the request is terminated.
-    pub(crate) screenshot: crate::handlers::screenshot::Coordinator,
-    pub(crate) screenshot_parts: Option<crate::handlers::screenshot::PartSender>,
-    pub(crate) screenshot_worker: Option<crate::handlers::screenshot_worker::Worker>,
-    pub(crate) shell_resources: Vec<
-        smithay::reexports::wayland_server::Weak<
-            ferese_protocols::shell::v1::server::ferese_shell_v1::FereseShellV1,
-        >,
-    >,
+    pub(crate) screenshot: Coordinator,
+    pub(crate) screenshot_parts: Option<PartSender>,
+    pub(crate) screenshot_worker: Option<Worker>,
+    pub(crate) shell_resources: Vec<Weak<FereseShellV1>>,
     pub(crate) shell_snapshot_serial: u32,
-    pub(crate) last_shell_snapshot: Option<crate::shell_control::ShellSnapshot>,
+    pub(crate) last_shell_snapshot: Option<ShellSnapshot>,
     pub(crate) overview: crate::overview::OverviewState,
     next_window_id: u64,
     next_output_id: u64,
     last_animation_tick: Instant,
     pub popups: PopupManager,
-    pub(crate) dismissing_popups: Vec<(
-        WlSurface,
-        smithay::desktop::PopupKind,
-        crate::dimming::DimAnimation,
-    )>,
+    pub(crate) dismissing_popups: Vec<(WlSurface, PopupKind, DimAnimation)>,
     pub seat: Seat<Self>,
     pub alpha_modifier_state: AlphaModifierState,
     pub compositor_state: CompositorState,
@@ -393,16 +383,12 @@ impl Ferese {
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&display_handle);
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&display_handle);
         let idle_notifier_state = IdleNotifierState::new(&display_handle, event_loop.handle());
-        let session_lock_state = smithay::wayland::session_lock::SessionLockManagerState::new::<
-            Self,
-            _,
-        >(&display_handle, |_| true);
-        let input_method_enabled =
-            std::env::var_os("FERESE_ENABLE_INPUT_METHOD").is_some_and(|value| value == "1");
+        let session_lock_state =
+            smithay::wayland::session_lock::SessionLockManagerState::new::<Self, _>(&display_handle, |_| true);
+        let input_method_enabled = std::env::var_os("FERESE_ENABLE_INPUT_METHOD").is_some_and(|value| value == "1");
         let input_method_manager_state =
             InputMethodManagerState::new::<Self, _>(&display_handle, move |_| input_method_enabled);
-        let keyboard_shortcuts_inhibit_state =
-            KeyboardShortcutsInhibitState::new::<Self>(&display_handle);
+        let keyboard_shortcuts_inhibit_state = KeyboardShortcutsInhibitState::new::<Self>(&display_handle);
         let shortcut_inhibit_enabled =
             std::env::var_os("FERESE_ENABLE_SHORTCUT_INHIBIT").is_some_and(|value| value == "1");
         if !shortcut_inhibit_enabled {
@@ -413,8 +399,7 @@ impl Ferese {
         let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
         let pointer_constraints_state = PointerConstraintsState::new::<Self>(&display_handle);
-        let presentation_state =
-            PresentationState::new::<Self>(&display_handle, libc::CLOCK_MONOTONIC as u32);
+        let presentation_state = PresentationState::new::<Self>(&display_handle, libc::CLOCK_MONOTONIC as u32);
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let primary_selection_state = PrimarySelectionState::new::<Self>(&display_handle);
         let relative_pointer_state = RelativePointerManagerState::new::<Self>(&display_handle);
@@ -425,8 +410,8 @@ impl Ferese {
         let xdg_toplevel_icon_manager = XdgToplevelIconManager::new::<Self>(&display_handle);
         let mut seat_state = SeatState::new();
         let mut seat = seat_state.new_wl_seat(&display_handle, "ferese-winit");
-        let xkb_options = (!config.input_settings.xkb_options.is_empty())
-            .then(|| config.input_settings.xkb_options.join(","));
+        let xkb_options =
+            (!config.input_settings.xkb_options.is_empty()).then(|| config.input_settings.xkb_options.join(","));
         seat.add_keyboard(
             XkbConfig {
                 layout: &config.input_settings.xkb_layout,
@@ -472,10 +457,7 @@ impl Ferese {
             resize_transactions: HashMap::new(),
             resize_snapshots: HashMap::new(),
             nested_backend: None,
-            wallpaper: crate::wallpaper::WallpaperState::with_wakeup(
-                config.wallpaper,
-                Some(event_loop.get_signal()),
-            ),
+            wallpaper: crate::wallpaper::WallpaperState::with_wakeup(config.wallpaper, Some(event_loop.get_signal())),
             maximized_windows: HashSet::new(),
             maximized_column_widths: HashMap::new(),
             window_stack: crate::stacking::WindowStack::default(),
@@ -519,6 +501,8 @@ impl Ferese {
             autostart: config.autostart,
             cursor_status: CursorImageStatus::default_named(),
             cursor_redraw_pending: false,
+            locked_pointer_hint: None,
+            last_pointer_time: 0,
             cursor_theme,
             named_cursors,
             intercepted_keys: HashSet::new(),
@@ -606,10 +590,7 @@ impl Ferese {
                     )
                     .map_err(|e| format!("keymap reload failed: {e}"))?;
             }
-            keyboard.change_repeat_info(
-                config.input_settings.repeat_rate,
-                config.input_settings.repeat_delay_ms,
-            );
+            keyboard.change_repeat_info(config.input_settings.repeat_rate, config.input_settings.repeat_delay_ms);
         }
 
         self.lock_idle = config.lock_idle;
@@ -644,8 +625,7 @@ impl Ferese {
         self.gap_config = config.gap_config;
         self.input_settings = config.input_settings;
         self.bindings = config.bindings;
-        self.portal_shortcuts
-            .reconcile(&self.bindings, &self.input_settings);
+        self.portal_shortcuts.reconcile(&self.bindings, &self.input_settings);
         let old_rules = std::mem::replace(&mut self.window_rules, config.window_rules);
         self.theme_settings = config.theme_settings;
         self.column_width_presets = config.column_width_presets;
@@ -703,16 +683,9 @@ impl Ferese {
                     .then_some(workspace)
             })
             .expect("numeric workspaces are inexhaustible");
-        let geometry = OutputGeometry::new(
-            geometry.loc.x,
-            geometry.loc.y,
-            geometry.size.w,
-            geometry.size.h,
-        );
+        let geometry = OutputGeometry::new(geometry.loc.x, geometry.loc.y, geometry.size.w, geometry.size.h);
 
-        let registration = self
-            .output_workspaces
-            .connect(output_id, geometry, fallback_workspace);
+        let registration = self.output_workspaces.connect(output_id, geometry, fallback_workspace);
 
         match registration {
             Ok(workspace) => {
@@ -776,9 +749,7 @@ impl Ferese {
                     return None;
                 }
                 match self.workspaces.placement(*id)? {
-                    WindowPlacement::Floating { rect } => {
-                        Some((*id, moved_floating_rect(rect, old, new)))
-                    }
+                    WindowPlacement::Floating { rect } => Some((*id, moved_floating_rect(rect, old, new))),
                     _ => None,
                 }
             })
@@ -838,9 +809,7 @@ impl Ferese {
         let Some(workspace) = self.output_workspaces.active_workspace(output_id) else {
             return;
         };
-        if self.output_workspaces.focused_output() == Some(output_id)
-            && self.workspaces.active_id() == workspace
-        {
+        if self.output_workspaces.focused_output() == Some(output_id) && self.workspaces.active_id() == workspace {
             return;
         }
 
@@ -900,10 +869,7 @@ impl Ferese {
         Ok(socket_name)
     }
 
-    pub fn surface_under(
-        &self,
-        position: Point<f64, Logical>,
-    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+    pub fn surface_under(&self, position: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         if self.session_lock.active {
             return self.lock_surface_under(position);
         }
@@ -919,10 +885,7 @@ impl Ferese {
             })
     }
 
-    pub fn layer_under(
-        &self,
-        position: Point<f64, Logical>,
-    ) -> Option<(LayerSurface, WlSurface, Point<f64, Logical>)> {
+    pub fn layer_under(&self, position: Point<f64, Logical>) -> Option<(LayerSurface, WlSurface, Point<f64, Logical>)> {
         if self.session_lock.active {
             return None;
         }
@@ -936,10 +899,7 @@ impl Ferese {
         self.layer_surface_under(position, &[Layer::Bottom, Layer::Background])
     }
 
-    fn window_surface_under(
-        &self,
-        position: Point<f64, Logical>,
-    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+    fn window_surface_under(&self, position: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
         if self.overview.is_active() {
             return None;
         }
@@ -959,8 +919,7 @@ impl Ferese {
                 return None;
             }
 
-            let (source_x, source_y) =
-                self.inverse_presented_window_point(*id, position.x, position.y)?;
+            let (source_x, source_y) = self.inverse_presented_window_point(*id, position.x, position.y)?;
             let source_point = Point::from((source_x, source_y)) + window.geometry().loc.to_f64();
 
             let surface = window.surface_under(source_point, WindowSurfaceType::ALL);
@@ -1001,8 +960,7 @@ impl Ferese {
             for layer in map.layers_on(*requested).rev() {
                 let geometry = map.layer_geometry(layer)?;
                 let layer_position = output_position - geometry.loc.to_f64();
-                let Some((surface, surface_location)) =
-                    layer.surface_under(layer_position, WindowSurfaceType::ALL)
+                let Some((surface, surface_location)) = layer.surface_under(layer_position, WindowSurfaceType::ALL)
                 else {
                     continue;
                 };
@@ -1060,13 +1018,9 @@ impl Ferese {
             }
 
             if !overview_active {
-                let (source_x, source_y) =
-                    self.inverse_presented_window_point(*id, position.x, position.y)?;
-                let source_point =
-                    Point::from((source_x, source_y)) + window.geometry().loc.to_f64();
-                if window
-                    .surface_under(source_point, WindowSurfaceType::ALL)
-                    .is_none()
+                let (source_x, source_y) = self.inverse_presented_window_point(*id, position.x, position.y)?;
+                let source_point = Point::from((source_x, source_y)) + window.geometry().loc.to_f64();
+                if window.surface_under(source_point, WindowSurfaceType::ALL).is_none()
                     && !self.window_fills_visual_bounds(*id, workspace)
                 {
                     return None;
@@ -1079,9 +1033,7 @@ impl Ferese {
         if overview_active {
             let mut candidates = self.window_ids.keys().cloned().collect::<Vec<_>>();
             // Match Overview's front-to-back render order during overlapping motion.
-            candidates.sort_by_key(|window| {
-                std::cmp::Reverse(self.window_ids.get(window).map_or(0, |id| id.0))
-            });
+            candidates.sort_by_key(|window| std::cmp::Reverse(self.window_ids.get(window).map_or(0, |id| id.0)));
             candidates.iter().find_map(hit)
         } else {
             self.space.elements().rev().find_map(hit)
@@ -1090,8 +1042,7 @@ impl Ferese {
 
     fn workspace_under_pointer(&self, position: Point<f64, Logical>) -> Option<WorkspaceId> {
         let output = self.space.output_under(position).next()?;
-        self.output_workspaces
-            .active_workspace(self.output_id(output)?)
+        self.output_workspaces.active_workspace(self.output_id(output)?)
     }
 
     pub(crate) fn window_belongs_to_output(&self, window: WindowId, output: &Output) -> bool {
@@ -1147,32 +1098,23 @@ impl Ferese {
         windows.sort_by_key(|window| {
             let id = self.window_ids.get(window).copied();
             let geometry = id.and_then(|id| self.window_geometry.get(&id));
-            let floating = id.is_some_and(|id| {
-                matches!(
-                    self.workspaces.placement(id),
-                    Some(WindowPlacement::Floating { .. })
-                )
-            });
+            let floating =
+                id.is_some_and(|id| matches!(self.workspaces.placement(id), Some(WindowPlacement::Floating { .. })));
             let priority = crate::stacking::layer_priority(
                 floating,
                 geometry.is_some_and(|geometry| geometry.is_zooming()),
                 geometry.is_some_and(|geometry| geometry.is_fullscreen()),
                 floating
                     && id.is_some_and(|id| {
-                        self.floating_above_fullscreen
-                            .get(&id)
-                            .is_some_and(|parent| {
-                                self.workspaces
-                                    .workspace_for_window(id)
-                                    .and_then(|workspace| self.workspaces.workspace(workspace))
-                                    .is_some_and(|workspace| workspace.fullscreen == Some(*parent))
-                            })
+                        self.floating_above_fullscreen.get(&id).is_some_and(|parent| {
+                            self.workspaces
+                                .workspace_for_window(id)
+                                .and_then(|workspace| self.workspaces.workspace(workspace))
+                                .is_some_and(|workspace| workspace.fullscreen == Some(*parent))
+                        })
                     }),
             );
-            (
-                priority,
-                id.map_or(usize::MAX, |id| self.window_stack.rank(id)),
-            )
+            (priority, id.map_or(usize::MAX, |id| self.window_stack.rank(id)))
         });
         if stacking_order_settled(self.space.elements(), &windows, |window| window.z_index()) {
             return;
@@ -1201,10 +1143,7 @@ impl Ferese {
         ))
     }
 
-    pub(crate) fn visual_rect_for_window(
-        &self,
-        window: &Window,
-    ) -> Option<Rectangle<i32, Logical>> {
+    pub(crate) fn visual_rect_for_window(&self, window: &Window) -> Option<Rectangle<i32, Logical>> {
         let id = self.window_ids.get(window)?;
         let rect = self.presented_window_rect(*id)?;
         let size = ClientSize::from_rect(rect);
@@ -1256,9 +1195,9 @@ impl Ferese {
             .unwrap_or_else(|| centered_floating_rect(bounds));
         let fullscreen = self.workspaces.active().fullscreen;
         let focus = true;
-        if let Err(error) =
-            self.workspaces
-                .insert_floating_window(id, self.workspaces.active_id(), rect, focus)
+        if let Err(error) = self
+            .workspaces
+            .insert_floating_window(id, self.workspaces.active_id(), rect, focus)
         {
             tracing::error!(%error, ?id, "failed to insert rule-placed floating window");
             return;
@@ -1327,12 +1266,8 @@ impl Ferese {
         self.next_window_id += 1;
 
         let focus = workspace == self.workspaces.active_id()
-            && (self.focused_window == Some(parent)
-                || self.workspaces.active().fullscreen == Some(parent));
-        if let Err(error) = self
-            .workspaces
-            .insert_floating_window(id, workspace, rect, focus)
-        {
+            && (self.focused_window == Some(parent) || self.workspaces.active().fullscreen == Some(parent));
+        if let Err(error) = self.workspaces.insert_floating_window(id, workspace, rect, focus) {
             tracing::error!(%error, ?id, ?parent, "failed to insert transient window");
             return;
         }
@@ -1381,37 +1316,22 @@ impl Ferese {
                 continue;
             };
             let (app_id, title, transient) = with_states(toplevel.wl_surface(), |states| {
-                let attributes = states
-                    .data_map
-                    .get::<XdgToplevelSurfaceData>()
-                    .unwrap()
-                    .lock()
-                    .unwrap();
+                let attributes = states.data_map.get::<XdgToplevelSurfaceData>().unwrap().lock().unwrap();
                 (
                     attributes.app_id.clone(),
                     attributes.title.clone(),
                     attributes.parent.is_some(),
                 )
             });
-            let old =
-                resolve_window_rules(old_rules, app_id.as_deref(), title.as_deref(), transient);
-            let new = resolve_window_rules(
-                &self.window_rules,
-                app_id.as_deref(),
-                title.as_deref(),
-                transient,
-            );
+            let old = resolve_window_rules(old_rules, app_id.as_deref(), title.as_deref(), transient);
+            let new = resolve_window_rules(&self.window_rules, app_id.as_deref(), title.as_deref(), transient);
             if let Some(new) = crate::window_rules::live_result(old, new, transient) {
                 self.apply_window_rule_result(&window, new);
             }
         }
     }
 
-    fn apply_window_rule_result(
-        &mut self,
-        window: &Window,
-        rule: crate::window_rules::WindowRuleResult,
-    ) {
+    fn apply_window_rule_result(&mut self, window: &Window, rule: crate::window_rules::WindowRuleResult) {
         let Some(id) = self.window_ids.get(window).copied() else {
             return;
         };
@@ -1429,9 +1349,7 @@ impl Ferese {
             .unwrap_or(Axis::Horizontal);
 
         if let Some(workspace) = rule.workspace
-            && let Err(error) = self
-                .workspaces
-                .move_window_to_numeric(id, workspace, axis, 0.5)
+            && let Err(error) = self.workspaces.move_window_to_numeric(id, workspace, axis, 0.5)
         {
             tracing::warn!(%error, ?id, workspace, "failed to apply window workspace rule");
         }
@@ -1441,10 +1359,7 @@ impl Ferese {
             .floating
             .or((rule.width.is_some() || rule.height.is_some()).then_some(true));
         if let Some(should_float) = should_float {
-            let is_floating = matches!(
-                self.workspaces.placement(id),
-                Some(WindowPlacement::Floating { .. })
-            );
+            let is_floating = matches!(self.workspaces.placement(id), Some(WindowPlacement::Floating { .. }));
             let mut rect = centered_floating_rect(bounds);
             if should_float && rule.width.is_none() && rule.height.is_none() {
                 if let Some(size) = client_size(window) {
@@ -1459,9 +1374,7 @@ impl Ferese {
             rect.y = bounds.y + (bounds.height - rect.height) / 2.0;
 
             let result = if should_float != is_floating {
-                self.workspaces
-                    .toggle_floating(id, rect, axis, 0.5)
-                    .map(|_| ())
+                self.workspaces.toggle_floating(id, rect, axis, 0.5).map(|_| ())
             } else if should_float && (rule.width.is_some() || rule.height.is_some()) {
                 self.workspaces.set_floating_rect(id, rect)
             } else {
@@ -1492,13 +1405,8 @@ impl Ferese {
         let Some(id) = self.window_ids.get(window).copied() else {
             return;
         };
-        if self.workspaces.workspace_for_window(id) != self.workspaces.workspace_for_window(parent)
-        {
-            tracing::warn!(
-                ?id,
-                ?parent,
-                "ignored transient parent on another workspace"
-            );
+        if self.workspaces.workspace_for_window(id) != self.workspaces.workspace_for_window(parent) {
+            tracing::warn!(?id, ?parent, "ignored transient parent on another workspace");
             return;
         }
         let Some(bounds) = self.output_bounds() else {
@@ -1666,25 +1574,22 @@ impl Ferese {
             let workspace_focus = workspace.last_focused;
             let focused = self
                 .focused_window
-                .filter(|window| {
-                    self.workspaces.workspace_for_window(*window) == Some(workspace_id)
-                })
+                .filter(|window| self.workspaces.workspace_for_window(*window) == Some(workspace_id))
                 .or(workspace_focus);
             let Some(workspace) = self.workspaces.workspace_mut(workspace_id) else {
                 continue;
             };
-            let layout = match workspace.layout.geometry_with_constraints(
-                bounds,
-                self.gap_config,
-                &constraints,
-                focused,
-            ) {
-                Ok(layout) => layout,
-                Err(error) => {
-                    tracing::error!(%error, ?workspace_id, "failed to compute tiled geometry");
-                    continue;
-                }
-            };
+            let layout =
+                match workspace
+                    .layout
+                    .geometry_with_constraints(bounds, self.gap_config, &constraints, focused)
+                {
+                    Ok(layout) => layout,
+                    Err(error) => {
+                        tracing::error!(%error, ?workspace_id, "failed to compute tiled geometry");
+                        continue;
+                    }
+                };
             let viewport_target = workspace.layout.viewport_x();
             let viewport_motion = viewport_target.map(|target| {
                 let viewport = self
@@ -1719,8 +1624,7 @@ impl Ferese {
                     crate::handlers::set_surface_tree_scale(toplevel.wl_surface(), scale);
                 }
 
-                let is_maximized =
-                    self.maximized_windows.contains(id) && workspace_fullscreen != Some(*id);
+                let is_maximized = self.maximized_windows.contains(id) && workspace_fullscreen != Some(*id);
                 let rect = if workspace_fullscreen == Some(*id) {
                     fullscreen_bounds
                 } else if is_maximized && !is_scrolling_layout {
@@ -1734,10 +1638,8 @@ impl Ferese {
                             rect
                         }
                         Some(WindowPlacement::Floating { rect }) => {
-                            let constrained = constrained_floating_rect(
-                                rect,
-                                constraints.get(id).copied().unwrap_or_default(),
-                            );
+                            let constrained =
+                                constrained_floating_rect(rect, constraints.get(id).copied().unwrap_or_default());
                             if constrained != rect {
                                 let _ = self.workspaces.set_floating_rect(*id, constrained);
                             }
@@ -1747,20 +1649,16 @@ impl Ferese {
                     }
                 };
                 let is_fullscreen = workspace_fullscreen == Some(*id);
-                let is_floating = matches!(
-                    self.workspaces.placement(*id),
-                    Some(WindowPlacement::Floating { .. })
-                );
+                let is_floating = matches!(self.workspaces.placement(*id), Some(WindowPlacement::Floating { .. }));
 
                 visible.insert(*id);
-                let scrolling =
-                    if !is_fullscreen && !is_floating && (!is_maximized || is_scrolling_layout) {
-                        viewport_target
-                            .zip(viewport_current)
-                            .map(|(target, current)| (workspace_id, rect.x + target, current))
-                    } else {
-                        None
-                    };
+                let scrolling = if !is_fullscreen && !is_floating && (!is_maximized || is_scrolling_layout) {
+                    viewport_target
+                        .zip(viewport_current)
+                        .map(|(target, current)| (workspace_id, rect.x + target, current))
+                } else {
+                    None
+                };
 
                 placements.push((
                     window.clone(),
@@ -1782,9 +1680,7 @@ impl Ferese {
         let mut scrolling_world_x = HashMap::new();
         placements.sort_by_key(|(_, id, ..)| self.window_stack.rank(*id));
 
-        for (window, id, rect, is_fullscreen, is_maximized, is_floating, scrolling, couple_width) in
-            placements
-        {
+        for (window, id, rect, is_fullscreen, is_maximized, is_floating, scrolling, couple_width) in placements {
             let was_mapped = self.space.element_location(&window).is_some();
             // A viewport-coupled width must never override fullscreen/floating geometry.
             if scrolling.is_none() {
@@ -1792,10 +1688,7 @@ impl Ferese {
             }
             let (geometry, had_geometry) = match self.window_geometry.entry(id) {
                 Entry::Occupied(entry) => (entry.into_mut(), true),
-                Entry::Vacant(entry) => (
-                    entry.insert(WindowGeometry::new(rect, client_size(&window))),
-                    false,
-                ),
+                Entry::Vacant(entry) => (entry.insert(WindowGeometry::new(rect, client_size(&window))), false),
             };
             let mode = if is_fullscreen {
                 PresentationMode::Fullscreen
@@ -1817,12 +1710,8 @@ impl Ferese {
                 self.viewport_coupled_widths.remove(&id);
             }
             if let Some((workspace, world_x, viewport_x)) = scrolling {
-                let restored_world_x = restored_scrolling_world_x(
-                    had_geometry,
-                    geometry.visual.current.x,
-                    viewport_x,
-                    world_x,
-                );
+                let restored_world_x =
+                    restored_scrolling_world_x(had_geometry, geometry.visual.current.x, viewport_x, world_x);
                 let mut animated_world_x = previous_scrolling_world_x
                     .remove(&id)
                     .filter(|(previous_workspace, _)| *previous_workspace == workspace)
@@ -1840,13 +1729,15 @@ impl Ferese {
 
                 let coupled = !geometry.is_zooming()
                     && (couple_width
-                        || self.viewport_coupled_widths.get(&id).is_some_and(
-                            |(previous_workspace, _)| *previous_workspace == workspace,
-                        ));
+                        || self
+                            .viewport_coupled_widths
+                            .get(&id)
+                            .is_some_and(|(previous_workspace, _)| *previous_workspace == workspace));
                 if coupled {
-                    let width = self.viewport_coupled_widths.entry(id).or_insert_with(|| {
-                        (workspace, AnimatedValue::new(geometry.visual.current.width))
-                    });
+                    let width = self
+                        .viewport_coupled_widths
+                        .entry(id)
+                        .or_insert_with(|| (workspace, AnimatedValue::new(geometry.visual.current.width)));
                     if width.0 != workspace {
                         *width = (workspace, AnimatedValue::new(geometry.visual.current.width));
                     }
@@ -1861,10 +1752,8 @@ impl Ferese {
                 }
             }
             let visual = geometry.visual.current;
-            let natural_pending = self.natural_floating_pending.contains(&id)
-                && is_floating
-                && !is_fullscreen
-                && !is_maximized;
+            let natural_pending =
+                self.natural_floating_pending.contains(&id) && is_floating && !is_fullscreen && !is_maximized;
             if natural_pending {
                 requested_size = None;
             }
@@ -1944,13 +1833,7 @@ impl Ferese {
         self.advance_animations_by(delta)
     }
 
-    pub fn record_drm_presentation(
-        &mut self,
-        node: DrmNode,
-        crtc: crtc::Handle,
-        time: DrmEventTime,
-        sequence: u32,
-    ) {
+    pub fn record_drm_presentation(&mut self, node: DrmNode, crtc: crtc::Handle, time: DrmEventTime, sequence: u32) {
         if let Some(backend) = self.direct_backend.as_mut() {
             backend.record_presentation(node, crtc, time, sequence);
         }
@@ -1975,12 +1858,7 @@ impl Ferese {
         let windows = self
             .space
             .elements()
-            .filter_map(|window| {
-                self.window_ids
-                    .get(window)
-                    .copied()
-                    .map(|id| (window.clone(), id))
-            })
+            .filter_map(|window| self.window_ids.get(window).copied().map(|id| (window.clone(), id)))
             .collect::<Vec<_>>();
         let mut active_animation = false;
         let mut completed_slides = Vec::new();
@@ -2029,12 +1907,7 @@ impl Ferese {
             dim_changed |= previous != focus.current;
         }
         for (_, id) in &windows {
-            let target = crate::dimming::target(
-                dim_settings,
-                self.focused_window,
-                *id,
-                self.overview.is_presenting(),
-            );
+            let target = crate::dimming::target(dim_settings, self.focused_window, *id, self.overview.is_presenting());
             let dim = self
                 .window_dimming
                 .entry(*id)
@@ -2105,11 +1978,7 @@ impl Ferese {
                 snapshot.commit.increment();
             }
             if !active {
-                tracing::debug!(
-                    ?id,
-                    bytes = snapshot.bytes(),
-                    "released resize handoff snapshot"
-                );
+                tracing::debug!(?id, bytes = snapshot.bytes(), "released resize handoff snapshot");
             }
             active
         });
@@ -2144,16 +2013,12 @@ impl Ferese {
             };
             let zooming = geometry.is_zooming();
 
-            let coupled_target = self
-                .viewport_coupled_widths
-                .get(&id)
-                .map(|(_, width)| width.target);
+            let coupled_target = self.viewport_coupled_widths.get(&id).map(|(_, width)| width.target);
             if coupled_target.is_some() {
                 geometry.visual.target.width = geometry.visual.current.width;
                 geometry.visual.velocity.width = 0.0;
             }
-            active_animation |=
-                geometry.advance(delta, self.spring_config, self.animations_enabled);
+            active_animation |= geometry.advance(delta, self.spring_config, self.animations_enabled);
             if let Some(target) = coupled_target {
                 geometry.visual.target.width = target;
             }
@@ -2206,11 +2071,8 @@ impl Ferese {
                 toplevel.send_pending_configure();
             }
             let visual = geometry.visual.current;
-            self.space.map_element(
-                window,
-                (visual.x.round() as i32, visual.y.round() as i32),
-                false,
-            );
+            self.space
+                .map_element(window, (visual.x.round() as i32, visual.y.round() as i32), false);
         }
         for id in settled_coupled_widths {
             self.viewport_coupled_widths.remove(&id);
@@ -2235,9 +2097,9 @@ impl Ferese {
             self.send_shell_snapshots();
             active_animation = true;
         }
-        active_animation |=
-            self.overview
-                .advance(delta, self.spring_config, self.animations_enabled);
+        active_animation |= self
+            .overview
+            .advance(delta, self.spring_config, self.animations_enabled);
         self.sync_window_stacking();
 
         if active_animation || dim_changed {
@@ -2283,9 +2145,7 @@ impl Ferese {
         else {
             return;
         };
-        let source_geometry = transaction
-            .source_geometry()
-            .unwrap_or_else(|| window.geometry());
+        let source_geometry = transaction.source_geometry().unwrap_or_else(|| window.geometry());
         let scale = output.current_scale().fractional_scale();
         let source_size = source_geometry.size.to_physical_precise_round(scale);
         if self.resize_snapshots.get(&id).is_some_and(|snapshot| {
@@ -2298,11 +2158,7 @@ impl Ferese {
         }) {
             return;
         }
-        let used: usize = self
-            .resize_snapshots
-            .values()
-            .map(|snapshot| snapshot.bytes())
-            .sum();
+        let used: usize = self.resize_snapshots.values().map(|snapshot| snapshot.bytes()).sum();
         let remaining = crate::presentation::SNAPSHOT_BUDGET.saturating_sub(used);
         let result = if let Some(backend) = &self.nested_backend {
             // Commit dispatch does not run inside the Winit event callback;
@@ -2324,11 +2180,7 @@ impl Ferese {
         };
         match result {
             Ok(Some(snapshot)) => {
-                tracing::debug!(
-                    ?id,
-                    bytes = snapshot.bytes(),
-                    "captured native resize handoff"
-                );
+                tracing::debug!(?id, bytes = snapshot.bytes(), "captured native resize handoff");
                 self.resize_snapshots.insert(id, snapshot);
             }
             Ok(None) => {}
@@ -2363,18 +2215,14 @@ impl Ferese {
             return;
         };
         if self.natural_floating_pending.remove(&id)
-            && matches!(
-                self.workspaces.placement(id),
-                Some(WindowPlacement::Floating { .. })
-            )
+            && matches!(self.workspaces.placement(id), Some(WindowPlacement::Floating { .. }))
             && let Some(bounds) = self.floating_bounds_for_window(id)
         {
             let rect = natural_floating_rect(bounds, size);
             if self.workspaces.set_floating_rect(id, rect).is_ok() {
                 // This is the first mapped client buffer, not a user resize.
                 // Do not animate from the temporary placement box.
-                self.window_geometry
-                    .insert(id, WindowGeometry::new(rect, Some(size)));
+                self.window_geometry.insert(id, WindowGeometry::new(rect, Some(size)));
                 self.resize_transactions.remove(&id);
                 self.relayout();
             }
@@ -2385,18 +2233,15 @@ impl Ferese {
         // Never let an old buffer undo a newer resize or a fullscreen transition.
         let settled_configure = window.toplevel().is_some_and(|toplevel| {
             with_states(toplevel.wl_surface(), |states| {
-                states
-                    .data_map
-                    .get::<XdgToplevelSurfaceData>()
-                    .is_some_and(|data| {
-                        let Ok(data) = data.lock() else { return false };
-                        floating_commit_is_current(
-                            data.pending_configures().is_empty(),
-                            data.current_serial,
-                            data.configure_serial,
-                            data.current.states.contains(xdg_toplevel::State::Resizing),
-                        )
-                    })
+                states.data_map.get::<XdgToplevelSurfaceData>().is_some_and(|data| {
+                    let Ok(data) = data.lock() else { return false };
+                    floating_commit_is_current(
+                        data.pending_configures().is_empty(),
+                        data.current_serial,
+                        data.configure_serial,
+                        data.current.states.contains(xdg_toplevel::State::Resizing),
+                    )
+                })
             })
         });
         let fullscreen = self
@@ -2414,15 +2259,9 @@ impl Ferese {
             && let Some(WindowPlacement::Floating { rect }) = self.workspaces.placement(id)
             && ClientSize::from_rect(rect) != size
         {
-            let rect = Rect::new(
-                rect.x,
-                rect.y,
-                f64::from(size.width),
-                f64::from(size.height),
-            );
+            let rect = Rect::new(rect.x, rect.y, f64::from(size.width), f64::from(size.height));
             if self.workspaces.set_floating_rect(id, rect).is_ok() {
-                self.window_geometry
-                    .insert(id, WindowGeometry::new(rect, Some(size)));
+                self.window_geometry.insert(id, WindowGeometry::new(rect, Some(size)));
                 self.resize_transactions.remove(&id);
                 self.resize_snapshots.remove(&id);
                 self.relayout();
@@ -2433,12 +2272,7 @@ impl Ferese {
         };
 
         let matches_target = geometry.client.commit(size);
-        tracing::debug!(
-            ?id,
-            ?size,
-            matches_target,
-            "recorded client geometry commit"
-        );
+        tracing::debug!(?id, ?size, matches_target, "recorded client geometry commit");
     }
 
     pub fn focus_direction(&mut self, direction: Direction) {
@@ -2489,23 +2323,17 @@ impl Ferese {
         else {
             return;
         };
-        let Some(surface) = window
-            .toplevel()
-            .map(|toplevel| toplevel.wl_surface().clone())
-        else {
+        let Some(surface) = window.toplevel().map(|toplevel| toplevel.wl_surface().clone()) else {
             return;
         };
 
         self.focused_window = Some(next);
         self.raise_window(&window, true);
-        self.seat
-            .get_keyboard()
-            .expect("seat has a keyboard")
-            .set_focus(
-                self,
-                Some(surface),
-                smithay::utils::SERIAL_COUNTER.next_serial(),
-            );
+        self.seat.get_keyboard().expect("seat has a keyboard").set_focus(
+            self,
+            Some(surface),
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+        );
 
         for window in self.space.elements() {
             if let Some(toplevel) = window.toplevel() {
@@ -2624,10 +2452,7 @@ impl Ferese {
             return;
         };
 
-        match self
-            .workspaces
-            .cycle_column_width(window, &self.column_width_presets)
-        {
+        match self.workspaces.cycle_column_width(window, &self.column_width_presets) {
             Ok(true) => {
                 self.pending_column_width_cycles.insert(window);
                 self.relayout();
@@ -2679,10 +2504,7 @@ impl Ferese {
             .automatic_axis(Some(window), bounds)
             .unwrap_or(Axis::Horizontal);
 
-        if let Err(error) = self
-            .workspaces
-            .toggle_floating(window, floating_rect, axis, 0.5)
-        {
+        if let Err(error) = self.workspaces.toggle_floating(window, floating_rect, axis, 0.5) {
             tracing::error!(%error, ?window, "failed to toggle floating window");
             return;
         }
@@ -2733,14 +2555,8 @@ impl Ferese {
                 && let WorkspaceLayout::Scrolling(layout) = &mut workspace.layout
             {
                 if enabled {
-                    if let Some(column) = layout
-                        .columns()
-                        .iter()
-                        .find(|column| column.windows.contains(&window))
-                    {
-                        self.maximized_column_widths
-                            .entry(window)
-                            .or_insert(column.width);
+                    if let Some(column) = layout.columns().iter().find(|column| column.windows.contains(&window)) {
+                        self.maximized_column_widths.entry(window).or_insert(column.width);
                     }
                     let _ = layout.set_column_width(window, ColumnWidth::Proportion(1.0));
                 } else if let Some(width) = self.maximized_column_widths.remove(&window) {
@@ -2864,9 +2680,11 @@ impl Ferese {
     }
 
     fn send_window_close(&self, id: WindowId) {
-        let Some(toplevel) = self.window_ids.iter().find_map(|(window, window_id)| {
-            (*window_id == id).then(|| window.toplevel()).flatten()
-        }) else {
+        let Some(toplevel) = self
+            .window_ids
+            .iter()
+            .find_map(|(window, window_id)| (*window_id == id).then(|| window.toplevel()).flatten())
+        else {
             return;
         };
 
@@ -2987,10 +2805,8 @@ impl Ferese {
             && self.animations_enabled
         {
             self.last_animation_tick = Instant::now();
-            self.workspace_slides.insert(
-                owner,
-                WorkspaceSlide::new(previous_slide, from, workspace, direction),
-            );
+            self.workspace_slides
+                .insert(owner, WorkspaceSlide::new(previous_slide, from, workspace, direction));
         }
     }
 
@@ -3003,17 +2819,11 @@ impl Ferese {
             .and_then(|bounds| {
                 let workspace = self.workspaces.ensure_numeric(index).ok()?;
                 let target = self.workspaces.workspace(workspace)?;
-                target
-                    .layout
-                    .automatic_axis(target.last_focused, bounds)
-                    .ok()
+                target.layout.automatic_axis(target.last_focused, bounds).ok()
             })
             .unwrap_or(Axis::Horizontal);
 
-        let destination = match self
-            .workspaces
-            .move_window_to_numeric(window, index, axis, 0.5)
-        {
+        let destination = match self.workspaces.move_window_to_numeric(window, index, axis, 0.5) {
             Ok(destination) => destination,
             Err(error) => {
                 tracing::error!(%error, ?window, index, "failed to move window to workspace");
@@ -3048,16 +2858,15 @@ impl Ferese {
             })
         });
 
-        self.seat
-            .get_keyboard()
-            .expect("seat has a keyboard")
-            .set_focus(self, surface, smithay::utils::SERIAL_COUNTER.next_serial());
+        self.seat.get_keyboard().expect("seat has a keyboard").set_focus(
+            self,
+            surface,
+            smithay::utils::SERIAL_COUNTER.next_serial(),
+        );
     }
 
     fn output_bounds(&self) -> Option<Rect> {
-        let output = self
-            .focused_output()
-            .or_else(|| self.space.outputs().next())?;
+        let output = self.focused_output().or_else(|| self.space.outputs().next())?;
         self.output_bounds_for(output)
     }
 
@@ -3212,19 +3021,11 @@ fn constrained_floating_rect(rect: Rect, constraints: SizeConstraints) -> Rect {
     Rect::new(
         rect.x,
         rect.y,
-        rect.width.clamp(
-            min_width,
-            constraints
-                .max_width
-                .unwrap_or(f64::INFINITY)
-                .max(min_width),
-        ),
+        rect.width
+            .clamp(min_width, constraints.max_width.unwrap_or(f64::INFINITY).max(min_width)),
         rect.height.clamp(
             min_height,
-            constraints
-                .max_height
-                .unwrap_or(f64::INFINITY)
-                .max(min_height),
+            constraints.max_height.unwrap_or(f64::INFINITY).max(min_height),
         ),
     )
 }
@@ -3246,12 +3047,7 @@ fn smoothstep(progress: f64) -> f64 {
     progress * progress * (3.0 - 2.0 * progress)
 }
 
-fn restored_scrolling_world_x(
-    had_geometry: bool,
-    visual_x: f64,
-    viewport_x: f64,
-    target_world_x: f64,
-) -> f64 {
+fn restored_scrolling_world_x(had_geometry: bool, visual_x: f64, viewport_x: f64, target_world_x: f64) -> f64 {
     if had_geometry {
         visual_x + viewport_x
     } else {
@@ -3287,10 +3083,9 @@ fn client_size(window: &Window) -> Option<ClientSize> {
 
 pub(crate) fn window_has_buffer(window: &Window) -> bool {
     window.toplevel().is_some_and(|toplevel| {
-        smithay::backend::renderer::utils::with_renderer_surface_state(
-            toplevel.wl_surface(),
-            |state| state.buffer().is_some(),
-        )
+        smithay::backend::renderer::utils::with_renderer_surface_state(toplevel.wl_surface(), |state| {
+            state.buffer().is_some()
+        })
         .unwrap_or(false)
     })
 }
@@ -3355,17 +3150,11 @@ mod tests {
         for assignment in [None, Some(OutputId(1)), Some(OutputId(2))] {
             let mut workspaces = WorkspaceSet::default();
             let first = workspaces.active_id();
-            workspaces
-                .insert_window(WindowId(1), Axis::Horizontal, 0.5)
-                .unwrap();
+            workspaces.insert_window(WindowId(1), Axis::Horizontal, 0.5).unwrap();
             let second = workspaces.ensure_numeric(2).unwrap();
             workspaces.activate(second).unwrap();
-            workspaces
-                .insert_window(WindowId(2), Axis::Horizontal, 0.5)
-                .unwrap();
-            workspaces
-                .insert_window(WindowId(3), Axis::Horizontal, 0.5)
-                .unwrap();
+            workspaces.insert_window(WindowId(2), Axis::Horizontal, 0.5).unwrap();
+            workspaces.insert_window(WindowId(3), Axis::Horizontal, 0.5).unwrap();
             workspaces.activate(first).unwrap();
 
             let mut outputs = OutputWorkspaceMap::default();
@@ -3387,11 +3176,7 @@ mod tests {
             };
             outputs.focus_output(OutputId(1)).unwrap();
 
-            assert!(activate_window_workspace(
-                &mut workspaces,
-                &mut outputs,
-                WindowId(2)
-            ));
+            assert!(activate_window_workspace(&mut workspaces, &mut outputs, WindowId(2)));
             assert_eq!(outputs.active_workspace(owner), Some(second));
             assert_eq!(outputs.focused_output(), Some(owner));
             assert_eq!(outputs.output_for_workspace(second), Some(owner));
@@ -3406,12 +3191,8 @@ mod tests {
     #[test]
     fn selecting_a_tiled_window_reveals_it_past_another_fullscreen_window() {
         let mut workspaces = WorkspaceSet::default();
-        workspaces
-            .insert_window(WindowId(1), Axis::Horizontal, 0.5)
-            .unwrap();
-        workspaces
-            .insert_window(WindowId(2), Axis::Horizontal, 0.5)
-            .unwrap();
+        workspaces.insert_window(WindowId(1), Axis::Horizontal, 0.5).unwrap();
+        workspaces.insert_window(WindowId(2), Axis::Horizontal, 0.5).unwrap();
         workspaces.set_fullscreen(WindowId(1), true).unwrap();
         let mut outputs = OutputWorkspaceMap::default();
         outputs
@@ -3422,11 +3203,7 @@ mod tests {
             )
             .unwrap();
 
-        assert!(activate_window_workspace(
-            &mut workspaces,
-            &mut outputs,
-            WindowId(2)
-        ));
+        assert!(activate_window_workspace(&mut workspaces, &mut outputs, WindowId(2)));
         assert_eq!(workspaces.active().fullscreen, None);
         assert_eq!(workspaces.active().last_focused, Some(WindowId(2)));
     }
@@ -3472,26 +3249,15 @@ mod tests {
         assert!(chained.contains(first));
         assert!(chained.contains(second));
         assert!(chained.contains(third));
-        let first_start = chained
-            .items
-            .iter()
-            .find(|item| item.workspace == first)
-            .unwrap()
-            .start;
+        let first_start = chained.items.iter().find(|item| item.workspace == first).unwrap().start;
         let second_start = chained
             .items
             .iter()
             .find(|item| item.workspace == second)
             .unwrap()
             .start;
-        assert_eq!(
-            (first_start.x * 1600.0, first_start.y * 900.0),
-            first_position
-        );
-        assert_eq!(
-            (second_start.x * 1600.0, second_start.y * 900.0),
-            second_position
-        );
+        assert_eq!((first_start.x * 1600.0, first_start.y * 900.0), first_position);
+        assert_eq!((second_start.x * 1600.0, second_start.y * 900.0), second_position);
 
         let reversed = WorkspaceSlide::new(Some(chained), third, first, SwipeDirection::Down);
         assert_eq!(reversed.items.len(), 3);
@@ -3524,10 +3290,7 @@ mod tests {
             constrained_floating_rect(Rect::new(40., 60., 1000., 800.), constraints),
             Rect::new(40., 60., 900., 700.)
         );
-        assert_eq!(
-            constrained_floating_rect(rect, SizeConstraints::default()),
-            rect
-        );
+        assert_eq!(constrained_floating_rect(rect, SizeConstraints::default()), rect);
     }
 
     #[test]
@@ -3535,12 +3298,7 @@ mod tests {
         let serial = Some(12.into());
         assert!(floating_commit_is_current(true, serial, serial, false));
         assert!(!floating_commit_is_current(false, serial, serial, false));
-        assert!(!floating_commit_is_current(
-            true,
-            Some(11.into()),
-            serial,
-            false
-        ));
+        assert!(!floating_commit_is_current(true, Some(11.into()), serial, false));
         assert!(!floating_commit_is_current(true, serial, serial, true));
         assert!(!floating_commit_is_current(true, None, None, false));
     }
@@ -3549,8 +3307,7 @@ mod tests {
     fn display_reposition_moves_floats_with_their_output_and_clamps_after_shrinking() {
         let old = ferese_layout::Rect::new(0., 0., 1920., 1080.);
         let new = ferese_layout::Rect::new(2000., 0., 1000., 700.);
-        let rect =
-            super::moved_floating_rect(ferese_layout::Rect::new(1500., 800., 400., 300.), old, new);
+        let rect = super::moved_floating_rect(ferese_layout::Rect::new(1500., 800., 400., 300.), old, new);
         assert_eq!(rect, ferese_layout::Rect::new(2600., 400., 400., 300.));
     }
     use super::*;
@@ -3635,10 +3392,7 @@ mod tests {
     fn fullscreen_exit_restores_world_x_from_presented_position() {
         assert_eq!(restored_scrolling_world_x(true, 0.0, 0.0, 505.0), 0.0);
         assert_eq!(restored_scrolling_world_x(true, 25.0, 480.0, 505.0), 505.0);
-        assert_eq!(
-            restored_scrolling_world_x(false, 10.0, 495.0, 1_000.0),
-            1_000.0
-        );
+        assert_eq!(restored_scrolling_world_x(false, 10.0, 495.0, 1_000.0), 1_000.0);
     }
 
     #[derive(Clone, Copy, PartialEq, Debug)]
@@ -3671,11 +3425,7 @@ mod tests {
     #[test]
     fn stacking_is_not_settled_when_z_index_is_mixed_even_with_matching_order() {
         let current = [stacked(1, 30), stacked(2, 40)];
-        assert!(!stacking_order_settled(
-            current.iter(),
-            &current,
-            |window| window.z_index
-        ));
+        assert!(!stacking_order_settled(current.iter(), &current, |window| window.z_index));
     }
 
     #[test]

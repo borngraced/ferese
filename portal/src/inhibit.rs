@@ -1,21 +1,17 @@
-use std::{
-    collections::HashMap,
-    sync::{Arc, atomic::Ordering},
-    time::Duration,
-};
-use tokio::sync::{Mutex, Notify};
-use zbus::{
-    Connection,
-    message::Header,
-    object_server::SignalEmitter,
-    zvariant::{OwnedFd, OwnedObjectPath, Value},
-};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
-use crate::{
-    backend::{Cancel, Options, authorize},
-    bridge::Bridge,
-    desktop::Requests,
-};
+use tokio::sync::{Mutex, Notify};
+use zbus::Connection;
+use zbus::message::Header;
+use zbus::object_server::SignalEmitter;
+use zbus::zvariant::{OwnedFd, OwnedObjectPath, Value};
+
+use crate::backend::{Cancel, Options, authorize};
+use crate::bridge::Bridge;
+use crate::desktop::Requests;
 
 const PATH: &str = "/org/freedesktop/portal/desktop";
 
@@ -68,10 +64,7 @@ impl Inhibit {
             if let Ok(emitter) = SignalEmitter::new(connection, path) {
                 let _ = MonitorObject::closed(&emitter).await;
             }
-            let _ = connection
-                .object_server()
-                .remove::<MonitorObject, _>(path)
-                .await;
+            let _ = connection.object_server().remove::<MonitorObject, _>(path).await;
             self.changed.notify_one();
         }
     }
@@ -114,9 +107,7 @@ impl Inhibit {
                     since = state["revision"].as_u64();
                     for (path, monitor) in monitors {
                         if !state["monitor-owners"].as_array().is_some_and(|owners| {
-                            owners
-                                .iter()
-                                .any(|owner| owner.as_u64() == Some(monitor.native_owner))
+                            owners.iter().any(|owner| owner.as_u64() == Some(monitor.native_owner))
                         }) {
                             self.end(&connection, &path).await;
                             continue;
@@ -128,8 +119,7 @@ impl Inhibit {
                         let transitions = match *last {
                             None => vec![state.clone()],
                             Some((_, _, revision, _)) => {
-                                let events =
-                                    state["transitions"].as_array().cloned().unwrap_or_default();
+                                let events = state["transitions"].as_array().cloned().unwrap_or_default();
                                 if events
                                     .first()
                                     .and_then(|event| event["revision"].as_u64())
@@ -141,11 +131,7 @@ impl Inhibit {
                                 }
                                 events
                                     .into_iter()
-                                    .filter(|event| {
-                                        event["revision"]
-                                            .as_u64()
-                                            .is_some_and(|next| next > revision)
-                                    })
+                                    .filter(|event| event["revision"].as_u64().is_some_and(|next| next > revision))
                                     .collect()
                             }
                         };
@@ -154,19 +140,13 @@ impl Inhibit {
                             let phase = event["session-state"].as_u64().unwrap_or(1) as u32;
                             let revision = event["revision"].as_u64().unwrap_or(0);
                             let token = event["query-token"].as_u64().unwrap_or(0) as u32;
-                            let changed = last.as_ref().is_none_or(|old| {
-                                old.0 != locked || old.1 != phase || (phase == 2 && old.3 != token)
-                            });
+                            let changed = last
+                                .as_ref()
+                                .is_none_or(|old| old.0 != locked || old.1 != phase || (phase == 2 && old.3 != token));
                             if changed {
                                 let values = HashMap::from([
-                                    (
-                                        "screensaver-active".into(),
-                                        Value::from(locked).try_into().unwrap(),
-                                    ),
-                                    (
-                                        "session-state".into(),
-                                        Value::from(phase).try_into().unwrap(),
-                                    ),
+                                    ("screensaver-active".into(), Value::from(locked).try_into().unwrap()),
+                                    ("session-state".into(), Value::from(phase).try_into().unwrap()),
                                 ]);
                                 if let Ok(emitter) = SignalEmitter::new(&connection, PATH) {
                                     if Self::state_changed(
@@ -203,9 +183,7 @@ impl Inhibit {
         use futures_util::StreamExt;
         loop {
             let result: Result<(), String> = async {
-                let connection = Connection::system()
-                    .await
-                    .map_err(|error| error.to_string())?;
+                let connection = Connection::system().await.map_err(|error| error.to_string())?;
                 let proxy = zbus::Proxy::new(
                     &connection,
                     "org.freedesktop.login1",
@@ -219,16 +197,10 @@ impl Inhibit {
                     .await
                     .map_err(|error| error.to_string())?;
                 while let Some(message) = signals.next().await {
-                    let (ending,): (bool,) = message
-                        .body()
-                        .deserialize()
-                        .map_err(|error| error.to_string())?;
+                    let (ending,): (bool,) = message.body().deserialize().map_err(|error| error.to_string())?;
                     if let Ok(bridge) = Bridge::connect() {
                         let _ = bridge
-                            .call(
-                                "logind-session-ending",
-                                serde_json::json!({"ending": ending}),
-                            )
+                            .call("logind-session-ending", serde_json::json!({"ending": ending}))
                             .await;
                         bridge.close();
                     }
@@ -246,9 +218,7 @@ impl Inhibit {
 
 fn flags_what(flags: u32) -> zbus::fdo::Result<String> {
     if flags == 0 || flags & !15 != 0 {
-        return Err(zbus::fdo::Error::InvalidArgs(
-            "Invalid inhibition flags".into(),
-        ));
+        return Err(zbus::fdo::Error::InvalidArgs("Invalid inhibition flags".into()));
     }
     let mut what = Vec::new();
     if flags & 1 != 0 {
@@ -268,9 +238,7 @@ async fn login_inhibitor(what: &str, app: &str, reason: &str) -> Result<Option<O
         return Ok(None);
     }
     tokio::time::timeout(Duration::from_secs(5), async {
-        let connection = Connection::system()
-            .await
-            .map_err(|error| error.to_string())?;
+        let connection = Connection::system().await.map_err(|error| error.to_string())?;
         let proxy = zbus::Proxy::new(
             &connection,
             "org.freedesktop.login1",
@@ -309,13 +277,8 @@ impl Inhibit {
             .transpose()
             .map_err(|_| zbus::fdo::Error::InvalidArgs("Invalid inhibition reason".into()))?
             .unwrap_or_else(|| "Application requested session inhibition".into());
-        if app_id.len() > 512
-            || reason.len() > 1024
-            || app_id.chars().chain(reason.chars()).any(char::is_control)
-        {
-            return Err(zbus::fdo::Error::InvalidArgs(
-                "Invalid application or reason".into(),
-            ));
+        if app_id.len() > 512 || reason.len() > 1024 || app_id.chars().chain(reason.chars()).any(char::is_control) {
+            return Err(zbus::fdo::Error::InvalidArgs("Invalid application or reason".into()));
         }
         let cancel = self.requests.begin(connection, &header, &handle).await?;
         let bridge = match Bridge::connect() {
@@ -351,9 +314,7 @@ impl Inhibit {
                 bridge.close();
                 self.requests.end(connection, &handle).await;
                 Err(zbus::fdo::Error::Failed(
-                    result
-                        .err()
-                        .unwrap_or_else(|| "Inhibition was cancelled".into()),
+                    result.err().unwrap_or_else(|| "Inhibition was cancelled".into()),
                 ))
             }
         }
@@ -369,15 +330,11 @@ impl Inhibit {
         #[zbus(header)] header: Header<'_>,
     ) -> zbus::fdo::Result<u32> {
         let owner = authorize(connection, &header).await?;
-        if !session_handle
-            .as_str()
-            .starts_with(&format!("{PATH}/session/"))
+        if !session_handle.as_str().starts_with(&format!("{PATH}/session/"))
             || session_handle.as_str().len() > 512
             || app_id.len() > 512
         {
-            return Err(zbus::fdo::Error::InvalidArgs(
-                "Invalid session monitor".into(),
-            ));
+            return Err(zbus::fdo::Error::InvalidArgs("Invalid session monitor".into()));
         }
         let cancel = self.requests.begin(connection, &header, &handle).await?;
         let mut monitors = self.monitors.lock().await;
@@ -394,30 +351,59 @@ impl Inhibit {
                     _ = cancel.wait() => Err("Monitor creation was cancelled".into()),
                     result = bridge.call("portal-monitor-register", serde_json::json!({})) => result,
                 };
-                let native = match result { Ok(native) => native, Err(error) => { bridge.close(); return Err(zbus::fdo::Error::Failed(error)); } };
+                let native = match result {
+                    Ok(native) => native,
+                    Err(error) => {
+                        bridge.close();
+                        return Err(zbus::fdo::Error::Failed(error));
+                    }
+                };
                 let Some(native_owner) = native["monitor-owner"].as_u64() else {
                     bridge.close();
                     return Err(zbus::fdo::Error::Failed("Missing monitor owner".into()));
                 };
-                let exported = connection.object_server().at(&session_handle, MonitorObject {
-                    backend: self.clone(), path: session_handle.to_string(), owner: owner.clone(), cancel: cancel.clone(),
-                }).await;
+                let exported = connection
+                    .object_server()
+                    .at(
+                        &session_handle,
+                        MonitorObject {
+                            backend: self.clone(),
+                            path: session_handle.to_string(),
+                            owner: owner.clone(),
+                            cancel: cancel.clone(),
+                        },
+                    )
+                    .await;
                 match exported {
                     Ok(true) if !cancel.stopped.load(Ordering::SeqCst) => {
-                        monitors.insert(session_handle.to_string(), Arc::new(Monitor {
-                            owner, cancel: cancel.clone(), last: Mutex::new(None), bridge,
-                            native_owner,
-                        }));
+                        monitors.insert(
+                            session_handle.to_string(),
+                            Arc::new(Monitor {
+                                owner,
+                                cancel: cancel.clone(),
+                                last: Mutex::new(None),
+                                bridge,
+                                native_owner,
+                            }),
+                        );
                         self.changed.notify_one();
                         Ok(0)
                     }
                     result => {
                         bridge.close();
-                        if matches!(result, Ok(true)) { let _ = connection.object_server().remove::<MonitorObject, _>(&session_handle).await; }
-                        result.map(|_| if cancel.stopped.load(Ordering::SeqCst) { 1 } else { 2 }).map_err(Into::into)
+                        if matches!(result, Ok(true)) {
+                            let _ = connection
+                                .object_server()
+                                .remove::<MonitorObject, _>(&session_handle)
+                                .await;
+                        }
+                        result
+                            .map(|_| if cancel.stopped.load(Ordering::SeqCst) { 1 } else { 2 })
+                            .map_err(Into::into)
                     }
                 }
-            }.await;
+            }
+            .await;
             attempt
         };
         drop(monitors);
@@ -442,9 +428,7 @@ impl Inhibit {
             .ok_or_else(|| zbus::fdo::Error::AccessDenied("Not your session monitor".into()))?;
         let last = monitor.last.lock().await;
         if monitor.cancel.stopped.load(Ordering::SeqCst) {
-            return Err(zbus::fdo::Error::AccessDenied(
-                "Session monitor closed".into(),
-            ));
+            return Err(zbus::fdo::Error::AccessDenied("Session monitor closed".into()));
         }
         if let Some((_, 2, _, token)) = *last {
             monitor
@@ -484,9 +468,7 @@ impl MonitorObject {
         #[zbus(header)] header: Header<'_>,
     ) -> zbus::fdo::Result<()> {
         if authorize(connection, &header).await? != self.owner {
-            return Err(zbus::fdo::Error::AccessDenied(
-                "Not your session monitor".into(),
-            ));
+            return Err(zbus::fdo::Error::AccessDenied("Not your session monitor".into()));
         }
         self.cancel.stop();
         self.backend.end(connection, &self.path).await;

@@ -1,27 +1,21 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use super::screenshot::{CaptureBuffer, PartOutcome, PartSender};
-use smithay::{
-    backend::{
-        allocator::Fourcc,
-        renderer::{ExportMem, TextureMapping},
-    },
-    output::Output,
-    reexports::{
-        wayland_protocols_wlr::screencopy::v1::server::{
-            zwlr_screencopy_frame_v1::{self, ZwlrScreencopyFrameV1},
-            zwlr_screencopy_manager_v1::{self, ZwlrScreencopyManagerV1},
-        },
-        wayland_server::{
-            Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
-            protocol::{wl_buffer::WlBuffer, wl_shm},
-        },
-    },
-    utils::{Buffer, Logical, Rectangle, Size},
-    wayland::shm::with_buffer_contents_mut,
+use smithay::backend::allocator::Fourcc;
+use smithay::backend::renderer::{ExportMem, TextureMapping};
+use smithay::output::Output;
+use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1;
+use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1;
+use smithay::reexports::wayland_protocols_wlr::screencopy::v1::server::{
+    zwlr_screencopy_frame_v1, zwlr_screencopy_manager_v1,
 };
+use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+use smithay::reexports::wayland_server::protocol::wl_shm;
+use smithay::reexports::wayland_server::{Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource};
+use smithay::utils::{Buffer, Logical, Rectangle, Size};
+use smithay::wayland::shm::with_buffer_contents_mut;
 
+use super::screenshot::{CaptureBuffer, PartOutcome, PartSender};
 use crate::Ferese;
 
 const BYTES_PER_PIXEL: usize = 4;
@@ -150,8 +144,7 @@ impl PendingScreencopy {
 
 pub(crate) fn capture_allowed() -> bool {
     static ALLOWED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ALLOWED
-        .get_or_init(|| capture_opted_in(std::env::var_os("FERESE_ENABLE_SCREENCOPY").as_deref()))
+    *ALLOWED.get_or_init(|| capture_opted_in(std::env::var_os("FERESE_ENABLE_SCREENCOPY").as_deref()))
 }
 
 fn capture_opted_in(value: Option<&std::ffi::OsStr>) -> bool {
@@ -312,9 +305,7 @@ impl Ferese {
         let captures = std::mem::take(&mut self.pending_screencopies);
 
         for capture in captures {
-            if &capture.output != output
-                || !cursor_overlay_matches(capture.overlay_cursor, overlay_cursor)
-            {
+            if &capture.output != output || !cursor_overlay_matches(capture.overlay_cursor, overlay_cursor) {
                 remaining.push(capture);
                 continue;
             }
@@ -325,8 +316,7 @@ impl Ferese {
             }
 
             framebuffer_binding_changed = true;
-            if complete_capture(renderer, framebuffer, &capture, self.start_time.elapsed()).is_err()
-            {
+            if complete_capture(renderer, framebuffer, &capture, self.start_time.elapsed()).is_err() {
                 capture.fail();
             }
         }
@@ -336,10 +326,9 @@ impl Ferese {
     }
 
     pub(crate) fn has_pending_screencopy(&self, output: &Output, overlay_cursor: bool) -> bool {
-        self.pending_screencopies.iter().any(|capture| {
-            capture.output == *output
-                && cursor_overlay_matches(capture.overlay_cursor, overlay_cursor)
-        })
+        self.pending_screencopies
+            .iter()
+            .any(|capture| capture.output == *output && cursor_overlay_matches(capture.overlay_cursor, overlay_cursor))
     }
 }
 
@@ -404,10 +393,7 @@ fn create_frame(
     }
 }
 
-fn capture_region(
-    output: &Output,
-    requested: Option<Rectangle<i32, Logical>>,
-) -> Option<Rectangle<i32, Buffer>> {
+fn capture_region(output: &Output, requested: Option<Rectangle<i32, Logical>>) -> Option<Rectangle<i32, Buffer>> {
     let mode = output.current_mode()?;
     let scale = output.current_scale().fractional_scale();
     let transform = output.current_transform();
@@ -434,9 +420,7 @@ pub(crate) fn capture_region_for_geometry(
 ) -> Option<Rectangle<i32, Buffer>> {
     let logical_size = output_logical_size(mode_size, scale, transform);
     let output_region = Rectangle::from_size(logical_size);
-    let logical_region = requested
-        .unwrap_or(output_region)
-        .intersection(output_region)?;
+    let logical_region = requested.unwrap_or(output_region).intersection(output_region)?;
 
     if logical_region.size.w <= 0 || logical_region.size.h <= 0 {
         return None;
@@ -488,9 +472,7 @@ where
         tracing::warn!(?error, "failed to map output framebuffer copy");
     })?;
     let expected = capture.region.size;
-    let stride = (expected.w as usize)
-        .checked_mul(BYTES_PER_PIXEL)
-        .ok_or(())?;
+    let stride = (expected.w as usize).checked_mul(BYTES_PER_PIXEL).ok_or(())?;
     let bytes = stride.checked_mul(expected.h as usize).ok_or(())?;
     if source.len() < bytes {
         return Err(());
@@ -548,19 +530,16 @@ where
         frame.flags(zwlr_screencopy_frame_v1::Flags::empty());
 
         let seconds = timestamp.as_secs();
-        frame.ready(
-            (seconds >> 32) as u32,
-            seconds as u32,
-            timestamp.subsec_nanos(),
-        );
+        frame.ready((seconds >> 32) as u32, seconds as u32, timestamp.subsec_nanos());
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use smithay::utils::{Physical, Transform};
+
+    use super::*;
 
     #[test]
     fn capture_is_off_unless_the_opt_in_is_exactly_one() {
@@ -580,8 +559,7 @@ mod tests {
         let mode = Size::<i32, Physical>::from((1_920, 1_080));
         let requested = Rectangle::new((-10, 20).into(), (110, 50).into());
 
-        let region =
-            capture_region_for_geometry(mode, 2.0, Transform::Normal, Some(requested)).unwrap();
+        let region = capture_region_for_geometry(mode, 2.0, Transform::Normal, Some(requested)).unwrap();
 
         assert_eq!(region, Rectangle::new((0, 40).into(), (200, 100).into()));
     }
@@ -591,9 +569,7 @@ mod tests {
         let mode = Size::<i32, Physical>::from((1_920, 1_080));
         let requested = Rectangle::new((1_000, 600).into(), (100, 100).into());
 
-        assert!(
-            capture_region_for_geometry(mode, 2.0, Transform::Normal, Some(requested),).is_none()
-        );
+        assert!(capture_region_for_geometry(mode, 2.0, Transform::Normal, Some(requested),).is_none());
     }
 
     #[test]

@@ -1,12 +1,9 @@
-use wayland_client::{
-    Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
-    globals::{GlobalListContents, registry_queue_init},
-    protocol::{wl_registry, wl_surface},
-};
-use wayland_protocols::xdg::foreign::zv2::client::{
-    zxdg_imported_v2::{self, ZxdgImportedV2},
-    zxdg_importer_v2::ZxdgImporterV2,
-};
+use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::{wl_registry, wl_surface};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
+use wayland_protocols::xdg::foreign::zv2::client::zxdg_imported_v2;
+use wayland_protocols::xdg::foreign::zv2::client::zxdg_imported_v2::ZxdgImportedV2;
+use wayland_protocols::xdg::foreign::zv2::client::zxdg_importer_v2::ZxdgImporterV2;
 
 #[derive(Debug)]
 pub(crate) struct Parent {
@@ -16,10 +13,7 @@ pub(crate) struct Parent {
 }
 
 impl Parent {
-    pub(crate) fn attach(
-        window: &dyn cosmic::iced::window::Window,
-        parent: &str,
-    ) -> Result<Option<Self>, String> {
+    pub(crate) fn attach(window: &dyn cosmic::iced::window::Window, parent: &str) -> Result<Option<Self>, String> {
         use cosmic::iced::window::raw_window_handle::{RawDisplayHandle, RawWindowHandle};
         if parent.is_empty() {
             return Ok(None);
@@ -36,9 +30,8 @@ impl Parent {
             return Err("Portal parenting requires Wayland".into());
         };
         // The window lends live handles; the borrowed backend never owns the display.
-        let backend = unsafe {
-            wayland_client::backend::Backend::from_foreign_display(display.display.as_ptr().cast())
-        };
+        let backend =
+            unsafe { wayland_client::backend::Backend::from_foreign_display(display.display.as_ptr().cast()) };
         let connection = Connection::from_backend(backend);
         let id = unsafe {
             wayland_client::backend::ObjectId::from_ptr(
@@ -47,19 +40,15 @@ impl Parent {
             )
         }
         .map_err(|error| error.to_string())?;
-        let surface =
-            wl_surface::WlSurface::from_id(&connection, id).map_err(|error| error.to_string())?;
-        let (globals, mut queue) =
-            registry_queue_init::<State>(&connection).map_err(|error| error.to_string())?;
+        let surface = wl_surface::WlSurface::from_id(&connection, id).map_err(|error| error.to_string())?;
+        let (globals, mut queue) = registry_queue_init::<State>(&connection).map_err(|error| error.to_string())?;
         let qh = queue.handle();
         let importer = globals
             .bind::<ZxdgImporterV2, _, _>(&qh, 1..=1, ())
             .map_err(|error| error.to_string())?;
         let imported = importer.import_toplevel(handle.into(), &qh, ());
         let mut state = State::default();
-        queue
-            .roundtrip(&mut state)
-            .map_err(|error| error.to_string())?;
+        queue.roundtrip(&mut state).map_err(|error| error.to_string())?;
         if state.invalid {
             imported.destroy();
             importer.destroy();

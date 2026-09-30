@@ -1,6 +1,8 @@
 //! Read NetworkManager directly; no scans or network changes are requested.
+use zbus::blocking::Connection;
+use zbus::zvariant::OwnedObjectPath;
+
 use super::Network;
-use zbus::{blocking::Connection, zvariant::OwnedObjectPath};
 
 const SERVICE: &str = "org.freedesktop.NetworkManager";
 const ROOT: &str = "/org/freedesktop/NetworkManager";
@@ -86,8 +88,9 @@ pub(super) fn read(connection: &Connection) -> zbus::Result<Option<Network>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::{Arc, Mutex};
+
+    use super::*;
     #[derive(Default)]
     struct State {
         wifi: bool,
@@ -120,12 +123,7 @@ mod tests {
     impl Wireless {
         #[zbus(property)]
         fn active_access_point(&self) -> OwnedObjectPath {
-            OwnedObjectPath::try_from(if self.0.lock().unwrap().active {
-                "/ap"
-            } else {
-                "/"
-            })
-            .unwrap()
+            OwnedObjectPath::try_from(if self.0.lock().unwrap().active { "/ap" } else { "/" }).unwrap()
         }
     }
     struct Ap(Arc<Mutex<State>>);

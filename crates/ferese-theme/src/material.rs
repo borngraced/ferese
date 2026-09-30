@@ -1,14 +1,10 @@
 use std::sync::Arc;
 
-use ferese_protocols::material::v1::client::{
-    ferese_material_manager_v1::FereseMaterialManagerV1,
-    ferese_surface_material_v1::FereseSurfaceMaterialV1,
-};
-use wayland_client::{
-    Connection, Dispatch, Proxy, QueueHandle, delegate_noop,
-    globals::{GlobalListContents, registry_queue_init},
-    protocol::{wl_registry, wl_surface},
-};
+use ferese_protocols::material::v1::client::ferese_material_manager_v1::FereseMaterialManagerV1;
+use ferese_protocols::material::v1::client::ferese_surface_material_v1::FereseSurfaceMaterialV1;
+use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::{wl_registry, wl_surface};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};
 
 /// Keeps a compositor-owned dialog material attached for the window lifetime.
 #[derive(Clone, Debug)]
@@ -37,9 +33,8 @@ impl ModalMaterial {
             return Err("Dialog materials require Wayland".into());
         };
         // Iced lends live native handles; this backend borrows its connection.
-        let backend = unsafe {
-            wayland_client::backend::Backend::from_foreign_display(display.display.as_ptr().cast())
-        };
+        let backend =
+            unsafe { wayland_client::backend::Backend::from_foreign_display(display.display.as_ptr().cast()) };
         let connection = Connection::from_backend(backend);
         let id = unsafe {
             wayland_client::backend::ObjectId::from_ptr(
@@ -48,8 +43,7 @@ impl ModalMaterial {
             )
         }
         .map_err(|error| error.to_string())?;
-        let surface =
-            wl_surface::WlSurface::from_id(&connection, id).map_err(|error| error.to_string())?;
+        let surface = wl_surface::WlSurface::from_id(&connection, id).map_err(|error| error.to_string())?;
         let (globals, mut queue) =
             registry_queue_init::<MaterialState>(&connection).map_err(|error| error.to_string())?;
         let qh = queue.handle();
@@ -63,9 +57,7 @@ impl ModalMaterial {
             material,
         };
         let mut state = MaterialState::default();
-        queue
-            .roundtrip(&mut state)
-            .map_err(|error| error.to_string())?;
+        queue.roundtrip(&mut state).map_err(|error| error.to_string())?;
         if !state.ready {
             return Err("Dialog material attachment was not acknowledged".into());
         }

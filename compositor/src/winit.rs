@@ -1,84 +1,65 @@
-use std::{
-    cell::{Cell, RefCell},
-    collections::HashMap,
-    error::Error,
-    rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::{Duration, Instant},
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::error::Error;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
+use smithay::backend::allocator::Fourcc;
+use smithay::backend::renderer::damage::OutputDamageTracker;
+use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
+use smithay::backend::renderer::element::solid::SolidColorRenderElement;
+use smithay::backend::renderer::element::surface::{
+    WaylandSurfaceRenderElement, WaylandSurfaceTexture, render_elements_from_surface_tree,
 };
-
-use smithay::{
-    backend::{
-        allocator::Fourcc,
-        renderer::{
-            Bind, Color32F, ErasedContextId, ExportMem, Frame, ImportDma, Offscreen, Renderer,
-            Texture,
-            damage::OutputDamageTracker,
-            element::{
-                Element, Id, Kind as RenderElementKind, RenderElement, UnderlyingStorage,
-                memory::MemoryRenderBufferRenderElement,
-                render_elements,
-                solid::SolidColorRenderElement,
-                surface::{
-                    WaylandSurfaceRenderElement, WaylandSurfaceTexture,
-                    render_elements_from_surface_tree,
-                },
-                utils::{
-                    ConstrainAlign, ConstrainScaleBehavior, CropRenderElement, Relocate,
-                    RelocateRenderElement, RescaleRenderElement, constrain_render_elements,
-                },
-            },
-            gles::{
-                GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, GlesTexture,
-                Uniform, UniformName, UniformType, element::PixelShaderElement,
-            },
-            utils::{CommitCounter, DamageSet, OpaqueRegions, draw_render_elements},
-        },
-        winit::{self, WinitEvent},
-    },
-    desktop::{
-        LayerSurface, PopupManager, layer_map_for_output,
-        space::{ConstrainBehavior, ConstrainReference, constrain_space_element},
-        utils::OutputPresentationFeedback,
-    },
-    input::pointer::{CursorImageStatus, CursorImageSurfaceData},
-    output::{Mode, Output, PhysicalProperties, Scale, Subpixel},
-    reexports::calloop::{
-        EventLoop,
-        timer::{TimeoutAction, Timer},
-    },
-    reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind as PresentationKind,
-    reexports::wayland_server::Resource,
-    utils::{
-        Buffer, Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale as RenderScale, Size,
-        Transform,
-    },
-    wayland::shell::wlr_layer::Layer,
-    wayland::{compositor::with_states, presentation::Refresh},
+use smithay::backend::renderer::element::utils::{
+    ConstrainAlign, ConstrainScaleBehavior, CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement,
+    constrain_render_elements,
 };
-
-use crate::{
-    Ferese,
-    metrics::{FrameEffectMetrics, RenderMetrics},
-    presentation::{NativeTextureElement, PhysicalShaderElement, physical_rect},
+use smithay::backend::renderer::element::{
+    Element, Id, Kind as RenderElementKind, RenderElement, RenderElementStates, UnderlyingStorage, render_elements,
 };
+use smithay::backend::renderer::gles::element::PixelShaderElement;
+use smithay::backend::renderer::gles::{
+    GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
+    UniformType,
+};
+use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions, draw_render_elements};
+use smithay::backend::renderer::{
+    Bind, Color32F, ErasedContextId, ExportMem, Frame, ImportDma, Offscreen, Renderer, Texture,
+};
+use smithay::backend::winit;
+use smithay::backend::winit::WinitEvent;
+use smithay::desktop::space::{ConstrainBehavior, ConstrainReference, constrain_space_element};
+use smithay::desktop::{LayerSurface, PopupManager, layer_map_for_output};
+use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
+use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
+use smithay::reexports::calloop::EventLoop;
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_presentation_feedback::Kind as PresentationKind;
+use smithay::reexports::wayland_server::Resource;
+use smithay::utils::{
+    Buffer, Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale as RenderScale, Size, Transform,
+};
+use smithay::wayland::compositor::with_states;
+use smithay::wayland::presentation::Refresh;
+use smithay::wayland::shell::wlr_layer::Layer;
 
-type SurfaceRenderElement = CropRenderElement<
-    RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>,
->;
+use crate::Ferese;
+use crate::metrics::{FrameEffectMetrics, RenderMetrics};
+use crate::presentation::{NativeTextureElement, PhysicalShaderElement, physical_rect};
 
-type WindowRenderElement =
-    CropRenderElement<RelocateRenderElement<RescaleRenderElement<WindowContentRenderElement>>>;
+type SurfaceRenderElement =
+    CropRenderElement<RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>;
 
-type MemoryRenderElement = CropRenderElement<
-    RelocateRenderElement<RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>>,
->;
+type WindowRenderElement = CropRenderElement<RelocateRenderElement<RescaleRenderElement<WindowContentRenderElement>>>;
+
+type MemoryRenderElement =
+    CropRenderElement<RelocateRenderElement<RescaleRenderElement<MemoryRenderBufferRenderElement<GlesRenderer>>>>;
 
 type PhysicalDamage = Vec<Rectangle<i32, Physical>>;
-type DamageRenderResult = Result<(Option<PhysicalDamage>, FrameEffectMetrics), Box<dyn Error>>;
+type DamageRenderResult = Result<(Option<PhysicalDamage>, FrameEffectMetrics, RenderElementStates), Box<dyn Error>>;
 
 render_elements! {
     pub(crate) AnimatedWindowRenderElement<=GlesRenderer>;
@@ -131,14 +112,10 @@ pub(crate) fn capture_resize_snapshot(
     }
     // Called before on_commit_buffer_handler: renderer surface state still
     // owns the previous buffer. Copy only during an actual resize handoff.
-    let content = render_elements_from_surface_tree::<
-        GlesRenderer,
-        WaylandSurfaceRenderElement<GlesRenderer>,
-    >(
+    let content = render_elements_from_surface_tree::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
         renderer,
         toplevel.wl_surface(),
-        Point::<i32, Logical>::from((-geometry.loc.x, -geometry.loc.y))
-            .to_physical_precise_round(scale),
+        Point::<i32, Logical>::from((-geometry.loc.x, -geometry.loc.y)).to_physical_precise_round(scale),
         scale,
         1.0,
         RenderElementKind::Unspecified,
@@ -146,11 +123,7 @@ pub(crate) fn capture_resize_snapshot(
     if content.is_empty() {
         return Ok(None);
     }
-    let mut texture = Offscreen::<GlesTexture>::create_buffer(
-        renderer,
-        Fourcc::Abgr8888,
-        (size.w, size.h).into(),
-    )?;
+    let mut texture = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, (size.w, size.h).into())?;
     {
         let mut target = renderer.bind(&mut texture)?;
         let mut frame = renderer.render(&mut target, size, Transform::Normal)?;
@@ -186,16 +159,13 @@ pub(crate) fn capture_window_frame(
     scale: f64,
     cursor: Option<(&Ferese, Rectangle<i32, Logical>)>,
 ) -> Result<crate::handlers::screenshot::CaptureBuffer, String> {
-    let mut snapshot =
-        capture_resize_snapshot(renderer, window, geometry, scale, 128 * 1024 * 1024)
-            .map_err(|error| error.to_string())?
-            .ok_or("Window has no capturable content")?;
+    let mut snapshot = capture_resize_snapshot(renderer, window, geometry, scale, 128 * 1024 * 1024)
+        .map_err(|error| error.to_string())?
+        .ok_or("Window has no capturable content")?;
     let size = snapshot.texture.size();
     if let Some((state, cursor_geometry)) = cursor {
         let elements = cursor_elements(state, renderer, cursor_geometry, scale);
-        let mut target = renderer
-            .bind(&mut snapshot.texture)
-            .map_err(|e| e.to_string())?;
+        let mut target = renderer.bind(&mut snapshot.texture).map_err(|e| e.to_string())?;
         let mut frame = renderer
             .render(&mut target, (size.w, size.h).into(), Transform::Normal)
             .map_err(|e| e.to_string())?;
@@ -209,11 +179,7 @@ pub(crate) fn capture_window_frame(
         let _ = frame.finish().map_err(|e| e.to_string())?;
     }
     let mapping = renderer
-        .copy_texture(
-            &snapshot.texture,
-            Rectangle::from_size(size),
-            Fourcc::Abgr8888,
-        )
+        .copy_texture(&snapshot.texture, Rectangle::from_size(size), Fourcc::Abgr8888)
         .map_err(|error| error.to_string())?;
     if mapping.format() != Some(Fourcc::Abgr8888) {
         return Err("Unsupported window readback format".into());
@@ -222,9 +188,7 @@ pub(crate) fn capture_window_frame(
         .checked_mul(size.h as usize)
         .and_then(|pixels| pixels.checked_mul(4))
         .ok_or("Window is too large")?;
-    let source = renderer
-        .map_texture(&mapping)
-        .map_err(|error| error.to_string())?;
+    let source = renderer.map_texture(&mapping).map_err(|error| error.to_string())?;
     if source.len() < bytes {
         return Err("Incomplete window readback".into());
     }
@@ -547,11 +511,7 @@ impl Element for BlurRenderElement {
         self.geometry.to_physical_precise_round(scale)
     }
 
-    fn damage_since(
-        &self,
-        scale: RenderScale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
+    fn damage_since(&self, scale: RenderScale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
         blur_damage(self.geometry(scale).size, self.commit, commit)
     }
 
@@ -804,11 +764,7 @@ impl Element for RoundedSurfaceRenderElement {
         self.inner.src()
     }
 
-    fn damage_since(
-        &self,
-        scale: RenderScale<f64>,
-        commit: Option<CommitCounter>,
-    ) -> DamageSet<i32, Physical> {
+    fn damage_since(&self, scale: RenderScale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
         if self.clip_changed {
             return DamageSet::from_slice(&[Rectangle::from_size(self.inner.geometry(scale).size)]);
         }
@@ -856,9 +812,7 @@ impl RenderElement<GlesRenderer> for RoundedSurfaceRenderElement {
                     Uniform::new("radius", self.radius),
                 ],
             ),
-            WaylandSurfaceTexture::SolidColor(_) => {
-                self.inner.draw(frame, src, dst, damage, opaque_regions)
-            }
+            WaylandSurfaceTexture::SolidColor(_) => self.inner.draw(frame, src, dst, damage, opaque_regions),
         }
     }
 
@@ -943,10 +897,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     refresh.set(Duration::from_nanos(1_000_000_000_000 / rate.max(1) as u64));
 
                     output.change_current_state(
-                        Some(Mode {
-                            size,
-                            refresh: rate,
-                        }),
+                        Some(Mode { size, refresh: rate }),
                         None,
                         Some(Scale::Fractional(scale)),
                         None,
@@ -973,10 +924,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                             let (renderer, mut framebuffer) = backend.bind()?;
                             state.process_dmabuf_imports(renderer);
                             let elements = animated_window_elements(state, renderer, &output);
-                            let effects = frame_effect_metrics(
-                                &elements,
-                                output.current_scale().fractional_scale(),
-                            );
+                            let effects = frame_effect_metrics(&elements, output.current_scale().fractional_scale());
                             let result = damage_tracker.render_output(
                                 renderer,
                                 &mut framebuffer,
@@ -989,14 +937,8 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                                 state.process_screencopies(renderer, &framebuffer, &output, true);
 
                             if cursorless_capture {
-                                let cursorless_elements =
-                                    output_elements(state, renderer, &output, false);
-                                redraw_output(
-                                    renderer,
-                                    &mut framebuffer,
-                                    &output,
-                                    &cursorless_elements,
-                                )?;
+                                let cursorless_elements = output_elements(state, renderer, &output, false);
+                                redraw_output(renderer, &mut framebuffer, &output, &cursorless_elements)?;
                                 state.process_screencopies(renderer, &framebuffer, &output, false);
                                 redraw_output(renderer, &mut framebuffer, &output, &elements)?;
                             } else if captured_with_cursor {
@@ -1009,14 +951,13 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                                     .finish()?;
                             }
 
-                            Ok((result.damage.cloned(), effects))
+                            Ok((result.damage.cloned(), effects, result.states))
                         }
                     })();
-                    let (damage, effects) = match rendered {
-                        Ok((Some(damage), effects)) => (damage, effects),
-                        Ok((None, _)) => {
-                            render_metrics
-                                .record_no_damage(render_started.elapsed(), missed_deadlines);
+                    let (damage, effects, rendered_states) = match rendered {
+                        Ok((Some(damage), effects, states)) => (damage, effects, states),
+                        Ok((None, _, _)) => {
+                            render_metrics.record_no_damage(render_started.elapsed(), missed_deadlines);
                             // A callback means permission to draw the next client
                             // frame, not proof of a new compositor presentation.
                             // No-damage frames must still unblock layer clients.
@@ -1049,21 +990,12 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     }
                     render_metrics.record_frame(elapsed, &damage, missed_deadlines, effects);
 
-                    let mut presentation = OutputPresentationFeedback::new(&output);
-                    state.space.elements().for_each(|window| {
-                        window.take_presentation_feedback(
-                            &mut presentation,
-                            |_, _| Some(output.clone()),
-                            |_, _| PresentationKind::Vsync,
-                        );
-                    });
-                    layer_surfaces(&output).iter().for_each(|layer| {
-                        layer.take_presentation_feedback(
-                            &mut presentation,
-                            |_, _| Some(output.clone()),
-                            |_, _| PresentationKind::Vsync,
-                        );
-                    });
+                    let mut presentation = crate::presentation::take_output_feedback(
+                        state,
+                        &output,
+                        &rendered_states,
+                        PresentationKind::Vsync,
+                    );
                     sequence = sequence.wrapping_add(1);
                     presentation.presented(
                         clock.now(),
@@ -1092,7 +1024,12 @@ fn send_nested_frame_callbacks(state: &mut Ferese, output: &Output, refresh: Dur
         return;
     }
     let time = state.start_time.elapsed();
-    for window in state.space.elements() {
+    for window in state.space.elements().filter(|window| {
+        state
+            .window_ids
+            .get(*window)
+            .is_some_and(|id| state.window_belongs_to_output(*id, output))
+    }) {
         window.send_frame(output, time, Some(refresh), |_, _| Some(output.clone()));
     }
     for layer in layer_surfaces(output) {
@@ -1117,10 +1054,7 @@ pub(crate) fn cursorless_window_elements(
     output_elements(state, renderer, output, false)
 }
 
-pub(crate) fn frame_effect_metrics(
-    _elements: &[AnimatedWindowRenderElement],
-    _scale: f64,
-) -> FrameEffectMetrics {
+pub(crate) fn frame_effect_metrics(_elements: &[AnimatedWindowRenderElement], _scale: f64) -> FrameEffectMetrics {
     FrameEffectMetrics
 }
 
@@ -1136,16 +1070,9 @@ fn output_elements(
             return Vec::new();
         };
         let scale = output.current_scale().fractional_scale();
-        let background = state
-            .session_lock
-            .backgrounds
-            .entry(output.clone())
-            .or_insert_with(|| {
-                smithay::backend::renderer::element::solid::SolidColorBuffer::new(
-                    geometry.size,
-                    [0.0, 0.0, 0.0, 1.0],
-                )
-            });
+        let background = state.session_lock.backgrounds.entry(output.clone()).or_insert_with(|| {
+            smithay::backend::renderer::element::solid::SolidColorBuffer::new(geometry.size, [0.0, 0.0, 0.0, 1.0])
+        });
         background.resize(geometry.size);
         let mut elements = Vec::new();
         let opacity = state.session_lock.idle_opacity;
@@ -1162,14 +1089,8 @@ fn output_elements(
                 });
             overlay.resize(geometry.size);
             elements.push(
-                SolidColorRenderElement::from_buffer(
-                    overlay,
-                    (0, 0),
-                    scale,
-                    opacity,
-                    RenderElementKind::Unspecified,
-                )
-                .into(),
+                SolidColorRenderElement::from_buffer(overlay, (0, 0), scale, opacity, RenderElementKind::Unspecified)
+                    .into(),
             );
         }
         if let Some(surface) = state
@@ -1179,10 +1100,7 @@ fn output_elements(
             .filter(|surface| surface.alive())
         {
             elements.extend(
-                render_elements_from_surface_tree::<
-                    GlesRenderer,
-                    WaylandSurfaceRenderElement<GlesRenderer>,
-                >(
+                render_elements_from_surface_tree::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
                     renderer,
                     surface.wl_surface(),
                     (0, 0),
@@ -1195,14 +1113,7 @@ fn output_elements(
             );
         }
         elements.push(
-            SolidColorRenderElement::from_buffer(
-                background,
-                (0, 0),
-                scale,
-                1.0,
-                RenderElementKind::Unspecified,
-            )
-            .into(),
+            SolidColorRenderElement::from_buffer(background, (0, 0), scale, 1.0, RenderElementKind::Unspecified).into(),
         );
         return elements;
     }
@@ -1224,13 +1135,7 @@ fn output_elements(
     };
     elements.extend(layer_elements(state, renderer, output, upper_layers));
     if state.overview.is_presenting() {
-        elements.extend(overview_strip_elements(
-            state,
-            renderer,
-            output,
-            output_geometry,
-            scale,
-        ));
+        elements.extend(overview_strip_elements(state, renderer, output, output_geometry, scale));
     }
     let mut candidates = if state.overview.is_active() {
         state.window_ids.keys().cloned().collect::<Vec<_>>()
@@ -1238,9 +1143,7 @@ fn output_elements(
         state.space.elements().rev().cloned().collect::<Vec<_>>()
     };
     if state.overview.is_active() {
-        candidates.sort_by_key(|window| {
-            std::cmp::Reverse(state.window_ids.get(window).map_or(0, |id| id.0))
-        });
+        candidates.sort_by_key(|window| std::cmp::Reverse(state.window_ids.get(window).map_or(0, |id| id.0)));
     }
     let windows = candidates
         .iter()
@@ -1321,8 +1224,7 @@ fn output_elements(
                 .get(&id)
                 .map_or(if focused { 1.0 } else { 0.0 }, |v| v.current);
             let border_width = state.theme_settings.border_width
-                + (state.theme_settings.focus_ring_width - state.theme_settings.border_width)
-                    * focus;
+                + (state.theme_settings.focus_ring_width - state.theme_settings.border_width) * focus;
             let border_color = state.theme_settings.border_color.0;
             let gradient = state.theme_settings.border_gradient;
 
@@ -1365,8 +1267,7 @@ fn output_elements(
                 && (snapshot.scale - scale).abs() < 0.001
             {
                 let size = snapshot.texture.size();
-                let visible =
-                    Rectangle::new(pixels.loc, (size.w, size.h).into()).intersection(pixels);
+                let visible = Rectangle::new(pixels.loc, (size.w, size.h).into()).intersection(pixels);
                 if let Some(visible) = visible {
                     let clip = framebuffer_clip_rect(
                         pixels,
@@ -1383,16 +1284,12 @@ fn output_elements(
                                 f64::from(visible.size.w),
                                 f64::from(visible.size.h),
                             ))),
-                            alpha: crate::presentation::handoff_alpha(snapshot.elapsed)
-                                * close_alpha,
+                            alpha: crate::presentation::handoff_alpha(snapshot.elapsed) * close_alpha,
                             program: Some(programs.texture.clone()),
                             uniforms: vec![
                                 Uniform::new("clip_rect", clip).into_owned(),
-                                Uniform::new(
-                                    "radius",
-                                    scaled_effect_value(window_radius, constrain, scale),
-                                )
-                                .into_owned(),
+                                Uniform::new("radius", scaled_effect_value(window_radius, constrain, scale))
+                                    .into_owned(),
                             ],
                         }
                         .into(),
@@ -1460,11 +1357,7 @@ fn output_elements(
                 elements.push(shadow.into());
             }
         } else {
-            elements.extend(constrain_space_element::<
-                GlesRenderer,
-                _,
-                AnimatedWindowRenderElement,
-            >(
+            elements.extend(constrain_space_element::<GlesRenderer, _, AnimatedWindowRenderElement>(
                 renderer,
                 &window,
                 constrain.loc,
@@ -1544,9 +1437,7 @@ fn overview_chrome_element(
     let chrome = &mut state
         .overview_scrims
         .entry(output_id)
-        .or_insert_with(|| OverviewScrim {
-            chrome: HashMap::new(),
-        })
+        .or_insert_with(|| OverviewScrim { chrome: HashMap::new() })
         .chrome;
     let cached = chrome
         .entry(key)
@@ -1622,9 +1513,7 @@ fn overview_strip_elements(
     {
         cache.chrome.retain(|(id, part), _| match part {
             OverviewChromePart::Caption => windows_by_id.keys().any(|window| window.0 == *id),
-            OverviewChromePart::Card | OverviewChromePart::Outline => {
-                cards.iter().any(|card| card.workspace.0 == *id)
-            }
+            OverviewChromePart::Card | OverviewChromePart::Outline => cards.iter().any(|card| card.workspace.0 == *id),
             OverviewChromePart::Strip => true,
         });
     }
@@ -1648,9 +1537,7 @@ fn overview_strip_elements(
             26.0,
         );
         let location = Point::<i32, Physical>::from((
-            ((caption.x - f64::from(output_geometry.loc.x) + caption.width * 0.5) * scale).round()
-                as i32
-                - size.w / 2,
+            ((caption.x - f64::from(output_geometry.loc.x) + caption.width * 0.5) * scale).round() as i32 - size.w / 2,
             ((caption.y - f64::from(output_geometry.loc.y) + 4.0) * scale).round() as i32,
         ));
         if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
@@ -1658,9 +1545,7 @@ fn overview_strip_elements(
             location.to_f64(),
             &buffer,
             Some(alpha),
-            Some(Rectangle::from_size(
-                (f64::from(size.w), f64::from(size.h)).into(),
-            )),
+            Some(Rectangle::from_size((f64::from(size.w), f64::from(size.h)).into())),
             Some(
                 (
                     (f64::from(size.w) / scale).round() as i32,
@@ -1672,11 +1557,9 @@ fn overview_strip_elements(
         ) {
             let element = RescaleRenderElement::from_element(element, location, 1.0);
             let element = RelocateRenderElement::from_element(element, (0, 0), Relocate::Relative);
-            if let Some(element) = CropRenderElement::from_element(
-                element,
-                scale,
-                physical_rect(caption, output_geometry.loc, scale),
-            ) {
+            if let Some(element) =
+                CropRenderElement::from_element(element, scale, physical_rect(caption, output_geometry.loc, scale))
+            {
                 elements.push(element.into());
             }
         }
@@ -1739,20 +1622,16 @@ fn overview_strip_elements(
         }
         if let Some((buffer, size)) = state.overview_workspace_label(card.workspace, scale) {
             let location = Point::<i32, Physical>::from((
-                ((card.rect.x - f64::from(output_geometry.loc.x) + card.rect.width * 0.5) * scale)
-                    .round() as i32
+                ((card.rect.x - f64::from(output_geometry.loc.x) + card.rect.width * 0.5) * scale).round() as i32
                     - size.w / 2,
-                ((card.rect.y - f64::from(output_geometry.loc.y) + card.rect.height - 20.0) * scale)
-                    .round() as i32,
+                ((card.rect.y - f64::from(output_geometry.loc.y) + card.rect.height - 20.0) * scale).round() as i32,
             ));
             if let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 location.to_f64(),
                 &buffer,
                 Some(alpha),
-                Some(Rectangle::from_size(
-                    (f64::from(size.w), f64::from(size.h)).into(),
-                )),
+                Some(Rectangle::from_size((f64::from(size.w), f64::from(size.h)).into())),
                 Some(
                     (
                         (f64::from(size.w) / scale).round() as i32,
@@ -1763,8 +1642,7 @@ fn overview_strip_elements(
                 RenderElementKind::Unspecified,
             ) {
                 let element = RescaleRenderElement::from_element(element, location, 1.0);
-                let element =
-                    RelocateRenderElement::from_element(element, (0, 0), Relocate::Relative);
+                let element = RelocateRenderElement::from_element(element, (0, 0), Relocate::Relative);
                 if let Some(element) = CropRenderElement::from_element(
                     element,
                     scale,
@@ -1819,10 +1697,7 @@ fn overview_strip_elements(
     elements
 }
 
-fn rounded_clip_program(
-    state: &mut Ferese,
-    renderer: &mut GlesRenderer,
-) -> Option<RoundedClipPrograms> {
+fn rounded_clip_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<RoundedClipPrograms> {
     let context = renderer.context_id().erased();
     if let Some(program) = state.rounded_clip_programs.get(&context) {
         return Some(program.clone());
@@ -1854,9 +1729,7 @@ fn rounded_clip_program(
     let texture = renderer.compile_custom_texture_shader(ROUNDED_TEXTURE_SHADER, &texture_uniforms);
     let border = renderer.compile_custom_pixel_shader(ROUNDED_BORDER_SHADER, &border_uniforms);
     let shadow = renderer.compile_custom_pixel_shader(WINDOW_SHADOW_SHADER, &shadow_uniforms);
-    let compiled = texture.and_then(|texture| {
-        border.and_then(|border| shadow.map(|shadow| (texture, border, shadow)))
-    });
+    let compiled = texture.and_then(|texture| border.and_then(|border| shadow.map(|shadow| (texture, border, shadow))));
     match compiled {
         Ok((texture, border, shadow)) => {
             let programs = RoundedClipPrograms {
@@ -1864,9 +1737,7 @@ fn rounded_clip_program(
                 border,
                 shadow,
             };
-            state
-                .rounded_clip_programs
-                .insert(context, programs.clone());
+            state.rounded_clip_programs.insert(context, programs.clone());
             Some(programs)
         }
         Err(error) => {
@@ -1903,26 +1774,15 @@ fn window_border_element(
         Some(gradient) => (
             gradient.from.0,
             gradient.to.0,
-            border_gradient_line(
-                physical,
-                mode.size,
-                output.current_transform().invert(),
-                gradient.angle,
-            ),
+            border_gradient_line(physical, mode.size, output.current_transform().invert(), gradient.angle),
         ),
         None => (color, color, [0.0; 4]),
     };
-    let (focus_from, focus_to, focus_gradient_line) = match state.theme_settings.focus_ring_gradient
-    {
+    let (focus_from, focus_to, focus_gradient_line) = match state.theme_settings.focus_ring_gradient {
         Some(g) => (
             g.from.0,
             g.to.0,
-            border_gradient_line(
-                physical,
-                mode.size,
-                output.current_transform().invert(),
-                g.angle,
-            ),
+            border_gradient_line(physical, mode.size, output.current_transform().invert(), g.angle),
         ),
         None => (
             state.theme_settings.accent_color.0,
@@ -2045,20 +1905,17 @@ fn window_tint_element(
     } else {
         state.window_dims.entry(id).or_default()
     };
-    let cached = buffers
-        .contexts
-        .entry(context)
-        .or_insert_with(|| CachedBorder {
-            element: PixelShaderElement::new(
-                program.0,
-                geometry,
-                None,
-                1.0,
-                uniforms(&parameters),
-                RenderElementKind::Unspecified,
-            ),
-            parameters: parameters.clone(),
-        });
+    let cached = buffers.contexts.entry(context).or_insert_with(|| CachedBorder {
+        element: PixelShaderElement::new(
+            program.0,
+            geometry,
+            None,
+            1.0,
+            uniforms(&parameters),
+            RenderElementKind::Unspecified,
+        ),
+        parameters: parameters.clone(),
+    });
     if cached.parameters != parameters {
         if cached.parameters.geometry != geometry {
             cached.element.resize(geometry, None);
@@ -2096,22 +1953,14 @@ fn window_shadow_element(
     }
 
     let shadow_geometry = Rectangle::new(
-        (
-            physical.loc.x,
-            physical.loc.y + (offset_y * scale).round() as i32,
-        )
-            .into(),
+        (physical.loc.x, physical.loc.y + (offset_y * scale).round() as i32).into(),
         physical.size,
     );
     let bounds = shadow_bounds(geometry, offset_y, blur);
     let parameters = ShadowParameters {
         blur: (blur * scale) as f32,
         bounds,
-        shadow_rect: framebuffer_clip_rect(
-            shadow_geometry,
-            mode.size,
-            output.current_transform().invert(),
-        ),
+        shadow_rect: framebuffer_clip_rect(shadow_geometry, mode.size, output.current_transform().invert()),
         radius: scaled_effect_value(requested_radius, geometry, scale),
         opacity: opacity as f32,
         color,
@@ -2149,16 +1998,8 @@ fn window_shadow_element(
     Some(PhysicalShaderElement {
         inner: cached.element.clone(),
         geometry: Rectangle::new(
-            (
-                shadow_geometry.loc.x - extent,
-                shadow_geometry.loc.y - extent,
-            )
-                .into(),
-            (
-                shadow_geometry.size.w + 2 * extent,
-                shadow_geometry.size.h + 2 * extent,
-            )
-                .into(),
+            (shadow_geometry.loc.x - extent, shadow_geometry.loc.y - extent).into(),
+            (shadow_geometry.size.w + 2 * extent, shadow_geometry.size.h + 2 * extent).into(),
         ),
     })
 }
@@ -2173,11 +2014,7 @@ fn shadow_uniforms(parameters: &ShadowParameters) -> Vec<Uniform<'static>> {
     ]
 }
 
-fn shadow_bounds(
-    geometry: Rectangle<i32, Logical>,
-    offset_y: f64,
-    blur: f64,
-) -> Rectangle<i32, Logical> {
+fn shadow_bounds(geometry: Rectangle<i32, Logical>, offset_y: f64, blur: f64) -> Rectangle<i32, Logical> {
     let extent = (blur * 2.0).ceil() as i32;
     let offset_y = offset_y.round() as i32;
 
@@ -2218,23 +2055,15 @@ fn rounded_window_elements(
     let geometry = window.geometry();
     let reference = geometry.to_physical_precise_round(scale);
     let location = physical_constrain.loc - geometry.loc.to_physical_precise_round(scale);
-    let clip = framebuffer_clip_rect(
-        physical_constrain,
-        mode.size,
-        output.current_transform().invert(),
-    );
+    let clip = framebuffer_clip_rect(physical_constrain, mode.size, output.current_transform().invert());
     let radius = scaled_effect_value(requested_radius, constrain, scale);
     let surface = toplevel.wl_surface();
 
     let mut content = PopupManager::popups_for_surface(surface)
         .flat_map(|(popup, popup_offset)| {
-            let offset = (geometry.loc + popup_offset - popup.geometry().loc)
-                .to_physical_precise_round(scale);
+            let offset = (geometry.loc + popup_offset - popup.geometry().loc).to_physical_precise_round(scale);
 
-            render_elements_from_surface_tree::<
-                GlesRenderer,
-                WaylandSurfaceRenderElement<GlesRenderer>,
-            >(
+            render_elements_from_surface_tree::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
                 renderer,
                 popup.wl_surface(),
                 location + offset,
@@ -2247,10 +2076,7 @@ fn rounded_window_elements(
         })
         .collect::<Vec<_>>();
     content.extend(
-        render_elements_from_surface_tree::<
-            GlesRenderer,
-            WaylandSurfaceRenderElement<GlesRenderer>,
-        >(
+        render_elements_from_surface_tree::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
             renderer,
             surface,
             location,
@@ -2310,10 +2136,7 @@ fn color_with_alpha(mut color: [f32; 4], alpha: f32) -> [f32; 4] {
     color
 }
 
-fn rounded_visual_rect(
-    rect: ferese_layout::Rect,
-    output_location: Point<i32, Logical>,
-) -> Rectangle<i32, Logical> {
+fn rounded_visual_rect(rect: ferese_layout::Rect, output_location: Point<i32, Logical>) -> Rectangle<i32, Logical> {
     let left = (rect.x - f64::from(output_location.x)).round() as i32;
     let top = (rect.y - f64::from(output_location.y)).round() as i32;
     let right = (rect.x + rect.width - f64::from(output_location.x)).round() as i32;
@@ -2421,17 +2244,14 @@ fn layer_elements(
         requested_layers
             .iter()
             .flat_map(|requested| {
-                map.layers_on(*requested).rev().filter_map(|layer| {
-                    map.layer_geometry(layer)
-                        .map(|geometry| (geometry, layer.clone()))
-                })
+                map.layers_on(*requested)
+                    .rev()
+                    .filter_map(|layer| map.layer_geometry(layer).map(|geometry| (geometry, layer.clone())))
             })
             .collect::<Vec<_>>()
     };
 
-    state
-        .material_buffers
-        .retain(|surface, _| surface.is_alive());
+    state.material_buffers.retain(|surface, _| surface.is_alive());
 
     let mut elements = Vec::new();
     for (geometry, layer) in layers {
@@ -2479,13 +2299,12 @@ fn append_material_surface(
     output_crop: Rectangle<i32, Physical>,
     elements: &mut Vec<AnimatedWindowRenderElement>,
 ) {
-    let radius = if crate::effects::surface_role(surface)
-        .is_some_and(|(role, _)| role == crate::effects::SemanticRole::Panel)
-    {
-        state.theme_settings.panel_radius
-    } else {
-        state.theme_settings.material_radius
-    };
+    let radius =
+        if crate::effects::surface_role(surface).is_some_and(|(role, _)| role == crate::effects::SemanticRole::Panel) {
+            state.theme_settings.panel_radius
+        } else {
+            state.theme_settings.material_radius
+        };
     let regions = crate::effects::surface_regions(surface);
     let targets: Vec<_> = match &regions {
         None => vec![(geometry, radius as f32)],
@@ -2505,15 +2324,11 @@ fn append_material_surface(
         .iter()
         .enumerate()
         .filter_map(|(index, (rect, radius))| {
-            material_element(
-                state, renderer, output, surface, *rect, *radius, index, geometry, 1.0,
-            )
+            material_element(state, renderer, output, surface, *rect, *radius, index, geometry, 1.0)
         })
         .collect();
     if let Some(buffers) = state.material_buffers.get_mut(surface) {
-        buffers
-            .contexts
-            .retain(|(_, index), _| *index < targets.len());
+        buffers.contexts.retain(|(_, index), _| *index < targets.len());
     }
     let material = (!materials.is_empty() && regions.is_none()).then_some(());
     let clip = material.as_ref().and_then(|_| {
@@ -2530,10 +2345,7 @@ fn append_material_surface(
         ))
     });
     // Smithay element lists are front to back: content, material, shadow.
-    let content = render_elements_from_surface_tree::<
-        GlesRenderer,
-        WaylandSurfaceRenderElement<GlesRenderer>,
-    >(
+    let content = render_elements_from_surface_tree::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
         renderer,
         surface,
         content_origin.to_physical_precise_round(scale),
@@ -2588,8 +2400,7 @@ fn material_element(
     let [red, green, blue, _] = state.theme_settings.surface_base_color.0;
     let radius = radius.min(geometry.size.w.min(geometry.size.h) as f32 * 0.5);
     let [offset_y, shadow_blur, shadow_opacity] = material.shadow;
-    let edge_bar =
-        role == crate::effects::SemanticRole::Panel && radius == 0.0 && geometry.loc.y == 0;
+    let edge_bar = role == crate::effects::SemanticRole::Panel && radius == 0.0 && geometry.loc.y == 0;
     let shadow_opacity = if edge_bar {
         0.0
     } else {
@@ -2600,11 +2411,7 @@ fn material_element(
         geometry.size,
     );
     let background_opacity = material.opacity;
-    let blur = material_blur_radius(
-        material.style,
-        material.opacity,
-        state.theme_settings.backdrop_blur,
-    );
+    let blur = material_blur_radius(material.style, material.opacity, state.theme_settings.backdrop_blur);
     let output_size = output
         .current_transform()
         .transform_size(mode.size)
@@ -2617,37 +2424,23 @@ fn material_element(
         presentation_alpha,
         background_opacity,
         blur: (blur * scale) as f32,
-        scene_generation: if blur > 0.0 {
-            state.backdrop_generation
-        } else {
-            0
-        },
+        scene_generation: if blur > 0.0 { state.backdrop_generation } else { 0 },
         sample_geometry,
         sample_physical,
         sample_framebuffer: framebuffer_clip_rect(sample_physical, mode.size, transform),
         radius: radius * scale as f32,
-        shadow_rect: framebuffer_clip_rect(
-            shadow_geometry.to_physical_precise_round(scale),
-            mode.size,
-            transform,
-        ),
+        shadow_rect: framebuffer_clip_rect(shadow_geometry.to_physical_precise_round(scale), mode.size, transform),
         shadow_values: [(shadow_blur * scale) as f32, shadow_opacity as f32],
         shadow_bounds: shadow_bounds(geometry, offset_y, shadow_blur),
         geometry,
         tint: [red, green, blue, material.opacity * presentation_alpha],
         generation,
         opaque: material.opacity == 1.0 && presentation_alpha == 1.0 && radius == 0.0,
-        visible_framebuffer: framebuffer_clip_rect(
-            geometry.to_physical_precise_round(scale),
-            mode.size,
-            transform,
-        ),
+        visible_framebuffer: framebuffer_clip_rect(geometry.to_physical_precise_round(scale), mode.size, transform),
     };
     let context = renderer.context_id().erased();
     let program = material_program(state, renderer)?;
-    let blur_program = (blur > 0.0)
-        .then(|| blur_program(state, renderer))
-        .flatten();
+    let blur_program = (blur > 0.0).then(|| blur_program(state, renderer)).flatten();
     let capture_rect = framebuffer_capture_rect(parameters.sample_framebuffer);
     let capture_size = Size::from((capture_rect[2], capture_rect[3]));
     let buffers = state.material_buffers.entry(surface.clone()).or_default();
@@ -2657,16 +2450,12 @@ fn material_element(
             .get(&context)
             .is_none_or(|c| c.geometry != sample_geometry || c.texture.size() != capture_size)
         {
-            let texture = Offscreen::<GlesTexture>::create_buffer(
-                renderer,
-                Fourcc::Abgr8888,
-                capture_size,
-            )
-            .map_err(|error| {
-                tracing::warn!(%error, ?sample_physical, "backdrop capture allocation failed");
-                error
-            })
-            .ok();
+            let texture = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, capture_size)
+                .map_err(|error| {
+                    tracing::warn!(%error, ?sample_physical, "backdrop capture allocation failed");
+                    error
+                })
+                .ok();
             if let Some(texture) = texture {
                 buffers.captures.insert(
                     context.clone(),
@@ -2704,9 +2493,7 @@ fn material_element(
             MaterialElement::Fill(PixelShaderElement::new(
                 program.0.clone(),
                 geometry,
-                parameters
-                    .opaque
-                    .then(|| vec![Rectangle::from_size(geometry.size)]),
+                parameters.opaque.then(|| vec![Rectangle::from_size(geometry.size)]),
                 1.0,
                 material_uniforms(&parameters),
                 RenderElementKind::Unspecified,
@@ -2739,16 +2526,12 @@ fn material_element(
     }
     if cached.parameters != parameters {
         cached.shadow.resize(parameters.shadow_bounds, None);
-        cached
-            .shadow
-            .update_uniforms(decoration_uniforms(&parameters, 2.0));
+        cached.shadow.update_uniforms(decoration_uniforms(&parameters, 2.0));
         match &mut cached.element {
             MaterialElement::Fill(element) => {
                 element.resize(
                     geometry,
-                    parameters
-                        .opaque
-                        .then(|| vec![Rectangle::from_size(geometry.size)]),
+                    parameters.opaque.then(|| vec![Rectangle::from_size(geometry.size)]),
                 );
                 element.update_uniforms(material_uniforms(&parameters));
             }
@@ -2806,16 +2589,8 @@ fn blur_uniforms(p: &MaterialParameters) -> Vec<Uniform<'static>> {
     vec![
         Uniform::new("visible_rect", p.visible_framebuffer).into_owned(),
         Uniform::new("material_radius", p.radius).into_owned(),
-        Uniform::new(
-            "texture_size",
-            [p.sample_framebuffer[2], p.sample_framebuffer[3]],
-        )
-        .into_owned(),
-        Uniform::new(
-            "capture_origin",
-            [p.sample_framebuffer[0], p.sample_framebuffer[1]],
-        )
-        .into_owned(),
+        Uniform::new("texture_size", [p.sample_framebuffer[2], p.sample_framebuffer[3]]).into_owned(),
+        Uniform::new("capture_origin", [p.sample_framebuffer[0], p.sample_framebuffer[1]]).into_owned(),
         Uniform::new("blur_radius", p.blur).into_owned(),
         Uniform::new("presentation_alpha", p.presentation_alpha).into_owned(),
         Uniform::new("background_opacity", p.background_opacity).into_owned(),
@@ -2896,8 +2671,7 @@ fn cursor_elements(
     let Some(pointer) = state.seat.get_pointer() else {
         return Vec::new();
     };
-    let output_crop =
-        Rectangle::<i32, Logical>::from_size(output_geometry.size).to_physical_precise_round(scale);
+    let output_crop = Rectangle::<i32, Logical>::from_size(output_geometry.size).to_physical_precise_round(scale);
     let origin = Point::<i32, Physical>::default();
     let pointer_location = pointer.current_location() - output_geometry.loc.to_f64();
     match &state.cursor_status {
@@ -2909,13 +2683,9 @@ fn cursor_elements(
                     .map(|attributes| attributes.lock().unwrap().hotspot)
                     .unwrap_or_default()
             });
-            let physical_location =
-                (pointer_location - hotspot.to_f64()).to_physical_precise_round(scale);
+            let physical_location = (pointer_location - hotspot.to_f64()).to_physical_precise_round(scale);
 
-            render_elements_from_surface_tree::<
-                GlesRenderer,
-                WaylandSurfaceRenderElement<GlesRenderer>,
-            >(
+            render_elements_from_surface_tree::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
                 renderer,
                 surface,
                 physical_location,
@@ -2926,8 +2696,7 @@ fn cursor_elements(
             .into_iter()
             .filter_map(|element| {
                 let element = RescaleRenderElement::from_element(element, origin, 1.0);
-                let element =
-                    RelocateRenderElement::from_element(element, origin, Relocate::Relative);
+                let element = RelocateRenderElement::from_element(element, origin, Relocate::Relative);
 
                 CropRenderElement::from_element(element, scale, output_crop).map(Into::into)
             })
@@ -2963,45 +2732,30 @@ fn cursor_elements(
 }
 
 fn normalized_scale(scale: f64) -> f64 {
-    if scale.is_finite() && scale > 0.0 {
-        scale
-    } else {
-        1.0
-    }
+    if scale.is_finite() && scale > 0.0 { scale } else { 1.0 }
 }
 
 #[cfg(test)]
 mod tests {
-    use smithay::{
-        backend::renderer::{
-            damage::OutputDamageTracker,
-            element::{Element, Id},
-            utils::CommitCounter,
-        },
-        utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform},
-    };
+    use smithay::backend::renderer::damage::OutputDamageTracker;
+    use smithay::backend::renderer::element::{Element, Id};
+    use smithay::backend::renderer::utils::CommitCounter;
+    use smithay::utils::{Buffer, Logical, Physical, Rectangle, Scale, Transform};
 
     use super::{
-        border_gradient_line, color_with_alpha, framebuffer_clip_rect, normalized_scale,
-        resize_content_behavior, rounded_visual_rect, scaled_visual_rect, shadow_bounds,
+        border_gradient_line, color_with_alpha, framebuffer_clip_rect, normalized_scale, resize_content_behavior,
+        rounded_visual_rect, scaled_visual_rect, shadow_bounds,
     };
 
     #[test]
     #[ignore = "requires an EGL rendering device"]
     fn translucent_blur_does_not_leak_the_sharp_backdrop() {
-        use smithay::backend::{
-            allocator::Fourcc,
-            egl::{EGLContext, EGLDevice, EGLDisplay},
-            renderer::{
-                Bind, Color32F, ExportMem, Frame, ImportMem, Offscreen, Renderer,
-                gles::{GlesRenderer, GlesTexture, Uniform},
-            },
-        };
+        use smithay::backend::allocator::Fourcc;
+        use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
+        use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture, Uniform};
+        use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, ImportMem, Offscreen, Renderer};
 
-        let device = EGLDevice::enumerate()
-            .unwrap()
-            .last()
-            .expect("an EGL device");
+        let device = EGLDevice::enumerate().unwrap().last().expect("an EGL device");
         let display = unsafe { EGLDisplay::new(device).unwrap() };
         let context = EGLContext::new(&display).unwrap();
         let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
@@ -3013,11 +2767,8 @@ mod tests {
         for pixel in pixels.chunks_exact_mut(4) {
             pixel[3] = 255;
         }
-        let blurred = renderer
-            .import_memory(&pixels, Fourcc::Abgr8888, size, false)
-            .unwrap();
-        let mut target_texture: GlesTexture =
-            renderer.create_buffer(Fourcc::Abgr8888, size).unwrap();
+        let blurred = renderer.import_memory(&pixels, Fourcc::Abgr8888, size, false).unwrap();
+        let mut target_texture: GlesTexture = renderer.create_buffer(Fourcc::Abgr8888, size).unwrap();
         let damage = Rectangle::<i32, Physical>::from_size((32, 32).into());
 
         for opacity in [0.2f32, 0.71, 1.0] {
@@ -3036,9 +2787,7 @@ mod tests {
                 let mut frame = renderer
                     .render(&mut target, (32, 32).into(), Transform::Normal)
                     .unwrap();
-                frame
-                    .clear(Color32F::new(0.0, 0.0, 0.0, 1.0), &[damage])
-                    .unwrap();
+                frame.clear(Color32F::new(0.0, 0.0, 0.0, 1.0), &[damage]).unwrap();
                 frame
                     .draw_solid(
                         Rectangle::new((0, 0).into(), (16, 32).into()),
@@ -3095,8 +2844,7 @@ mod tests {
             Transform::Flipped270,
         ] {
             let area = transform.transform_size(mode).to_f64();
-            let rect: Rectangle<i32, Physical> =
-                Rectangle::new((110, 60).into(), (800, 600).into());
+            let rect: Rectangle<i32, Physical> = Rectangle::new((110, 60).into(), (800, 600).into());
             for (angle, first, last) in [
                 (0.0, (110.0, 360.0), (910.0, 360.0)),
                 (90.0, (510.0, 60.0), (510.0, 660.0)),
@@ -3109,14 +2857,8 @@ mod tests {
                     (point.x - f64::from(line[0])) * f64::from(line[2])
                         + (point.y - f64::from(line[1])) * f64::from(line[3])
                 };
-                assert!(
-                    progress(first.into()).abs() < 0.00001,
-                    "{transform:?}, {angle}"
-                );
-                assert!(
-                    (progress(last.into()) - 1.0).abs() < 0.00001,
-                    "{transform:?}, {angle}"
-                );
+                assert!(progress(first.into()).abs() < 0.00001, "{transform:?}, {angle}");
+                assert!((progress(last.into()) - 1.0).abs() < 0.00001, "{transform:?}, {angle}");
             }
         }
     }
@@ -3165,12 +2907,7 @@ mod tests {
         }
 
         fn src(&self) -> Rectangle<f64, Buffer> {
-            Rectangle::from_size(
-                self.geometry
-                    .size
-                    .to_f64()
-                    .to_buffer(1.0, Transform::Normal),
-            )
+            Rectangle::from_size(self.geometry.size.to_f64().to_buffer(1.0, Transform::Normal))
         }
 
         fn geometry(&self, scale: Scale<f64>) -> Rectangle<i32, Physical> {
@@ -3194,9 +2931,7 @@ mod tests {
 
     #[test]
     fn resize_keeps_source_pixels_native_when_growing_and_shrinking() {
-        use smithay::backend::renderer::element::utils::{
-            ConstrainAlign, constrain_render_elements,
-        };
+        use smithay::backend::renderer::element::utils::{ConstrainAlign, constrain_render_elements};
         for scale in [1.0, 1.5, 1.8, 2.0] {
             for width in [300, 600, 1200] {
                 let source = Rectangle::<i32, Logical>::from_size((600, 800).into());
@@ -3279,18 +3014,14 @@ mod tests {
                 Transform::Flipped180,
                 Transform::Flipped270,
             ] {
-                let output_size = smithay::utils::Size::<i32, Physical>::from((
-                    (1280.0 * scale) as i32,
-                    (800.0 * scale) as i32,
-                ));
+                let output_size =
+                    smithay::utils::Size::<i32, Physical>::from(((1280.0 * scale) as i32, (800.0 * scale) as i32));
                 let element_size = transform.transform_size(output_size);
                 let logical_height = f64::from(element_size.h) / scale;
                 // Bar and exclusion end at 40; the 10px outer gap ends at 50.
-                let geometry = Rectangle::<f64, Logical>::new(
-                    (10.0, 50.0).into(),
-                    (400.0, logical_height - 60.0).into(),
-                )
-                .to_physical_precise_round(scale);
+                let geometry =
+                    Rectangle::<f64, Logical>::new((10.0, 50.0).into(), (400.0, logical_height - 60.0).into())
+                        .to_physical_precise_round(scale);
                 let clip = framebuffer_clip_rect(geometry, output_size, transform);
                 // Independently reproduce GlesFrame's orthographic projection,
                 // transform matrix, GL flip, and viewport mapping for each corner.
@@ -3311,10 +3042,7 @@ mod tests {
                 let max_x = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max);
                 let min_y = ys.iter().copied().fold(f32::INFINITY, f32::min);
                 let max_y = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                for (actual, expected) in
-                    clip.into_iter()
-                        .zip([min_x, min_y, max_x - min_x, max_y - min_y])
-                {
+                for (actual, expected) in clip.into_iter().zip([min_x, min_y, max_x - min_x, max_y - min_y]) {
                     assert!(
                         (actual - expected).abs() < 0.001,
                         "{transform:?}, scale={scale}: {actual} != {expected}"
@@ -3343,17 +3071,11 @@ mod tests {
         let old_window = Rectangle::<i32, Logical>::new((100, 80).into(), (400, 300).into());
         let new_window = Rectangle::<i32, Logical>::new((300, 180).into(), (400, 300).into());
         let mut shadow = DamageElement::new(shadow_bounds(old_window, 4.0, 18.0));
-        let mut tracker =
-            OutputDamageTracker::new((1_000, 800), Scale::from(1.0), Transform::Normal);
+        let mut tracker = OutputDamageTracker::new((1_000, 800), Scale::from(1.0), Transform::Normal);
 
         tracker.damage_output(0, &[&shadow]).unwrap();
         shadow.geometry = shadow_bounds(new_window, 4.0, 18.0);
-        let damage = tracker
-            .damage_output(1, &[&shadow])
-            .unwrap()
-            .0
-            .cloned()
-            .unwrap();
+        let damage = tracker.damage_output(1, &[&shadow]).unwrap().0.cloned().unwrap();
 
         assert!(damage.iter().any(|rect| rect.contains((64, 48))));
         assert!(damage.iter().any(|rect| rect.contains((735, 519))));
@@ -3370,22 +3092,13 @@ mod tests {
     #[test]
     fn translucent_materials_blur_at_full_opacity() {
         use crate::config::MaterialStyle;
-        assert_eq!(
-            super::material_blur_radius(MaterialStyle::Translucent, 0.0, 18.0),
-            0.0
-        );
-        assert_eq!(
-            super::material_blur_radius(MaterialStyle::Translucent, 1.0, 18.0),
-            18.0
-        );
+        assert_eq!(super::material_blur_radius(MaterialStyle::Translucent, 0.0, 18.0), 0.0);
+        assert_eq!(super::material_blur_radius(MaterialStyle::Translucent, 1.0, 18.0), 18.0);
         assert_eq!(
             super::material_blur_radius(MaterialStyle::Translucent, 0.79, 18.0),
             18.0
         );
-        assert_eq!(
-            super::material_blur_radius(MaterialStyle::Solid, 0.79, 18.0),
-            0.0
-        );
+        assert_eq!(super::material_blur_radius(MaterialStyle::Solid, 0.79, 18.0), 0.0);
     }
 
     #[test]
@@ -3401,10 +3114,7 @@ mod tests {
 
     #[test]
     fn close_opacity_only_changes_the_alpha_channel() {
-        assert_eq!(
-            color_with_alpha([0.2, 0.4, 0.6, 0.8], 0.5),
-            [0.2, 0.4, 0.6, 0.4]
-        );
+        assert_eq!(color_with_alpha([0.2, 0.4, 0.6, 0.8], 0.5), [0.2, 0.4, 0.6, 0.4]);
     }
 
     #[test]
@@ -3418,10 +3128,7 @@ mod tests {
 
         for tenth in 0..=10 {
             let left = 100.0 + f64::from(tenth) / 10.0;
-            let frame = rounded_visual_rect(
-                ferese_layout::Rect::new(left, 50.0, 500.0 - left, 300.0),
-                (0, 0).into(),
-            );
+            let frame = rounded_visual_rect(ferese_layout::Rect::new(left, 50.0, 500.0 - left, 300.0), (0, 0).into());
 
             assert_eq!(frame.loc.x + frame.size.w, 500);
         }

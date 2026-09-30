@@ -1,15 +1,12 @@
-use super::*;
 use cosmic::iced::widget::scrollable::{Direction, Scrollbar};
 use cosmic::widget::{column, scrollable};
+
+use super::*;
 
 const POPUP_WIDTH: u32 = 368;
 
 fn popup_height(notice: &notifications::Notice, count: usize) -> u32 {
-    let body = if notice.body.is_empty() && count == 1 {
-        0
-    } else {
-        22
-    };
+    let body = if notice.body.is_empty() && count == 1 { 0 } else { 22 };
     let actions = if notice.live && notice.actions.iter().any(|(key, _)| key != "default") {
         39
     } else {
@@ -33,18 +30,13 @@ fn history_height(center: &notifications::Center) -> u32 {
         } else {
             1
         };
-        popup_height(notice, count)
-            + wrapped_lines.saturating_sub(1) as u32 * 17
-            + if count > 1 { 12 } else { 0 }
+        popup_height(notice, count) + wrapped_lines.saturating_sub(1) as u32 * 17 + if count > 1 { 12 } else { 0 }
     };
     let cards: u32 = groups
         .iter()
         .map(|group| {
             if group.len() > 1 && center.expanded_apps.contains(&group[0].app) {
-                32 + group
-                    .iter()
-                    .map(|notice| card_height(notice, 1))
-                    .sum::<u32>()
+                32 + group.iter().map(|notice| card_height(notice, 1)).sum::<u32>()
                     + group.len().saturating_sub(1) as u32 * 8
             } else {
                 card_height(group[0], group.len())
@@ -188,9 +180,10 @@ impl FereseShell {
             .outputs
             .iter()
             .find(|entry| {
-                self.snapshot.outputs.iter().any(|output| {
-                    output.focused && Some(output.name.as_str()) == entry.name.as_deref()
-                })
+                self.snapshot
+                    .outputs
+                    .iter()
+                    .any(|output| output.focused && Some(output.name.as_str()) == entry.name.as_deref())
             })
             .or_else(|| self.outputs.first())
             .map(|entry| entry.output.clone());
@@ -213,9 +206,7 @@ impl FereseShell {
             .notifications
             .popup_groups()
             .iter()
-            .map(|(notice, _, count)| {
-                popup_height(notice, *count) + if *count > 1 { 12 } else { 0 }
-            })
+            .map(|(notice, _, count)| popup_height(notice, *count) + if *count > 1 { 12 } else { 0 })
             .sum::<u32>()
             + count.saturating_sub(1) as u32 * 8
             + 8;
@@ -299,8 +290,7 @@ impl FereseShell {
         let id = notice.id;
         let mut bold = *SHELL_FONT.get().unwrap().read().unwrap();
         bold.weight = cosmic::iced::font::Weight::Bold;
-        let app_icon = if notice.app.to_lowercase().starts_with("ferese") || notice.icon.is_empty()
-        {
+        let app_icon = if notice.app.to_lowercase().starts_with("ferese") || notice.icon.is_empty() {
             accented_icon(ferese_theme::icons::FERESE, 18, accent, accent)
         } else if notice.icon.starts_with('/') {
             icon::icon(icon::from_path(notice.icon.clone().into())).size(18)
@@ -308,18 +298,17 @@ impl FereseShell {
             icon::from_name(notice.icon.as_str()).size(18).icon()
         }
         .opacity(opacity);
-        let icon_well =
-            container(app_icon)
-                .center_x(30)
-                .center_y(30)
-                .class(theme::Container::custom(move |_| container::Style {
-                    background: Some(Background::Color(well)),
-                    border: Border {
-                        radius: motion::radius(15.0).into(),
-                        ..Default::default()
-                    },
+        let icon_well = container(app_icon)
+            .center_x(30)
+            .center_y(30)
+            .class(theme::Container::custom(move |_| container::Style {
+                background: Some(Background::Color(well)),
+                border: Border {
+                    radius: motion::radius(15.0).into(),
                     ..Default::default()
-                }));
+                },
+                ..Default::default()
+            }));
         let icon: Element<'_, cosmic::Action<Message>> = if count > 1 {
             let badge_fill = ferese_theme::composite(
                 color(palette.accent),
@@ -329,8 +318,7 @@ impl FereseShell {
                     palette.surface_popover
                 }),
             );
-            let (badge_fill, badge_text) =
-                ferese_theme::accent_pair(badge_fill, color(palette.text_primary));
+            let (badge_fill, badge_text) = ferese_theme::accent_pair(badge_fill, color(palette.text_primary));
             let badge = container(
                 text(count.to_string())
                     .size(10)
@@ -375,15 +363,10 @@ impl FereseShell {
             .align_y(alignment::Vertical::Center)
             .push(icon)
             .push(
-                container(
-                    text(app)
-                        .size(11)
-                        .font(bold)
-                        .class(theme::Text::Color(muted)),
-                )
-                .width(Length::Fill)
-                .height(16)
-                .clip(true),
+                container(text(app).size(11).font(bold).class(theme::Text::Color(muted)))
+                    .width(Length::Fill)
+                    .height(16)
+                    .clip(true),
             )
             .push(
                 text(age_label(notice.received_at.elapsed()))
@@ -446,13 +429,13 @@ impl FereseShell {
                 let mut actions = row([]);
                 for (index, (key, label)) in available.into_iter().enumerate() {
                     if index > 0 {
-                        actions = actions.push(
-                            container(cosmic::iced::widget::Space::new().width(1).height(38))
-                                .class(theme::Container::custom(move |_| container::Style {
+                        actions =
+                            actions.push(container(cosmic::iced::widget::Space::new().width(1).height(38)).class(
+                                theme::Container::custom(move |_| container::Style {
                                     background: Some(Background::Color(divider)),
                                     ..Default::default()
-                                })),
-                        );
+                                }),
+                            ));
                     }
                     actions = actions.push(card_button(
                         container(
@@ -472,17 +455,12 @@ impl FereseShell {
                 }
                 face = face
                     .push(
-                        container(
-                            cosmic::iced::widget::Space::new()
-                                .width(Length::Fill)
-                                .height(1),
-                        )
-                        .class(theme::Container::custom(move |_| {
-                            container::Style {
+                        container(cosmic::iced::widget::Space::new().width(Length::Fill).height(1)).class(
+                            theme::Container::custom(move |_| container::Style {
                                 background: Some(Background::Color(divider)),
                                 ..Default::default()
-                            }
-                        })),
+                            }),
+                        ),
                     )
                     .push(actions);
             }
@@ -518,23 +496,19 @@ impl FereseShell {
             // bottom edges, after the card's measured height.
             let back = move |inset: f32| {
                 container(
-                    container(
-                        cosmic::iced::widget::Space::new()
-                            .width(Length::Fill)
-                            .height(6),
-                    )
-                    .width(Length::Fill)
-                    .class(theme::Container::custom(move |_| container::Style {
-                        background: Some(Background::Color(Color {
-                            a: 0.045 * opacity,
-                            ..foreground
-                        })),
-                        border: Border {
-                            radius: [0.0, 0.0, motion::radius(6.0), motion::radius(6.0)].into(),
+                    container(cosmic::iced::widget::Space::new().width(Length::Fill).height(6))
+                        .width(Length::Fill)
+                        .class(theme::Container::custom(move |_| container::Style {
+                            background: Some(Background::Color(Color {
+                                a: 0.045 * opacity,
+                                ..foreground
+                            })),
+                            border: Border {
+                                radius: [0.0, 0.0, motion::radius(6.0), motion::radius(6.0)].into(),
+                                ..Default::default()
+                            },
                             ..Default::default()
-                        },
-                        ..Default::default()
-                    })),
+                        })),
                 )
                 .padding([0.0, inset])
             };
@@ -552,10 +526,7 @@ impl FereseShell {
                 Message::ToggleNotificationHistory
             }));
         } else if notice.live && notice.actions.iter().any(|(key, _)| key == "default") {
-            area = area.on_press(cosmic::Action::App(Message::InvokeNotification(
-                id,
-                "default".into(),
-            )));
+            area = area.on_press(cosmic::Action::App(Message::InvokeNotification(id, "default".into())));
         }
         area.into()
     }
@@ -589,11 +560,7 @@ impl FereseShell {
             } else {
                 format!(
                     "{count} {} · {} {}",
-                    if count == 1 {
-                        "notification"
-                    } else {
-                        "notifications"
-                    },
+                    if count == 1 { "notification" } else { "notifications" },
                     groups.len(),
                     if groups.len() == 1 { "app" } else { "apps" }
                 )
@@ -619,11 +586,7 @@ impl FereseShell {
                     well,
                     28,
                 ));
-            let dnd_color = if self.notifications.dnd {
-                accent
-            } else {
-                muted
-            };
+            let dnd_color = if self.notifications.dnd { accent } else { muted };
             let dnd_icon = if self.notifications.dnd {
                 ferese_theme::icons::NOTIFICATIONS_OFF
             } else {
@@ -674,40 +637,34 @@ impl FereseShell {
                     self.notifications.dnd,
                     1.0,
                 ));
-            let controls =
-                container(dnd)
-                    .padding(10)
-                    .width(Length::Fill)
-                    .class(theme::Container::custom(move |_| container::Style {
-                        background: Some(Background::Color(base)),
-                        border: Border {
-                            radius: palette.material_radius.into(),
-                            ..Default::default()
-                        },
+            let controls = container(dnd)
+                .padding(10)
+                .width(Length::Fill)
+                .class(theme::Container::custom(move |_| container::Style {
+                    background: Some(Background::Color(base)),
+                    border: Border {
+                        radius: palette.material_radius.into(),
                         ..Default::default()
-                    }));
+                    },
+                    ..Default::default()
+                }));
             let mut content = column([]).spacing(10).push(header).push(controls);
             if count == 0 {
                 let empty = column([])
                     .spacing(10)
                     .align_x(alignment::Horizontal::Center)
                     .push(
-                        container(accented_icon(
-                            ferese_theme::icons::NOTIFICATIONS,
-                            26,
-                            muted,
-                            accent,
-                        ))
-                        .center_x(56)
-                        .center_y(56)
-                        .class(theme::Container::custom(move |_| container::Style {
-                            background: Some(Background::Color(well)),
-                            border: Border {
-                                radius: motion::radius(28.0).into(),
+                        container(accented_icon(ferese_theme::icons::NOTIFICATIONS, 26, muted, accent))
+                            .center_x(56)
+                            .center_y(56)
+                            .class(theme::Container::custom(move |_| container::Style {
+                                background: Some(Background::Color(well)),
+                                border: Border {
+                                    radius: motion::radius(28.0).into(),
+                                    ..Default::default()
+                                },
                                 ..Default::default()
-                            },
-                            ..Default::default()
-                        })),
+                            })),
                     )
                     .push(
                         text("You're all caught up")
@@ -720,11 +677,7 @@ impl FereseShell {
                             .size(11)
                             .class(theme::Text::Color(muted)),
                     );
-                content = content.push(
-                    container(empty)
-                        .center_x(Length::Fill)
-                        .center_y(Length::Fill),
-                );
+                content = content.push(container(empty).center_x(Length::Fill).center_y(Length::Fill));
             } else {
                 content = content.push(
                     row([])
@@ -786,12 +739,7 @@ impl FereseShell {
                         }
                         entries = entries.push(cards);
                     } else {
-                        entries = entries.push(self.notification_card(
-                            latest,
-                            opacity,
-                            true,
-                            group.len(),
-                        ));
+                        entries = entries.push(self.notification_card(latest, opacity, true, group.len()));
                     }
                 }
                 content = content.push(
@@ -806,8 +754,7 @@ impl FereseShell {
                 .height(history_height(&self.notifications) as f32)
                 .width(Length::Fill)
                 .class(theme::Container::custom(move |_| container::Style {
-                    background: (!compositor_material)
-                        .then_some(Background::Color(color(palette.surface_popover))),
+                    background: (!compositor_material).then_some(Background::Color(color(palette.surface_popover))),
                     border: Border {
                         color: color_with_opacity(palette.text_muted, 0.18 * opacity),
                         width: 1.0,
@@ -819,9 +766,7 @@ impl FereseShell {
             motion::animated(
                 panel,
                 progress,
-                surface
-                    .map(|surface| surface.regions.clone())
-                    .unwrap_or_default(),
+                surface.map(|surface| surface.regions.clone()).unwrap_or_default(),
                 palette.material_radius,
             )
         } else {

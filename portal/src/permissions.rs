@@ -1,20 +1,16 @@
-use crate::{
-    backend::{Options, authorize},
-    desktop::{Requests, consent, ipc, reply},
-};
-use std::{
-    collections::{HashMap, HashSet},
-    path::Path,
-    sync::Arc,
-    time::Duration,
-};
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
 use tokio::sync::RwLock;
-use zbus::{
-    Connection,
-    message::Header,
-    object_server::SignalEmitter,
-    zvariant::{OwnedObjectPath, OwnedValue, Value},
-};
+use zbus::Connection;
+use zbus::message::Header;
+use zbus::object_server::SignalEmitter;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+
+use crate::backend::{Options, authorize};
+use crate::desktop::{Requests, consent, ipc, reply};
 
 const PATH: &str = "/org/freedesktop/portal/desktop";
 
@@ -56,19 +52,12 @@ fn usb_label(info: &Options, id: &str) -> String {
         .and_then(|value| HashMap::<String, OwnedValue>::try_from(value).ok())
         .unwrap_or_default();
     let property = |keys: &[&str]| {
-        keys.iter().find_map(|key| {
-            properties
-                .get(*key)
-                .and_then(|value| <&str>::try_from(value).ok())
-        })
+        keys.iter()
+            .find_map(|key| properties.get(*key).and_then(|value| <&str>::try_from(value).ok()))
     };
     let vendor = property(&["ID_VENDOR_FROM_DATABASE", "ID_VENDOR", "ID_VENDOR_ID"]);
     let model = property(&["ID_MODEL_FROM_DATABASE", "ID_MODEL", "ID_MODEL_ID"]);
-    let label = [vendor, model]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let label = [vendor, model].into_iter().flatten().collect::<Vec<_>>().join(" ");
     let label = if label.is_empty() { id } else { &label };
     label
         .chars()
@@ -102,27 +91,11 @@ async fn usb_consent(
         description.push_str(&format!(
             "\n{} — {}",
             label,
-            if writable {
-                "read and write"
-            } else {
-                "read only"
-            }
+            if writable { "read and write" } else { "read only" }
         ));
-        selected.push((
-            id,
-            HashMap::from([("writable".to_owned(), OwnedValue::from(writable))]),
-        ));
+        selected.push((id, HashMap::from([("writable".to_owned(), OwnedValue::from(writable))])));
     }
-    if !consent(
-        app,
-        parent,
-        "USB device access",
-        &description,
-        "Allow access",
-        None,
-    )
-    .await?
-    {
+    if !consent(app, parent, "USB device access", &description, "Allow access", None).await? {
         return Ok(None);
     }
     Ok(Some(HashMap::from([(
@@ -212,8 +185,7 @@ impl Background {
         let directory = dirs::config_dir()
             .ok_or_else(|| zbus::fdo::Error::Failed("Missing config directory".into()))?
             .join("autostart");
-        set_autostart(&directory, &app_id, enable, &commandline, flags)
-            .map_err(zbus::fdo::Error::InvalidArgs)
+        set_autostart(&directory, &app_id, enable, &commandline, flags).map_err(zbus::fdo::Error::InvalidArgs)
     }
 
     #[zbus(signal)]
@@ -254,13 +226,7 @@ fn app_states(windows: &serde_json::Value) -> HashMap<String, u32> {
     apps
 }
 
-fn set_autostart(
-    directory: &Path,
-    app: &str,
-    enable: bool,
-    argv: &[String],
-    flags: u32,
-) -> Result<bool, String> {
+fn set_autostart(directory: &Path, app: &str, enable: bool, argv: &[String], flags: u32) -> Result<bool, String> {
     if app.is_empty()
         || app.len() > 255
         || !app
@@ -287,9 +253,7 @@ fn set_autostart(
         }
         return Ok(true);
     }
-    if argv.len() > 128
-        || (argv.first().is_none_or(|argument| argument.is_empty()) && flags & 1 == 0)
-    {
+    if argv.len() > 128 || (argv.first().is_none_or(|argument| argument.is_empty()) && flags & 1 == 0) {
         return Err("Invalid autostart command".into());
     }
     let exec = argv
@@ -377,15 +341,9 @@ mod tests {
                 "ID_VENDOR_FROM_DATABASE".to_owned(),
                 Value::from("Example Vendor").try_to_owned().unwrap(),
             ),
-            (
-                "ID_MODEL".to_owned(),
-                Value::from("Gamepad").try_to_owned().unwrap(),
-            ),
+            ("ID_MODEL".to_owned(), Value::from("Gamepad").try_to_owned().unwrap()),
         ]);
-        let info = HashMap::from([(
-            "properties".into(),
-            Value::from(properties).try_to_owned().unwrap(),
-        )]);
+        let info = HashMap::from([("properties".into(), Value::from(properties).try_to_owned().unwrap())]);
         assert_eq!(usb_label(&info, "opaque-id"), "Example Vendor Gamepad");
         assert_eq!(usb_label(&Options::new(), "fallback-id"), "fallback-id");
     }

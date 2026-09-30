@@ -4,22 +4,20 @@ mod store;
 mod visuals;
 mod watch;
 
-use cosmic::{
-    ApplicationExt, Element,
-    app::{Core, Settings, Task},
-    iced::{Alignment, Length},
-    widget::{self, button, column, container, row, scrollable, slider, text_input, toggler},
-};
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use cosmic::app::{Core, Settings, Task};
+use cosmic::iced::{Alignment, Length};
+use cosmic::widget::{button, column, container, row, scrollable, slider, text_input, toggler};
+use cosmic::{ApplicationExt, Element, widget};
 use schema::{Field, Kind, Page};
-use std::{collections::HashMap, path::PathBuf};
 use store::{Edit, Snapshot, set};
 
 fn main() -> cosmic::iced::Result {
     let mut args = std::env::args_os().skip(1);
     let path = match args.next() {
-        Some(arg) if arg == "--config" => {
-            PathBuf::from(args.next().expect("--config requires a path"))
-        }
+        Some(arg) if arg == "--config" => PathBuf::from(args.next().expect("--config requires a path")),
         Some(_) => {
             eprintln!("Usage: ferese-settings [--config PATH]");
             return Ok(());
@@ -195,9 +193,7 @@ impl cosmic::Application for App {
                     return self.change(set(&format!("desktop_widgets.notes.{index}.text"), value));
                 }
             }
-            Message::AddNote
-                if !self.saving && self.draft.records("desktop_widgets.notes") < 32 =>
-            {
+            Message::AddNote if !self.saving && self.draft.records("desktop_widgets.notes") < 32 => {
                 let id = format!(
                     "note-{}",
                     std::time::SystemTime::now()
@@ -223,9 +219,7 @@ impl cosmic::Application for App {
             }
             Message::DragWindow => return self.core.drag(None),
             Message::ExternalConfig(result) => match result {
-                Ok(snapshot)
-                    if snapshot.source == self.current.source
-                        || snapshot.source == self.draft.source => {}
+                Ok(snapshot) if snapshot.source == self.current.source || snapshot.source == self.draft.source => {}
                 Ok(snapshot) => {
                     if self.saving
                         || self.note_editors.values().any(|editor| editor.dirty)
@@ -233,9 +227,7 @@ impl cosmic::Application for App {
                         || !self.ranges.is_empty()
                         || !self.pending.is_empty()
                     {
-                        self.status =
-                            "Config changed externally · Reload when your edits are finished"
-                                .into();
+                        self.status = "Config changed externally · Reload when your edits are finished".into();
                     } else {
                         self.current = snapshot.clone();
                         self.draft = snapshot;
@@ -307,9 +299,7 @@ impl cosmic::Application for App {
                         match shlex::split(&value).filter(|v| !v.is_empty()) {
                             Some(args) => set(
                                 &field.path,
-                                args.into_iter()
-                                    .map(serde_json::Value::from)
-                                    .collect::<Vec<_>>(),
+                                args.into_iter().map(serde_json::Value::from).collect::<Vec<_>>(),
                             ),
                             None => {
                                 self.error = Some("Enter a program and arguments with balanced quotes. Commands are not run through a shell.".into());
@@ -348,11 +338,7 @@ impl cosmic::Application for App {
                         }
                         .into();
 
-                        return Task::batch([
-                            self.update_theme(),
-                            self.flush(),
-                            self.load_thumbnail(),
-                        ]);
+                        return Task::batch([self.update_theme(), self.flush(), self.load_thumbnail()]);
                     }
                     Err(error) => {
                         self.error = Some(error);
@@ -410,13 +396,20 @@ impl cosmic::Application for App {
                                 "--file-filter=All files | *",
                             ])
                             .output()
-                            .map_err(|error| format!("Could not open the file chooser: {error}. Install zenity or enter an image path."))
+                            .map_err(|error| {
+                                format!(
+                                    "Could not open the file chooser: {error}. Install zenity or enter an image path."
+                                )
+                            })
                             .and_then(|output| {
                                 if output.status.code() == Some(1) {
                                     return Ok(None); // User cancelled.
                                 }
                                 if !output.status.success() {
-                                    return Err(format!("File chooser failed: {}", String::from_utf8_lossy(&output.stderr).trim()));
+                                    return Err(format!(
+                                        "File chooser failed: {}",
+                                        String::from_utf8_lossy(&output.stderr).trim()
+                                    ));
                                 }
                                 let path = String::from_utf8(output.stdout)
                                     .map_err(|_| "The image path is not valid UTF-8.".to_owned())?;
@@ -458,31 +451,23 @@ impl cosmic::Application for App {
                 return self.load_thumbnail();
             }
             Message::NewCommand(value) => self.new_command = value,
-            Message::AddCommand if !self.saving => {
-                match shlex::split(&self.new_command).filter(|a| !a.is_empty()) {
-                    Some(args) => {
-                        self.new_command.clear();
-                        return self.change(Edit::Add(
-                            "autostart".into(),
-                            vec![
-                                (
-                                    "command".into(),
-                                    args.into_iter()
-                                        .map(serde_json::Value::from)
-                                        .collect::<Vec<_>>()
-                                        .into(),
-                                ),
-                                ("enabled".into(), true.into()),
-                                ("restart".into(), true.into()),
-                            ],
-                        ));
-                    }
-                    None => {
-                        self.error =
-                            Some("Enter a program and arguments with balanced quotes.".into())
-                    }
+            Message::AddCommand if !self.saving => match shlex::split(&self.new_command).filter(|a| !a.is_empty()) {
+                Some(args) => {
+                    self.new_command.clear();
+                    return self.change(Edit::Add(
+                        "autostart".into(),
+                        vec![
+                            (
+                                "command".into(),
+                                args.into_iter().map(serde_json::Value::from).collect::<Vec<_>>().into(),
+                            ),
+                            ("enabled".into(), true.into()),
+                            ("restart".into(), true.into()),
+                        ],
+                    ));
                 }
-            }
+                None => self.error = Some("Enter a program and arguments with balanced quotes.".into()),
+            },
             Message::AddSwipe(keys) if !self.saving => {
                 let (action, argument) = match keys {
                     "Swipe3Up" => ("workspace-next", None),
@@ -490,10 +475,7 @@ impl cosmic::Application for App {
                     "Swipe3Left" => ("focus", Some("right")),
                     _ => ("focus", Some("left")),
                 };
-                let mut fields = vec![
-                    ("keys".into(), keys.into()),
-                    ("action".into(), action.into()),
-                ];
+                let mut fields = vec![("keys".into(), keys.into()), ("action".into(), action.into())];
 
                 if let Some(argument) = argument {
                     fields.push(("argument".into(), argument.into()));
@@ -596,8 +578,7 @@ impl cosmic::Application for App {
 
         if !self.search.is_empty() {
             if !Page::ALL.into_iter().any(|p| p.matches(&self.search)) {
-                body = body
-                    .push(self.note("No matching settings. Try wallpaper, keyboard, or motion."));
+                body = body.push(self.note("No matching settings. Try wallpaper, keyboard, or motion."));
             }
             for page in Page::ALL.into_iter().filter(|p| p.matches(&self.search)) {
                 body = body.push(
@@ -682,8 +663,7 @@ impl cosmic::Application for App {
                             .unwrap_or("Choose an image to preview your wallpaper.")
                     }));
                 }
-                body =
-                    body.push(button::standard("Choose image…").on_press(Message::PickWallpaper));
+                body = body.push(button::standard("Choose image…").on_press(Message::PickWallpaper));
             }
             let fields = schema::fields(self.page);
 
@@ -692,30 +672,21 @@ impl cosmic::Application for App {
                 for field in fields {
                     group = group.push(self.field(field));
                 }
-                body = body.push(
-                    container(group)
-                        .padding(8)
-                        .class(visuals::surface(palette.card, 14.)),
-                );
+                body = body.push(container(group).padding(8).class(visuals::surface(palette.card, 14.)));
             }
 
             match self.page {
                 Page::LockScreen => {
                     body = body.push(self.note("Uses your wallpaper, shell colors, font and corner radius from Appearance. Changes apply when the locker or preview opens."));
-                    body = body.push(
-                        button::standard("Preview lock screen").on_press(Message::PreviewLock),
-                    );
+                    body = body.push(button::standard("Preview lock screen").on_press(Message::PreviewLock));
                     body = body.push(self.note("The preview is an ordinary window and does not lock your session. Automatic locking is configured separately in Login items."));
                 }
                 Page::Desktop => {
-                    let can_change_list =
-                        !self.saving && !self.note_editors.values().any(|e| e.dirty);
+                    let can_change_list = !self.saving && !self.note_editors.values().any(|e| e.dirty);
                     body = body.push(self.label("Sticky notes", 16.));
                     body = body.push(self.note("Edit here; notes save after you pause typing. Desktop cards stay behind windows and are click-through."));
                     for index in 0..self.draft.records("desktop_widgets.notes") {
-                        let id = self
-                            .draft
-                            .string(&format!("desktop_widgets.notes.{index}.id"), "note");
+                        let id = self.draft.string(&format!("desktop_widgets.notes.{index}.id"), "note");
                         let mut group = column([]).spacing(8);
 
                         for field in schema::note_fields(index) {
@@ -729,23 +700,13 @@ impl cosmic::Application for App {
                                     .height(160)
                                     .font(self.font)
                                     .size(14.)
-                                    .on_action(move |action| {
-                                        Message::NoteAction(id.clone(), action)
-                                    }),
+                                    .on_action(move |action| Message::NoteAction(id.clone(), action)),
                             );
                         }
-                        group =
-                            group.push(button::destructive("Remove note").on_press_maybe(
-                                can_change_list.then_some(Message::Remove(
-                                    "desktop_widgets.notes".into(),
-                                    index,
-                                )),
-                            ));
-                        body = body.push(
-                            container(group)
-                                .padding(12)
-                                .class(visuals::surface(palette.card, 14.)),
-                        );
+                        group = group.push(button::destructive("Remove note").on_press_maybe(
+                            can_change_list.then_some(Message::Remove("desktop_widgets.notes".into(), index)),
+                        ));
+                        body = body.push(container(group).padding(12).class(visuals::surface(palette.card, 14.)));
                     }
                     body = body.push(
                         button::standard("Add note").on_press_maybe(
@@ -783,19 +744,12 @@ impl cosmic::Application for App {
                                 Kind::Toggle(true),
                             )))
                             .push(
-                                container(
-                                    button::destructive("Remove item").on_press_maybe(
-                                        (!self.saving)
-                                            .then_some(Message::Remove("autostart".into(), index)),
-                                    ),
-                                )
+                                container(button::destructive("Remove item").on_press_maybe(
+                                    (!self.saving).then_some(Message::Remove("autostart".into(), index)),
+                                ))
                                 .padding(12),
                             );
-                        body = body.push(
-                            container(group)
-                                .padding(8)
-                                .class(visuals::surface(palette.card, 14.)),
-                        );
+                        body = body.push(container(group).padding(8).class(visuals::surface(palette.card, 14.)));
                     }
                     body = body.push(
                         row([])
@@ -804,12 +758,9 @@ impl cosmic::Application for App {
                                 text_input("Program and arguments", self.new_command.clone())
                                     .on_input(Message::NewCommand),
                             )
-                            .push(
-                                button::standard("Add login item").on_press_maybe(
-                                    (!self.saving && !self.new_command.trim().is_empty())
-                                        .then_some(Message::AddCommand),
-                                ),
-                            ),
+                            .push(button::standard("Add login item").on_press_maybe(
+                                (!self.saving && !self.new_command.trim().is_empty()).then_some(Message::AddCommand),
+                            )),
                     );
                 }
                 Page::Shortcuts => {
@@ -828,10 +779,10 @@ impl cosmic::Application for App {
                         });
 
                         if !exists {
-                            gestures =
-                                gestures.push(button::standard(label).on_press_maybe(
-                                    (!self.saving).then_some(Message::AddSwipe(keys)),
-                                ));
+                            gestures = gestures.push(
+                                button::standard(label)
+                                    .on_press_maybe((!self.saving).then_some(Message::AddSwipe(keys))),
+                            );
                         }
                     }
 
@@ -859,11 +810,7 @@ impl cosmic::Application for App {
                                 "Command name, direction, or action argument.",
                                 "",
                             )));
-                        body = body.push(
-                            container(group)
-                                .padding(8)
-                                .class(visuals::surface(palette.card, 14.)),
-                        );
+                        body = body.push(container(group).padding(8).class(visuals::surface(palette.card, 14.)));
                     }
                     if self.draft.records("bindings") == 0 {
                         body = body.push(self.note("You are using the built-in shortcuts. Add custom bindings in config.kdl; they will appear here after Reload."));
@@ -873,29 +820,44 @@ impl cosmic::Application for App {
                     body = body.push(self.note("Display profiles update connected outputs live. Keep your config open for adding profiles or changing display positions."));
                     for profile in 0..self.draft.records("output_profiles") {
                         let prefix = format!("output_profiles.{profile}");
-                        body = body.push(
-                            self.label(
-                                self.draft
-                                    .string(&format!("{prefix}.name"), "Display profile"),
-                                17.,
-                            ),
-                        );
+                        body =
+                            body.push(self.label(self.draft.string(&format!("{prefix}.name"), "Display profile"), 17.));
 
                         for output in 0..self.draft.records(&format!("{prefix}.outputs")) {
                             let prefix = format!("{prefix}.outputs.{output}");
-                            let group = column([]).spacing(1)
-                                .push(self.field(schema::text(format!("{prefix}.match"), "Display", "Output name or matching pattern.", "")))
-                                .push(self.field(schema::text(format!("{prefix}.mode"), "Resolution", "For example: 2560x1440@60. Leave unchanged to retain automatic selection.", "")))
-                                .push(self.field(schema::range(format!("{prefix}.scale"), "Scale", "Logical size of text and controls.", 1., 0.75, 3., 0.25, "×", false)));
-                            body = body.push(
-                                container(group)
-                                    .padding(8)
-                                    .class(visuals::surface(palette.card, 14.)),
-                            );
+                            let group = column([])
+                                .spacing(1)
+                                .push(self.field(schema::text(
+                                    format!("{prefix}.match"),
+                                    "Display",
+                                    "Output name or matching pattern.",
+                                    "",
+                                )))
+                                .push(self.field(schema::text(
+                                    format!("{prefix}.mode"),
+                                    "Resolution",
+                                    "For example: 2560x1440@60. Leave unchanged to retain automatic selection.",
+                                    "",
+                                )))
+                                .push(self.field(schema::range(
+                                    format!("{prefix}.scale"),
+                                    "Scale",
+                                    "Logical size of text and controls.",
+                                    1.,
+                                    0.75,
+                                    3.,
+                                    0.25,
+                                    "×",
+                                    false,
+                                )));
+                            body = body.push(container(group).padding(8).class(visuals::surface(palette.card, 14.)));
                         }
                     }
                     if self.draft.records("output_profiles") == 0 {
-                        body = body.push(self.note("No saved profiles. Ferese currently configures connected displays automatically."));
+                        body =
+                            body.push(self.note(
+                                "No saved profiles. Ferese currently configures connected displays automatically.",
+                            ));
                     }
                 }
                 _ => {}
@@ -947,14 +909,7 @@ impl cosmic::Application for App {
                     },
                     palette.muted,
                 ),
-                self.label(
-                    if self.saving {
-                        "Saving…"
-                    } else {
-                        &self.status
-                    },
-                    11.,
-                ),
+                self.label(if self.saving { "Saving…" } else { &self.status }, 11.),
                 widget::tooltip::Position::Top,
             ))
             .push(widget::Space::new().width(Length::Fill))
@@ -986,21 +941,16 @@ impl cosmic::Application for App {
             .push(sidebar)
             .push(
                 container(
-                    container(
-                        column([])
-                            .push(content.height(Length::Fill))
-                            .push(footer)
-                            .spacing(6),
-                    )
-                    .padding(cosmic::iced::Padding {
-                        top: 20.,
-                        right: 20.,
-                        bottom: 8.,
-                        left: 20.,
-                    })
-                    .max_width(840)
-                    .width(Length::Fill)
-                    .height(Length::Fill),
+                    container(column([]).push(content.height(Length::Fill)).push(footer).spacing(6))
+                        .padding(cosmic::iced::Padding {
+                            top: 20.,
+                            right: 20.,
+                            bottom: 8.,
+                            left: 20.,
+                        })
+                        .max_width(840)
+                        .width(Length::Fill)
+                        .height(Length::Fill),
                 )
                 .width(Length::Fill)
                 .center_x(Length::Fill)
@@ -1022,11 +972,8 @@ impl App {
     }
 
     fn note_index(&self, id: &str) -> Option<usize> {
-        (0..self.draft.records("desktop_widgets.notes")).find(|index| {
-            self.draft
-                .string(&format!("desktop_widgets.notes.{index}.id"), "note")
-                == id
-        })
+        (0..self.draft.records("desktop_widgets.notes"))
+            .find(|index| self.draft.string(&format!("desktop_widgets.notes.{index}.id"), "note") == id)
     }
 
     fn sync_notes(&mut self) {
@@ -1036,14 +983,11 @@ impl App {
             let prefix = format!("desktop_widgets.notes.{index}");
             let id = self.draft.string(&format!("{prefix}.id"), "note");
             let text = self.draft.string(&format!("{prefix}.text"), "");
-            let editor = self
-                .note_editors
-                .entry(id.clone())
-                .or_insert_with(|| NoteEditor {
-                    content: widget::text_editor::Content::with_text(&text),
-                    revision: 0,
-                    dirty: false,
-                });
+            let editor = self.note_editors.entry(id.clone()).or_insert_with(|| NoteEditor {
+                content: widget::text_editor::Content::with_text(&text),
+                revision: 0,
+                dirty: false,
+            });
             if !editor.dirty && editor.content.text() != text {
                 editor.content = widget::text_editor::Content::with_text(&text);
             }
@@ -1121,9 +1065,7 @@ impl App {
 
     fn field(&self, field: Field) -> Element<'static, Message> {
         let palette = visuals::Palette::from_document(Some(&self.draft.doc));
-        let mut labels = column([])
-            .spacing(3)
-            .push(self.label(field.label.clone(), 13.));
+        let mut labels = column([]).spacing(3).push(self.label(field.label.clone(), 13.));
         if !field.description.is_empty() {
             labels = labels.push(
                 self.label(field.description.clone(), 11.)
@@ -1205,12 +1147,10 @@ impl App {
                     .align_y(Alignment::Center)
                     .spacing(14)
                     .push(
-                        slider(min..=max, value, move |value| {
-                            Message::Range(field.clone(), value)
-                        })
-                        .step(step)
-                        .on_release(Message::Release(release))
-                        .width(145),
+                        slider(min..=max, value, move |value| Message::Range(field.clone(), value))
+                            .step(step)
+                            .on_release(Message::Release(release))
+                            .width(145),
                     )
                     .push(self.label(display, 12.).width(65))
                     .into()
@@ -1254,10 +1194,7 @@ impl App {
                     row([])
                         .spacing(8)
                         .align_y(Alignment::Center)
-                        .push(
-                            container(widget::Space::new().width(24).height(24))
-                                .class(visuals::surface(swatch, 6.)),
-                        )
+                        .push(container(widget::Space::new().width(24).height(24)).class(visuals::surface(swatch, 6.)))
                         .push(input)
                         .into()
                 } else {
@@ -1342,8 +1279,9 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use cosmic::Application;
+
+    use super::*;
     fn app() -> App {
         App::init(
             Core::default(),
@@ -1361,10 +1299,7 @@ mod tests {
         app.draft
             .edit(&Edit::Add(
                 "desktop_widgets.notes".into(),
-                vec![
-                    ("id".into(), "test".into()),
-                    ("text".into(), "first\nsecond".into()),
-                ],
+                vec![("id".into(), "test".into()), ("text".into(), "first\nsecond".into())],
             ))
             .unwrap();
         app.sync_notes();
@@ -1377,10 +1312,7 @@ mod tests {
         let _ = app.update(Message::SaveNote("test".into(), 2));
         assert!(app.saving);
         assert!(!app.note_editors["test"].dirty);
-        assert_eq!(
-            app.draft.string("desktop_widgets.notes.0.text", ""),
-            "first\nsecond"
-        );
+        assert_eq!(app.draft.string("desktop_widgets.notes.0.text", ""), "first\nsecond");
     }
 
     #[test]
@@ -1424,8 +1356,7 @@ mod tests {
         let _ = app.update(Message::ExternalConfig(Ok(external.clone())));
         assert_eq!(app.current.source, external.source);
         assert_eq!(app.draft.number("animations.speed", 0.), 0.5);
-        app.inputs
-            .insert("theme.colors.accent".into(), "#ffffff".into());
+        app.inputs.insert("theme.colors.accent".into(), "#ffffff".into());
         let newer = Snapshot::parse("animations {\n    speed 0.8\n}\n".into()).unwrap();
         let _ = app.update(Message::ExternalConfig(Ok(newer)));
         assert_eq!(app.current.source, external.source);

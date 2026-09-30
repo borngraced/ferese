@@ -1,22 +1,16 @@
-use std::{
-    error::Error,
-    os::{
-        fd::{FromRawFd, RawFd},
-        unix::net::UnixStream,
-    },
-    sync::mpsc::{self, Receiver, Sender, TryRecvError},
-    thread,
-};
+use std::error::Error;
+use std::os::fd::{FromRawFd, RawFd};
+use std::os::unix::net::UnixStream;
+use std::sync::mpsc;
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::thread;
 
-use ferese_protocols::shell::v1::client::{
-    ferese_shell_manager_v1::FereseShellManagerV1,
-    ferese_shell_v1::{self, FereseShellV1},
-};
-use wayland_client::{
-    Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop,
-    globals::{GlobalListContents, registry_queue_init},
-    protocol::wl_registry,
-};
+use ferese_protocols::shell::v1::client::ferese_shell_manager_v1::FereseShellManagerV1;
+use ferese_protocols::shell::v1::client::ferese_shell_v1;
+use ferese_protocols::shell::v1::client::ferese_shell_v1::FereseShellV1;
+use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::wl_registry;
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ShellSnapshot {
@@ -116,11 +110,7 @@ impl ShellControl {
             match self.updates.try_recv() {
                 Ok(ControlUpdate::Logout(serial, output)) => poll.logout = Some((serial, output)),
                 Ok(ControlUpdate::LogoutCancelled(serial)) => {
-                    if poll
-                        .logout
-                        .as_ref()
-                        .is_some_and(|(pending, _)| *pending == serial)
-                    {
+                    if poll.logout.as_ref().is_some_and(|(pending, _)| *pending == serial) {
                         poll.logout = None;
                     }
                     poll.logout_cancelled.push(serial);
@@ -174,8 +164,8 @@ impl ShellControl {
 }
 
 fn control_connection() -> Result<Connection, Box<dyn Error>> {
-    let raw_fd = std::env::var_os("FERESE_SHELL_CONTROL_SOCKET")
-        .ok_or("Ferese did not provide a shell-control connection")?;
+    let raw_fd =
+        std::env::var_os("FERESE_SHELL_CONTROL_SOCKET").ok_or("Ferese did not provide a shell-control connection")?;
     let fd = raw_fd
         .to_str()
         .ok_or("FERESE_SHELL_CONTROL_SOCKET is not valid UTF-8")?
@@ -299,26 +289,14 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
                     fullscreen,
                 });
             }
-            ferese_shell_v1::Event::SnapshotEnd { serial }
-                if state.serial.take() == Some(serial) =>
-            {
+            ferese_shell_v1::Event::SnapshotEnd { serial } if state.serial.take() == Some(serial) => {
                 state.pending.workspaces.sort_unstable_by_key(|workspace| {
-                    ferese_core::workspace_order_key(
-                        &workspace.name,
-                        ferese_core::WorkspaceId(workspace.id),
-                    )
+                    ferese_core::workspace_order_key(&workspace.name, ferese_core::WorkspaceId(workspace.id))
                 });
-                let _ = state
-                    .sender
-                    .send(ControlUpdate::Snapshot(state.pending.clone()));
+                let _ = state.sender.send(ControlUpdate::Snapshot(state.pending.clone()));
             }
-            ferese_shell_v1::Event::LogoutRequested {
-                serial,
-                output_name,
-            } => {
-                let _ = state
-                    .sender
-                    .send(ControlUpdate::Logout(serial, output_name));
+            ferese_shell_v1::Event::LogoutRequested { serial, output_name } => {
+                let _ = state.sender.send(ControlUpdate::Logout(serial, output_name));
             }
             ferese_shell_v1::Event::LogoutCancelled { serial } => {
                 let _ = state.sender.send(ControlUpdate::LogoutCancelled(serial));

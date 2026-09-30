@@ -1,5 +1,6 @@
 //! PAM stays on a worker thread. No password is placed in argv, logs or IPC.
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
+
 use zeroize::Zeroizing;
 
 #[repr(C)]
@@ -14,8 +15,7 @@ struct Response {
 }
 #[repr(C)]
 struct Conversation {
-    callback:
-        unsafe extern "C" fn(c_int, *mut *const Message, *mut *mut Response, *mut c_void) -> c_int,
+    callback: unsafe extern "C" fn(c_int, *mut *const Message, *mut *mut Response, *mut c_void) -> c_int,
     data: *mut c_void,
 }
 struct Credentials {
@@ -39,8 +39,7 @@ unsafe extern "C" fn converse(
     unsafe {
         *out = std::ptr::null_mut();
         let credentials = &mut *(data as *mut Credentials);
-        let responses =
-            libc::calloc(count as usize, std::mem::size_of::<Response>()) as *mut Response;
+        let responses = libc::calloc(count as usize, std::mem::size_of::<Response>()) as *mut Response;
         if responses.is_null() {
             return CONV_ERR;
         }
@@ -51,13 +50,11 @@ unsafe extern "C" fn converse(
             } else {
                 match (*msg).style {
                     1 => {
-                        credentials.password_prompts =
-                            credentials.password_prompts.saturating_add(1);
-                        (credentials.password_prompts == 1)
-                            .then_some(credentials.password.as_slice())
+                        credentials.password_prompts = credentials.password_prompts.saturating_add(1);
+                        (credentials.password_prompts == 1).then_some(credentials.password.as_slice())
                     } // Never send the password as a second-factor response.
                     2 => Some(credentials.user.as_bytes_with_nul()), // PAM_PROMPT_ECHO_ON
-                    3 | 4 => Some(&[][..]), // PAM_ERROR_MSG / PAM_TEXT_INFO
+                    3 | 4 => Some(&[][..]),                          // PAM_ERROR_MSG / PAM_TEXT_INFO
                     _ => None,
                 }
             };
@@ -65,11 +62,7 @@ unsafe extern "C" fn converse(
                 if !bytes.is_empty() {
                     let allocation = libc::malloc(bytes.len()) as *mut c_char;
                     if !allocation.is_null() {
-                        std::ptr::copy_nonoverlapping(
-                            bytes.as_ptr(),
-                            allocation.cast(),
-                            bytes.len(),
-                        );
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), allocation.cast(), bytes.len());
                         (*responses.add(i)).text = allocation;
                         continue;
                     }
@@ -139,12 +132,7 @@ fn authenticate_with(user: &str, password: &str, config: Option<&CStr>) -> bool 
         let Ok(library) = libloading::Library::new("libpam.so.0") else {
             return false;
         };
-        type Start = unsafe extern "C" fn(
-            *const c_char,
-            *const c_char,
-            *const Conversation,
-            *mut *mut c_void,
-        ) -> c_int;
+        type Start = unsafe extern "C" fn(*const c_char, *const c_char, *const Conversation, *mut *mut c_void) -> c_int;
         type StartConf = unsafe extern "C" fn(
             *const c_char,
             *const c_char,

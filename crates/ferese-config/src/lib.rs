@@ -1,7 +1,9 @@
+use std::fmt;
+use std::path::PathBuf;
+
 use kdl::{KdlDocument, KdlEntry, KdlNode, KdlValue};
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value};
-use std::{fmt, path::PathBuf};
 
 pub const DEFAULT_MATERIAL_OPACITY: f64 = 0.78;
 
@@ -36,14 +38,9 @@ pub fn default_wallpaper() -> &'static str {
             .ok()
             .and_then(|path| path.parent().map(|dir| dir.join("wallpapers/ferese.png")))
             .filter(|path| path.is_file())
-            .unwrap_or_else(|| {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/wallpapers/ferese.png")
-            });
+            .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/wallpapers/ferese.png"));
 
-        path.canonicalize()
-            .unwrap_or(path)
-            .to_string_lossy()
-            .into_owned()
+        path.canonicalize().unwrap_or(path).to_string_lossy().into_owned()
     })
 }
 
@@ -65,10 +62,8 @@ fn field(name: &str, parent: &str) -> String {
 fn is_records(key: &str, parent: &str) -> bool {
     matches!(
         (parent, key),
-        (
-            "",
-            "bindings" | "window_rules" | "output_profiles" | "autostart"
-        ) | ("output_profiles", "outputs")
+        ("", "bindings" | "window_rules" | "output_profiles" | "autostart")
+            | ("output_profiles", "outputs")
             | ("desktop_widgets", "notes")
     )
 }
@@ -77,12 +72,7 @@ fn is_array(key: &str, parent: &str) -> bool {
     parent == "commands"
         || matches!(
             key,
-            "command"
-                | "position"
-                | "width_presets"
-                | "xkb_options"
-                | "settings_command"
-                | "outputs"
+            "command" | "position" | "width_presets" | "xkb_options" | "settings_command" | "outputs"
         )
 }
 
@@ -91,9 +81,7 @@ fn scalar(value: &KdlValue) -> Result<Value, Error> {
         KdlValue::String(s) => Value::String(s.clone()),
         KdlValue::Bool(v) => Value::Bool(*v),
         KdlValue::Null => {
-            return Err(Error(
-                "Omit optional settings instead of using #null".into(),
-            ));
+            return Err(Error("Omit optional settings instead of using #null".into()));
         }
         KdlValue::Integer(n) => {
             if let Ok(n) = i64::try_from(*n) {
@@ -124,9 +112,7 @@ fn object(doc: &KdlDocument, parent: &str) -> Result<Map<String, Value>, Error> 
         let key = field(node.name().value(), parent);
         let value = node_value(node, &key, parent)?;
         if is_records(&key, parent) {
-            let records = result
-                .entry(key)
-                .or_insert_with(|| Value::Array(Vec::new()));
+            let records = result.entry(key).or_insert_with(|| Value::Array(Vec::new()));
             records.as_array_mut().unwrap().push(value);
         } else {
             insert(&mut result, key, value)?;
@@ -138,9 +124,7 @@ fn object(doc: &KdlDocument, parent: &str) -> Result<Map<String, Value>, Error> 
 
 fn node_value(node: &KdlNode, key: &str, parent: &str) -> Result<Value, Error> {
     if node.ty().is_some() || node.entries().iter().any(|e| e.ty().is_some()) {
-        return Err(Error(
-            "Type annotations are not supported in configuration".into(),
-        ));
+        return Err(Error("Type annotations are not supported in configuration".into()));
     }
 
     let args = node
@@ -156,11 +140,7 @@ fn node_value(node: &KdlNode, key: &str, parent: &str) -> Result<Value, Error> {
         .collect::<Vec<_>>();
 
     if is_records(key, parent) {
-        let mut map = node
-            .children()
-            .map(|d| object(d, key))
-            .transpose()?
-            .unwrap_or_default();
+        let mut map = node.children().map(|d| object(d, key)).transpose()?.unwrap_or_default();
         for (name, entry) in props {
             insert(&mut map, name, scalar(entry.value())?)?;
         }
@@ -195,11 +175,7 @@ fn node_value(node: &KdlNode, key: &str, parent: &str) -> Result<Value, Error> {
                 node.name()
             )));
         }
-        let mut map = node
-            .children()
-            .map(|d| object(d, key))
-            .transpose()?
-            .unwrap_or_default();
+        let mut map = node.children().map(|d| object(d, key)).transpose()?.unwrap_or_default();
         for (name, entry) in props {
             insert(&mut map, name, scalar(entry.value())?)?;
         }
@@ -224,9 +200,7 @@ pub struct Document {
 
 impl Document {
     pub fn parse(source: &str) -> Result<Self, Error> {
-        let doc = source
-            .parse::<KdlDocument>()
-            .map_err(|e| Error(format!("{e:?}")))?;
+        let doc = source.parse::<KdlDocument>().map_err(|e| Error(format!("{e:?}")))?;
         let value = Value::Object(object(&doc, "")?);
 
         Ok(Self { doc, value })
@@ -267,10 +241,7 @@ impl Document {
     pub fn add(&mut self, path: &str, fields: Vec<(String, Value)>) -> Result<(), Error> {
         let mut candidate = self.clone();
         let (last, parents) = path.rsplit_once('.').map_or((path, ""), |(p, l)| (l, p));
-        let parent = parents
-            .rsplit('.')
-            .find(|s| s.parse::<usize>().is_err())
-            .unwrap_or("");
+        let parent = parents.rsplit('.').find(|s| s.parse::<usize>().is_err()).unwrap_or("");
 
         if !is_records(last, parent) {
             return Err(Error("Expected a list of records".into()));
@@ -278,18 +249,12 @@ impl Document {
 
         let doc = section_mut(
             &mut candidate.doc,
-            &parents
-                .split('.')
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>(),
+            &parents.split('.').filter(|s| !s.is_empty()).collect::<Vec<_>>(),
             "",
         )?;
 
-        doc.nodes_mut().push(value_node(
-            last,
-            &Value::Object(fields.into_iter().collect()),
-            parent,
-        )?);
+        doc.nodes_mut()
+            .push(value_node(last, &Value::Object(fields.into_iter().collect()), parent)?);
         format_document(&mut candidate.doc);
         candidate.refresh()?;
         *self = candidate;
@@ -302,19 +267,14 @@ impl Document {
         let (last, parents) = path.rsplit_once('.').map_or((path, ""), |(p, l)| (l, p));
         let doc = section_mut(
             &mut candidate.doc,
-            &parents
-                .split('.')
-                .filter(|s| !s.is_empty())
-                .collect::<Vec<_>>(),
+            &parents.split('.').filter(|s| !s.is_empty()).collect::<Vec<_>>(),
             "",
         )?;
         let i = doc
             .nodes()
             .iter()
             .enumerate()
-            .filter(|(_, n)| {
-                field(n.name().value(), parents.rsplit('.').next().unwrap_or("")) == last
-            })
+            .filter(|(_, n)| field(n.name().value(), parents.rsplit('.').next().unwrap_or("")) == last)
             .nth(index)
             .map(|(i, _)| i)
             .ok_or_else(|| Error("This item no longer exists. Reload settings.".into()))?;
@@ -346,11 +306,7 @@ type NodeFormat = (Vec<Option<kdl::KdlEntryFormat>>, Option<String>);
 
 fn collect_node_formats(doc: &KdlDocument, formats: &mut Vec<NodeFormat>) {
     for node in doc.nodes() {
-        let entries = node
-            .entries()
-            .iter()
-            .map(|entry| entry.format().cloned())
-            .collect();
+        let entries = node.entries().iter().map(|entry| entry.format().cloned()).collect();
         let terminator = node
             .format()
             .map(|format| format.terminator.clone())
@@ -391,11 +347,7 @@ fn format_document(doc: &mut KdlDocument) {
 }
 
 fn node_index(doc: &mut KdlDocument, key: &str, parent: &str) -> usize {
-    if let Some(i) = doc
-        .nodes()
-        .iter()
-        .position(|n| field(n.name().value(), parent) == key)
-    {
+    if let Some(i) = doc.nodes().iter().position(|n| field(n.name().value(), parent) == key) {
         return i;
     }
 
@@ -403,11 +355,7 @@ fn node_index(doc: &mut KdlDocument, key: &str, parent: &str) -> usize {
     doc.nodes().len() - 1
 }
 
-fn section_mut<'a>(
-    doc: &'a mut KdlDocument,
-    parts: &[&str],
-    parent: &str,
-) -> Result<&'a mut KdlDocument, Error> {
+fn section_mut<'a>(doc: &'a mut KdlDocument, parts: &[&str], parent: &str) -> Result<&'a mut KdlDocument, Error> {
     if parts.is_empty() {
         return Ok(doc);
     }
@@ -500,9 +448,7 @@ fn set_in(doc: &mut KdlDocument, parts: &[&str], parent: &str, value: Value) -> 
                 }
             }
 
-            if key == "autostart"
-                && rest[0] == "command"
-                && node.children().is_none_or(|d| d.get("command").is_none())
+            if key == "autostart" && rest[0] == "command" && node.children().is_none_or(|d| d.get("command").is_none())
             {
                 node.entries_mut().retain(|e| e.name().is_some());
                 for value in value
@@ -613,15 +559,9 @@ fn value_node(key: &str, value: &Value, parent: &str) -> Result<KdlNode, Error> 
                     {
                         node.entries_mut().push(KdlEntry::new(kdl_value(value)?));
                     }
-                } else if is_records(key, parent)
-                    && map.len() <= 4
-                    && !value.is_array()
-                    && !value.is_object()
-                {
-                    node.entries_mut().push(KdlEntry::new_prop(
-                        name.replace('_', "-"),
-                        kdl_value(value)?,
-                    ));
+                } else if is_records(key, parent) && map.len() <= 4 && !value.is_array() && !value.is_object() {
+                    node.entries_mut()
+                        .push(KdlEntry::new_prop(name.replace('_', "-"), kdl_value(value)?));
                 } else {
                     append(&mut child, name, value, key)?;
                 }
@@ -643,10 +583,7 @@ fn value_node(key: &str, value: &Value, parent: &str) -> Result<KdlNode, Error> 
 
 fn append(doc: &mut KdlDocument, key: &str, value: &Value, parent: &str) -> Result<(), Error> {
     if is_records(key, parent) {
-        for record in value
-            .as_array()
-            .ok_or_else(|| Error("Expected records".into()))?
-        {
+        for record in value.as_array().ok_or_else(|| Error("Expected records".into()))? {
             doc.nodes_mut().push(value_node(key, record, parent)?);
         }
     } else {
@@ -677,10 +614,7 @@ desktop-widgets {
 }
 "#;
         let mut doc = Document::parse(source).unwrap();
-        assert_eq!(
-            doc.get("commands.my_command").unwrap(),
-            &serde_json::json!(["program"])
-        );
+        assert_eq!(doc.get("commands.my_command").unwrap(), &serde_json::json!(["program"]));
         assert_eq!(
             doc.get("desktop_widgets.clock.outputs").unwrap(),
             &serde_json::json!(["DP-1"])
@@ -691,8 +625,7 @@ desktop-widgets {
         );
         doc.set("commands.new_command", serde_json::json!(["two", "words"]))
             .unwrap();
-        doc.set("desktop_widgets.clock.outputs", serde_json::json!([]))
-            .unwrap();
+        doc.set("desktop_widgets.clock.outputs", serde_json::json!([])).unwrap();
         let reparsed = Document::parse(&doc.to_string()).unwrap();
         assert_eq!(
             reparsed.get("commands.new_command").unwrap(),
@@ -706,8 +639,7 @@ desktop-widgets {
 
     #[test]
     fn inline_comments_and_failed_edits_leave_document_intact() {
-        let mut doc =
-            Document::parse("// header\nanimations {\n    speed 0.75 // keep inline\n}\n").unwrap();
+        let mut doc = Document::parse("// header\nanimations {\n    speed 0.75 // keep inline\n}\n").unwrap();
         doc.set("animations.speed", 0.8.into()).unwrap();
         assert!(doc.to_string().contains("// keep inline"));
         assert_eq!(
@@ -750,15 +682,11 @@ autostart "program" "two words" enabled=#false
         assert_eq!(doc.get("bindings.0.action").unwrap(), "toggle-overview");
         doc.set("bindings.0.action", "none".into()).unwrap();
         doc.set("input.repeat_rate", 25.into()).unwrap();
-        doc.set("output_profiles.0.outputs.0.scale", 2.0.into())
-            .unwrap();
+        doc.set("output_profiles.0.outputs.0.scale", 2.0.into()).unwrap();
         let reparsed = Document::parse(&doc.to_string()).unwrap();
         assert_eq!(reparsed.get("bindings.0.action").unwrap(), "none");
         assert_eq!(reparsed.get("input.repeat_rate").unwrap(), 25);
-        assert_eq!(
-            reparsed.get("output_profiles.0.outputs.0.scale").unwrap(),
-            2.0
-        );
+        assert_eq!(reparsed.get("output_profiles.0.outputs.0.scale").unwrap(), 2.0);
     }
 
     #[test]
@@ -786,28 +714,17 @@ desktop-widgets {
 }
 "#;
         let mut doc = Document::parse(source).unwrap();
-        doc.set("desktop_widgets.notes.0.text", "one\ntwo".into())
-            .unwrap();
+        doc.set("desktop_widgets.notes.0.text", "one\ntwo".into()).unwrap();
         assert!(doc.to_string().contains("// personal comment"));
         let reparsed = Document::parse(&doc.to_string()).unwrap();
         assert_eq!(
             reparsed.get("commands.screenshot-full").unwrap(),
             &serde_json::json!(["ferese-screenshot", "--full"])
         );
-        assert_eq!(
-            reparsed.get("desktop_widgets.notes.0.text").unwrap(),
-            "one\ntwo"
-        );
+        assert_eq!(reparsed.get("desktop_widgets.notes.0.text").unwrap(), "one\ntwo");
         doc.add("desktop_widgets.notes", vec![("id".into(), "b".into())])
             .unwrap();
-        assert_eq!(
-            doc.get("desktop_widgets.notes")
-                .unwrap()
-                .as_array()
-                .unwrap()
-                .len(),
-            2
-        );
+        assert_eq!(doc.get("desktop_widgets.notes").unwrap().as_array().unwrap().len(), 2);
         doc.remove("desktop_widgets.notes", 0).unwrap();
         assert_eq!(doc.get("desktop_widgets.notes.0.id").unwrap(), "b");
     }

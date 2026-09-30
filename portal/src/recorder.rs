@@ -1,22 +1,19 @@
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
+
 use futures_util::StreamExt;
-use gstreamer::{self as gst, prelude::*};
-use std::{
-    collections::HashMap,
-    fs::{File, OpenOptions},
-    io::{Read, Write},
-    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
-    path::{Path, PathBuf},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::{Duration, Instant},
-};
+use gstreamer as gst;
+use gstreamer::prelude::*;
 use tokio::sync::watch;
-use zbus::{
-    Connection, Proxy,
-    zvariant::{OwnedFd, OwnedObjectPath, OwnedValue, Value},
-};
+use zbus::zvariant::{OwnedFd, OwnedObjectPath, OwnedValue, Value};
+use zbus::{Connection, Proxy};
 
 type Options = HashMap<String, OwnedValue>;
 const DESKTOP: &str = "org.freedesktop.portal.Desktop";
@@ -38,32 +35,15 @@ async fn request<B: serde::Serialize + zbus::zvariant::DynamicType>(
     body: &B,
     stop: &mut watch::Receiver<bool>,
 ) -> Result<Option<Options>, String> {
-    let sender = connection
-        .unique_name()
-        .ok_or("No D-Bus identity")?
-        .as_str()[1..]
-        .replace('.', "_");
+    let sender = connection.unique_name().ok_or("No D-Bus identity")?.as_str()[1..].replace('.', "_");
     let path = format!("{DESKTOP_PATH}/request/{sender}/{token}");
-    let request = Proxy::new(
-        connection,
-        DESKTOP,
-        path.as_str(),
-        "org.freedesktop.portal.Request",
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    let mut responses = request
-        .receive_signal("Response")
+    let request = Proxy::new(connection, DESKTOP, path.as_str(), "org.freedesktop.portal.Request")
         .await
         .map_err(|e| e.to_string())?;
-    let portal = Proxy::new(
-        connection,
-        DESKTOP,
-        DESKTOP_PATH,
-        "org.freedesktop.portal.ScreenCast",
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let mut responses = request.receive_signal("Response").await.map_err(|e| e.to_string())?;
+    let portal = Proxy::new(connection, DESKTOP, DESKTOP_PATH, "org.freedesktop.portal.ScreenCast")
+        .await
+        .map_err(|e| e.to_string())?;
     let returned: OwnedObjectPath = portal
         .call(method, body)
         .await
@@ -90,14 +70,7 @@ async fn request<B: serde::Serialize + zbus::zvariant::DynamicType>(
 
 pub async fn run() -> Result<(), String> {
     gst::init().map_err(|e| e.to_string())?;
-    for factory in [
-        "pipewiresrc",
-        "queue",
-        "videoconvert",
-        "vp8enc",
-        "webmmux",
-        "fdsink",
-    ] {
+    for factory in ["pipewiresrc", "queue", "videoconvert", "vp8enc", "webmmux", "fdsink"] {
         if gst::ElementFactory::find(factory).is_none() {
             return Err(format!(
                 "Recording needs the GStreamer {factory} plugin. See the recording installation guide."
@@ -127,13 +100,10 @@ pub async fn run() -> Result<(), String> {
         event("cancelled", None, None);
         return Ok(());
     };
-    let handle = created
-        .get("session_handle")
-        .ok_or("Portal returned no session")?;
+    let handle = created.get("session_handle").ok_or("Portal returned no session")?;
     // The public portal historically returns this path as a D-Bus string.
     let handle = OwnedObjectPath::try_from(
-        String::try_from(handle.try_clone().map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?,
+        String::try_from(handle.try_clone().map_err(|e| e.to_string())?).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
     // Older/foreign backends keep their normal sharing indicator. Only Ferese
@@ -146,19 +116,12 @@ pub async fn run() -> Result<(), String> {
             "org.ferese.ScreenRecorder",
         )
         .await?;
-        control
-            .call::<_, _, ()>("UseBarControls", &(handle.clone(),))
-            .await
+        control.call::<_, _, ()>("UseBarControls", &(handle.clone(),)).await
     })
     .await;
-    let session = Proxy::new(
-        &connection,
-        DESKTOP,
-        handle.as_str(),
-        "org.freedesktop.portal.Session",
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let session = Proxy::new(&connection, DESKTOP, handle.as_str(), "org.freedesktop.portal.Session")
+        .await
+        .map_err(|e| e.to_string())?;
     let result = record_session(&connection, &session, &handle, &token, &output, &mut stop).await;
     let _: Result<(), _> = session.call("Close", &()).await;
     match result {
@@ -176,10 +139,7 @@ async fn record_session(
     output: &Path,
     stop: &mut watch::Receiver<bool>,
 ) -> Result<Option<PathBuf>, String> {
-    let mut closed = session
-        .receive_signal("Closed")
-        .await
-        .map_err(|e| e.to_string())?;
+    let mut closed = session.receive_signal("Closed").await.map_err(|e| e.to_string())?;
     if request(
         connection,
         "SelectSources",
@@ -205,11 +165,7 @@ async fn record_session(
         connection,
         "Start",
         &token(2),
-        &(
-            handle,
-            "",
-            HashMap::from([("handle_token", option_string(token(2)))]),
-        ),
+        &(handle, "", HashMap::from([("handle_token", option_string(token(2)))])),
         stop,
     )
     .await?
@@ -226,14 +182,9 @@ async fn record_session(
     if streams.len() != 1 {
         return Err("Recording requires exactly one display".into());
     }
-    let portal = Proxy::new(
-        connection,
-        DESKTOP,
-        DESKTOP_PATH,
-        "org.freedesktop.portal.ScreenCast",
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let portal = Proxy::new(connection, DESKTOP, DESKTOP_PATH, "org.freedesktop.portal.ScreenCast")
+        .await
+        .map_err(|e| e.to_string())?;
     let remote: OwnedFd = portal
         .call("OpenPipeWireRemote", &(handle, Options::new()))
         .await
@@ -278,8 +229,7 @@ fn output_directory() -> Result<PathBuf, String> {
     }
 }
 fn recording_file(directory: &Path) -> Result<(File, PathBuf, PathBuf), String> {
-    std::fs::create_dir_all(directory)
-        .map_err(|e| format!("Cannot create recording folder: {e}"))?;
+    std::fs::create_dir_all(directory).map_err(|e| format!("Cannot create recording folder: {e}"))?;
     let name = format!(
         "Recording-{}-{}",
         jiff::Zoned::now().strftime("%Y-%m-%d_%H-%M-%S"),
@@ -338,24 +288,19 @@ fn encode(source: gst::Element, output: &Path, stop: Arc<AtomicBool>) -> Result<
         pipeline
             .add_many([&source, &queue, &convert, &encoder, &mux, &sink])
             .map_err(|e| e.to_string())?;
-        gst::Element::link_many([&source, &queue, &convert, &encoder, &mux, &sink])
-            .map_err(|e| e.to_string())?;
+        gst::Element::link_many([&source, &queue, &convert, &encoder, &mux, &sink]).map_err(|e| e.to_string())?;
         let announced = Arc::new(AtomicBool::new(false));
         let notice = announced.clone();
         source
             .static_pad("src")
             .ok_or("Capture has no video output")?
             .add_probe(gst::PadProbeType::BUFFER, move |_, info| {
-                if info.buffer().is_some_and(|b| b.size() > 0)
-                    && !notice.swap(true, Ordering::Relaxed)
-                {
+                if info.buffer().is_some_and(|b| b.size() > 0) && !notice.swap(true, Ordering::Relaxed) {
                     event("recording", None, None);
                 }
                 gst::PadProbeReturn::Ok
             });
-        pipeline
-            .set_state(gst::State::Playing)
-            .map_err(|e| e.to_string())?;
+        pipeline.set_state(gst::State::Playing).map_err(|e| e.to_string())?;
         let bus = pipeline.bus().ok_or("Encoder has no message bus")?;
         let mut finishing = None;
         let started = Instant::now();
@@ -404,8 +349,7 @@ fn encode(source: gst::Element, output: &Path, stop: Arc<AtomicBool>) -> Result<
     result.map_err(|e| format!("{e}. Incomplete file: {}", partial.display()))?;
     file.sync_all()
         .map_err(|e| format!("Cannot finish saving {}: {e}", partial.display()))?;
-    std::fs::rename(&partial, &destination)
-        .map_err(|e| format!("Cannot finish saving {}: {e}", partial.display()))?;
+    std::fs::rename(&partial, &destination).map_err(|e| format!("Cannot finish saving {}: {e}", partial.display()))?;
     Ok(destination)
 }
 
@@ -419,10 +363,7 @@ mod tests {
         let (_, second, _) = recording_file(directory.path()).unwrap();
         assert_ne!(first, second);
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            std::fs::metadata(first).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
+        assert_eq!(std::fs::metadata(first).unwrap().permissions().mode() & 0o777, 0o600);
     }
     #[test]
     #[ignore = "requires an explicitly provided temporary PipeWire test node"]
@@ -493,10 +434,7 @@ mod tests {
             "Invalid saved duration: {duration:?}"
         );
         assert!(
-            matches!(
-                message.as_ref().map(|m| m.view()),
-                Some(gst::MessageView::Eos(_))
-            ),
+            matches!(message.as_ref().map(|m| m.view()), Some(gst::MessageView::Eos(_))),
             "Saved video did not decode: {message:?}"
         );
     }

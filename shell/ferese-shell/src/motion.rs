@@ -1,6 +1,5 @@
 //! Draw-only popup transform; layout stays stable while its presentation animates.
-use cosmic::iced::advanced::Renderer as _;
-use cosmic::iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, renderer, widget};
+use cosmic::iced::advanced::{Clipboard, Layout, Renderer as _, Shell, Widget, layout, mouse, renderer, widget};
 use cosmic::iced::{Event, Length, Rectangle, Size, Transformation, Vector};
 use cosmic::{Element, Theme};
 
@@ -42,8 +41,7 @@ impl Settings {
     }
 }
 static SETTINGS: std::sync::OnceLock<std::sync::RwLock<Settings>> = std::sync::OnceLock::new();
-static SHELL_RADIUS: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(14.0_f32.to_bits());
+static SHELL_RADIUS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(14.0_f32.to_bits());
 
 /// All shell shapes share one radius, capped to fit smaller controls.
 pub(crate) fn radius(limit: f32) -> f32 {
@@ -97,17 +95,14 @@ impl PopupMotion {
     }
 
     pub(crate) fn progress_at(&self, now: std::time::Instant) -> f32 {
-        let duration = self
-            .settings
-            .duration(if self.target == 1.0 { 200.0 } else { 140.0 });
+        let duration = self.settings.duration(if self.target == 1.0 { 200.0 } else { 140.0 });
         if duration.is_zero() {
             return self.target;
         }
         let Some(started) = self.started else {
             return self.start;
         };
-        let t = (now.saturating_duration_since(started).as_secs_f32() / duration.as_secs_f32())
-            .min(1.0);
+        let t = (now.saturating_duration_since(started).as_secs_f32() / duration.as_secs_f32()).min(1.0);
         if t == 1.0 {
             return self.target;
         }
@@ -145,14 +140,7 @@ pub(crate) fn button<'a, M: Clone + 'a>(
     let active = progress.clone();
     let hovered = progress.clone();
     let paint = move |progress: f32, pressed: bool| {
-        ferese_theme::controls::shell_button(
-            foreground,
-            selected,
-            opacity,
-            radius(14.),
-            progress,
-            pressed,
-        )
+        ferese_theme::controls::shell_button(foreground, selected, opacity, radius(14.), progress, pressed)
     };
     let content = button
         .class(cosmic::theme::Button::Custom {
@@ -181,12 +169,7 @@ struct HoverState {
 }
 
 impl HoverState {
-    fn advance(
-        &mut self,
-        target: f32,
-        now: std::time::Instant,
-        duration: std::time::Duration,
-    ) -> bool {
+    fn advance(&mut self, target: f32, now: std::time::Instant, duration: std::time::Duration) -> bool {
         if self.target != target {
             self.start = self.current;
             self.target = target;
@@ -196,8 +179,7 @@ impl HoverState {
             1.0
         } else {
             self.started.map_or(1.0, |start| {
-                (now.saturating_duration_since(start).as_secs_f32() / duration.as_secs_f32())
-                    .min(1.0)
+                (now.saturating_duration_since(start).as_secs_f32() / duration.as_secs_f32()).min(1.0)
             })
         };
         self.current = self.start + (self.target - self.start) * t * t * (3.0 - 2.0 * t);
@@ -222,9 +204,7 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Hover<'_, M> {
         tree: &widget::Tree,
         cursor: mouse::Cursor,
     ) -> iced_accessibility::A11yTree {
-        self.content
-            .as_widget()
-            .a11y_nodes(layout, &tree.children[0], cursor)
+        self.content.as_widget().a11y_nodes(layout, &tree.children[0], cursor)
     }
 
     fn tag(&self) -> widget::tree::Tag {
@@ -298,17 +278,10 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Hover<'_, M> {
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        self.progress
-            .set(tree.state.downcast_ref::<HoverState>().current);
-        self.content.as_widget().draw(
-            &tree.children[0],
-            renderer,
-            theme,
-            style,
-            layout,
-            cursor,
-            viewport,
-        );
+        self.progress.set(tree.state.downcast_ref::<HoverState>().current);
+        self.content
+            .as_widget()
+            .draw(&tree.children[0], renderer, theme, style, layout, cursor, viewport);
     }
 
     fn mouse_interaction(
@@ -319,13 +292,9 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Hover<'_, M> {
         viewport: &Rectangle,
         renderer: &cosmic::Renderer,
     ) -> mouse::Interaction {
-        self.content.as_widget().mouse_interaction(
-            &tree.children[0],
-            layout,
-            cursor,
-            viewport,
-            renderer,
-        )
+        self.content
+            .as_widget()
+            .mouse_interaction(&tree.children[0], layout, cursor, viewport, renderer)
     }
 
     fn operate(
@@ -348,22 +317,13 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Hover<'_, M> {
         viewport: &Rectangle,
         translation: Vector,
     ) -> Option<cosmic::iced::advanced::overlay::Element<'a, M, Theme, cosmic::Renderer>> {
-        self.content.as_widget_mut().overlay(
-            &mut tree.children[0],
-            layout,
-            renderer,
-            viewport,
-            translation,
-        )
+        self.content
+            .as_widget_mut()
+            .overlay(&mut tree.children[0], layout, renderer, viewport, translation)
     }
 }
 
-pub fn animated<'a, M: 'a>(
-    content: Element<'a, M>,
-    progress: f32,
-    regions: Regions,
-    radius: f32,
-) -> Element<'a, M> {
+pub fn animated<'a, M: 'a>(content: Element<'a, M>, progress: f32, regions: Regions, radius: f32) -> Element<'a, M> {
     Element::new(Motion {
         content,
         progress,
@@ -445,9 +405,9 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
         }
         *self.regions.lock().unwrap() = collector.into_regions(self.translation(), self.radius);
         let cursor = self.cursor(cursor);
-        self.content.as_widget_mut().update(
-            tree, event, layout, cursor, renderer, clipboard, shell, viewport,
-        );
+        self.content
+            .as_widget_mut()
+            .update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
     }
 
     fn draw(
@@ -463,15 +423,9 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
         let v = self.translation();
         let transform = Transformation::translate(v.x, v.y);
         renderer.with_transformation(transform, |renderer| {
-            self.content.as_widget().draw(
-                tree,
-                renderer,
-                theme,
-                style,
-                layout,
-                self.cursor(cursor),
-                viewport,
-            )
+            self.content
+                .as_widget()
+                .draw(tree, renderer, theme, style, layout, self.cursor(cursor), viewport)
         });
     }
 
@@ -483,13 +437,9 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
         viewport: &Rectangle,
         renderer: &cosmic::Renderer,
     ) -> mouse::Interaction {
-        self.content.as_widget().mouse_interaction(
-            tree,
-            layout,
-            self.cursor(cursor),
-            viewport,
-            renderer,
-        )
+        self.content
+            .as_widget()
+            .mouse_interaction(tree, layout, self.cursor(cursor), viewport, renderer)
     }
 
     fn operate(
@@ -499,9 +449,7 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
         renderer: &cosmic::Renderer,
         operation: &mut dyn widget::Operation,
     ) {
-        self.content
-            .as_widget_mut()
-            .operate(tree, layout, renderer, operation);
+        self.content.as_widget_mut().operate(tree, layout, renderer, operation);
     }
 }
 
@@ -557,11 +505,7 @@ mod tests {
     fn centered_modal_material_tracks_surface_position_and_animation() {
         let mut collector = CollectRegions(Vec::new());
         let card = Rectangle::new((380.0, 420.0).into(), (440.0, 220.0).into());
-        widget::Operation::container(
-            &mut collector,
-            Some(&widget::Id::new("ferese-blur-card")),
-            card,
-        );
+        widget::Operation::container(&mut collector, Some(&widget::Id::new("ferese-blur-card")), card);
         assert_eq!(
             collector.into_regions(Vector::new(0.0, -2.0), 14.0),
             vec![[380, 418, 440, 220, 14]]
@@ -572,29 +516,16 @@ mod tests {
     fn popup_waits_for_configuration_then_opens_and_closes_faster() {
         let now = std::time::Instant::now();
         let mut motion = PopupMotion::new(Settings::default());
-        assert_eq!(
-            motion.progress_at(now + std::time::Duration::from_secs(30)),
-            0.0
-        );
+        assert_eq!(motion.progress_at(now + std::time::Duration::from_secs(30)), 0.0);
         motion.begin(now);
         // Later configure/focus notifications must not restart the clock.
         motion.begin(now + std::time::Duration::from_millis(90));
-        assert!(
-            (motion.progress_at(now + std::time::Duration::from_millis(100)) - 0.5).abs() < 0.00001
-        );
-        assert_eq!(
-            motion.progress_at(now + std::time::Duration::from_millis(200)),
-            1.0
-        );
+        assert!((motion.progress_at(now + std::time::Duration::from_millis(100)) - 0.5).abs() < 0.00001);
+        assert_eq!(motion.progress_at(now + std::time::Duration::from_millis(200)), 1.0);
         motion.retarget(0.0, now + std::time::Duration::from_millis(200));
         assert!(motion.closing());
-        assert!(
-            (motion.progress_at(now + std::time::Duration::from_millis(270)) - 0.5).abs() < 0.00001
-        );
-        assert_eq!(
-            motion.progress_at(now + std::time::Duration::from_millis(340)),
-            0.0
-        );
+        assert!((motion.progress_at(now + std::time::Duration::from_millis(270)) - 0.5).abs() < 0.00001);
+        assert_eq!(motion.progress_at(now + std::time::Duration::from_millis(340)), 0.0);
     }
 
     #[test]
@@ -613,10 +544,7 @@ mod tests {
         let before = motion.progress_at(reopen);
         motion.retarget(1.0, reopen);
         assert_eq!(motion.progress_at(reopen), before);
-        assert_eq!(
-            motion.progress_at(reopen + std::time::Duration::from_secs(1)),
-            1.0
-        );
+        assert_eq!(motion.progress_at(reopen + std::time::Duration::from_secs(1)), 1.0);
         for settings in [
             Settings {
                 reduced_motion: true,

@@ -1,4 +1,5 @@
-use std::{process::Command, sync::OnceLock};
+use std::process::Command;
+use std::sync::OnceLock;
 
 pub fn families() -> &'static [String] {
     static FAMILIES: OnceLock<Vec<String>> = OnceLock::new();

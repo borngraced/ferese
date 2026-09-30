@@ -1,6 +1,6 @@
 use std::error::Error;
-use std::fmt;
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
+use std::{fmt, io};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -69,10 +69,7 @@ impl fmt::Display for FrameError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => error.fmt(formatter),
-            Self::Oversized(size) => write!(
-                formatter,
-                "IPC payload is {size} bytes; maximum is {MAX_PAYLOAD_SIZE}"
-            ),
+            Self::Oversized(size) => write!(formatter, "IPC payload is {size} bytes; maximum is {MAX_PAYLOAD_SIZE}"),
             Self::InvalidJson(error) => write!(formatter, "invalid IPC JSON: {error}"),
         }
     }

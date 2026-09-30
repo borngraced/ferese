@@ -1,18 +1,16 @@
-use crate::PromptEvent;
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
+
 use glib::gobject_ffi;
 use libloading::Library;
-use std::{
-    ffi::{CStr, CString, c_char, c_int, c_void},
-    io::{BufRead, BufReader, BufWriter, Write},
-    process::{Child, ChildStdin, Command, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Sender},
-    },
-    time::Duration,
-};
 use zeroize::Zeroize;
+
+use crate::PromptEvent;
 
 enum SessionEvent {
     Request(String, bool),
@@ -38,21 +36,15 @@ impl Api {
         unsafe {
             let agent = Library::new("libpolkit-agent-1.so.0").map_err(|e| e.to_string())?;
             let polkit = Library::new("libpolkit-gobject-1.so.0").map_err(|e| e.to_string())?;
-            let user_new = *polkit
-                .get(b"polkit_unix_user_new\0")
-                .map_err(|e| e.to_string())?;
-            let session_new = *agent
-                .get(b"polkit_agent_session_new\0")
-                .map_err(|e| e.to_string())?;
+            let user_new = *polkit.get(b"polkit_unix_user_new\0").map_err(|e| e.to_string())?;
+            let session_new = *agent.get(b"polkit_agent_session_new\0").map_err(|e| e.to_string())?;
             let initiate = *agent
                 .get(b"polkit_agent_session_initiate\0")
                 .map_err(|e| e.to_string())?;
             let response = *agent
                 .get(b"polkit_agent_session_response\0")
                 .map_err(|e| e.to_string())?;
-            let cancel = *agent
-                .get(b"polkit_agent_session_cancel\0")
-                .map_err(|e| e.to_string())?;
+            let cancel = *agent.get(b"polkit_agent_session_cancel\0").map_err(|e| e.to_string())?;
 
             Ok(Self {
                 _agent: agent,
@@ -72,9 +64,7 @@ pub fn check() -> Result<(), String> {
 }
 
 fn username(uid: u32) -> String {
-    let output = Command::new("getent")
-        .args(["passwd", &uid.to_string()])
-        .output();
+    let output = Command::new("getent").args(["passwd", &uid.to_string()]).output();
     output
         .ok()
         .filter(|output| output.status.success())
@@ -122,32 +112,21 @@ fn prompt_process(
     Ok((child, writer, rx))
 }
 
-unsafe extern "C" fn request(
-    _session: Object,
-    prompt: *const c_char,
-    echo: c_int,
-    data: *mut c_void,
-) {
+unsafe extern "C" fn request(_session: Object, prompt: *const c_char, echo: c_int, data: *mut c_void) {
     let tx = unsafe { &*(data as *const Sender<SessionEvent>) };
-    let prompt = unsafe { CStr::from_ptr(prompt) }
-        .to_string_lossy()
-        .into_owned();
+    let prompt = unsafe { CStr::from_ptr(prompt) }.to_string_lossy().into_owned();
     let _ = tx.send(SessionEvent::Request(prompt, echo != 0));
 }
 
 unsafe extern "C" fn info(_session: Object, text: *const c_char, data: *mut c_void) {
     let tx = unsafe { &*(data as *const Sender<SessionEvent>) };
-    let text = unsafe { CStr::from_ptr(text) }
-        .to_string_lossy()
-        .into_owned();
+    let text = unsafe { CStr::from_ptr(text) }.to_string_lossy().into_owned();
     let _ = tx.send(SessionEvent::Info(text));
 }
 
 unsafe extern "C" fn error(_session: Object, text: *const c_char, data: *mut c_void) {
     let tx = unsafe { &*(data as *const Sender<SessionEvent>) };
-    let text = unsafe { CStr::from_ptr(text) }
-        .to_string_lossy()
-        .into_owned();
+    let text = unsafe { CStr::from_ptr(text) }.to_string_lossy().into_owned();
     let _ = tx.send(SessionEvent::Error(text));
 }
 
@@ -156,12 +135,7 @@ unsafe extern "C" fn completed(_session: Object, success: c_int, data: *mut c_vo
     let _ = tx.send(SessionEvent::Completed(success != 0));
 }
 
-unsafe fn connect(
-    session: Object,
-    name: &'static CStr,
-    callback: gobject_ffi::GCallback,
-    data: *mut c_void,
-) {
+unsafe fn connect(session: Object, name: &'static CStr, callback: gobject_ffi::GCallback, data: *mut c_void) {
     unsafe {
         gobject_ffi::g_signal_connect_data(
             session.cast(),
@@ -215,7 +189,7 @@ fn run_session(
                 unsafe extern "C" fn(Object, *const c_char, *mut c_void),
                 unsafe extern "C" fn(),
             >(
-                info as unsafe extern "C" fn(Object, *const c_char, *mut c_void),
+                info as unsafe extern "C" fn(Object, *const c_char, *mut c_void)
             )),
             signal_data,
         );
@@ -226,7 +200,7 @@ fn run_session(
                 unsafe extern "C" fn(Object, *const c_char, *mut c_void),
                 unsafe extern "C" fn(),
             >(
-                error as unsafe extern "C" fn(Object, *const c_char, *mut c_void),
+                error as unsafe extern "C" fn(Object, *const c_char, *mut c_void)
             )),
             signal_data,
         );
@@ -237,7 +211,7 @@ fn run_session(
                 unsafe extern "C" fn(Object, c_int, *mut c_void),
                 unsafe extern "C" fn(),
             >(
-                completed as unsafe extern "C" fn(Object, c_int, *mut c_void),
+                completed as unsafe extern "C" fn(Object, c_int, *mut c_void)
             )),
             signal_data,
         );
@@ -276,10 +250,7 @@ fn run_session(
                 _ => {}
             }
         }
-        if !stopped
-            && (cancelled.load(Ordering::Acquire)
-                || child.try_wait().map_err(|e| e.to_string())?.is_some())
-        {
+        if !stopped && (cancelled.load(Ordering::Acquire) || child.try_wait().map_err(|e| e.to_string())?.is_some()) {
             unsafe { (api.cancel)(session) };
             stopped = true;
         }
@@ -293,12 +264,7 @@ fn run_session(
     Ok(outcome.filter(|_| !stopped))
 }
 
-pub fn authenticate(
-    uid: u32,
-    message: String,
-    cookie: String,
-    cancelled: Arc<AtomicBool>,
-) -> Result<bool, String> {
+pub fn authenticate(uid: u32, message: String, cookie: String, cancelled: Arc<AtomicBool>) -> Result<bool, String> {
     let api = Api::load()?;
     let cookie = CString::new(cookie).map_err(|_| "Invalid authentication cookie")?;
     let context = glib::MainContext::new();
