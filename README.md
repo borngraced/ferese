@@ -17,7 +17,7 @@ lock screen, and screen sharing. Change themes and settings without restarting.
 
 ![Ferese Blue desktop with Settings and Control Center](docs/images/screenshots/ferese-main-hero.png)
 
-[View all screenshots](docs/screenshots.md).
+[View more screenshots](docs/screenshots.md).
 
 ## Features
 
