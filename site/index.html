@@ -1,134 +1,121 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#10151c" />
-    <meta
-      name="description"
-      content="Ferese is a Linux Wayland desktop with scrolling layouts, native Settings, and a shared theme."
-    />
-    <meta
-      property="og:title"
-      content="Ferese — Wayland desktop"
-    />
-    <meta
-      property="og:description"
-      content="A Wayland desktop with scrolling layouts and a shared theme."
-    />
-    <meta property="og:type" content="website" />
-    <meta
-      property="og:image"
-      content="https://ferese-wm.github.io/ferese/assets/screenshots/ferese-main-hero.png"
-    />
-    <meta name="twitter:card" content="summary_large_image" />
-    <title>Ferese — Wayland desktop</title>
-    <link rel="icon" href="assets/ferese.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="styles.css?v=jetbrains" />
-  </head>
-  <body>
-    <a class="skip" href="#main">Skip to content</a>
-    <header class="site-header">
-      <div class="header-inner">
-        <a class="wordmark" href="./" aria-label="Ferese home"
-          ><svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M3 3h6v18H3zM11 3h10v6H11zM11 11h7v6h-7z" /></svg
-          >ferese</a
-        >
-        <nav aria-label="Main navigation">
-          <a href="./" aria-current="page">Overview</a
-          ><a href="docs/screenshots.html">Screenshots</a
-          ><a href="docs/">Documentation</a
-          ><a href="https://github.com/ferese-wm/ferese"
-            >GitHub <svg class="link-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M7 17 17 7M7 7h10v10"/></svg></a
-          >
-        </nav>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#10151c" />
+  <meta name="description" content="Ferese is a Wayland desktop built around personalization." />
+  <meta property="og:title" content="Ferese — Wayland desktop" />
+  <meta property="og:description" content="A Wayland desktop built around personalization." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://ferese-wm.github.io/ferese/assets/screenshots/ferese-main-hero.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <title>Ferese — Wayland desktop</title>
+  <link rel="icon" href="assets/ferese.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css?v=jetbrains" />
+</head>
+
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="wordmark" href="./" aria-label="Ferese home"><svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 3h6v18H3zM11 3h10v6H11zM11 11h7v6h-7z" />
+        </svg>ferese</a>
+      <nav aria-label="Main navigation">
+        <a href="./" aria-current="page">Overview</a><a href="docs/screenshots.html">Screenshots</a><a
+          href="docs/">Documentation</a><a href="https://github.com/ferese-wm/ferese">GitHub <svg class="link-arrow"
+            viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+            stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M7 17 17 7M7 7h10v10" />
+          </svg></a>
+      </nav>
+    </div>
+  </header>
+  <main id="main" class="simple-home">
+    <section class="product-intro page-width">
+      <h1 class="product-tagline">
+        A Wayland desktop built around personalization.
+      </h1>
+      <p class="product-description">
+        Ferese is a window manager and desktop shell
+        built together and configured in one place,
+        for people who want their desktop to be their own.
+      </p>
+      <div class="product-links">
+        <a class="button" href="docs/installation.html">Install Ferese</a>
+        <a class="button secondary" href="docs/">Documentation</a>
+        <a class="source-link" href="https://github.com/ferese-wm/ferese">Source code <svg class="link-arrow"
+            viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+            stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M7 17 17 7M7 7h10v10" />
+          </svg></a>
       </div>
-    </header>
-    <main id="main" class="simple-home">
-      <section class="product-intro page-width">
-        <h1 class="product-tagline">
-          A Wayland desktop with scrolling layouts and a shared theme.
-        </h1>
-        <p class="product-description">
-          A Linux desktop with a top bar, Settings,
-          scrolling and tiling layouts, and themes that update live.
-        </p>
-        <div class="product-links">
-          <a class="button" href="docs/installation.html">Install Ferese</a>
-          <a class="button secondary" href="docs/">Documentation</a>
-          <a class="source-link" href="https://github.com/ferese-wm/ferese"
-            >Source code <svg class="link-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M7 17 17 7M7 7h10v10"/></svg></a
-          >
-        </div>
-      </section>
-      <figure class="product-screenshot page-width">
-        <a
-          href="assets/screenshots/ferese-main-hero.png"
-          aria-label="View the full-resolution Ferese desktop screenshot"
-        >
-          <img
-            src="assets/screenshots/ferese-main-hero.png"
-            width="2880"
-            height="1800"
-            alt="Ferese Blue desktop with Settings, Control Center and the default wallpaper"
-            fetchpriority="high"
-          />
-        </a>
-        <figcaption>
-          Ferese Blue with Settings, Control Center, and the default wallpaper.
-        </figcaption>
-      </figure>
-      <section class="product-features page-width" aria-label="Features">
-        <article>
-          <h2>Flexible layouts</h2>
-          <p>
-            Scrolling columns, tree tiling, floating windows, and a workspace
-            overview. Use keyboard shortcuts or gestures to move around.
-          </p>
-          <a href="docs/configuration.html#layout">Configure layouts →</a>
-        </article>
-        <article>
-          <h2>A native desktop</h2>
-          <p>
-            A menu bar, Control Center, Settings, notifications, and desktop
-            widgets, designed to work together.
-          </p>
-          <a href="docs/why-ferese.html">Explore Ferese →</a>
-        </article>
-        <article>
-          <h2>Make it yours</h2>
-          <p>
-            Choose your theme, wallpaper, colors, and motion. Change settings
-            through the app or a KDL config, with live reload.
-          </p>
-          <a href="docs/configuration.html#appearance">Customize Ferese →</a>
-        </article>
-      </section>
-      <section class="product-getting-started page-width">
-        <h2>Getting started</h2>
+    </section>
+    <figure class="product-screenshot page-width">
+      <a href="assets/screenshots/ferese-main-hero.png" aria-label="View the full-resolution Ferese desktop screenshot">
+        <img src="assets/screenshots/ferese-main-hero.png" width="2880" height="1800"
+          alt="Ferese Blue desktop with Settings, Control Center and the default wallpaper" fetchpriority="high" />
+      </a>
+      <figcaption>
+        Ferese Blue with Settings, Control Center, and the default wallpaper.
+      </figcaption>
+    </figure>
+    <section class="product-features page-width" aria-label="Features">
+      <article>
+        <h2>Flexible layouts</h2>
         <p>
-          The <a href="docs/installation.html">installation guide</a> covers
-          dependencies, login, updates, and recovery. You can also
-          <a href="docs/installation.html#preview-and-logs">preview Ferese</a>
-          inside an existing Wayland session before installing.
+          Scrolling columns, tree tiling, floating windows, and a workspace
+          overview. Use keyboard shortcuts or gestures to move around.
         </p>
+        <a href="docs/configuration.html#layout">Configure layouts →</a>
+      </article>
+      <article>
+        <h2>A native desktop</h2>
         <p>
-          Share a display with recording and conferencing apps through Ferese’s
-          native screen-sharing portal. Choose what to share and stop at any time.
-          See <a href="docs/screen-sharing.html">screen sharing and recording</a>
-          for setup and limits.
+          A menu bar, Control Center, Settings, notifications, and desktop
+          widgets, designed to work together.
         </p>
+        <a href="docs/why-ferese.html">Explore Ferese →</a>
+      </article>
+      <article>
+        <h2>Make it yours</h2>
         <p>
-          Find <a href="docs/shortcuts.html">shortcuts and mouse actions</a> in the handbook. Development happens
-          <a href="https://github.com/ferese-wm/ferese">on GitHub</a>.
+          Choose your theme, wallpaper, colors, and motion. Change settings
+          through the app or a KDL config, with live reload.
         </p>
-      </section>
-    </main>
-    <footer class="site-footer page-width">
-      <a class="wordmark" href="./">ferese</a>
-      <p>A Wayland desktop with scrolling layouts.</p>
-      <a href="docs/">Read the handbook <svg class="link-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M7 17 17 7M7 7h10v10"/></svg></a>
-    </footer>
-  </body>
+        <a href="docs/configuration.html#appearance">Customize Ferese →</a>
+      </article>
+    </section>
+    <section class="product-getting-started page-width">
+      <h2>Getting started</h2>
+      <p>
+        The <a href="docs/installation.html">installation guide</a> covers
+        dependencies, login, updates, and recovery. You can also
+        <a href="docs/installation.html#preview-and-logs">preview Ferese</a>
+        inside an existing Wayland session before installing.
+      </p>
+      <p>
+        Share a display with recording and conferencing apps through Ferese’s
+        native screen-sharing portal. Choose what to share and stop at any time.
+        See <a href="docs/screen-sharing.html">screen sharing and recording</a>
+        for setup and limits.
+      </p>
+      <p>
+        Find <a href="docs/shortcuts.html">shortcuts and mouse actions</a> in the handbook. Development happens
+        <a href="https://github.com/ferese-wm/ferese">on GitHub</a>.
+      </p>
+    </section>
+  </main>
+  <footer class="site-footer page-width">
+    <a class="wordmark" href="./">ferese</a>
+    <p>A Wayland desktop with scrolling layouts.</p>
+    <a href="docs/">Read the handbook <svg class="link-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+        <path d="M7 17 17 7M7 7h10v10" />
+      </svg></a>
+  </footer>
+</body>
+
 </html>

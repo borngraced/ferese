@@ -2,7 +2,7 @@
   <img src="docs/images/ferese-lockup.svg" width="300" alt="Ferese">
 </p>
 
-<p align="center"><strong>A Wayland desktop with scrolling layouts and a shared theme.</strong></p>
+<p align="center"><strong>A complete Wayland desktop built around personalization</strong></p>
 
 <p align="center">
   <a href="docs/installation.md">Install</a> ·
@@ -11,9 +11,7 @@
   <a href="docs/README.md">Documentation</a>
 </p>
 
-Ferese is a Linux desktop with scrolling columns, tree tiling, and floating
-windows. It includes a top bar, Settings, notifications, desktop widgets, a
-lock screen, and screen sharing. Change themes and settings without restarting.
+Ferese is a window manager and desktop shell built together and configured in one place, for people who want their desktop to be their own.
 
 ![Ferese Blue desktop with Settings and Control Center](docs/images/screenshots/ferese-main-hero.png)
 

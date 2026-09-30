@@ -1,8 +1,6 @@
 # Why Ferese
 
-Ferese combines window management and a desktop shell with one configuration.
-Settings, the bar, notifications, widgets, authentication prompts, and the lock
-screen share colors and fonts.
+Most Wayland desktops are assembled from separate programs such as a compositor, a bar, a notification daemon, a launcher, a lock screen with each having its own config and its own idea of how things should look. Ferese is built as one desktop. Window management and the shell share a single configuration, so personalizing it means changing one thing, not five.
 
 ## Choose how windows fit
 
