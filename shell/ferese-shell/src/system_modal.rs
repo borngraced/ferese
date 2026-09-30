@@ -54,27 +54,71 @@ struct ModalSurface {
     regions: motion::Regions,
 }
 
-pub(super) struct PowerModal {
-    action: PowerAction,
+#[derive(Clone, Debug, PartialEq)]
+enum Content {
+    Power(PowerAction),
+    Guide(Vec<keybinding_guide::Entry>),
+}
+
+pub(super) struct SystemModal {
+    content: Content,
     surfaces: Vec<ModalSurface>,
     pub(super) motion: motion::PopupMotion,
     error: Option<String>,
 }
 
-impl PowerModal {
+impl SystemModal {
+    pub(super) fn is_guide(&self) -> bool {
+        matches!(self.content, Content::Guide(_))
+    }
+
     pub(super) fn contains(&self, id: window::Id) -> bool {
         self.surfaces.iter().any(|surface| surface.id == id)
     }
 }
 
 impl FereseShell {
-    pub(super) fn open_power_modal(
+    pub(super) fn open_system_modal(
         &mut self,
         action: PowerAction,
         output_name: Option<&str>,
     ) -> Task<Message> {
+        self.open_modal(Content::Power(action), output_name)
+    }
+
+    pub(super) fn rebuild_system_modal(&mut self) -> Task<Message> {
+        let guide = self
+            .system_modal
+            .as_ref()
+            .and_then(|modal| match &modal.content {
+                Content::Guide(entries)
+                    if !modal.motion.closing() && self.config.status.keybinding_guide =>
+                {
+                    Some(entries.clone())
+                }
+                _ => None,
+            });
+        let destroy = self.destroy_system_modal(true);
+        if let Some(entries) = guide {
+            if self.outputs.is_empty() {
+                self.guide_shown = false;
+                self.guide_attempts = 0;
+                return destroy;
+            }
+            let open = self.open_guide(entries);
+            Task::batch([destroy, open])
+        } else {
+            destroy
+        }
+    }
+
+    pub(super) fn open_guide(&mut self, entries: Vec<keybinding_guide::Entry>) -> Task<Message> {
+        self.open_modal(Content::Guide(entries), None)
+    }
+
+    fn open_modal(&mut self, content: Content, output_name: Option<&str>) -> Task<Message> {
         if self.pending_power.is_some() || self.outputs.is_empty() {
-            if let PowerAction::Logout(serial) = action
+            if let Content::Power(PowerAction::Logout(serial)) = content
                 && let Some(control) = &self.control
             {
                 control.cancel_logout(serial);
@@ -82,9 +126,9 @@ impl FereseShell {
             return Task::none();
         }
         if self
-            .power_modal
+            .system_modal
             .as_ref()
-            .is_some_and(|modal| modal.action == action && !modal.motion.closing())
+            .is_some_and(|modal| modal.content == content && !modal.motion.closing())
         {
             return Task::none();
         }
@@ -101,7 +145,7 @@ impl FereseShell {
             })
             .unwrap_or(0);
         let mut tasks = vec![
-            self.destroy_power_modal(true),
+            self.destroy_system_modal(true),
             self.destroy_menu(),
             self.close_notification_history(),
         ];
@@ -135,12 +179,12 @@ impl FereseShell {
                     size: Some((None, None)),
                     ..Default::default()
                 },
-                Some(Box::new(move |app| app.view_power_modal(id))),
+                Some(Box::new(move |app| app.view_system_modal(id))),
             );
             tasks.push(cosmic::task::message(cosmic::Action::Surface(action)));
         }
-        self.power_modal = Some(PowerModal {
-            action,
+        self.system_modal = Some(SystemModal {
+            content,
             surfaces,
             motion: motion::PopupMotion::new(self.config.animations),
             error: None,
@@ -153,7 +197,7 @@ impl FereseShell {
         id: window::Id,
         surface: &wl_surface::WlSurface,
     ) {
-        let Some(modal) = &mut self.power_modal else {
+        let Some(modal) = &mut self.system_modal else {
             return;
         };
         let Some(entry) = modal.surfaces.iter_mut().find(|entry| entry.id == id) else {
@@ -169,7 +213,7 @@ impl FereseShell {
     }
 
     pub(super) fn update_power_materials(&self) {
-        if let Some(modal) = &self.power_modal {
+        if let Some(modal) = &self.system_modal {
             for entry in &modal.surfaces {
                 if let Some(effects) = &entry.effects {
                     let regions = entry.regions.lock().unwrap().clone();
@@ -181,36 +225,36 @@ impl FereseShell {
         }
     }
 
-    pub(super) fn close_power_modal(&mut self) -> Task<Message> {
-        if let Some(modal) = &mut self.power_modal {
-            if let PowerAction::Logout(serial) = modal.action
+    pub(super) fn close_system_modal(&mut self) -> Task<Message> {
+        if let Some(modal) = &mut self.system_modal {
+            if let Content::Power(PowerAction::Logout(serial)) = modal.content
                 && let Some(control) = &self.control
             {
                 control.cancel_logout(serial);
             }
             modal.motion.retarget(0.0, Instant::now());
         }
-        self.animate_power_modal()
+        self.animate_system_modal()
     }
 
-    pub(super) fn animate_power_modal(&mut self) -> Task<Message> {
+    pub(super) fn animate_system_modal(&mut self) -> Task<Message> {
         if self
-            .power_modal
+            .system_modal
             .as_ref()
             .is_some_and(|modal| modal.motion.closing() && !modal.motion.animating())
         {
-            return self.destroy_power_modal(false);
+            return self.destroy_system_modal(false);
         }
         self.update_power_materials();
         Task::none()
     }
 
-    pub(super) fn destroy_power_modal(&mut self, cancel: bool) -> Task<Message> {
-        let Some(modal) = self.power_modal.take() else {
+    pub(super) fn destroy_system_modal(&mut self, cancel: bool) -> Task<Message> {
+        let Some(modal) = self.system_modal.take() else {
             return Task::none();
         };
         if cancel
-            && let PowerAction::Logout(serial) = modal.action
+            && let Content::Power(PowerAction::Logout(serial)) = modal.content
             && let Some(control) = &self.control
         {
             control.cancel_logout(serial);
@@ -225,28 +269,31 @@ impl FereseShell {
 
     pub(super) fn cancel_logout_modal(&mut self, serial: u32) -> Task<Message> {
         if self
-            .power_modal
+            .system_modal
             .as_ref()
-            .is_some_and(|modal| modal.action == PowerAction::Logout(serial))
+            .is_some_and(|modal| modal.content == Content::Power(PowerAction::Logout(serial)))
         {
-            self.destroy_power_modal(false)
+            self.destroy_system_modal(false)
         } else {
             Task::none()
         }
     }
 
-    pub(super) fn execute_power_modal(&mut self) -> Task<Message> {
-        let Some(modal) = &mut self.power_modal else {
+    pub(super) fn execute_system_modal(&mut self) -> Task<Message> {
+        let Some(modal) = &mut self.system_modal else {
             return Task::none();
         };
         if modal.motion.closing() || self.pending_power.is_some() {
             return Task::none();
         }
-        let action = match modal.action {
+        let Content::Power(power) = modal.content else {
+            return self.close_system_modal();
+        };
+        let action = match power {
             PowerAction::Logout(serial) => {
                 if let Some(control) = &self.control {
                     control.confirm_logout(serial);
-                    return self.destroy_power_modal(false);
+                    return self.destroy_system_modal(false);
                 }
                 modal.error = Some("Ferese shell control is unavailable".to_owned());
                 return Task::none();
@@ -256,8 +303,8 @@ impl FereseShell {
             PowerAction::Suspend => status::Action::Suspend,
         };
         let id = modal.surfaces[0].id;
-        self.pending_power = Some((id, modal.action));
-        let destroy = self.destroy_power_modal(false);
+        self.pending_power = Some((id, power));
+        let destroy = self.destroy_system_modal(false);
         let execute = Task::perform(
             async move {
                 tokio::task::spawn_blocking(move || status::execute_power(action))
@@ -285,8 +332,8 @@ impl FereseShell {
         match result {
             Ok(()) => Task::none(),
             Err(error) => {
-                let task = self.open_power_modal(action, None);
-                if let Some(modal) = &mut self.power_modal {
+                let task = self.open_system_modal(action, None);
+                if let Some(modal) = &mut self.system_modal {
                     modal.error = Some(error);
                 }
                 task
@@ -294,8 +341,8 @@ impl FereseShell {
         }
     }
 
-    fn view_power_modal(&self, id: window::Id) -> Element<'_, cosmic::Action<Message>> {
-        let Some(modal) = &self.power_modal else {
+    fn view_system_modal(&self, id: window::Id) -> Element<'_, cosmic::Action<Message>> {
+        let Some(modal) = &self.system_modal else {
             return text("").into();
         };
         let Some(surface) = modal.surfaces.iter().find(|surface| surface.id == id) else {
@@ -312,34 +359,71 @@ impl FereseShell {
             palette.sidebar = palette.sidebar.scale_alpha(alpha);
             palette.card = palette.card.scale_alpha(alpha);
             palette.accent = palette.accent.scale_alpha(alpha);
-            let mut rows = column![
-                text(modal.action.title()).font(shell_font()).size(23),
-                text(modal.action.description())
-                    .font(shell_font())
-                    .size(14)
-                    .class(theme::Text::Color(palette.muted)),
-            ]
-            .spacing(12);
-            if let Some(error) = &modal.error {
-                rows = rows.push(text(error).size(13));
-            }
-            let confirm = button::text(modal.action.label())
-                .class(ferese_theme::controls::button_style(palette, true))
-                .on_press(cosmic::Action::App(Message::ExecutePower));
-            rows = rows.push(
-                row![
-                    Space::new().width(Length::Fill),
-                    button::text("Cancel")
-                        .class(ferese_theme::controls::button_style(palette, false))
-                        .on_press(cosmic::Action::App(Message::CancelPower)),
-                    confirm,
-                ]
-                .spacing(10),
-            );
+            let rows = match &modal.content {
+                Content::Power(action) => {
+                    let mut rows = column![
+                        text(action.title()).font(shell_font()).size(23),
+                        text(action.description())
+                            .font(shell_font())
+                            .size(14)
+                            .class(theme::Text::Color(palette.muted)),
+                    ]
+                    .spacing(12);
+                    if let Some(error) = &modal.error {
+                        rows = rows.push(text(error).size(13));
+                    }
+                    rows.push(
+                        row![
+                            Space::new().width(Length::Fill),
+                            button::text("Cancel")
+                                .class(ferese_theme::controls::button_style(palette, false))
+                                .on_press(cosmic::Action::App(Message::CancelPower)),
+                            button::text(action.label())
+                                .class(ferese_theme::controls::button_style(palette, true))
+                                .on_press(cosmic::Action::App(Message::ExecutePower)),
+                        ]
+                        .spacing(10),
+                    )
+                }
+                Content::Guide(entries) => {
+                    let mut bindings = column::with_capacity(entries.len()).spacing(12);
+                    for entry in entries {
+                        bindings = bindings.push(
+                            row![
+                                text(&entry.keys)
+                                    .font(shell_font())
+                                    .size(13)
+                                    .width(Length::FillPortion(1)),
+                                text(&entry.description)
+                                    .font(shell_font())
+                                    .size(13)
+                                    .width(Length::FillPortion(1)),
+                            ]
+                            .spacing(16),
+                        );
+                    }
+                    let height = self
+                        .outputs
+                        .iter()
+                        .filter_map(|output| output.size)
+                        .map(|(_, height)| height)
+                        .min()
+                        .unwrap_or(720)
+                        .saturating_sub(360)
+                        .clamp(40, 400) as f32;
+                    column![
+                        text("Welcome to Ferese").font(shell_font()).size(23),
+                        text("Your active shortcuts").font(shell_font()).size(14).class(theme::Text::Color(palette.muted)),
+                        container(cosmic::widget::scrollable(bindings).height(Length::Shrink)).max_height(height),
+                        text("Disable this guide in Settings → Shortcuts. It appears at each login until disabled.").font(shell_font()).size(12).class(theme::Text::Color(palette.muted)),
+                        row![Space::new().width(Length::Fill), button::text("Got it").class(ferese_theme::controls::button_style(palette, true)).on_press(cosmic::Action::App(Message::CancelPower))],
+                    ].spacing(14)
+                }
+            };
             container(rows)
                 .id("ferese-blur-card")
                 .width(Length::Fill)
-                .max_width(440)
+                .max_width(if modal.is_guide() { 600 } else { 440 })
                 .padding(24)
                 .class(theme::Container::custom(move |_| container::Style {
                     background: (!material).then_some(Background::Color(color_with_opacity(

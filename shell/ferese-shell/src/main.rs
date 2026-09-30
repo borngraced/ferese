@@ -1,5 +1,6 @@
 mod config;
 mod control;
+mod keybinding_guide;
 mod motion;
 mod note_store;
 mod notification_ui;
@@ -175,7 +176,10 @@ struct FereseShell {
     calendar_offset: i32,
     status_error: Option<String>,
     menu: Option<status_ui::OpenMenu>,
-    power_modal: Option<system_modal::PowerModal>,
+    system_modal: Option<system_modal::SystemModal>,
+    guide_shown: bool,
+    guide_loading: bool,
+    guide_attempts: u8,
     pending_power: Option<(window::Id, system_modal::PowerAction)>,
     note_editor: Option<DesktopNoteEditor>,
     note_drag: Option<NoteDrag>,
@@ -250,6 +254,8 @@ enum Message {
     OpenMenu(status_ui::Menu, cosmic::iced::Rectangle<i32>),
     OpenMenuOn(window::Id, status_ui::Menu, cosmic::iced::Rectangle<i32>),
     Control(status::Action),
+    ShowGuide,
+    GuideLoaded(Result<Vec<keybinding_guide::Entry>, String>),
     ConfirmPower(status::Action),
     CancelPower,
     ExecutePower,
@@ -292,7 +298,10 @@ impl cosmic::Application for FereseShell {
             calendar_offset: 0,
             status_error: None,
             menu: None,
-            power_modal: None,
+            system_modal: None,
+            guide_shown: false,
+            guide_loading: false,
+            guide_attempts: 0,
             pending_power: None,
             note_editor: None,
             note_drag: None,
@@ -331,7 +340,7 @@ impl cosmic::Application for FereseShell {
     fn subscription(&self) -> Subscription<Self::Message> {
         Subscription::batch([
             if self
-                .power_modal
+                .system_modal
                 .as_ref()
                 .is_some_and(|modal| modal.motion.animating() || modal.motion.closing())
             {
@@ -628,14 +637,67 @@ impl cosmic::Application for FereseShell {
                     self.open_menu(kind, anchor)
                 }
             }
+            Message::ShowGuide => {
+                if self.guide_shown
+                    || self.guide_loading
+                    || self.guide_attempts >= 5
+                    || !self.config.status.keybinding_guide
+                    || self.outputs.is_empty()
+                {
+                    return Task::none();
+                }
+                self.guide_loading = true;
+                self.guide_attempts += 1;
+                Task::perform(
+                    async {
+                        tokio::task::spawn_blocking(keybinding_guide::load)
+                            .await
+                            .map_err(|error| error.to_string())
+                            .and_then(|result| result)
+                    },
+                    |result| cosmic::Action::App(Message::GuideLoaded(result)),
+                )
+            }
+            Message::GuideLoaded(result) => {
+                self.guide_loading = false;
+                match result {
+                    Ok(entries)
+                        if self.config.status.keybinding_guide
+                            && !self.outputs.is_empty()
+                            && self.system_modal.is_none()
+                            && self.pending_power.is_none() =>
+                    {
+                        self.guide_shown = true;
+                        self.open_guide(entries)
+                    }
+                    result => {
+                        if let Err(error) = result {
+                            eprintln!("ferese-shell: keybinding guide unavailable: {error}");
+                        }
+                        if self.guide_attempts < 5
+                            && self.config.status.keybinding_guide
+                            && !self.guide_shown
+                        {
+                            Task::perform(
+                                async {
+                                    tokio::time::sleep(Duration::from_secs(2)).await;
+                                },
+                                |_| cosmic::Action::App(Message::ShowGuide),
+                            )
+                        } else {
+                            Task::none()
+                        }
+                    }
+                }
+            }
             Message::ConfirmPower(action) => {
                 if let Some(action) = system_modal::PowerAction::from_status(action) {
-                    return self.open_power_modal(action, None);
+                    return self.open_system_modal(action, None);
                 }
                 Task::none()
             }
-            Message::ExecutePower => self.execute_power_modal(),
-            Message::AnimatePower => self.animate_power_modal(),
+            Message::ExecutePower => self.execute_system_modal(),
+            Message::AnimatePower => self.animate_system_modal(),
             Message::PowerCompleted(id, result) => self.finish_power_action(id, result),
             Message::CalendarMonth(delta) => {
                 self.calendar_offset = (self.calendar_offset + delta).clamp(-1200, 1200);
@@ -645,10 +707,10 @@ impl cosmic::Application for FereseShell {
                 self.calendar_offset = 0;
                 Task::none()
             }
-            Message::CancelPower => self.close_power_modal(),
+            Message::CancelPower => self.close_system_modal(),
             Message::Control(action) => {
                 if let Some(action) = system_modal::PowerAction::from_status(action.clone()) {
-                    return self.open_power_modal(action, None);
+                    return self.open_system_modal(action, None);
                 }
 
                 if let status::Action::PowerProfile(profile) = action {
@@ -768,7 +830,7 @@ impl cosmic::Application for FereseShell {
                     if let Some((serial, output)) = poll.logout {
                         reload_task = Task::batch([
                             reload_task,
-                            self.open_power_modal(
+                            self.open_system_modal(
                                 system_modal::PowerAction::Logout(serial),
                                 Some(&output),
                             ),
@@ -874,6 +936,15 @@ impl FereseShell {
             Task::none()
         }];
 
+        if !self.config.status.keybinding_guide
+            && self
+                .system_modal
+                .as_ref()
+                .is_some_and(|modal| modal.is_guide())
+        {
+            tasks.push(self.destroy_system_modal(false));
+        }
+
         if old.palette() != theme.palette() {
             tasks.push(cosmic::command::set_theme(theme.palette().native_theme()));
         }
@@ -941,7 +1012,7 @@ impl FereseShell {
                 let mut tasks = vec![
                     destroy_layer_surface(entry.bar),
                     menu,
-                    self.destroy_power_modal(true),
+                    self.rebuild_system_modal(),
                 ];
                 if self.note_drag.as_ref().is_some_and(|drag| {
                     entry.clock == Some(drag.source)
@@ -1084,7 +1155,8 @@ impl FereseShell {
             Task::batch(tasks),
             self.rebuild_clocks(false),
             self.rebuild_notes(false),
-            self.destroy_power_modal(true),
+            self.rebuild_system_modal(),
+            cosmic::task::message(cosmic::Action::App(Message::ShowGuide)),
         ])
     }
 
@@ -1875,8 +1947,8 @@ impl FereseShell {
                 ..
             })
         ) {
-            if self.power_modal.is_some() {
-                return self.close_power_modal();
+            if self.system_modal.is_some() {
+                return self.close_system_modal();
             }
             if self.note_drag.is_some() {
                 return self.finish_note_drag(false);
@@ -1900,7 +1972,7 @@ impl FereseShell {
                 if self.outputs.iter().any(|entry| entry.bar == id)
                     || self.menu.as_ref().is_some_and(|menu| menu.id == id)
                     || self
-                        .power_modal
+                        .system_modal
                         .as_ref()
                         .is_some_and(|modal| modal.contains(id))
                     || self
@@ -1992,11 +2064,11 @@ impl FereseShell {
             }
             Event::Window(window::Event::Closed)
                 if self
-                    .power_modal
+                    .system_modal
                     .as_ref()
                     .is_some_and(|modal| modal.contains(id)) =>
             {
-                self.close_power_modal()
+                self.close_system_modal()
             }
             Event::Window(window::Event::Closed) => Task::none(),
             Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(

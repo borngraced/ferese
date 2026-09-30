@@ -414,6 +414,16 @@ impl Ferese {
             "close" => self.close_focused_window(),
             "get-focused-window" => return Ok(self.focused_window_json()),
             "get-windows" => return Ok(self.windows_json()),
+            "get-keybindings" => {
+                let map = crate::config::physical_keymap(&self.input_settings).ok();
+                return Ok(json!(
+                    self.bindings
+                        .iter()
+                        .filter_map(|binding| binding.guide_entry(map.as_ref()))
+                        .take(256)
+                        .collect::<Vec<_>>()
+                ));
+            }
             "has-client-surfaces" => {
                 let pid = args
                     .get("pid")

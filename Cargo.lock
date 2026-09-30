@@ -1771,6 +1771,7 @@ version = "0.1.0"
 dependencies = [
  "ferese-config",
  "ferese-core",
+ "ferese-ipc",
  "ferese-protocols",
  "ferese-theme",
  "iced_accessibility",

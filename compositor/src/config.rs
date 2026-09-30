@@ -566,6 +566,84 @@ impl Binding {
             }
     }
 
+    pub(crate) fn guide_entry(&self, keymap: Option<&xkb::Keymap>) -> Option<serde_json::Value> {
+        let description = match &self.action {
+            BindingAction::None => return None,
+            BindingAction::Spawn(argv)
+                if argv
+                    .first()
+                    .is_some_and(|program| program == "ferese-screenshot") =>
+            {
+                if argv.iter().any(|arg| arg == "--full") {
+                    "Capture whole screen"
+                } else {
+                    "Capture selected area"
+                }
+                .into()
+            }
+            BindingAction::Spawn(argv) => format!(
+                "Launch {}",
+                argv.first()
+                    .and_then(|program| std::path::Path::new(program).file_name())
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("application")
+            ),
+            BindingAction::Close => "Close window".into(),
+            BindingAction::Exit => "Log out (with confirmation)".into(),
+            BindingAction::Focus(direction) => format!("Focus window {direction:?}"),
+            BindingAction::Move(direction) => format!("Move window {direction:?}"),
+            BindingAction::Resize(direction) => format!("Resize window {direction:?}"),
+            BindingAction::SwitchWorkspace(index) => format!("Go to workspace {index}"),
+            BindingAction::MoveToWorkspace(index) => format!("Move window to workspace {index}"),
+            BindingAction::SwitchRelativeWorkspace(next) => if *next {
+                "Next workspace"
+            } else {
+                "Previous workspace"
+            }
+            .into(),
+            BindingAction::ToggleFullscreen => "Toggle fullscreen".into(),
+            BindingAction::ToggleMaximized => "Toggle full-width window".into(),
+            BindingAction::ToggleLayout => "Switch workspace layout".into(),
+            BindingAction::CycleColumnWidth => "Cycle column width".into(),
+            BindingAction::CenterColumn => "Center focused column".into(),
+            BindingAction::Consume => "Join window into column".into(),
+            BindingAction::Expel => "Move window out of column".into(),
+            BindingAction::ToggleFloating => "Toggle floating window".into(),
+            BindingAction::ToggleOverview => "Open or close overview".into(),
+        };
+        let mut parts = Vec::new();
+        for (enabled, label) in [
+            (self.modifiers.logo, "Super"),
+            (self.modifiers.ctrl, "Ctrl"),
+            (self.modifiers.alt, "Alt"),
+            (self.modifiers.shift, "Shift"),
+        ] {
+            if enabled {
+                parts.push(label.to_owned());
+            }
+        }
+        parts.push(match self.trigger {
+            BindingTrigger::Keysym(symbol) => {
+                let name = xkb::keysym_get_name(xkb::Keysym::new(symbol));
+                match name.as_str() {
+                    "Return" => "Enter".into(),
+                    "Print" => "Print Screen".into(),
+                    "space" => "Space".into(),
+                    _ if name.len() == 1 => name.to_uppercase(),
+                    _ => name,
+                }
+            }
+            BindingTrigger::Physical(code) => keymap
+                .and_then(|map| map.key_get_name(code))
+                .map(|name| format!("Physical {name}"))
+                .unwrap_or_else(|| format!("Keycode {}", u32::from(code))),
+            BindingTrigger::Swipe { fingers, direction } => {
+                format!("{fingers}-finger swipe {direction:?}")
+            }
+        });
+        Some(serde_json::json!({"keys": parts.join(" + "), "description": description}))
+    }
+
     pub(crate) fn swipe_fingers(&self, count: u32) -> bool {
         matches!(self.trigger, BindingTrigger::Swipe { fingers, .. } if fingers == count)
     }
@@ -2350,6 +2428,29 @@ mod tests {
                 .iter()
                 .any(|binding| binding.matches_swipe(4, crate::gestures::SwipeDirection::Up))
         );
+    }
+
+    #[test]
+    fn guide_uses_effective_bindings_including_overrides_and_unbindings() {
+        let config = parse(
+            "binding keys=\"Super+Q\" action=\"none\"\nbinding keys=\"Super+Tab\" action=\"toggle-floating\"\n",
+        );
+        let input = config.input_settings().unwrap();
+        let map = physical_keymap(&input).unwrap();
+        let entries = config
+            .bindings(&input)
+            .unwrap()
+            .iter()
+            .filter_map(|binding| binding.guide_entry(Some(&map)))
+            .collect::<Vec<_>>();
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry["description"] == "Close window")
+        );
+        assert!(entries.iter().any(|entry| entry["keys"] == "Super + Tab"
+            && entry["description"] == "Toggle floating window"));
+        assert!(entries.iter().any(|entry| entry["keys"] == "Super + Enter"));
     }
 
     #[test]

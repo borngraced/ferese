@@ -19,6 +19,7 @@ pub(crate) struct ShellConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default)]
 pub(crate) struct StatusConfig {
+    pub(crate) keybinding_guide: bool,
     pub(crate) battery_percentage: bool,
     pub(crate) window_title: bool,
     pub(crate) low_battery_threshold: u8,
@@ -28,6 +29,7 @@ pub(crate) struct StatusConfig {
 impl Default for StatusConfig {
     fn default() -> Self {
         Self {
+            keybinding_guide: true,
             battery_percentage: true,
             window_title: true,
             low_battery_threshold: 20,
@@ -566,6 +568,17 @@ mod tests {
         );
     }
     use super::*;
+
+    #[test]
+    fn keybinding_guide_is_enabled_until_explicitly_disabled() {
+        assert!(parse_source("").unwrap().status.keybinding_guide);
+        assert!(
+            !parse_source("status { keybinding-guide #false; }")
+                .unwrap()
+                .status
+                .keybinding_guide
+        );
+    }
 
     #[test]
     fn parses_theme_without_rejecting_compositor_sections() {

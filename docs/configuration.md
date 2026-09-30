@@ -389,6 +389,7 @@ returns. Ferese does not change the system's suspend policy.
 
 | `status` key | Type | Default | Meaning |
 | --- | --- | --- | --- |
+| `keybinding-guide` | boolean | `true` | Show the active shortcut guide at login until disabled in Settings → Shortcuts. |
 | `window_title` | boolean | `true` | Focused window title in the bar center when space allows |
 | `battery_percentage` | boolean | `true` | Show percentage beside icon |
 | `low_battery_threshold` | integer 0–100 | `20` | Warning-color threshold |

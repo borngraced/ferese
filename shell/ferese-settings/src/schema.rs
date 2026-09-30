@@ -950,6 +950,12 @@ pub fn fields(page: Page) -> Vec<Field> {
                 true,
             ),
         ],
-        Page::Shortcuts | Page::Startup | Page::Displays => vec![],
+        Page::Shortcuts => vec![toggle(
+            "status.keybinding_guide",
+            "Show keybinding guide at login",
+            "Keep the shortcut guide until you are comfortable with Ferese.",
+            true,
+        )],
+        Page::Startup | Page::Displays => vec![],
     }
 }

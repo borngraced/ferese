@@ -1,3 +1,3 @@
 # Backlog
 
-- [ ] Add a first-run keybinding guide modal showing important keybindings and their functions. Keep showing it until the user disables the guide in Settings.
+- [ ] Review the lock screen against swaylock for practical feature parity: dim and sleep after inactivity, and reduce the oversized password input. Keep the implementation simple.

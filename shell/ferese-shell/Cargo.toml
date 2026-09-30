@@ -6,6 +6,7 @@ license.workspace = true
 rust-version = "1.93"
 
 [dependencies]
+ferese-ipc = { path = "../../crates/ferese-ipc" }
 ferese-theme = { path = "../../crates/ferese-theme" }
 ferese-config = { path = "../../crates/ferese-config" }
 ferese-core = { path = "../../crates/ferese-core" }

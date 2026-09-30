@@ -80,6 +80,8 @@ target/release/ferese --backend nested --grant-effects --grant-shell-control -- 
 ## Get around
 
 These are the built-in defaults; every shortcut and gesture can be changed.
+The login guide shows your active shortcuts. Disable it in **Settings → Shortcuts**
+when you no longer need it.
 
 | Shortcut | Action |
 | --- | --- |
