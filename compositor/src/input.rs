@@ -107,7 +107,7 @@ impl Ferese {
                         self,
                         &GestureSwipeBeginEvent {
                             serial: SERIAL_COUNTER.next_serial(),
-                            time: event.time() as u32,
+                            time: event.time_msec(),
                             fingers: event.fingers(),
                         },
                     );
@@ -122,7 +122,7 @@ impl Ferese {
                         .gesture_swipe_update(
                             self,
                             &GestureSwipeUpdateEvent {
-                                time: event.time() as u32,
+                                time: event.time_msec(),
                                 delta: event.delta(),
                             },
                         );
@@ -158,7 +158,7 @@ impl Ferese {
                             self,
                             &GestureSwipeEndEvent {
                                 serial: SERIAL_COUNTER.next_serial(),
-                                time: event.time() as u32,
+                                time: event.time_msec(),
                                 cancelled: event.cancelled(),
                             },
                         );
@@ -184,7 +184,7 @@ impl Ferese {
                     keycode,
                     state,
                     SERIAL_COUNTER.next_serial(),
-                    Event::time(&event) as u32,
+                    event.time_msec(),
                     |data, modifiers, keysym| {
                         if state == KeyState::Released {
                             data.portal_shortcuts.release(keycode, Event::time(&event));
@@ -316,7 +316,7 @@ impl Ferese {
                     &MotionEvent {
                         location: position,
                         serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time() as u32,
+                        time: event.time_msec(),
                     },
                 );
                 pointer.frame(self);
@@ -348,7 +348,7 @@ impl Ferese {
                         delta: (delta.x / scale_x, delta.y / scale_y).into(),
                         delta_unaccel: (delta_unaccel.x / scale_x, delta_unaccel.y / scale_y)
                             .into(),
-                        utime: (event.time_msec() as u64).saturating_mul(1_000),
+                        utime: event.time(),
                     },
                 );
                 let requested = self.clamp_pointer_position(position + delta);
@@ -360,7 +360,7 @@ impl Ferese {
                     &MotionEvent {
                         location,
                         serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time() as u32,
+                        time: event.time_msec(),
                     },
                 );
                 pointer.frame(self);
@@ -397,7 +397,7 @@ impl Ferese {
                         popup,
                         crate::dimming::DimAnimation::new(f64::from(opacity)),
                     ));
-                    pointer.unset_grab(self, serial, event.time() as u32);
+                    pointer.unset_grab(self, serial, event.time_msec());
                     self.focus_window_at(pointer.current_location(), serial, true);
                     crate::backends::direct::render_all(self);
                 }
@@ -411,7 +411,7 @@ impl Ferese {
                                 button: event.button_code(),
                                 state: event.state(),
                                 serial,
-                                time: event.time() as u32,
+                                time: event.time_msec(),
                             },
                         );
                         pointer.frame(self);
@@ -443,7 +443,7 @@ impl Ferese {
                             button: event.button_code(),
                             state: event.state(),
                             serial,
-                            time: event.time() as u32,
+                            time: event.time_msec(),
                         },
                     );
                     pointer.frame(self);
@@ -460,7 +460,7 @@ impl Ferese {
                         button: event.button_code(),
                         state: event.state(),
                         serial,
-                        time: event.time() as u32,
+                        time: event.time_msec(),
                     },
                 );
                 pointer.frame(self);
@@ -490,7 +490,7 @@ impl Ferese {
                 ) {
                     return;
                 }
-                let mut frame = AxisFrame::new(event.time() as u32).source(source);
+                let mut frame = AxisFrame::new(event.time_msec()).source(source);
                 if horizontal != 0.0 {
                     frame = frame.value(Axis::Horizontal, horizontal);
                     if let Some(value) = event.amount_v120(Axis::Horizontal) {
@@ -534,7 +534,7 @@ impl Ferese {
                         slot: event.slot(),
                         location,
                         serial,
-                        time: event.time() as u32,
+                        time: event.time_msec(),
                     },
                 );
             }
@@ -550,7 +550,7 @@ impl Ferese {
                     &TouchMotionEvent {
                         slot: event.slot(),
                         location,
-                        time: event.time() as u32,
+                        time: event.time_msec(),
                     },
                 );
             }
@@ -561,7 +561,7 @@ impl Ferese {
                     &UpEvent {
                         slot: event.slot(),
                         serial: SERIAL_COUNTER.next_serial(),
-                        time: event.time() as u32,
+                        time: event.time_msec(),
                     },
                 );
             }

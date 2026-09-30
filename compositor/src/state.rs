@@ -788,10 +788,6 @@ impl Ferese {
         }
     }
 
-    pub(crate) fn is_focused_output(&self, output: &Output) -> bool {
-        self.output_ids.get(output).copied() == self.output_workspaces.focused_output()
-    }
-
     fn activate_output_workspace(&mut self, output: OutputId, workspace: ferese_core::WorkspaceId) {
         if let Err(error) = self.output_workspaces.focus_output(output) {
             tracing::error!(%error, "failed to focus output");
@@ -1023,6 +1019,12 @@ impl Ferese {
         let CursorImageStatus::Surface(surface) = &self.cursor_status else {
             return;
         };
+        let Some(pointer) = self.seat.get_pointer() else {
+            return;
+        };
+        if self.space.output_under(pointer.current_location()).next() != Some(output) {
+            return;
+        }
 
         send_frames_surface_tree(
             surface,
@@ -1949,16 +1951,17 @@ impl Ferese {
         time: DrmEventTime,
         sequence: u32,
     ) {
-        let delta = self
-            .direct_backend
-            .as_mut()
-            .and_then(|backend| backend.record_presentation(node, crtc, time, sequence));
-        if delta.is_some() {
-            // All outputs animate the same scene. Summing each CRTC's frame
-            // interval makes motion run faster with two monitors (and uneven
-            // with mixed 60/120 Hz). Advance once by actual elapsed time.
-            self.advance_animations(Instant::now());
+        if let Some(backend) = self.direct_backend.as_mut() {
+            backend.record_presentation(node, crtc, time, sequence);
         }
+    }
+
+    pub(crate) fn animation_fallback_deadline(&self, interval: std::time::Duration) -> Instant {
+        self.last_animation_tick + interval.saturating_mul(2)
+    }
+
+    pub(crate) fn reset_animation_clock(&mut self) {
+        self.last_animation_tick = Instant::now();
     }
 
     fn advance_animations_by(&mut self, delta: std::time::Duration) -> bool {

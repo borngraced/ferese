@@ -17,6 +17,22 @@ use smithay::{
 pub(crate) const HANDOFF: Duration = Duration::from_millis(80);
 pub(crate) const SNAPSHOT_BUDGET: usize = 64 * 1024 * 1024;
 
+#[derive(Default)]
+pub(crate) struct CallbackClock {
+    last_sent: Option<Instant>,
+}
+
+impl CallbackClock {
+    pub(crate) fn deadline(&self, now: Instant, interval: Duration) -> Instant {
+        self.last_sent
+            .map_or(now, |last| (last + interval).max(now))
+    }
+
+    pub(crate) fn sent(&mut self, now: Instant) {
+        self.last_sent = Some(now);
+    }
+}
+
 pub(crate) fn frame_delta(last: &mut Instant, now: Instant) -> Duration {
     let delta = now.saturating_duration_since(*last);
     *last = (*last).max(now);
@@ -275,6 +291,43 @@ mod tests {
             false,
             1.0
         ));
+    }
+
+    #[test]
+    fn no_damage_requests_are_paced_without_buffer_submission() {
+        let start = Instant::now();
+        let refresh = Duration::from_millis(16);
+        let mut clock = CallbackClock::default();
+        assert_eq!(clock.deadline(start, refresh), start);
+        clock.sent(start);
+        for millisecond in 1..16 {
+            assert_eq!(
+                clock.deadline(start + Duration::from_millis(millisecond), refresh),
+                start + refresh
+            );
+        }
+        let late = start + Duration::from_millis(50);
+        assert_eq!(clock.deadline(late, refresh), late);
+        clock.sent(late);
+        assert_eq!(clock.deadline(late, refresh), late + refresh);
+    }
+
+    #[test]
+    fn independent_output_callback_clocks_do_not_sum_their_rates() {
+        let start = Instant::now();
+        let mut slow = CallbackClock::default();
+        let mut fast = CallbackClock::default();
+        slow.sent(start);
+        fast.sent(start);
+        fast.sent(start + Duration::from_millis(8));
+        assert_eq!(
+            slow.deadline(start + Duration::from_millis(8), Duration::from_millis(16)),
+            start + Duration::from_millis(16)
+        );
+        assert_eq!(
+            fast.deadline(start + Duration::from_millis(8), Duration::from_millis(8)),
+            start + Duration::from_millis(16)
+        );
     }
 
     #[test]
