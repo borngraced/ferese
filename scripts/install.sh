@@ -11,6 +11,7 @@ Run from any directory as your normal user. Existing user config is preserved.
 
   --release-id ID  Name the installed release (default: UTC timestamp + PID)
   --skip-build     Install existing target/release binaries
+  --replace-portal-config  Back up and replace existing Ferese portal configuration
   --offline        Build using only cached Cargo dependencies
   --dry-run        Print commands without building or installing
   -h, --help       Show this help
@@ -24,6 +25,7 @@ fail() { echo "ferese installer: $*" >&2; exit 1; }
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 release_id="$(date -u +%Y%m%d-%H%M%S)-$$"
 skip_build=false
+replace_portal_config=false
 offline=false
 dry_run=false
 while (($#)); do
@@ -34,6 +36,7 @@ while (($#)); do
             shift 2
             ;;
         --skip-build) skip_build=true; shift ;;
+        --replace-portal-config) replace_portal_config=true; shift ;;
         --offline) offline=true; shift ;;
         --dry-run) dry_run=true; shift ;;
         -h|--help) usage; exit 0 ;;
@@ -57,6 +60,7 @@ if ! $skip_build; then
 fi
 
 installer=(bash "$repo_dir/scripts/install-session.sh" "$release_id")
+if $replace_portal_config; then installer+=(--replace-portal-config); fi
 if ((EUID != 0)); then
     if command -v sudo >/dev/null; then
         installer=(sudo "${installer[@]}")

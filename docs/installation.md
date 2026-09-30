@@ -267,6 +267,12 @@ git pull --ff-only
 Log out and back in to use the new release. Running sessions keep their existing
 processes and release paths until restarted.
 
+The installer records shipped portal configuration with each release for future
+upgrades. Modified or untracked administrator files stop installation. To replace
+Ferese portal configuration from an earlier development install, use
+`./scripts/install.sh --skip-build --replace-portal-config` after building. Existing
+files are backed up under the new release's `portal-config.previous/` directory.
+
 Installer options:
 
 ```sh

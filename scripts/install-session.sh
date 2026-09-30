@@ -8,8 +8,21 @@ session_entry_matches() {
     cmp -s -- <(sed '/^Icon=/d' "$1") <(sed '/^Icon=/d' "$2")
 }
 
+managed_file_matches() {
+    local relative=$1 destination=$2
+    cmp -s -- "$repo_dir/packaging/$relative" "$destination" ||
+        cmp -s -- "$install_root/current/installer-files/$relative" "$destination"
+}
+
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-release_id=${1:?usage: install-session.sh RELEASE_ID}
+release_id=${1:?usage: install-session.sh RELEASE_ID [--replace-portal-config]}
+replace_portal_config=false
+if [[ ${2:-} == --replace-portal-config && $# == 2 ]]; then
+    replace_portal_config=true
+elif (($# > 1)); then
+    echo 'usage: install-session.sh RELEASE_ID [--replace-portal-config]' >&2
+    exit 2
+fi
 [[ $release_id =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || exit 2
 [[ $EUID == 0 ]] || { echo 'Run this installer with sudo.' >&2; exit 1; }
 
@@ -64,12 +77,14 @@ for entry in \
     'ferese-portals.conf:ferese-portals.conf'; do
     source=${entry%%:*}
     destination=/usr/share/xdg-desktop-portal/${entry#*:}
-    if [[ -e $destination ]] && ! cmp -s "$repo_dir/packaging/portal/$source" "$destination"; then
-        echo "Unmanaged portal configuration exists: $destination" >&2; exit 1
+    if [[ -e $destination ]] && ! managed_file_matches "portal/$source" "$destination" && ! $replace_portal_config; then
+        echo "Unmanaged portal configuration exists: $destination" >&2
+        echo 'Use --replace-portal-config to back up and replace Ferese portal configuration.' >&2
+        exit 1
     fi
 done
 service=/usr/local/share/dbus-1/services/org.freedesktop.impl.portal.desktop.ferese.service
-if [[ -e $service ]] && ! cmp -s "$repo_dir/packaging/portal/$(basename "$service")" "$service"; then
+if [[ -e $service ]] && ! managed_file_matches "portal/$(basename "$service")" "$service"; then
     # Upgrade the exact activation file shipped before systemd supervision.
     if ! cmp -s <(printf '%s\n' '[D-BUS Service]' \
         'Name=org.freedesktop.impl.portal.desktop.ferese' \
@@ -79,12 +94,12 @@ if [[ -e $service ]] && ! cmp -s "$repo_dir/packaging/portal/$(basename "$servic
 fi
 
 portal_unit=/usr/local/lib/systemd/user/xdg-desktop-portal-ferese.service
-if [[ -e $portal_unit ]] && ! cmp -s "$repo_dir/packaging/systemd/xdg-desktop-portal-ferese.service" "$portal_unit"; then
+if [[ -e $portal_unit ]] && ! managed_file_matches "systemd/xdg-desktop-portal-ferese.service" "$portal_unit"; then
     echo "Unmanaged portal unit exists: $portal_unit" >&2; exit 1
 fi
 
 session_target=/usr/local/lib/systemd/user/ferese-session.target
-if [[ -e $session_target ]] && ! cmp -s "$repo_dir/packaging/systemd/ferese-session.target" "$session_target"; then
+if [[ -e $session_target ]] && ! managed_file_matches "systemd/ferese-session.target" "$session_target"; then
     echo "Unmanaged session target exists: $session_target" >&2; exit 1
 fi
 
@@ -92,6 +107,20 @@ desktop-file-validate "$repo_dir/packaging/ferese.desktop"
 desktop-file-validate "$repo_dir/packaging/dev.ferese.Settings.desktop"
 
 install -d -m 0755 -- "$release_dir" /usr/local/bin /usr/share/wayland-sessions
+for relative in portals/ferese.portal ferese-portals.conf; do
+    destination=/usr/share/xdg-desktop-portal/$relative
+    if [[ -e $destination ]]; then
+        install -D -m 0644 -- "$destination" "$release_dir/portal-config.previous/$relative"
+    fi
+done
+for relative in \
+    portal/ferese.portal \
+    portal/ferese-portals.conf \
+    portal/org.freedesktop.impl.portal.desktop.ferese.service \
+    systemd/xdg-desktop-portal-ferese.service \
+    systemd/ferese-session.target; do
+    install -D -m 0644 -- "$repo_dir/packaging/$relative" "$release_dir/installer-files/$relative"
+done
 if [[ -e $session_entry ]]; then
     install -m 0644 -- "$session_entry" "$release_dir/session.previous.desktop"
 fi
