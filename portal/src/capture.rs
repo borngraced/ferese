@@ -1,4 +1,5 @@
 //! Bounded, cancellable Wayland capture. No screenshots or external capture tools.
+use ferese_protocols::window_capture::v1::client::ferese_window_capture_manager_v1 as window_manager;
 use memmap2::MmapMut;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -18,6 +19,8 @@ use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1 as frame, zwlr_screencopy_manager_v1 as manager,
 };
 
+pub const BUSY: &str = "Window capture snapshot pool is busy";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Source {
     pub name: String,
@@ -29,6 +32,12 @@ pub struct Source {
     pub scale: i32,
 }
 
+impl Source {
+    pub fn window_id(&self) -> Option<u64> {
+        self.name.strip_prefix("window:")?.parse().ok()
+    }
+}
+
 struct Output {
     global: u32,
     proxy: wl_output::WlOutput,
@@ -37,6 +46,7 @@ struct Output {
 }
 
 pub struct Frame {
+    pub logical_size: Option<(u32, u32)>,
     pub width: u32,
     pub height: u32,
     pub stride: u32,
@@ -63,10 +73,13 @@ impl Drop for Buffer {
 struct State {
     outputs: Vec<Output>,
     manager: Option<manager::ZwlrScreencopyManagerV1>,
+    window_manager: Option<window_manager::FereseWindowCaptureManagerV1>,
     shm: Option<wl_shm::WlShm>,
     buffer: Option<Buffer>,
     result: Option<Result<(), String>>,
     flipped: bool,
+    logical_size: Option<(u32, u32)>,
+    busy: bool,
 }
 
 pub struct Capture {
@@ -91,7 +104,9 @@ impl Capture {
         // uninterruptible roundtrip on a stalled compositor.
         this.sync(stop)?;
         this.sync(stop)?;
-        if this.state.manager.is_none() || this.state.shm.is_none() {
+        if (this.state.manager.is_none() && this.state.window_manager.is_none())
+            || this.state.shm.is_none()
+        {
             return Err("Ferese screen capture is unavailable in this session".into());
         }
         Ok(this)
@@ -107,6 +122,10 @@ impl Capture {
             self.dispatch(stop, deadline)?;
         }
         Ok(())
+    }
+
+    pub fn supports_windows(&self) -> bool {
+        self.state.window_manager.is_some()
     }
 
     pub fn generation(&self, name: &str) -> Option<u32> {
@@ -156,31 +175,53 @@ impl Capture {
         stop: &AtomicBool,
         mut pixels: Vec<u8>,
     ) -> Result<Frame, String> {
-        let output = self
-            .state
-            .outputs
-            .iter()
-            .find(|o| o.source.name == name)
-            .ok_or("Shared monitor disconnected")?;
-
-        if self
-            .selected_output
-            .is_some_and(|selected| selected != output.global)
-        {
-            return Err("Shared monitor was replaced".into());
-        }
-        self.selected_output = Some(output.global);
-
-        let transform = output.transform;
         self.state.result = None;
         self.state.flipped = false;
-
-        let frame = self.state.manager.as_ref().unwrap().capture_output(
-            cursor as i32,
-            &output.proxy,
-            &self.queue.handle(),
-            (),
-        );
+        self.state.logical_size = None;
+        self.state.busy = false;
+        let (frame, transform) = if let Some(id) = name
+            .strip_prefix("window:")
+            .and_then(|id| id.parse::<u64>().ok())
+        {
+            let manager = self
+                .state
+                .window_manager
+                .as_ref()
+                .ok_or("Window capture is unavailable")?;
+            (
+                manager.capture_window(
+                    (id >> 32) as u32,
+                    id as u32,
+                    cursor as u32,
+                    &self.queue.handle(),
+                    (),
+                ),
+                wl_output::Transform::Normal,
+            )
+        } else {
+            let output = self
+                .state
+                .outputs
+                .iter()
+                .find(|o| o.source.name == name)
+                .ok_or("Shared monitor disconnected")?;
+            if self
+                .selected_output
+                .is_some_and(|selected| selected != output.global)
+            {
+                return Err("Shared monitor was replaced".into());
+            }
+            self.selected_output = Some(output.global);
+            let manager = self
+                .state
+                .manager
+                .as_ref()
+                .ok_or("Monitor capture is unavailable")?;
+            (
+                manager.capture_output(cursor as i32, &output.proxy, &self.queue.handle(), ()),
+                output.transform,
+            )
+        };
         let deadline = Instant::now() + Duration::from_secs(5);
 
         while self.state.result.is_none() {
@@ -209,6 +250,7 @@ impl Capture {
         );
 
         Ok(Frame {
+            logical_size: self.state.logical_size,
             width,
             height,
             stride: width * 4,
@@ -285,6 +327,9 @@ impl Dispatch<wl_registry::WlRegistry, ()> for State {
                         scale: 1,
                     },
                 }),
+                "ferese_window_capture_manager_v1" => {
+                    state.window_manager = Some(registry.bind(name, 1, qh, ()))
+                }
                 "wl_shm" => state.shm = Some(registry.bind(name, 1, qh, ())),
                 "zwlr_screencopy_manager_v1" => {
                     state.manager = Some(registry.bind(name, version.min(3), qh, ()))
@@ -415,10 +460,11 @@ impl Dispatch<frame::ZwlrScreencopyFrameV1, ()> for State {
             }
             frame::Event::Ready { .. } => state.result = Some(Ok(())),
             frame::Event::Failed => {
-                state.result = Some(Err(
-                    "Capture ended: session locked, monitor removed, or compositor unavailable"
-                        .into(),
-                ))
+                state.result = Some(Err(if state.busy {
+                    BUSY.into()
+                } else {
+                    "Capture ended: session locked, source closed, or compositor unavailable".into()
+                }))
             }
             frame::Event::Flags {
                 flags: WEnum::Value(flags),
@@ -522,6 +568,24 @@ wayland_client::delegate_noop!(State: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(State: ignore wl_shm_pool::WlShmPool);
 wayland_client::delegate_noop!(State: ignore wl_buffer::WlBuffer);
 wayland_client::delegate_noop!(State: ignore manager::ZwlrScreencopyManagerV1);
+impl Dispatch<window_manager::FereseWindowCaptureManagerV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &window_manager::FereseWindowCaptureManagerV1,
+        event: window_manager::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            window_manager::Event::Geometry { width, height, .. } => {
+                state.logical_size = Some((width, height))
+            }
+            window_manager::Event::Busy { .. } => state.busy = true,
+            _ => (),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

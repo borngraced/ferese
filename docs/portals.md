@@ -47,7 +47,7 @@ standard file, print and application dialogs. Install both backends.
   for acknowledgements for up to one second. Power confirmations list blockers
   and recheck them before acting; authentication failure cancels the query.
   UserSwitch is recorded, but Ferese currently has no user-switch operation.
-- **ScreenCast:** monitor sharing with a native picker, PipeWire streams and explicit opt-in
+- **ScreenCast:** monitor and isolated window sharing with a native picker, PipeWire streams and explicit opt-in
   saved permissions. The frontend stores and revokes saved choices. Invalid
   restore data or changed display identity requires fresh consent.
   See [screen sharing](screen-sharing.md) for lifetime and recording details.
@@ -73,7 +73,7 @@ Matching D-Bus signatures does not establish complete feature parity.
 | Settings | Native, including appearance change signals |
 | Screenshot | Native screen/area/window/active-window capture and PickColor |
 | Wallpaper | Native desktop, lock-screen and combined targets |
-| ScreenCast | Native v4 monitors with logical geometry and opt-in saved permissions; window sources remain missing |
+| ScreenCast | Native v4 monitors and isolated windows, logical geometry, live window resizing and opt-in saved display permissions |
 | Access, Account, AppChooser, DynamicLauncher, FileChooser, Notification, Print | Delegated to GTK |
 | Background | Native application state, per-instance consent and XDG autostart |
 | Usb | Native consent; standard frontend handles enumeration and device descriptors |
@@ -88,10 +88,15 @@ The frontend supplies additional APIs such as OpenURI, network monitoring,
 document export and permission storage. Adding a similarly named backend service
 is neither required nor sufficient for those APIs.
 
-Do not advertise window sources for ScreenCast or input services until the
-compositor provides the corresponding operation. Screen crops include occluding
-windows and cannot serve as isolated window streams. GNOME's remote-input features require native
-compositor/session work, rather than substituting successful empty replies.
+Window streams render only the selected toplevel and its subsurfaces, including
+on an inactive workspace. Overlapping apps, shell layers, separate popup windows
+and compositor decorations are excluded. The private capture protocol is available
+only to the native portal executable and checks session opt-in and locking.
+Window resizing renegotiates PipeWire video dimensions. Closing the selected
+window ends sharing; its lifetime ID cannot select a replacement app. Window
+selections require fresh consent and are not saved as display permissions.
+InputCapture still needs native zones, barriers and EIS transport. RemoteDesktop
+and its Clipboard integration remain deferred.
 
 ## Validation
 
@@ -142,4 +147,11 @@ an isolated bus and nested compositor:
 
 ```sh
 FERESE_TEST_RESTORE=1 python3 scripts/tests/test_restore_isolated.py
+```
+
+Check live window pixels, overlap isolation, inactive workspaces, resizing and
+closure using a disposable nested compositor and a real PipeWire consumer:
+
+```sh
+FERESE_TEST_WINDOW_STREAM=1 python3 scripts/tests/test_window_stream_isolated.py
 ```

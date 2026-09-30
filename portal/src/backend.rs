@@ -78,6 +78,7 @@ struct Session {
     phase: Phase,
     multiple: bool,
     cursor: bool,
+    source_types: u32,
     bar_controlled: bool,
     persist_mode: u32,
     restore: Option<crate::restore::Restore>,
@@ -184,7 +185,7 @@ fn error(message: &str) -> zbus::fdo::Error {
     zbus::fdo::Error::InvalidArgs(message.into())
 }
 
-fn source_options(options: &Options) -> zbus::fdo::Result<(bool, bool)> {
+fn source_options(options: &Options) -> zbus::fdo::Result<(bool, bool, u32)> {
     let number = |key: &str, default| {
         options
             .get(key)
@@ -195,8 +196,8 @@ fn source_options(options: &Options) -> zbus::fdo::Result<(bool, bool)> {
     };
     let types = number("types", 1)?;
     let cursor = number("cursor_mode", 1)?;
-    if types & 1 == 0 {
-        return Err(error("Only monitor sharing is supported"));
+    if types == 0 || types & !3 != 0 {
+        return Err(error("Unsupported source types"));
     }
     if cursor != 1 && cursor != 2 {
         return Err(error("Unsupported cursor mode"));
@@ -208,7 +209,7 @@ fn source_options(options: &Options) -> zbus::fdo::Result<(bool, bool)> {
         .map_err(|_| error("Invalid multiple option"))?
         .unwrap_or(false);
 
-    Ok((multiple, cursor == 2))
+    Ok((multiple, cursor == 2, types))
 }
 
 impl Backend {
@@ -241,7 +242,7 @@ impl Backend {
 
     #[zbus(property)]
     fn available_source_types(&self) -> u32 {
-        1
+        3
     }
 
     #[zbus(property)]
@@ -294,6 +295,7 @@ impl Backend {
                 phase: Phase::Created,
                 multiple: false,
                 cursor: false,
+                source_types: 1,
                 bar_controlled: false,
                 persist_mode: 0,
                 restore: None,
@@ -313,8 +315,13 @@ impl Backend {
         #[zbus(header)] header: Header<'_>,
     ) -> zbus::fdo::Result<(u32, Options)> {
         let owner = authorize(connection, &header).await?;
-        let settings = source_options(&options).and_then(|(multiple, cursor)| {
-            Ok((multiple, cursor, crate::restore::persist_mode(&options)?))
+        let settings = source_options(&options).and_then(|(multiple, cursor, types)| {
+            Ok((
+                multiple,
+                cursor,
+                types,
+                crate::restore::persist_mode(&options)?,
+            ))
         });
         let mut sessions = self.sessions.lock().await;
         let session = sessions
@@ -329,11 +336,12 @@ impl Backend {
         }
 
         match settings {
-            Ok((multiple, cursor, persist_mode)) => {
+            Ok((multiple, cursor, types, persist_mode)) => {
                 session.persist_mode = persist_mode;
                 session.restore = crate::restore::Restore::read(&options);
                 session.multiple = multiple;
                 session.cursor = cursor;
+                session.source_types = types;
                 session.phase = Phase::Selected;
                 Ok((0, Options::new()))
             }
@@ -365,7 +373,7 @@ impl Backend {
             return Err(error("Invalid request path"));
         }
 
-        let (multiple, cursor, bar_controlled, persist_mode, restore, cancel) = {
+        let (multiple, cursor, source_types, bar_controlled, persist_mode, restore, cancel) = {
             let mut sessions = self.sessions.lock().await;
             let session = sessions
                 .get_mut(session_handle.as_str())
@@ -379,6 +387,7 @@ impl Backend {
             (
                 session.multiple,
                 session.cursor,
+                session.source_types,
                 session.bar_controlled,
                 session.persist_mode,
                 session.restore.clone(),
@@ -412,6 +421,7 @@ impl Backend {
             &parent_window,
             multiple,
             cursor,
+            source_types,
             persist_mode,
             restore,
             bar_controlled,
@@ -559,6 +569,7 @@ async fn start_streams(
     parent: &str,
     multiple: bool,
     cursor: bool,
+    source_types: u32,
     requested_persistence: u32,
     restore: Option<crate::restore::Restore>,
     bar_controlled: bool,
@@ -566,7 +577,15 @@ async fn start_streams(
     let mut discovery = tokio::task::spawn_blocking(|| Capture::connect(&AtomicBool::new(false)))
         .await
         .map_err(|e| e.to_string())??;
-    let sources = discovery.sources();
+    let mut sources = if source_types & 1 != 0 {
+        discovery.sources()
+    } else {
+        Vec::new()
+    };
+    if source_types & 2 != 0 && discovery.supports_windows() {
+        let windows = crate::desktop::ipc("get-windows", serde_json::json!({})).await?;
+        sources.extend(crate::desktop::sharing_window_sources(&windows)?);
+    }
     let outputs = crate::desktop::ipc("get-outputs", serde_json::json!({})).await?;
     let rememberable = sources
         .iter()
@@ -578,6 +597,15 @@ async fn start_streams(
         .collect::<Vec<_>>();
     let restored = restore.and_then(|restore| {
         let selected = restore.resolve(app, cursor, multiple, &sources, &outputs)?;
+        let selected = validate_selection(
+            &sources,
+            &selected
+                .iter()
+                .map(|source| source.name.clone())
+                .collect::<Vec<_>>(),
+            multiple,
+        )
+        .ok()?;
         Some((selected, restore.effective_mode(requested_persistence)))
     });
     let (selected, persist_mode) = if let Some(restored) = restored {
@@ -616,7 +644,12 @@ async fn start_streams(
     let mut reply = Options::new();
     let fresh_outputs = crate::desktop::ipc("get-outputs", serde_json::json!({})).await?;
 
-    if !crate::restore::selection_unchanged(&selected, &outputs, &fresh_outputs) {
+    let monitors = selected
+        .iter()
+        .filter(|source| source.window_id().is_none())
+        .cloned()
+        .collect::<Vec<_>>();
+    if !crate::restore::selection_unchanged(&monitors, &outputs, &fresh_outputs) {
         return Err("A selected display changed while approval was pending".into());
     }
 
@@ -629,7 +662,7 @@ async fn start_streams(
     };
     reply.insert("persist_mode".into(), effective_persistence.into());
 
-    let generations = selected
+    let generations = monitors
         .iter()
         .map(|source| {
             discovery
@@ -641,14 +674,28 @@ async fn start_streams(
     let mut children = Vec::new();
     let mut streams = Vec::new();
 
-    for (source, (_, generation)) in selected.iter().zip(&generations) {
-        let mut child = child_command()?
-            .args([
+    for source in &selected {
+        let mut command = child_command()?;
+        if let Some(id) = source.window_id() {
+            command.args([
+                "--stream-window",
+                &id.to_string(),
+                if cursor { "embedded" } else { "hidden" },
+            ]);
+        } else {
+            let generation = generations
+                .iter()
+                .find(|(name, _)| name == &source.name)
+                .ok_or("Missing display generation")?
+                .1;
+            command.args([
                 "--stream",
                 &source.name,
                 if cursor { "embedded" } else { "hidden" },
                 &generation.to_string(),
-            ])
+            ]);
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -680,7 +727,7 @@ async fn start_streams(
         .map_err(|error| error.to_string())??;
 
     let final_outputs = crate::desktop::ipc("get-outputs", serde_json::json!({})).await?;
-    if !crate::restore::selection_unchanged(&selected, &outputs, &final_outputs) {
+    if !crate::restore::selection_unchanged(&monitors, &outputs, &final_outputs) {
         return Err("A selected display changed during stream startup".into());
     }
 
@@ -691,14 +738,57 @@ async fn start_streams(
         return Err("A selected stream ended during startup".into());
     }
 
+    let final_windows = crate::desktop::ipc("get-windows", serde_json::json!({})).await?;
     let streams = streams
         .into_iter()
         .map(|(name, ready)| {
-            monitor_metadata(&final_outputs, &name, &ready).map(|metadata| (ready.node, metadata))
+            let metadata = if name.starts_with("window:") {
+                let source = selected
+                    .iter()
+                    .find(|source| source.name == name)
+                    .ok_or("Unknown window stream")?;
+                let id = source.window_id().ok_or("Invalid selected window")?;
+                if !final_windows.as_array().is_some_and(|windows| {
+                    windows
+                        .iter()
+                        .any(|window| window["id"].as_u64() == Some(id))
+                }) {
+                    return Err("A selected window closed during startup".to_owned());
+                }
+                window_metadata(source, &ready)
+            } else {
+                monitor_metadata(&final_outputs, &name, &ready)
+            };
+            metadata.map(|metadata| (ready.node, metadata))
         })
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok((children, streams, reply))
+}
+
+fn window_metadata(source: &Source, ready: &Ready) -> Result<Options, String> {
+    if source.window_id().is_none() || ready.width == 0 || ready.height == 0 {
+        return Err("Invalid window stream".into());
+    }
+    let (width, height) = ready
+        .logical_size
+        .ok_or("Missing captured window geometry")?;
+    let size = (
+        i32::try_from(width).map_err(|_| "Invalid window width")?,
+        i32::try_from(height).map_err(|_| "Invalid window height")?,
+    );
+    if size.0 <= 0 || size.1 <= 0 {
+        return Err("Invalid captured window geometry".into());
+    }
+    Ok(Options::from([
+        ("source_type".into(), 2u32.into()),
+        (
+            "size".into(),
+            Value::from(size)
+                .try_to_owned()
+                .map_err(|e| e.to_string())?,
+        ),
+    ]))
 }
 
 fn monitor_metadata(
@@ -770,7 +860,11 @@ fn validate_selection(
     names: &[String],
     multiple: bool,
 ) -> Result<Vec<Source>, String> {
-    if names.is_empty() || names.len() > sources.len() || (!multiple && names.len() != 1) {
+    if names.is_empty()
+        || names.len() > 8
+        || names.len() > sources.len()
+        || (!multiple && names.len() != 1)
+    {
         return Err("Invalid display selection".into());
     }
 
@@ -893,17 +987,76 @@ mod tests {
 
     #[test]
     fn rejects_unimplemented_sources_and_cursor_modes() {
-        assert_eq!(source_options(&Options::new()).unwrap(), (false, false));
-        for bits in [0u32, 2, 4, 6] {
+        assert_eq!(source_options(&Options::new()).unwrap(), (false, false, 1));
+        for bits in [0u32, 4, 5, 6, 7] {
             assert!(source_options(&HashMap::from([("types".into(), bits.into())])).is_err());
         }
-        for bits in [1u32, 3, 5, 7] {
+        for bits in [1u32, 2, 3] {
             assert_eq!(
                 source_options(&HashMap::from([("types".into(), bits.into())])).unwrap(),
-                (false, false)
+                (false, false, bits)
             );
         }
         assert!(source_options(&HashMap::from([("cursor_mode".into(), 4u32.into())])).is_err());
+    }
+
+    #[test]
+    fn window_metadata_uses_captured_logical_geometry_and_omits_position() {
+        let source = Source {
+            name: "window:17".into(),
+            label: "Editor".into(),
+            width: 640,
+            height: 480,
+            x: 0,
+            y: 0,
+            scale: 1,
+        };
+        let ready = Ready {
+            node: 1,
+            width: 1200,
+            height: 800,
+            logical_size: Some((600, 400)),
+        };
+        let metadata = window_metadata(&source, &ready).unwrap();
+        assert_eq!(u32::try_from(&metadata["source_type"]).unwrap(), 2);
+        assert_eq!(
+            <(i32, i32)>::try_from(metadata["size"].try_clone().unwrap()).unwrap(),
+            (600, 400)
+        );
+        assert!(!metadata.contains_key("position"));
+        assert!(
+            window_metadata(
+                &source,
+                &Ready {
+                    logical_size: None,
+                    ..ready
+                }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn multiple_selection_is_bounded_and_accepts_displays_with_windows() {
+        let sources = (0..9)
+            .map(|id| Source {
+                name: format!("window:{id}"),
+                label: "Editor".into(),
+                width: 640,
+                height: 480,
+                x: 0,
+                y: 0,
+                scale: 1,
+            })
+            .collect::<Vec<_>>();
+        let names = sources
+            .iter()
+            .map(|source| source.name.clone())
+            .collect::<Vec<_>>();
+        assert!(validate_selection(&sources, &names[..8], true).is_ok());
+        assert!(validate_selection(&sources, &names, true).is_err());
+        assert!(validate_selection(&sources, &names[..2], false).is_err());
+        assert!(validate_selection(&sources, &[names[0].clone(), names[0].clone()], true).is_err());
     }
 
     #[test]
@@ -913,6 +1066,7 @@ mod tests {
             &outputs,
             "display",
             &Ready {
+                logical_size: None,
                 node: 1,
                 width: 3840,
                 height: 2160,
@@ -932,6 +1086,7 @@ mod tests {
                 &outputs,
                 "missing",
                 &Ready {
+                    logical_size: None,
                     node: 1,
                     width: 3840,
                     height: 2160

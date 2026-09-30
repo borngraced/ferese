@@ -20,6 +20,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         [flag, name, cursor] if flag == "--stream" => {
             stream::run(name.clone(), cursor == "embedded", None)
         }
+        [flag, id, cursor] if flag == "--stream-window" => {
+            let id: u64 = id.parse()?;
+            stream::run(format!("window:{id}"), cursor == "embedded", None)
+        }
         [flag, name, cursor, generation] if flag == "--stream" => stream::run(
             name.clone(),
             cursor == "embedded",

@@ -462,6 +462,38 @@ fn window_sources(windows: &serde_json::Value) -> Result<Vec<crate::capture::Sou
     Ok(sources)
 }
 
+pub(crate) fn sharing_window_sources(
+    windows: &serde_json::Value,
+) -> Result<Vec<crate::capture::Source>, String> {
+    let windows = windows.as_array().ok_or("Invalid window list")?;
+    let eligible = windows
+        .iter()
+        .filter(|window| {
+            window["workspace"].as_u64().is_some()
+                && window["capture_width"]
+                    .as_i64()
+                    .is_some_and(|width| width > 0)
+                && window["capture_height"]
+                    .as_i64()
+                    .is_some_and(|height| height > 0)
+                && window["app_id"].as_str() != Some("dev.ferese.ScreenShare")
+        })
+        .take(128)
+        .map(|window| {
+            let mut window = window.clone();
+            window["mapped"] = true.into();
+            window["width"] = window["capture_width"].clone();
+            window["height"] = window["capture_height"].clone();
+            window
+        })
+        .collect::<Vec<_>>();
+    let mut sources = window_sources(&serde_json::Value::Array(eligible))?;
+    for source in &mut sources {
+        source.name = format!("window:{}", source.name);
+    }
+    Ok(sources)
+}
+
 async fn select_window(app: &str, parent: &str) -> Result<Option<u64>, String> {
     let windows = ipc("get-windows", serde_json::json!({})).await?;
     let sources = window_sources(&windows)?;
@@ -754,6 +786,20 @@ fn edit_wallpaper(path: &Path, image: &Path, target: &str) -> Result<(), String>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_window_choices_include_inactive_workspaces_and_exclude_picker() {
+        let windows = serde_json::json!([
+            {"id": 1, "workspace": 2, "mapped": false, "app_id": "org.Editor", "title": "Notes", "capture_width": 640, "capture_height": 480},
+            {"id": 2, "workspace": 1, "mapped": true, "app_id": "dev.ferese.ScreenShare", "capture_width": 400, "capture_height": 300},
+            {"id": 3, "workspace": 1, "capture_width": 0, "capture_height": 0}
+        ]);
+        let sources = super::sharing_window_sources(&windows).unwrap();
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].window_id(), Some(1));
+        assert_eq!((sources[0].width, sources[0].height), (640, 480));
+        assert!(sources[0].label.contains("Notes"));
+    }
+
     use super::*;
 
     #[test]

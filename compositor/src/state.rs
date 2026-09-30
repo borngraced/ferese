@@ -865,9 +865,15 @@ impl Ferese {
         let loop_handle = event_loop.handle();
 
         loop_handle.insert_source(listening_socket, |client_stream, _, state| {
+            let mut client_state = ClientState::default();
+            if crate::handlers::window_capture::is_portal(&client_stream) {
+                client_state
+                    .capabilities
+                    .insert(crate::private_client::ClientCapabilities::WINDOW_CAPTURE);
+            }
             if let Err(error) = state
                 .display_handle
-                .insert_client(client_stream, Arc::new(ClientState::default()))
+                .insert_client(client_stream, Arc::new(client_state))
             {
                 tracing::warn!(%error, "failed to register Wayland client");
             }

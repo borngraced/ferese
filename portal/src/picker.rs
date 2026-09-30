@@ -71,9 +71,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let prompt: Prompt = serde_json::from_str(&input)?;
 
-    if prompt.sources.is_empty()
-        || prompt.sources.len() > if prompt.window_capture { 128 } else { 16 }
-    {
+    if prompt.sources.is_empty() || prompt.sources.len() > 144 {
         return Err("No shareable displays".into());
     }
 
@@ -187,6 +185,9 @@ impl cosmic::Application for Picker {
                 if self.selected.contains(&index) {
                     self.selected.retain(|i| *i != index);
                 } else {
+                    if self.prompt.multiple && self.selected.len() >= 8 {
+                        return Task::none();
+                    }
                     if !self.prompt.multiple {
                         self.selected.clear();
                     }
@@ -244,7 +245,7 @@ impl cosmic::Application for Picker {
                     self.text(if self.prompt.window_capture {
                         "Choose a window"
                     } else {
-                        "Choose a display"
+                        "Choose what to share"
                     })
                     .size(18),
                     self.text(format!(
@@ -264,16 +265,27 @@ impl cosmic::Application for Picker {
             .align_y(Alignment::Center),
         );
         let mut sources = column([]).spacing(6);
+        let mut previous_kind = None;
         for (index, source) in self.prompt.sources.iter().enumerate() {
+            let is_window = self.prompt.window_capture || source.window_id().is_some();
+            if !self.prompt.window_capture && previous_kind != Some(is_window) {
+                sources = sources.push(
+                    self.text(if is_window { "Windows" } else { "Displays" })
+                        .size(12),
+                );
+                previous_kind = Some(is_window);
+            }
             let selected = self.selected.contains(&index);
             let mut entry = row![
                 glyph(ferese_theme::icons::DISPLAY, 24),
                 column![
-                    self.text(if self.prompt.window_capture {
-                        &source.label
-                    } else {
-                        &source.name
-                    })
+                    self.text(
+                        if self.prompt.window_capture || source.window_id().is_some() {
+                            &source.label
+                        } else {
+                            &source.name
+                        }
+                    )
                     .size(14),
                     self.text(format!("{} × {}", source.width, source.height))
                         .size(12)
@@ -305,7 +317,7 @@ impl cosmic::Application for Picker {
             self.text(if self.prompt.window_capture {
                 "Only the selected window will be captured."
             } else {
-                "Everything on this display, including notifications, is visible."
+                "Displays share everything visible. Windows share only their own content."
             })
             .size(12)
             .width(Length::Fill),

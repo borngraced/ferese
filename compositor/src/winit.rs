@@ -176,10 +176,38 @@ pub(crate) fn capture_window_buffer(
     geometry: Rectangle<i32, Logical>,
     scale: f64,
 ) -> Result<crate::handlers::screenshot::CaptureBuffer, String> {
-    let snapshot = capture_resize_snapshot(renderer, window, geometry, scale, 128 * 1024 * 1024)
-        .map_err(|error| error.to_string())?
-        .ok_or("Window has no capturable content")?;
+    capture_window_frame(renderer, window, geometry, scale, None)
+}
+
+pub(crate) fn capture_window_frame(
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    geometry: Rectangle<i32, Logical>,
+    scale: f64,
+    cursor: Option<(&Ferese, Rectangle<i32, Logical>)>,
+) -> Result<crate::handlers::screenshot::CaptureBuffer, String> {
+    let mut snapshot =
+        capture_resize_snapshot(renderer, window, geometry, scale, 128 * 1024 * 1024)
+            .map_err(|error| error.to_string())?
+            .ok_or("Window has no capturable content")?;
     let size = snapshot.texture.size();
+    if let Some((state, cursor_geometry)) = cursor {
+        let elements = cursor_elements(state, renderer, cursor_geometry, scale);
+        let mut target = renderer
+            .bind(&mut snapshot.texture)
+            .map_err(|e| e.to_string())?;
+        let mut frame = renderer
+            .render(&mut target, (size.w, size.h).into(), Transform::Normal)
+            .map_err(|e| e.to_string())?;
+        draw_render_elements(
+            &mut frame,
+            scale,
+            &elements,
+            &[Rectangle::from_size((size.w, size.h).into())],
+        )
+        .map_err(|e| e.to_string())?;
+        let _ = frame.finish().map_err(|e| e.to_string())?;
+    }
     let mapping = renderer
         .copy_texture(
             &snapshot.texture,
@@ -551,7 +579,7 @@ fn blur_damage(
         DamageSet::default()
     } else {
         // A new scene needs its entire sampling halo repainted before capture.
-        DamageSet::from_slice(&[Rectangle::from_size(size)])
+        DamageSet::from_slice(&[Rectangle::from_size((size.w, size.h).into())])
     }
 }
 

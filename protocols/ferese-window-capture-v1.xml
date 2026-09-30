@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="ferese_window_capture_v1">
+  <description summary="private native portal window capture">
+    Captures only a managed toplevel's surface tree, independently of its
+    workspace, occlusion, animations and output transform. The compositor
+    advertises this interface only to its native portal executable. Capture
+    requires session opt-in and fails while locked. Window IDs are compositor
+    lifetime IDs and never resolve to replacement windows.
+  </description>
+  <interface name="ferese_window_capture_manager_v1" version="1">
+    <request name="destroy" type="destructor"/>
+    <request name="capture_window">
+      <description summary="snapshot a managed window">
+        The two unsigned words encode a 64-bit window ID (high word first).
+        A version 1 wlr screencopy frame announces a bounded SHM ARGB8888
+        snapshot. It fails if the target has closed, capture is unavailable,
+        or the outstanding snapshot budget is exhausted. Resize after the
+        buffer announcement does not change this frame's dimensions.
+        Overlay cursor is zero for hidden and one for embedded.
+      </description>
+      <arg name="window_hi" type="uint"/>
+      <arg name="window_lo" type="uint"/>
+      <arg name="overlay_cursor" type="uint"/>
+      <arg name="frame" type="new_id" interface="zwlr_screencopy_frame_v1"/>
+    </request>
+    <event name="busy">
+      <description summary="temporary capture resource contention">
+        Sent before this frame's failed event if the bounded snapshot pool is
+        occupied. Retry a later frame; this does not revoke the window source.
+      </description>
+      <arg name="frame" type="object" interface="zwlr_screencopy_frame_v1"/>
+    </event>
+    <event name="geometry">
+      <description summary="logical dimensions of the announced snapshot">
+        Sent before the frame's buffer event. These dimensions describe this
+        captured frame, even if the window resizes before it is copied.
+      </description>
+      <arg name="frame" type="object" interface="zwlr_screencopy_frame_v1"/>
+      <arg name="width" type="uint"/>
+      <arg name="height" type="uint"/>
+    </event>
+  </interface>
+</protocol>

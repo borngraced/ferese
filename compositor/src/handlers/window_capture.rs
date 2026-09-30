@@ -1,0 +1,388 @@
+use std::{
+    os::unix::fs::MetadataExt,
+    sync::{Arc, Mutex},
+};
+
+use ferese_layout::WindowId;
+use ferese_protocols::window_capture::v1::server::ferese_window_capture_manager_v1::{
+    self as manager, FereseWindowCaptureManagerV1,
+};
+use smithay::{
+    reexports::{
+        wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_frame_v1::{
+            self as frame, ZwlrScreencopyFrameV1,
+        },
+        wayland_server::{
+            Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource,
+            protocol::{wl_buffer::WlBuffer, wl_shm},
+        },
+    },
+    utils::Rectangle,
+    wayland::shm::with_buffer_contents_mut,
+};
+
+use super::{screencopy::FrameData, screenshot::CaptureBuffer};
+use crate::Ferese;
+
+const MAX_BYTES: usize = 128 * 1024 * 1024;
+const MAX_FRAMES: usize = 8;
+
+#[derive(Debug, Default)]
+pub(crate) struct Budget {
+    bytes: usize,
+    frames: usize,
+}
+
+#[derive(Debug)]
+struct Permit {
+    budget: Arc<Mutex<Budget>>,
+    bytes: usize,
+}
+
+impl Permit {
+    fn reserve(budget: &Arc<Mutex<Budget>>, bytes: usize) -> Option<Self> {
+        let mut available = budget.lock().unwrap();
+        if bytes == 0
+            || bytes > MAX_BYTES.saturating_sub(available.bytes)
+            || available.frames >= MAX_FRAMES
+        {
+            return None;
+        }
+        available.bytes += bytes;
+        available.frames += 1;
+        Some(Self {
+            budget: budget.clone(),
+            bytes,
+        })
+    }
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        let mut budget = self.budget.lock().unwrap();
+        budget.bytes -= self.bytes;
+        budget.frames -= 1;
+    }
+}
+
+#[derive(Debug)]
+pub(super) struct Snapshot {
+    id: WindowId,
+    logical_size: (u32, u32),
+    pixels: CaptureBuffer,
+    _permit: Permit,
+}
+
+pub(crate) struct Global {
+    budget: Arc<Mutex<Budget>>,
+}
+
+pub(crate) fn is_portal(stream: &std::os::unix::net::UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut credentials = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut length = std::mem::size_of_val(&credentials) as libc::socklen_t;
+    // SAFETY: the connected socket is live and both out pointers cover their
+    // initialized stack allocations. SO_PEERCRED identifies the connecting process.
+    let valid = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&raw mut credentials).cast(),
+            &raw mut length,
+        ) == 0
+    };
+    if !valid || length as usize != std::mem::size_of_val(&credentials) || credentials.pid <= 0 {
+        return false;
+    }
+    let expected = std::env::current_exe()
+        .ok()
+        .and_then(|exe| {
+            exe.parent()
+                .map(|dir| dir.join("xdg-desktop-portal-ferese"))
+        })
+        .and_then(|exe| std::fs::metadata(exe).ok());
+    let actual = std::fs::metadata(format!("/proc/{}/exe", credentials.pid)).ok();
+    matches!((expected, actual), (Some(expected), Some(actual)) if expected.dev() == actual.dev() && expected.ino() == actual.ino())
+}
+
+pub(super) fn init_global(display: &DisplayHandle) {
+    display.create_global::<Ferese, FereseWindowCaptureManagerV1, Global>(
+        1,
+        Global {
+            budget: Arc::default(),
+        },
+    );
+}
+
+impl GlobalDispatch<FereseWindowCaptureManagerV1, Global> for Ferese {
+    fn can_view(client: Client, _: &Global) -> bool {
+        client
+            .get_data::<crate::state::ClientState>()
+            .is_some_and(|state| {
+                state
+                    .capabilities
+                    .contains(crate::private_client::ClientCapabilities::WINDOW_CAPTURE)
+            })
+    }
+
+    fn bind(
+        _: &mut Self,
+        _: &DisplayHandle,
+        _: &Client,
+        resource: New<FereseWindowCaptureManagerV1>,
+        global: &Global,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        data_init.init(resource, global.budget.clone());
+    }
+}
+
+impl Dispatch<FereseWindowCaptureManagerV1, Arc<Mutex<Budget>>> for Ferese {
+    fn request(
+        state: &mut Self,
+        _: &Client,
+        manager: &FereseWindowCaptureManagerV1,
+        request: manager::Request,
+        budget: &Arc<Mutex<Budget>>,
+        _: &DisplayHandle,
+        data_init: &mut DataInit<'_, Self>,
+    ) {
+        if let manager::Request::CaptureWindow {
+            window_hi,
+            window_lo,
+            overlay_cursor,
+            frame,
+        } = request
+        {
+            let id = WindowId((u64::from(window_hi) << 32) | u64::from(window_lo));
+            let mut busy = false;
+            let snapshot = (overlay_cursor <= 1)
+                .then(|| state.window_snapshot(id, overlay_cursor == 1, budget, &mut busy))
+                .flatten();
+            let size = snapshot
+                .as_ref()
+                .map(|snapshot| (snapshot.pixels.width, snapshot.pixels.height))
+                .unwrap_or((1, 1));
+            let logical_size = snapshot.as_ref().map(|snapshot| snapshot.logical_size);
+            let failed = snapshot.is_none();
+            let resource = data_init.init(
+                frame,
+                Arc::new(FrameData {
+                    output: None,
+                    region: Rectangle::from_size(size.into()),
+                    overlay_cursor: false,
+                    used: Mutex::new(failed),
+                    snapshot: Mutex::new(snapshot),
+                }),
+            );
+            if failed {
+                if busy {
+                    manager.busy(&resource);
+                }
+                resource.failed();
+            } else {
+                let logical_size = logical_size.unwrap();
+                manager.geometry(&resource, logical_size.0, logical_size.1);
+                resource.buffer(
+                    wl_shm::Format::Argb8888,
+                    size.0 as u32,
+                    size.1 as u32,
+                    size.0 as u32 * 4,
+                );
+            }
+        }
+    }
+}
+
+impl Ferese {
+    fn window_snapshot(
+        &mut self,
+        id: WindowId,
+        overlay_cursor: bool,
+        budget: &Arc<Mutex<Budget>>,
+        busy: &mut bool,
+    ) -> Option<Snapshot> {
+        if self.session_lock.active || !super::screencopy::capture_allowed() {
+            return None;
+        }
+        let window = self
+            .window_ids
+            .iter()
+            .find(|(_, candidate)| **candidate == id)?
+            .0
+            .clone();
+        let workspace = self.workspaces.workspace_for_window(id)?;
+        let owner = self.output_workspaces.output_for_workspace(workspace)?;
+        let output = self
+            .output_ids
+            .iter()
+            .find(|(_, candidate)| **candidate == owner)?
+            .0
+            .clone();
+        let geometry = window.geometry();
+        let scale = output.current_scale().fractional_scale();
+        let size: smithay::utils::Size<i32, smithay::utils::Physical> =
+            geometry.size.to_physical_precise_round(scale);
+        let bytes = usize::try_from(size.w)
+            .ok()?
+            .checked_mul(usize::try_from(size.h).ok()?)?
+            .checked_mul(4)?;
+        if bytes == 0 || bytes > MAX_BYTES {
+            return None;
+        }
+        let Some(permit) = Permit::reserve(budget, bytes) else {
+            *busy = true;
+            return None;
+        };
+        let cursor = if overlay_cursor && !self.overview.is_presenting() {
+            self.seat.get_pointer().and_then(|pointer| {
+                let location = pointer.current_location();
+                if self.window_under_visual(location).as_ref() != Some(&window) {
+                    return None;
+                }
+                let (x, y) = self.inverse_presented_window_point(id, location.x, location.y)?;
+                let surface_point = smithay::utils::Point::from((x, y)) + geometry.loc.to_f64();
+                let (surface, _) = window
+                    .surface_under(surface_point, smithay::desktop::WindowSurfaceType::ALL)?;
+                if pointer.current_focus().as_ref() != Some(&surface) {
+                    return None;
+                }
+                Some(Rectangle::new(
+                    (location - smithay::utils::Point::from((x, y))).to_i32_round(),
+                    geometry.size,
+                ))
+            })
+        } else {
+            None
+        };
+        let result = if let Some(backend) = self.nested_backend.clone() {
+            let mut backend = backend.try_borrow_mut().ok()?;
+            crate::winit::capture_window_frame(
+                backend.renderer(),
+                &window,
+                geometry,
+                scale,
+                cursor.map(|rect| (&*self, rect)),
+            )
+        } else if let Some(mut backend) = self.direct_backend.take() {
+            let result = backend.capture_window_frame(self, &window, &output, cursor);
+            self.direct_backend = Some(backend);
+            result
+        } else {
+            return None;
+        };
+        let pixels = result.ok()?;
+        if let Some(toplevel) = window.toplevel() {
+            smithay::desktop::utils::send_frames_surface_tree(
+                toplevel.wl_surface(),
+                &output,
+                self.start_time.elapsed(),
+                Some(std::time::Duration::ZERO),
+                |_, _| Some(output.clone()),
+            );
+        }
+        if pixels.pixels.len() != bytes {
+            return None;
+        }
+        Some(Snapshot {
+            id,
+            logical_size: (geometry.size.w as u32, geometry.size.h as u32),
+            pixels,
+            _permit: permit,
+        })
+    }
+}
+
+pub(super) fn copy_snapshot(
+    state: &Ferese,
+    resource: &ZwlrScreencopyFrameV1,
+    data: &FrameData,
+    buffer: &WlBuffer,
+) {
+    let mut used = data.used.lock().unwrap();
+    if *used {
+        resource.post_error(
+            frame::Error::AlreadyUsed,
+            "window capture frame has already been used",
+        );
+        return;
+    }
+    *used = true;
+    let Some(snapshot) = data.snapshot.lock().unwrap().take() else {
+        resource.failed();
+        return;
+    };
+    if state.session_lock.active
+        || !super::screencopy::capture_allowed()
+        || !state.window_ids.values().any(|id| *id == snapshot.id)
+    {
+        resource.failed();
+        return;
+    }
+    if !super::screencopy::valid_shm_buffer(buffer, data.region.size) {
+        resource.post_error(
+            frame::Error::InvalidBuffer,
+            "window capture requires the advertised ARGB8888 SHM buffer",
+        );
+        return;
+    }
+    let copied = with_buffer_contents_mut(buffer, |destination, length, layout| {
+        let bytes = snapshot.pixels.pixels.len();
+        let Ok(offset) = usize::try_from(layout.offset) else {
+            return false;
+        };
+        if offset.checked_add(bytes).is_none_or(|end| end > length) {
+            return false;
+        }
+        // SAFETY: Smithay owns the writable mapping, validated format/stride and
+        // checked offset cover the complete snapshot; the source is separately owned.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                snapshot.pixels.pixels.as_ptr(),
+                destination.add(offset),
+                bytes,
+            );
+        }
+        true
+    })
+    .unwrap_or(false);
+    if !copied {
+        resource.failed();
+        return;
+    }
+    let timestamp = state.start_time.elapsed();
+    resource.flags(frame::Flags::empty());
+    resource.ready(
+        (timestamp.as_secs() >> 32) as u32,
+        timestamp.as_secs() as u32,
+        timestamp.subsec_nanos(),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outstanding_snapshots_release_both_limits_when_dropped() {
+        let budget = Arc::default();
+        let permits = (0..MAX_FRAMES)
+            .map(|_| Permit::reserve(&budget, 4).unwrap())
+            .collect::<Vec<_>>();
+        assert!(Permit::reserve(&budget, 4).is_none());
+        drop(permits);
+        let full = Permit::reserve(&budget, MAX_BYTES).unwrap();
+        assert!(Permit::reserve(&budget, 4).is_none());
+        drop(full);
+        assert!(Permit::reserve(&budget, MAX_BYTES).is_some());
+        assert!(Permit::reserve(&budget, MAX_BYTES + 1).is_none());
+        assert!(Permit::reserve(&budget, 0).is_none());
+        assert_eq!(budget.lock().unwrap().bytes, 0);
+        assert_eq!(budget.lock().unwrap().frames, 0);
+    }
+}

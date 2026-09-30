@@ -1745,6 +1745,7 @@ dependencies = [
  "bitflags 2.13.2",
  "wayland-backend",
  "wayland-client",
+ "wayland-protocols-wlr",
  "wayland-scanner",
  "wayland-server",
 ]
@@ -7417,6 +7418,7 @@ dependencies = [
  "dirs",
  "ferese-config",
  "ferese-ipc",
+ "ferese-protocols",
  "ferese-theme",
  "futures-util",
  "gstreamer",

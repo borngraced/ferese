@@ -16,6 +16,7 @@ pub(crate) struct ClientCapabilities(u8);
 impl ClientCapabilities {
     pub(crate) const EFFECTS: Self = Self(1 << 0);
     pub(crate) const SHELL_CONTROL: Self = Self(1 << 1);
+    pub(crate) const WINDOW_CAPTURE: Self = Self(1 << 2);
 
     pub(crate) fn contains(self, capability: Self) -> bool {
         self.0 & capability.0 == capability.0

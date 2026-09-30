@@ -868,6 +868,8 @@ impl Ferese {
                     "workspace": self.workspaces.workspace_for_window(*id).map(|workspace| workspace.0),
                     "x": rect.as_ref().map(|rect| rect.loc.x),
                     "y": rect.as_ref().map(|rect| rect.loc.y),
+                    "capture_width": window.geometry().size.w,
+                    "capture_height": window.geometry().size.h,
                     "width": rect.as_ref().map(|rect| rect.size.w),
                     "height": rect.as_ref().map(|rect| rect.size.h),
                 }))

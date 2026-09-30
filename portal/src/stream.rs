@@ -15,6 +15,8 @@ use std::{
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Ready {
+    #[serde(default)]
+    pub logical_size: Option<(u32, u32)>,
     pub node: u32,
     pub width: u32,
     pub height: u32,
@@ -27,6 +29,7 @@ struct Data {
     fresh: Arc<AtomicBool>,
     announced: bool,
     sequence: u64,
+    negotiated: (u32, u32),
 }
 
 // pipewire-rs exposes read-only metadata through Buffer. Own a dequeued raw
@@ -110,6 +113,38 @@ fn pod(object: spa::pod::Object) -> Vec<u8> {
     .into_inner()
 }
 
+fn video_format(width: u32, height: u32) -> Vec<u8> {
+    pod(spa::pod::object!(
+        spa::utils::SpaTypes::ObjectParamFormat,
+        spa::param::ParamType::EnumFormat,
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaType,
+            Id,
+            spa::param::format::MediaType::Video
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::MediaSubtype,
+            Id,
+            spa::param::format::MediaSubtype::Raw
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoFormat,
+            Id,
+            spa::param::video::VideoFormat::BGRx
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoSize,
+            Rectangle,
+            spa::utils::Rectangle { width, height }
+        ),
+        spa::pod::property!(
+            spa::param::format::FormatProperties::VideoFramerate,
+            Fraction,
+            spa::utils::Fraction { num: 30, denom: 1 }
+        )
+    ))
+}
+
 pub fn run(
     name: String,
     cursor: bool,
@@ -126,8 +161,18 @@ pub fn run(
     if let Some(generation) = generation {
         capture.pin_output(&name, generation)?;
     }
-    let first = capture.frame(&name, cursor, &stop, Vec::new())?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let first = loop {
+        match capture.frame(&name, cursor, &stop, Vec::new()) {
+            Err(error) if error == crate::capture::BUSY && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            result => break result?,
+        }
+    };
     let (width, height) = (first.width, first.height);
+    let logical_size = first.logical_size;
+    let resizable = name.starts_with("window:");
     let latest = Arc::new(Mutex::new(first));
     let streaming = Arc::new(AtomicBool::new(false));
 
@@ -154,6 +199,7 @@ pub fn run(
             "node.latency" => "1/30",
         },
     )?;
+    let format_frames = latest.clone();
     let data = Data {
         latest: latest.clone(),
         stop: stop.clone(),
@@ -161,6 +207,7 @@ pub fn run(
         fresh: fresh.clone(),
         announced: false,
         sequence: 0,
+        negotiated: (width, height),
     };
     let _listener = stream
         .add_local_listener_with_user_data(data)
@@ -180,6 +227,7 @@ pub fn run(
                         println!(
                             "{}",
                             serde_json::to_string(&Ready {
+                                logical_size,
                                 node,
                                 width,
                                 height
@@ -206,13 +254,18 @@ pub fn run(
             let Some(param) = param else { return };
             let mut format = spa::param::video::VideoInfoRaw::default();
             if format.parse(param).is_err()
-                || format.size().width != width
-                || format.size().height != height
+                || format.size().width == 0
+                || format.size().height == 0
+                || (!resizable && (format.size().width, format.size().height) != (width, height))
+                || u64::from(format.size().width) * u64::from(format.size().height) * 4
+                    > 128 * 1024 * 1024
                 || format.format() != spa::param::video::VideoFormat::BGRx
             {
                 data.stop.store(true, Ordering::Relaxed);
                 return;
             }
+            let (width, height) = (format.size().width, format.size().height);
+            data.negotiated = (width, height);
             let buffers = pod(spa::pod::object!(
                 spa::utils::SpaTypes::ObjectParamBuffers,
                 spa::param::ParamType::Buffers,
@@ -260,6 +313,10 @@ pub fn run(
                 return;
             }
             let frame = data.latest.lock().unwrap();
+            if (frame.width, frame.height) != data.negotiated {
+                *target.chunk_mut().size_mut() = 0;
+                return;
+            }
             let row = frame.width as usize * 4;
             let bytes = row * frame.height as usize;
             let Some(destination) = target.data() else {
@@ -283,35 +340,7 @@ pub fn run(
         })
         .register()?;
 
-    let format = pod(spa::pod::object!(
-        spa::utils::SpaTypes::ObjectParamFormat,
-        spa::param::ParamType::EnumFormat,
-        spa::pod::property!(
-            spa::param::format::FormatProperties::MediaType,
-            Id,
-            spa::param::format::MediaType::Video
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::MediaSubtype,
-            Id,
-            spa::param::format::MediaSubtype::Raw
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoFormat,
-            Id,
-            spa::param::video::VideoFormat::BGRx
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoSize,
-            Rectangle,
-            spa::utils::Rectangle { width, height }
-        ),
-        spa::pod::property!(
-            spa::param::format::FormatProperties::VideoFramerate,
-            Fraction,
-            spa::utils::Fraction { num: 30, denom: 1 }
-        )
-    ));
+    let format = video_format(width, height);
 
     stream.connect(
         spa::utils::Direction::Output,
@@ -334,7 +363,7 @@ pub fn run(
             {
                 checked = Instant::now();
                 match capture.frame(&name, cursor, &capture_stop, std::mem::take(&mut spare)) {
-                    Ok(frame) if frame.width == width && frame.height == height => {
+                    Ok(frame) if resizable || (frame.width == width && frame.height == height) => {
                         spare = std::mem::replace(&mut *latest.lock().unwrap(), frame).pixels;
                         fresh.store(capture_streaming.load(Ordering::Relaxed), Ordering::SeqCst);
                     }
@@ -342,6 +371,7 @@ pub fn run(
                         eprintln!("Shared monitor changed size; start sharing again");
                         capture_stop.store(true, Ordering::Relaxed);
                     }
+                    Err(error) if error == crate::capture::BUSY => (),
                     Err(error) => {
                         eprintln!("{error}");
                         capture_stop.store(true, Ordering::Relaxed);
@@ -352,8 +382,23 @@ pub fn run(
         }
     });
     let mut next_frame = Instant::now();
+    let mut requested_size = (width, height);
+    let mut renegotiation_error = None;
 
     while !stop.load(Ordering::Relaxed) {
+        let size = {
+            let frame = format_frames.lock().unwrap();
+            (frame.width, frame.height)
+        };
+        if resizable && size != requested_size {
+            let format = video_format(size.0, size.1);
+            if let Err(error) = stream.update_params(&mut [Pod::from_bytes(&format).unwrap()]) {
+                renegotiation_error = Some(error);
+                stop.store(true, Ordering::Relaxed);
+                break;
+            }
+            requested_size = size;
+        }
         let active = streaming.load(Ordering::Relaxed);
         let timeout = if active {
             next_frame
@@ -375,6 +420,9 @@ pub fn run(
 
     let _ = stream.disconnect();
     let _ = capture_thread.join();
+    if let Some(error) = renegotiation_error {
+        return Err(error.into());
+    }
 
     Ok(())
 }

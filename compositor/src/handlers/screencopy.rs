@@ -28,10 +28,11 @@ const BYTES_PER_PIXEL: usize = 4;
 
 #[derive(Debug)]
 pub(crate) struct FrameData {
-    output: Option<Output>,
-    region: Rectangle<i32, Buffer>,
-    overlay_cursor: bool,
-    used: Mutex<bool>,
+    pub(super) output: Option<Output>,
+    pub(super) region: Rectangle<i32, Buffer>,
+    pub(super) overlay_cursor: bool,
+    pub(super) used: Mutex<bool>,
+    pub(super) snapshot: Mutex<Option<super::window_capture::Snapshot>>,
 }
 
 #[derive(Debug)]
@@ -160,6 +161,7 @@ fn capture_opted_in(value: Option<&std::ffi::OsStr>) -> bool {
 pub(crate) fn init_global(display: &DisplayHandle) {
     if capture_allowed() {
         display.create_global::<Ferese, ZwlrScreencopyManagerV1, ()>(3, ());
+        super::window_capture::init_global(display);
         tracing::info!("authorized screencopy is enabled for this session");
     }
 }
@@ -235,7 +237,9 @@ impl Dispatch<ZwlrScreencopyFrameV1, Arc<FrameData>> for Ferese {
             zwlr_screencopy_frame_v1::Request::CopyWithDamage { buffer } => {
                 state.queue_screencopy(frame, data, buffer, true);
             }
-            zwlr_screencopy_frame_v1::Request::Destroy => {}
+            zwlr_screencopy_frame_v1::Request::Destroy => {
+                data.snapshot.lock().unwrap().take();
+            }
             _ => unreachable!(),
         }
     }
@@ -249,6 +253,10 @@ impl Ferese {
         buffer: WlBuffer,
         with_damage: bool,
     ) {
+        if data.snapshot.lock().unwrap().is_some() {
+            super::window_capture::copy_snapshot(self, frame, data, &buffer);
+            return;
+        }
         let mut used = data.used.lock().unwrap();
         if self.session_lock.active {
             frame.failed();
@@ -354,6 +362,7 @@ fn create_frame(
                 region: Rectangle::from_size((1, 1).into()),
                 overlay_cursor,
                 used: Mutex::new(true),
+                snapshot: Mutex::new(None),
             }),
         );
         frame.failed();
@@ -367,6 +376,7 @@ fn create_frame(
                 region: Rectangle::from_size((1, 1).into()),
                 overlay_cursor,
                 used: Mutex::new(true),
+                snapshot: Mutex::new(None),
             }),
         );
         frame.failed();
@@ -379,6 +389,7 @@ fn create_frame(
         region,
         overlay_cursor,
         used: Mutex::new(false),
+        snapshot: Mutex::new(None),
     });
     let frame = data_init.init(frame, data);
 
@@ -439,7 +450,7 @@ pub(crate) fn capture_region_for_geometry(
     )
 }
 
-fn valid_shm_buffer(buffer: &WlBuffer, expected: Size<i32, Buffer>) -> bool {
+pub(super) fn valid_shm_buffer(buffer: &WlBuffer, expected: Size<i32, Buffer>) -> bool {
     with_buffer_contents_mut(buffer, |_, length, data| {
         let stride = expected.w.checked_mul(BYTES_PER_PIXEL as i32);
         let required = data

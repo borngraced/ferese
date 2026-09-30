@@ -1,7 +1,7 @@
 # Screen sharing and recording
 
 Ferese includes a ScreenCast portal backend, `xdg-desktop-portal-ferese`.
-Applications use the standard desktop portal to request a display, then receive
+Applications use the standard desktop portal to request a display or window, then receive
 video through PipeWire. A recorder or conferencing application handles encoding,
 saving files, or sending video; those tasks do not run inside the compositor.
 
@@ -25,8 +25,14 @@ may remain at the path shown in the error.
 ## Start sharing
 
 Use a Wayland screen-sharing or recording source in your application. Ferese
-opens a display picker. Select a display and press **Share**. Nothing is selected
-by default. Applications that request multiple displays can select multiple available displays.
+opens a native source picker. Depending on what the application requests, choose
+from displays, windows, or both and press **Share**. Nothing is selected by default.
+Applications that request multiple sources can select up to eight. Display and
+window choices are grouped separately. Windows show their title and application.
+Window streams capture only the selected app's toplevel and subsurfaces, even
+when covered or on another workspace. Separate popups and compositor decorations
+are excluded. Resizing a shared window updates the video size without ending the
+session. Closing that window ends sharing.
 The picker uses your Ferese theme colors, font, and shell corner radius. Its
 background uses the same compositor material as popovers and authentication
 prompts: opaque in solid mode, or blurred and translucent using the shared
@@ -37,14 +43,15 @@ Ferese’s built-in recorder uses the top-bar stop control instead, leaving your
 windows accessible after display selection. The command-line recorder keeps the
 sharing window when it is not launched by the shell. Press **Stop sharing** or
 close the sharing window to revoke an ordinary application’s session. Closing the requesting application,
-locking Ferese, disconnecting the selected display, or changing its capture size
-also ends sharing. By default, each request asks for consent. If an application requests saved
+locking Ferese, disconnecting the selected display, or changing a monitor's capture
+size also ends sharing. By default, each request asks for consent. If an application requests saved
 permissions, the picker offers an **Allow without asking** switch, off by default.
 Permissions can last while the application runs or until revoked, as requested
 by the app. The standard portal frontend owns permission storage and revocation.
 A changed or missing display, different app, or changed cursor options asks again.
 Displays without a reliable EDID identity, including nested previews, always need
-fresh consent. Stopping a stream ends that stream; it does not erase a previously
+fresh consent. Window selections also require fresh consent and cannot enable saved
+display permissions. Stopping a stream ends that stream; it does not erase a previously
 saved permission.
 Everything visible on a shared display, including notifications, is included.
 
@@ -76,7 +83,8 @@ configuration is preserved during installation.
 
 ## Current capabilities
 
-- Monitor capture, one PipeWire stream per selected display, at up to 30 fps.
+- Monitor and isolated window capture, one PipeWire stream per source, up to 30 fps.
+- Window streams keep working across workspace switches and renegotiate on resize.
 - Hidden or embedded pointer, as requested by the application.
 - Logical stream position and size, including fractional output scales.
 - Wayland parent-window relationships for the consent picker.
@@ -84,8 +92,8 @@ configuration is preserved during installation.
 - Cancellation during selection, an explicit stop control, and process cleanup.
 - ScreenCast backend version 4 with explicit opt-in saved display permissions.
 
-Window-only sharing, region selection, and audio capture in Ferese’s recorder
-are not implemented yet. Other recording applications can handle audio separately.
+Region selection and audio capture in Ferese’s recorder are not implemented yet.
+The top-bar recorder currently requests monitors. Other recording applications can handle audio separately.
 Video currently uses CPU copies through the compositor's shared-memory screencopy path, not DMA-BUF zero-copy. High-resolution
 or multiple-display recording can therefore use significant CPU and memory
 bandwidth. A paused stream checks capture availability once per second so locking
