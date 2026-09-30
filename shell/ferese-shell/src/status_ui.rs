@@ -587,39 +587,39 @@ impl FereseShell {
                         };
                     rows = rows.push(list);
                 }
+            }
 
-                if (combined || menu.kind == Menu::Audio)
-                    && let Some(a) = &self.status.audio
-                {
-                    let audio = column![
-                        row![
-                            text("Volume").size(13).width(Length::Fill),
-                            menu_button(
-                                if a.muted { "Unmute" } else { "Mute" },
-                                Message::Control(Action::Mute(!a.muted)),
-                                primary,
-                                p
-                            )
-                        ]
-                        .align_y(Alignment::Center),
-                        text(&a.output).size(12).class(theme::Text::Color(muted)),
-                        slider_row(
-                            audio_icon(a.volume, a.muted),
-                            a.volume,
-                            false,
+            if (combined || menu.kind == Menu::Audio)
+                && let Some(a) = &self.status.audio
+            {
+                let audio = column![
+                    row![
+                        text("Volume").size(13).width(Length::Fill),
+                        menu_button(
+                            if a.muted { "Unmute" } else { "Mute" },
+                            Message::Control(Action::Mute(!a.muted)),
                             primary,
-                            color_with_opacity(theme.accent, p),
-                            p,
+                            p
                         )
                     ]
-                    .spacing(4);
-                    let audio: Element<'_, cosmic::Action<Message>> = if combined {
-                        control_card(audio.into(), primary, p)
-                    } else {
-                        audio.into()
-                    };
-                    rows = rows.push(audio);
-                }
+                    .align_y(Alignment::Center),
+                    text(&a.output).size(12).class(theme::Text::Color(muted)),
+                    slider_row(
+                        audio_icon(a.volume, a.muted),
+                        a.volume,
+                        false,
+                        primary,
+                        color_with_opacity(theme.accent, p),
+                        p,
+                    )
+                ]
+                .spacing(4);
+                let audio: Element<'_, cosmic::Action<Message>> = if combined {
+                    control_card(audio.into(), primary, p)
+                } else {
+                    audio.into()
+                };
+                rows = rows.push(audio);
             }
 
             if combined && let Some(value) = self.status.brightness {
