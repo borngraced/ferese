@@ -1017,6 +1017,9 @@ impl Ferese {
             BindingAction::Expel => self.expel_focused_window(),
             BindingAction::ToggleFloating => self.toggle_focused_floating(),
             BindingAction::ToggleOverview => self.toggle_overview(),
+            BindingAction::ToggleKeybindingGuide => {
+                self.toggle_keybinding_guide();
+            }
         }
     }
 }

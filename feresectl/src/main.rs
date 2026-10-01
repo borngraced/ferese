@@ -146,6 +146,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(String, Value),
         | "toggle-maximized"
         | "toggle-layout"
         | "toggle-overview"
+        | "toggle-keybinding-guide"
         | "cycle-column-width"
         | "center-column"
         | "consume"
@@ -187,13 +188,21 @@ fn socket_path() -> Result<PathBuf, io::Error> {
 }
 
 fn usage() -> String {
-    "usage: feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl screenshot-window <window-id>\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl workspace-back-and-forth\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
+    "usage: feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl screenshot-window <window-id>\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl workspace-back-and-forth\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview|toggle-keybinding-guide>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn shortcut_hint_command_rejects_extra_arguments() {
+        assert_eq!(
+            parse_args(["toggle-keybinding-guide".into()]).unwrap(),
+            ("toggle-keybinding-guide".into(), json!({}))
+        );
+        assert!(parse_args(["toggle-keybinding-guide".into(), "extra".into()]).is_err());
+    }
     #[test]
     fn overview_toggle_accepts_no_arguments() {
         assert_eq!(

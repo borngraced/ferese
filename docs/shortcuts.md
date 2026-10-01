@@ -77,6 +77,11 @@ by default. The action can also be bound as `workspace-back-and-forth` or run wi
 | Print Screen | Capture the active monitor and open Satty |
 | Super + Shift + S | Select a screenshot area and open Satty |
 | Super + Shift + E | Ask to log out |
+| Super + F1 | Open or close the shortcut hint |
+
+Super + F1 works even when the guide at login is disabled. It opens on the
+focused monitor. Bind `toggle-keybinding-guide` to change the shortcut, or run
+`feresectl toggle-keybinding-guide`.
 
 In Satty, Enter saves the edited screenshot and copies it to the clipboard;
 Escape discards it. See [Configuration](configuration.md#commands-and-bindings)

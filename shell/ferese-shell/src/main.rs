@@ -170,7 +170,7 @@ struct FereseShell {
     menu: Option<status_ui::OpenMenu>,
     system_modal: Option<system_modal::SystemModal>,
     guide_shown: bool,
-    guide_loading: bool,
+    guide_load: keybinding_guide::LoadState,
     guide_attempts: u8,
     pending_power: Option<(window::Id, system_modal::PowerAction)>,
     note_editor: Option<DesktopNoteEditor>,
@@ -247,7 +247,12 @@ enum Message {
     OpenMenuOn(window::Id, status_ui::Menu, cosmic::iced::Rectangle<i32>),
     Control(status::Action),
     ShowGuide,
-    GuideLoaded(Result<Vec<keybinding_guide::Entry>, String>),
+    GuideLoaded {
+        generation: u64,
+        manual: bool,
+        output: Option<String>,
+        result: Result<Vec<keybinding_guide::Entry>, String>,
+    },
     SystemInhibitors(window::Id, Result<compositor_ipc::Approval, String>),
     ConfirmPower(status::Action),
     CancelPower,
@@ -290,7 +295,7 @@ impl cosmic::Application for FereseShell {
             menu: None,
             system_modal: None,
             guide_shown: false,
-            guide_loading: false,
+            guide_load: Default::default(),
             guide_attempts: 0,
             pending_power: None,
             note_editor: None,
@@ -624,42 +629,44 @@ impl cosmic::Application for FereseShell {
             }
             Message::ShowGuide => {
                 if self.guide_shown
-                    || self.guide_loading
+                    || self.guide_load.loading
                     || self.guide_attempts >= 5
                     || !self.config.status.keybinding_guide
                     || self.outputs.is_empty()
                 {
                     return Task::none();
                 }
-                self.guide_loading = true;
                 self.guide_attempts += 1;
-                Task::perform(
-                    async {
-                        tokio::task::spawn_blocking(keybinding_guide::load)
-                            .await
-                            .map_err(|error| error.to_string())
-                            .and_then(|result| result)
-                    },
-                    |result| cosmic::Action::App(Message::GuideLoaded(result)),
-                )
+                self.load_guide(false, None)
             }
-            Message::GuideLoaded(result) => {
-                self.guide_loading = false;
+            Message::GuideLoaded {
+                generation,
+                manual,
+                output,
+                result,
+            } => {
+                if !self.guide_load.finish(generation) {
+                    return Task::none();
+                }
                 match result {
                     Ok(entries)
-                        if self.config.status.keybinding_guide
+                        if (manual || self.config.status.keybinding_guide)
                             && !self.outputs.is_empty()
                             && self.system_modal.is_none()
                             && self.pending_power.is_none() =>
                     {
                         self.guide_shown = true;
-                        self.open_guide(entries)
+                        self.open_guide_on(entries, output.as_deref())
                     }
                     result => {
                         if let Err(error) = result {
                             eprintln!("ferese-shell: keybinding guide unavailable: {error}");
                         }
-                        if self.guide_attempts < 5 && self.config.status.keybinding_guide && !self.guide_shown {
+                        if !manual
+                            && self.guide_attempts < 5
+                            && self.config.status.keybinding_guide
+                            && !self.guide_shown
+                        {
                             Task::perform(
                                 async {
                                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -795,6 +802,9 @@ impl cosmic::Application for FereseShell {
                         }
                         reload_task = Task::batch(tasks);
                     }
+                    for output in poll.guide_toggles {
+                        reload_task = Task::batch([reload_task, self.toggle_guide(output)]);
+                    }
                     for serial in poll.logout_cancelled {
                         reload_task = Task::batch([reload_task, self.cancel_logout_modal(serial)]);
                     }
@@ -908,7 +918,10 @@ impl FereseShell {
             Task::none()
         }];
 
-        if !self.config.status.keybinding_guide && self.system_modal.as_ref().is_some_and(|modal| modal.is_guide()) {
+        if !self.guide_load.manual
+            && !self.config.status.keybinding_guide
+            && self.system_modal.as_ref().is_some_and(|modal| modal.is_guide())
+        {
             tasks.push(self.destroy_system_modal(false));
         }
 

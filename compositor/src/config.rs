@@ -514,6 +514,7 @@ pub enum BindingAction {
     Expel,
     ToggleFloating,
     ToggleOverview,
+    ToggleKeybindingGuide,
 }
 
 impl Binding {
@@ -616,6 +617,7 @@ impl Binding {
             BindingAction::Expel => "Move window out of column".into(),
             BindingAction::ToggleFloating => "Toggle floating window".into(),
             BindingAction::ToggleOverview => "Open or close overview".into(),
+            BindingAction::ToggleKeybindingGuide => "Open or close shortcut hint".into(),
         };
         let mut parts = Vec::new();
         for (enabled, label) in [
@@ -1566,6 +1568,10 @@ fn parse_action(
             no_argument()?;
             Ok(BindingAction::ToggleOverview)
         }
+        "toggle-keybinding-guide" => {
+            no_argument()?;
+            Ok(BindingAction::ToggleKeybindingGuide)
+        }
         _ => Err(ConfigError::InvalidBinding(format!("unknown action {action:?}"))),
     }
 }
@@ -1606,6 +1612,7 @@ fn default_bindings() -> Vec<BindingConfig> {
         binding("Super+]", "expel", None),
         binding("Super+Shift+Space", "toggle-floating", None),
         binding("Super+Tab", "toggle-overview", None),
+        binding("Super+F1", "toggle-keybinding-guide", None),
         binding("Super+Escape", "workspace-back-and-forth", None),
         binding("Super+Shift+E", "exit", None),
     ];
@@ -1888,6 +1895,30 @@ pub(crate) fn config_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn shortcut_hint_has_a_default_binding_and_can_be_rebound() {
+        let bindings = parse("").runtime_config().unwrap().bindings;
+        assert!(bindings.iter().any(|binding| binding.modifiers.logo
+            && binding.trigger == BindingTrigger::Keysym(keysyms::KEY_F1)
+            && binding.action == BindingAction::ToggleKeybindingGuide));
+        let bindings = parse(
+            "binding keys=\"Super+F1\" disabled=#true\nbinding keys=\"Super+F2\" action=\"toggle-keybinding-guide\"\n",
+        )
+        .runtime_config()
+        .unwrap()
+        .bindings;
+        assert!(
+            !bindings
+                .iter()
+                .any(|binding| binding.trigger == BindingTrigger::Keysym(keysyms::KEY_F1))
+        );
+        assert!(
+            bindings
+                .iter()
+                .any(|binding| binding.trigger == BindingTrigger::Keysym(keysyms::KEY_F2)
+                    && binding.action == BindingAction::ToggleKeybindingGuide)
+        );
+    }
     #[test]
     fn workspace_back_and_forth_config_is_optional_and_bindable() {
         let defaults = Config::default().runtime_config().unwrap();
@@ -2372,7 +2403,7 @@ mod tests {
         let input = config.input_settings().unwrap();
         let bindings = config.bindings(&input).unwrap();
 
-        assert_eq!(bindings.len(), 49);
+        assert_eq!(bindings.len(), 50);
         for (shift, action) in [
             (false, BindingAction::ToggleMaximized),
             (true, BindingAction::ToggleFullscreen),
@@ -2415,14 +2446,14 @@ mod tests {
 
         let input = replaced.input_settings().unwrap();
         let bindings = replaced.bindings(&input).unwrap();
-        assert_eq!(bindings.len(), 49);
+        assert_eq!(bindings.len(), 50);
         assert!(bindings.iter().any(|binding| {
             binding.action == BindingAction::Spawn(vec!["foot".to_owned(), "--app-id".to_owned(), "work".to_owned()])
         }));
 
         let input = unbound.input_settings().unwrap();
         let bindings = unbound.bindings(&input).unwrap();
-        assert_eq!(bindings.len(), 48);
+        assert_eq!(bindings.len(), 49);
         assert!(!bindings.iter().any(|binding| binding.action == BindingAction::Close));
     }
 

@@ -59,6 +59,7 @@ pub(crate) struct ControlPoll {
     pub(crate) disconnected: bool,
     pub(crate) logout: Option<(u32, String)>,
     pub(crate) logout_cancelled: Vec<u32>,
+    pub(crate) guide_toggles: Vec<String>,
 }
 
 enum ControlUpdate {
@@ -68,6 +69,7 @@ enum ControlUpdate {
     Disconnected,
     Logout(u32, String),
     LogoutCancelled(u32),
+    ToggleGuide(String),
 }
 
 impl ShellControl {
@@ -75,7 +77,7 @@ impl ShellControl {
         let connection = control_connection()?;
         let (globals, mut queue) = registry_queue_init::<ControlState>(&connection)?;
         let qh = queue.handle();
-        let manager = globals.bind::<FereseShellManagerV1, _, _>(&qh, 4..=4, ())?;
+        let manager = globals.bind::<FereseShellManagerV1, _, _>(&qh, 4..=5, ())?;
         let shell = manager.get_shell(&qh, ());
         let (sender, updates) = mpsc::channel();
         let mut state = ControlState::new(sender);
@@ -104,11 +106,13 @@ impl ShellControl {
             disconnected: false,
             logout: None,
             logout_cancelled: Vec::new(),
+            guide_toggles: Vec::new(),
         };
 
         loop {
             match self.updates.try_recv() {
                 Ok(ControlUpdate::Logout(serial, output)) => poll.logout = Some((serial, output)),
+                Ok(ControlUpdate::ToggleGuide(output)) => poll.guide_toggles.push(output),
                 Ok(ControlUpdate::LogoutCancelled(serial)) => {
                     if poll.logout.as_ref().is_some_and(|(pending, _)| *pending == serial) {
                         poll.logout = None;
@@ -297,6 +301,9 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
             }
             ferese_shell_v1::Event::LogoutRequested { serial, output_name } => {
                 let _ = state.sender.send(ControlUpdate::Logout(serial, output_name));
+            }
+            ferese_shell_v1::Event::ToggleKeybindingGuide { output_name } => {
+                let _ = state.sender.send(ControlUpdate::ToggleGuide(output_name));
             }
             ferese_shell_v1::Event::LogoutCancelled { serial } => {
                 let _ = state.sender.send(ControlUpdate::LogoutCancelled(serial));

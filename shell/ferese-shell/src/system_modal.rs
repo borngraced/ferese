@@ -87,7 +87,9 @@ impl FereseShell {
 
     pub(super) fn rebuild_system_modal(&mut self) -> Task<Message> {
         let guide = self.system_modal.as_ref().and_then(|modal| match &modal.content {
-            Content::Guide(entries) if !modal.motion.closing() && self.config.status.keybinding_guide => {
+            Content::Guide(entries)
+                if !modal.motion.closing() && (self.guide_load.manual || self.config.status.keybinding_guide) =>
+            {
                 Some(entries.clone())
             }
             _ => None,
@@ -107,7 +109,15 @@ impl FereseShell {
     }
 
     pub(super) fn open_guide(&mut self, entries: Vec<keybinding_guide::Entry>) -> Task<Message> {
-        self.open_modal(Content::Guide(entries), None)
+        self.open_guide_on(entries, None)
+    }
+
+    pub(super) fn open_guide_on(
+        &mut self,
+        entries: Vec<keybinding_guide::Entry>,
+        output: Option<&str>,
+    ) -> Task<Message> {
+        self.open_modal(Content::Guide(entries), output)
     }
 
     fn open_modal(&mut self, content: Content, output_name: Option<&str>) -> Task<Message> {

@@ -12,7 +12,7 @@ use crate::private_client::ClientCapabilities;
 use crate::state::ClientState;
 
 pub(crate) fn init_global(display: &DisplayHandle) {
-    display.create_global::<Ferese, FereseShellManagerV1, _>(4, ());
+    display.create_global::<Ferese, FereseShellManagerV1, _>(5, ());
 }
 
 pub(crate) fn config_chunks(source: &str) -> Vec<&str> {
@@ -206,6 +206,24 @@ impl Ferese {
                 self.request_logout_confirmation();
             }
         }
+    }
+
+    pub(crate) fn toggle_keybinding_guide(&mut self) -> bool {
+        if self.session_lock.active {
+            return false;
+        }
+        let Some(shell) = self
+            .shell_resources
+            .iter()
+            .filter_map(|shell| shell.upgrade().ok())
+            .find(|shell| shell.version() >= 5)
+        else {
+            tracing::warn!("shortcut hint requires the updated Ferese shell");
+            return false;
+        };
+        let output = self.focused_output().map_or_else(String::new, |output| output.name());
+        shell.toggle_keybinding_guide(output);
+        true
     }
 
     pub(crate) fn request_logout_confirmation(&mut self) {
