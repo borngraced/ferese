@@ -60,6 +60,7 @@ use smithay::wayland::presentation::PresentationState;
 use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::selection::data_device::DataDeviceState;
 use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::selection::{ext_data_control, wlr_data_control};
 use smithay::wayland::session_lock::SessionLockManagerState;
 use smithay::wayland::shell::wlr_layer::{Layer, WlrLayerShellState};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
@@ -403,6 +404,8 @@ pub struct Ferese {
     pub pointer_constraints_state: PointerConstraintsState,
     pub presentation_state: PresentationState,
     pub primary_selection_state: PrimarySelectionState,
+    pub wlr_data_control_state: wlr_data_control::DataControlState,
+    pub ext_data_control_state: ext_data_control::DataControlState,
     pub relative_pointer_state: RelativePointerManagerState,
     pub seat_state: SeatState<Self>,
     pub shm_state: ShmState,
@@ -479,6 +482,17 @@ impl Ferese {
         let presentation_state = PresentationState::new::<Self>(&display_handle, libc::CLOCK_MONOTONIC as u32);
         let data_device_state = DataDeviceState::new::<Self>(&display_handle);
         let primary_selection_state = PrimarySelectionState::new::<Self>(&display_handle);
+        // Clipboard tools need direct selection access. Without data control,
+        // wl-copy maps a temporary window to obtain keyboard focus.
+        let wlr_data_control_state =
+            wlr_data_control::DataControlState::new::<Self, _>(&display_handle, Some(&primary_selection_state), |_| {
+                true
+            });
+        let ext_data_control_state =
+            ext_data_control::DataControlState::new::<Self, _>(&display_handle, Some(&primary_selection_state), |_| {
+                true
+            });
+
         let relative_pointer_state = RelativePointerManagerState::new::<Self>(&display_handle);
         let viewporter_state = ViewporterState::new::<Self>(&display_handle);
         let layer_shell_state = WlrLayerShellState::new::<Self>(&display_handle);
@@ -607,6 +621,8 @@ impl Ferese {
             pointer_constraints_state,
             presentation_state,
             primary_selection_state,
+            wlr_data_control_state,
+            ext_data_control_state,
             relative_pointer_state,
             seat_state,
             shm_state,

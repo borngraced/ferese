@@ -261,6 +261,18 @@ impl PrimarySelectionHandler for Ferese {
     }
 }
 
+impl smithay::wayland::selection::wlr_data_control::DataControlHandler for Ferese {
+    fn data_control_state(&self) -> &smithay::wayland::selection::wlr_data_control::DataControlState {
+        &self.wlr_data_control_state
+    }
+}
+
+impl smithay::wayland::selection::ext_data_control::DataControlHandler for Ferese {
+    fn data_control_state(&self) -> &smithay::wayland::selection::ext_data_control::DataControlState {
+        &self.ext_data_control_state
+    }
+}
+
 impl XdgForeignHandler for Ferese {
     fn xdg_foreign_state(&mut self) -> &mut XdgForeignState {
         &mut self.xdg_foreign_state
@@ -295,3 +307,6 @@ smithay::delegate_xdg_decoration!(Ferese);
 smithay::delegate_xdg_foreign!(Ferese);
 smithay::delegate_xdg_shell!(Ferese);
 smithay::delegate_xdg_toplevel_icon!(Ferese);
+
+smithay::delegate_data_control!(Ferese);
+smithay::delegate_ext_data_control!(Ferese);
