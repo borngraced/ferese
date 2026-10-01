@@ -8,6 +8,10 @@
 #include <unistd.h>
 #include <wayland-client.h>
 #include "xdg-shell-client-protocol.h"
+#ifdef FERESE_TEST_DECORATION
+#include "xdg-decoration-client-protocol.h"
+static struct zxdg_decoration_manager_v1 *decoration_manager;
+#endif
 
 static struct wl_compositor *compositor;
 static struct wl_shm *shm;
@@ -50,6 +54,10 @@ static void global(void *data, struct wl_registry *registry, uint32_t name,
         wm = wl_registry_bind(registry, name, &xdg_wm_base_interface, 1);
         xdg_wm_base_add_listener(wm, &wm_listener, NULL);
     }
+#ifdef FERESE_TEST_DECORATION
+    else if (!strcmp(interface, "zxdg_decoration_manager_v1"))
+        decoration_manager = wl_registry_bind(registry, name, &zxdg_decoration_manager_v1_interface, 1);
+#endif
 }
 static void removed(void *data, struct wl_registry *registry, uint32_t name) {
     (void)data; (void)registry; (void)name;
@@ -59,6 +67,8 @@ static void configure(void *data, struct xdg_surface *xdg, uint32_t serial) {
     (void)data;
     xdg_surface_ack_configure(xdg, serial);
     make_buffer();
+    printf("buffer %d %d\n", width, height);
+    fflush(stdout);
     xdg_surface_set_window_geometry(xdg, 0, 0, width, height);
     wl_surface_attach(surface, buffer, 0, 0);
     wl_surface_damage(surface, 0, 0, width, height);
@@ -68,6 +78,8 @@ static const struct xdg_surface_listener surface_listener = {.configure = config
 static void size(void *data, struct xdg_toplevel *top, int32_t w, int32_t h,
                  struct wl_array *states) {
     (void)data; (void)top; (void)states;
+    printf("configure %d %d\n", w, h);
+    fflush(stdout);
     if (honor_configure) {
         if (w > 0) width = w;
         if (h > 0) height = h;
@@ -77,6 +89,12 @@ static void close_window(void *data, struct xdg_toplevel *top) {
     (void)data; (void)top; exit(0);
 }
 static const struct xdg_toplevel_listener top_listener = {.configure = size, .close = close_window};
+#ifdef FERESE_TEST_DECORATION
+static void decoration_configure(void *data, struct zxdg_toplevel_decoration_v1 *decoration, uint32_t mode) {
+    (void)data; (void)decoration; (void)mode;
+}
+static const struct zxdg_toplevel_decoration_v1_listener decoration_listener = {.configure = decoration_configure};
+#endif
 int main(int argc, char **argv) {
     if (argc >= 4) { width = atoi(argv[2]); height = atoi(argv[3]); }
     honor_configure = argc >= 5;
@@ -91,6 +109,15 @@ int main(int argc, char **argv) {
     xdg_surface_add_listener(xdg, &surface_listener, NULL);
     struct xdg_toplevel *top = xdg_surface_get_toplevel(xdg);
     xdg_toplevel_add_listener(top, &top_listener, NULL);
+#ifdef FERESE_TEST_DECORATION
+    if (argc >= 6 && !strcmp(argv[5], "decorated")) {
+        if (!decoration_manager) return 6;
+        struct zxdg_toplevel_decoration_v1 *decoration =
+            zxdg_decoration_manager_v1_get_toplevel_decoration(decoration_manager, top);
+        zxdg_toplevel_decoration_v1_add_listener(decoration, &decoration_listener, NULL);
+        zxdg_toplevel_decoration_v1_set_mode(decoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+    }
+#endif
     xdg_toplevel_set_app_id(top, argc >= 2 ? argv[1] : "ferese.test.floating-size");
     xdg_toplevel_set_title(top, "Floating size regression");
     wl_surface_commit(surface);

@@ -77,6 +77,12 @@ impl CompositorHandler for Ferese {
                         self.space.map_element(window.clone(), (0, 0), false);
                         self.restore_keyboard_focus();
                     }
+                    if window
+                        .toplevel()
+                        .is_some_and(|toplevel| !xdg_shell::initial_configure_sent(toplevel))
+                    {
+                        self.restore_initial_floating_size(&window);
+                    }
                 }
                 self.record_client_commit(&window);
             }

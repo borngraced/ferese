@@ -1257,6 +1257,54 @@ impl Ferese {
                 .is_some_and(|geometry| geometry.client.committed_size.is_some())
     }
 
+    pub(crate) fn restore_initial_floating_size(&mut self, window: &Window) {
+        let Some(toplevel) = window.toplevel() else { return };
+        let (app_id, title, transient) = with_states(toplevel.wl_surface(), |states| {
+            let attributes = states.data_map.get::<XdgToplevelSurfaceData>().unwrap().lock().unwrap();
+            (
+                attributes.app_id.clone(),
+                attributes.title.clone(),
+                attributes.parent.is_some(),
+            )
+        });
+        let special_mode = toplevel.with_pending_state(|pending| {
+            pending.states.contains(xdg_toplevel::State::Fullscreen)
+                || pending.states.contains(xdg_toplevel::State::Maximized)
+        });
+        let rule = resolve_window_rules(&self.window_rules, app_id.as_deref(), title.as_deref(), transient);
+        if transient
+            || special_mode
+            || rule.fullscreen == Some(true)
+            || !rule.floating.unwrap_or(rule.width.is_some() || rule.height.is_some())
+        {
+            return;
+        }
+        let outputs = self.floating_outputs();
+        let Some((remembered, work)) = app_id
+            .as_deref()
+            .and_then(|app| self.floating_memory.get(app))
+            .and_then(|entry| {
+                let rect = entry.restore(&outputs)?;
+                let work = outputs.iter().find(|(name, _)| *name == entry.output)?.1;
+                Some((rect, work))
+            })
+        else {
+            return;
+        };
+        // Metadata is available on the initial bufferless commit. Restore the
+        // size before the client creates its first buffer, without mapping or
+        // focusing the window. Use the same rule/constraint precedence as map.
+        let rect = self.place_floating(
+            window,
+            None,
+            work,
+            (remembered.width, remembered.height),
+            Some((rule.width, rule.height)),
+        );
+        let size = ClientSize::from_rect(rect);
+        toplevel.with_pending_state(|pending| pending.size = Some((size.width, size.height).into()));
+    }
+
     pub(crate) fn add_rule_placed_window(
         &mut self,
         window: Window,

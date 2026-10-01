@@ -285,11 +285,13 @@ impl XdgDecorationHandler for Ferese {
         let mode = self.decoration_mode_for(&toplevel);
         toplevel.with_pending_state(|state| state.decoration_mode = Some(mode));
 
-        // This must be unconditional: the initial xdg-toplevel configure may
-        // already contain the same mode before the decoration object exists.
-        // `send_pending_configure` would then see no state change and omit the
-        // decoration configure, leaving clients to fall back to CSD.
-        toplevel.send_configure();
+        // Wait for the initial surface commit so app-id and saved floating
+        // size can be included in the first configure. If already configured,
+        // send unconditionally: the existing toplevel state may have the same
+        // mode, but the new decoration object still needs its configure event.
+        if initial_configure_sent(&toplevel) {
+            toplevel.send_configure();
+        }
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: Mode) {
@@ -319,7 +321,21 @@ impl Ferese {
 
 fn set_decoration_mode(toplevel: &ToplevelSurface, mode: Mode) {
     toplevel.with_pending_state(|state| state.decoration_mode = Some(mode));
-    toplevel.send_pending_configure();
+    if initial_configure_sent(toplevel) {
+        toplevel.send_pending_configure();
+    }
+}
+
+pub(crate) fn initial_configure_sent(toplevel: &ToplevelSurface) -> bool {
+    with_states(toplevel.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .initial_configure_sent
+    })
 }
 
 pub fn handle_commit(popups: &mut PopupManager, space: &mut Space<Window>, surface: &WlSurface) {

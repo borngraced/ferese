@@ -23,21 +23,32 @@ class FloatingPlacementTest(unittest.TestCase):
             xml = str(Path(protocols) / "stable/xdg-shell/xdg-shell.xml")
             for kind, output in [("client-header", "xdg-shell-client-protocol.h"), ("private-code", "xdg-shell-protocol.c")]:
                 subprocess.run(["wayland-scanner", kind, xml, str(root / output)], check=True)
+            decoration_xml = str(Path(protocols) / "unstable/xdg-decoration/xdg-decoration-unstable-v1.xml")
+            for kind, output in [("client-header", "xdg-decoration-client-protocol.h"),
+                                 ("private-code", "xdg-decoration-protocol.c")]:
+                subprocess.run(["wayland-scanner", kind, decoration_xml, str(root / output)], check=True)
             flags = subprocess.check_output(["pkg-config", "--cflags", "--libs", "wayland-client"], text=True).split()
-            subprocess.run(["cc", "-Wall", "-Wextra", "-I", str(root), str(repo / "scripts/tests/fixtures/floating-size.c"),
-                            str(root / "xdg-shell-protocol.c"), "-o", str(root / "client"), *flags], check=True)
+            subprocess.run(["cc", "-Wall", "-Wextra", "-DFERESE_TEST_DECORATION", "-I", str(root),
+                            str(repo / "scripts/tests/fixtures/floating-size.c"), str(root / "xdg-shell-protocol.c"),
+                            str(root / "xdg-decoration-protocol.c"), "-o", str(root / "client"), *flags], check=True)
             runtime = root / "runtime"
             runtime.mkdir(mode=0o700)
             config = root / "config/ferese"
             config.mkdir(parents=True)
-            (config / "config.kdl").write_text('animations { enabled #false; }\n' + ''.join(
+            (config / "config.kdl").write_text('animations { enabled #true; }\n' + ''.join(
                 f'window-rule app-id="ferese.test.placement.{app}" floating=#true\n' for app in ["remembered", "second", "third"]) +
                 'window-rule app-id="ferese.test.placement.fullscreen" floating=#true width=240 height=160 fullscreen=#true\n' +
-                'window-rule app-id="ferese.test.placement.maximized" floating=#true width=240 height=160\n')
+                'window-rule app-id="ferese.test.placement.maximized" floating=#true width=240 height=160\n' +
+                'window-rule app-id="ferese.test.placement.reopen" floating=#true\n' +
+                'window-rule app-id="ferese.test.placement.rule-size" floating=#true width=300 height=190\n')
             state = root / "state/ferese"
             state.mkdir(parents=True)
             memory = state / "floating.json"
-            memory.write_text(json.dumps({"ferese.test.placement.remembered": {"output": "ferese-winit", "fractions": [.1, .1, .2, .2]}}))
+            memory.write_text(json.dumps({"ferese.test.placement." + app: {"output": "ferese-winit", "fractions": fractions}
+                                         for app, fractions in [("remembered", [.1, .1, .2, .2]),
+                                                                ("reopen", [.55, .55, .25, .3]),
+                                                                ("rule-size", [.55, .55, .25, .3]),
+                                                                ("tiled", [.55, .55, .25, .3])]}))
             before = memory.read_bytes()
             display = Path(os.environ["WAYLAND_DISPLAY"])
             if not display.is_absolute():
@@ -104,6 +115,49 @@ class FloatingPlacementTest(unittest.TestCase):
                             self.fail(f"floating rectangle changed after toggling: {expected} -> {actual}")
                         time.sleep(.025)
                     self.assertEqual(memory.read_bytes(), before, "nested previews must not persist drag memory")
+                    # The first configure and every buffer must already have
+                    # the restored size. Checking only the final rectangle
+                    # misses a visible default-size -> saved-size replay.
+                    for app, repeats in [("reopen", 2), ("rule-size", 1), ("tiled", 1)]:
+                        for attempt in range(repeats):
+                            with (root / f"{app}-{attempt}.log").open("w+") as client_log:
+                                args = [str(root / "client"), "ferese.test.placement." + app, "240", "160", "configured"]
+                                if attempt == 1:
+                                    # Request decorations before sending app-id:
+                                    # this must not send an early sizeless configure.
+                                    args.append("decorated")
+                                client = launch(args, stdout=client_log, stderr=log)
+                                deadline = time.monotonic() + 5
+                                while True:
+                                    client_log.seek(0)
+                                    events = client_log.read().splitlines()
+                                    buffers = [tuple(map(int, e.split()[1:])) for e in events if e.startswith("buffer ")]
+                                    if buffers:
+                                        break
+                                    if time.monotonic() > deadline:
+                                        self.fail(f"client did not map: {events}")
+                                    time.sleep(.01)
+                                first_configure = next(tuple(map(int, e.split()[1:])) for e in events if e.startswith("configure "))
+                                if app == "tiled":
+                                    self.assertEqual(first_configure, (0, 0), "floating memory must not size a tiled window")
+                                else:
+                                    output = next(o for o in command("get-outputs") if o["enabled"])
+                                    expected = ((round(.25 * output["width"]), round(.3 * output["height"]))
+                                                if app == "reopen" else (300, 190))
+                                    for actual, target in zip(first_configure, expected):
+                                        self.assertAlmostEqual(actual, target, delta=1)
+                                    time.sleep(.4)
+                                    client_log.seek(0)
+                                    buffers = [tuple(map(int, e.split()[1:])) for e in client_log.read().splitlines()
+                                               if e.startswith("buffer ")]
+                                    self.assertTrue(all(size == first_configure for size in buffers), repr(buffers))
+                                client.terminate()
+                                client.wait(timeout=3)
+                                deadline = time.monotonic() + 5
+                                while any(w["app_id"] == "ferese.test.placement." + app for w in command("get-windows")):
+                                    if time.monotonic() > deadline:
+                                        self.fail("closed client remained mapped")
+                                    time.sleep(.01)
                     for mode in ["fullscreen", "maximized"]:
                         app = "ferese.test.placement." + mode
                         if mode == "maximized":
