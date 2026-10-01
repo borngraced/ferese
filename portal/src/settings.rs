@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+use std::io::Read;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use ferese_config::Document;
 use ferese_config::theme::{Appearance as ThemeAppearance, ResolvedTheme};
 use tokio::sync::RwLock;
 use zbus::Connection;
@@ -50,52 +53,60 @@ pub(crate) struct Settings(Arc<RwLock<Appearance>>);
 
 impl Settings {
     pub(crate) fn new() -> Self {
-        Self(Arc::new(RwLock::new(Appearance::from_resolved(
-            &ferese_ipc::theme::current().theme,
-        ))))
+        let theme = ferese_ipc::theme::Connection::connect()
+            .ok()
+            .and_then(|mut connection| connection.get().ok())
+            .map(|snapshot| snapshot.theme);
+        Self(Arc::new(RwLock::new(initial_appearance(theme.as_ref(), load_config))))
+    }
+
+    async fn update_appearance(&self, next: Appearance, emitter: &SignalEmitter<'_>) {
+        let mut current = self.0.write().await;
+        if *current == next {
+            return;
+        }
+        let previous = current.values();
+        *current = next;
+        drop(current);
+        for (key, value) in next.values() {
+            if previous.get(&key) != Some(&value) {
+                let _ = Self::setting_changed(emitter, APPEARANCE, &key, value).await;
+            }
+        }
     }
 
     pub(crate) async fn watch(self, connection: Connection) {
         let emitter = SignalEmitter::new(&connection, PATH).unwrap();
         loop {
             let connection = tokio::task::spawn_blocking(ferese_ipc::theme::Connection::connect).await;
-            let Ok(Ok(mut connection)) = connection else {
-                tokio::time::sleep(Duration::from_secs(1)).await;
-                continue;
-            };
-            let Ok(cancellation) = connection.cancellation() else {
-                return;
-            };
-            let (send, mut receive) = tokio::sync::mpsc::channel(1);
-            tokio::task::spawn_blocking(move || {
-                let Ok(mut snapshot) = connection.get() else { return };
-                loop {
-                    let revision = snapshot.revision;
-                    if send.blocking_send(snapshot).is_err() {
-                        return;
+            if let Ok(Ok(mut connection)) = connection
+                && let Ok(cancellation) = connection.cancellation()
+            {
+                let (send, mut receive) = tokio::sync::mpsc::channel(1);
+                tokio::task::spawn_blocking(move || {
+                    let Ok(mut snapshot) = connection.get() else { return };
+                    loop {
+                        let revision = snapshot.revision;
+                        if send.blocking_send(snapshot).is_err() {
+                            return;
+                        }
+                        match connection.watch(revision) {
+                            Ok(next) => snapshot = next,
+                            Err(_) => return,
+                        }
                     }
-                    match connection.watch(revision) {
-                        Ok(next) => snapshot = next,
-                        Err(_) => return,
-                    }
+                });
+                while let Some(snapshot) = receive.recv().await {
+                    self.update_appearance(Appearance::from_resolved(&snapshot.theme), &emitter)
+                        .await;
                 }
-            });
-            while let Some(snapshot) = receive.recv().await {
-                let next = Appearance::from_resolved(&snapshot.theme);
-                let mut current = self.0.write().await;
-                if *current == next {
-                    continue;
-                }
-                let previous = current.values();
-                *current = next;
-                drop(current);
-                for (key, value) in next.values() {
-                    if previous.get(&key) != Some(&value) {
-                        let _ = Self::setting_changed(&emitter, APPEARANCE, &key, value).await;
-                    }
-                }
+                drop(cancellation);
             }
-            drop(cancellation);
+            // Standalone startup and compositor disconnects use the same resolver.
+            // Rejected edits retain the last valid appearance, just as the owner does.
+            if let Ok(Some(next)) = tokio::task::spawn_blocking(load_config).await {
+                self.update_appearance(next, &emitter).await;
+            }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
     }
@@ -147,9 +158,111 @@ fn matches_namespace(filters: &[String], namespace: &str) -> bool {
         })
 }
 
+fn initial_appearance(theme: Option<&ResolvedTheme>, load: impl FnOnce() -> Option<Appearance>) -> Appearance {
+    theme
+        .map(Appearance::from_resolved)
+        .or_else(load)
+        .unwrap_or_else(|| Appearance::from_resolved(&ResolvedTheme::default()))
+}
+
+fn read_source(path: &Path) -> Result<String, String> {
+    let mut source = String::new();
+    std::fs::File::open(path)
+        .map_err(|error| error.to_string())?
+        .take(60 * 1024 + 1)
+        .read_to_string(&mut source)
+        .map_err(|error| error.to_string())?;
+    if source.len() > 60 * 1024 {
+        return Err(format!("{} exceeds 60 KiB", path.display()));
+    }
+    Ok(source)
+}
+
+fn load_config() -> Option<Appearance> {
+    load_path(&ferese_config::config_path()?).ok()
+}
+
+fn load_path(path: &Path) -> Result<Appearance, String> {
+    let source = match read_source(path) {
+        Ok(source) => source,
+        Err(_) if !path.try_exists().map_err(|error| error.to_string())? => {
+            return Ok(Appearance::from_resolved(&ResolvedTheme::default()));
+        }
+        Err(error) => return Err(error),
+    };
+    let document = Document::parse(&source).map_err(|error| error.to_string())?;
+    let resolved = ferese_config::theme::resolve(
+        &document,
+        path.parent().unwrap_or_else(|| Path::new(".")),
+        jiff::Timestamp::now(),
+        read_source,
+    )?;
+    Ok(Appearance::from_resolved(&resolved.theme))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn standalone_appearance_resolves_disk_config_and_imports() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.kdl");
+        let imported = root.path().join("colors.kdl");
+        std::fs::write(&imported, r##"colors { accent "#ff8000"; }"##).unwrap();
+        let source = r#"theme { mode "light"; file "colors.kdl"; accessibility { increase-contrast #true; }; }; animations { reduced-motion #true; }"#;
+        std::fs::write(&path, source).unwrap();
+        let appearance = initial_appearance(None, || load_path(&path).ok());
+        let document = Document::parse(source).unwrap();
+        let expected =
+            ferese_config::theme::resolve(&document, root.path(), jiff::Timestamp::now(), read_source).unwrap();
+        assert_eq!(appearance, Appearance::from_resolved(&expected.theme));
+        assert_eq!(appearance.scheme, 2);
+        assert_eq!(appearance.reduced_motion, 1);
+        assert_eq!(appearance.contrast, 1);
+        assert_ne!(
+            appearance.accent,
+            Appearance::from_resolved(&ResolvedTheme::default()).accent
+        );
+
+        std::fs::write(&path, r#"theme { mode "dark"; }; animations { enabled #false; }"#).unwrap();
+        let next = load_path(&path).unwrap();
+        assert_eq!(next.scheme, 1);
+        assert_eq!(next.reduced_motion, 1);
+        assert_eq!(next.contrast, 0);
+    }
+
+    #[test]
+    fn ipc_appearance_has_priority_over_disk_fallback() {
+        let theme = ResolvedTheme {
+            appearance: ThemeAppearance::Light,
+            ..Default::default()
+        };
+        assert_eq!(
+            initial_appearance(Some(&theme), || panic!("disk fallback read with live IPC")),
+            Appearance::from_resolved(&theme)
+        );
+    }
+
+    #[test]
+    fn disk_fallback_rejects_invalid_config_and_uses_defaults_when_absent() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.kdl");
+        let default = Appearance::from_resolved(&ResolvedTheme::default());
+        assert_eq!(load_path(&path).unwrap(), default);
+        for source in [
+            r#"theme { broken"#,
+            r#"theme { mode "invalid"; }"#,
+            r#"theme { colors { accent "invalid"; }; }"#,
+            r#"theme { file "missing.kdl"; }"#,
+        ] {
+            std::fs::write(&path, source).unwrap();
+            assert!(load_path(&path).is_err(), "{source}");
+            assert_eq!(initial_appearance(None, || load_path(&path).ok()), default);
+        }
+        std::fs::write(&path, " ".repeat(60 * 1024 + 1)).unwrap();
+        assert!(load_path(&path).is_err());
+    }
 
     #[test]
     fn namespaces_support_only_trailing_section_wildcards() {

@@ -20,12 +20,18 @@ PATH = "/org/freedesktop/portal/desktop"
 
 class NativePortalContracts(unittest.TestCase):
     def test_private_bus_contracts(self):
-        result = subprocess.run(["dbus-run-session", "--", sys.executable, __file__, "--private"],
+        self.run_private("--private")
+
+    def test_standalone_disk_appearance_contracts(self):
+        self.run_private("--private-standalone")
+
+    def run_private(self, mode):
+        result = subprocess.run(["dbus-run-session", "--", sys.executable, __file__, mode],
                                 capture_output=True, text=True, timeout=45)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
-def private_bus_checks():
+def private_bus_checks(standalone=False):
     import gi
     gi.require_version("Gio", "2.0")
     from gi.repository import Gio, GLib
@@ -41,11 +47,14 @@ def private_bus_checks():
         root = Path(directory)
         config = root / "ferese/config.kdl"
         config.parent.mkdir()
-        # Lockdown still uses this document; appearance comes exclusively from theme IPC.
-        config.write_text('theme { mode "dark"; }; animations { reduced-motion #false; }\n')
+        if standalone:
+            config.write_text('theme { mode "light"; colors { surface-base "#ffffff"; accent "#ff8000"; }; }; animations { reduced-motion #true; }\n')
+        else:
+            # A live owner takes priority over this deliberately different document.
+            config.write_text('theme { mode "dark"; }; animations { reduced-motion #false; }\n')
         runtime = root / "runtime"
         runtime.mkdir(mode=0o700)
-        theme_owner = ThemeOwner(runtime)
+        theme_owner = None if standalone else ThemeOwner(runtime)
         log = (root / "backend.log").open("w")
         env = dict(os.environ, XDG_CONFIG_HOME=directory, XDG_RUNTIME_DIR=str(runtime),
                    WAYLAND_DISPLAY="wayland-unavailable")
@@ -83,7 +92,12 @@ def private_bus_checks():
             values, = call("org.freedesktop.impl.portal.Settings", "ReadAll", GLib.Variant("(as)", ([],)), "(a{sa{sv}})")
             appearance = values["org.freedesktop.appearance"]
             assert appearance["color-scheme"] == 2 and appearance["reduced-motion"] == 1, appearance
-            assert appearance["accent-color"][0] == 1. and appearance["accent-color"][2] == 0., appearance
+            if standalone:
+                # The resolver adjusts the requested orange for contrast in Light mode.
+                red, green, blue = appearance["accent-color"]
+                assert 1 >= red > green > blue >= 0, appearance
+            else:
+                assert appearance["accent-color"][0] == 1. and appearance["accent-color"][2] == 0., appearance
             result, = call("org.freedesktop.impl.portal.Settings", "ReadAll", GLib.Variant("(as)", (["other.*"],)), "(a{sa{sv}})")
             assert result == {}
             try:
@@ -229,18 +243,26 @@ def private_bus_checks():
             signals = []
             subscription = bus.signal_subscribe(NAME, "org.freedesktop.impl.portal.Settings", "SettingChanged", PATH,
                                                 None, Gio.DBusSignalFlags.NONE, lambda *args: signals.append(args[-1].unpack()))
-            theme_owner.publish("dark", "#0080ff", False, True)
+            if standalone:
+                temporary = config.with_suffix(".tmp")
+                temporary.write_text('theme { mode "dark"; colors { accent "#0080ff"; }; accessibility { increase-contrast #true; }; }; animations { enabled #true; }\n')
+                temporary.replace(config)
+            else:
+                theme_owner.publish("dark", "#0080ff", False, True)
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline and not {"color-scheme", "accent-color", "reduced-motion", "contrast"}.issubset({signal[1] for signal in signals}):
                 GLib.MainContext.default().iteration(False)
                 time.sleep(0.02)
             assert any(signal[1] == "color-scheme" and signal[2] == 1 for signal in signals), signals
             changed = {event[1]: event[2] for event in signals}
-            assert changed["accent-color"] == (0., 128 / 255, 1.), changed
+            if standalone:
+                assert changed["accent-color"] != appearance["accent-color"], changed
+            else:
+                assert changed["accent-color"] == (0., 128 / 255, 1.), changed
             assert changed["reduced-motion"] == 0 and changed["contrast"] == 1, changed
             current, = call("org.freedesktop.impl.portal.Settings", "ReadAll", GLib.Variant("(as)", (["org.freedesktop.*"],)), "(a{sa{sv}})")
             assert current["org.freedesktop.appearance"] == changed, current
-            # Portal appearance stays with the owner even when the local document is invalid.
+            # An invalid edit retains the last valid appearance for either source.
             config.write_text('theme { broken')
             time.sleep(1.2)
             scheme, = call("org.freedesktop.impl.portal.Settings", "Read", GLib.Variant("(ss)", ("org.freedesktop.appearance", "color-scheme")))
@@ -250,11 +272,14 @@ def private_bus_checks():
             os.killpg(process.pid, signal.SIGTERM)
             process.wait(timeout=5)
             log.close()
-            theme_owner.close()
+            if theme_owner is not None:
+                theme_owner.close()
 
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--private"]:
         private_bus_checks()
+    elif sys.argv[1:] == ["--private-standalone"]:
+        private_bus_checks(standalone=True)
     else:
         unittest.main()
