@@ -425,27 +425,25 @@ impl cosmic::Application for FereseShell {
                     }
                     self.theme_error = snapshot.error;
                 }
-                return self.apply_config(config);
+                self.apply_config(config)
             }
-            Message::ThemeMode(mode) => {
-                return cosmic::task::future(async move {
-                    let result = tokio::task::spawn_blocking(move || {
-                        let mut connection = ferese_ipc::theme::Connection::connect().map_err(|e| e.to_string())?;
-                        connection
-                            .call("theme-set-mode", serde_json::json!({"mode": mode}))
-                            .map(|_| ())
-                    })
-                    .await
-                    .unwrap_or_else(|e| Err(e.to_string()));
-                    cosmic::Action::App(Message::ThemeModeSet(result))
-                });
-            }
+            Message::ThemeMode(mode) => cosmic::task::future(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    let mut connection = ferese_ipc::theme::Connection::connect().map_err(|e| e.to_string())?;
+                    connection
+                        .call("theme-set-mode", serde_json::json!({"mode": mode}))
+                        .map(|_| ())
+                })
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()));
+                cosmic::Action::App(Message::ThemeModeSet(result))
+            }),
             Message::ThemeModeSet(result) => {
                 if let Err(error) = result {
                     self.notifications
                         .service_error("Appearance could not be changed", &error);
                 }
-                return Task::none();
+                Task::none()
             }
             Message::BeginNoteEdit(id) => {
                 let mut tasks = vec![self.finish_note_edit()];

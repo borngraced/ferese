@@ -309,16 +309,15 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Radio<'_, M> {
                 if !iced_accessibility::IdEq::eq(&id.0, &self.id.0) {
                     return;
                 }
-                if matches!(request.action, accesskit::Action::Focus | accesskit::Action::Click) {
-                    if let Some(message) = self
+                if matches!(request.action, accesskit::Action::Focus | accesskit::Action::Click)
+                    && let Some(message) = self
                         .navigate
                         .as_ref()
                         .and_then(|navigate| navigate(&keyboard::key::Named::Enter))
-                    {
-                        shell.publish(message);
-                        shell.capture_event();
-                        return;
-                    }
+                {
+                    shell.publish(message);
+                    shell.capture_event();
+                    return;
                 }
             }
             if matches!(event, Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))) {
@@ -344,12 +343,11 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Radio<'_, M> {
                 key: keyboard::Key::Named(key),
                 ..
             }) = event
+                && let Some(message) = self.navigate.as_ref().and_then(|navigate| navigate(key))
             {
-                if let Some(message) = self.navigate.as_ref().and_then(|navigate| navigate(key)) {
-                    shell.publish(message);
-                    shell.capture_event();
-                    return;
-                }
+                shell.publish(message);
+                shell.capture_event();
+                return;
             }
         }
         self.content.as_widget_mut().update(

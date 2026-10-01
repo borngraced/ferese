@@ -193,7 +193,7 @@ pub(crate) fn capture_window_frame(
         return Err("Incomplete window readback".into());
     }
     let mut pixels = source[..bytes].to_vec();
-    for pixel in pixels.chunks_exact_mut(4) {
+    for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
         let alpha = pixel[3] as u16;
         for channel in &mut pixel[..3] {

@@ -793,10 +793,8 @@ impl cosmic::Application for App {
 
             if !fields.is_empty() {
                 let mut group = column([]).spacing(1);
-                if self.page == Page::Appearance {
-                    if self.auto_details {
-                        group = group.push(self.auto_controls());
-                    }
+                if self.page == Page::Appearance && self.auto_details {
+                    group = group.push(self.auto_controls());
                 }
                 for field in fields {
                     if self.page == Page::Appearance

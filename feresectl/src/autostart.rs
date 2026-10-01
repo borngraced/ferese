@@ -53,10 +53,10 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
         if !enabled(&entry, &desktop) {
             continue;
         }
-        if let Some(program) = entry.get("TryExec").filter(|program| !program.is_empty()) {
-            if !available(program) {
-                continue;
-            }
+        if let Some(program) = entry.get("TryExec").filter(|program| !program.is_empty())
+            && !available(program)
+        {
+            continue;
         }
         let parent = std::process::id() as libc::pid_t;
         let mut command = Command::new("timeout");

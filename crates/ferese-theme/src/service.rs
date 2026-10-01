@@ -44,10 +44,10 @@ fn stream() -> impl cosmic::iced::futures::Stream<Item = Snapshot> {
             });
             while receive.changed().await.is_ok() {
                 let snapshot = receive.borrow_and_update().clone();
-                if let Some(snapshot) = snapshot {
-                    if output.send(snapshot).await.is_err() {
-                        return;
-                    }
+                if let Some(snapshot) = snapshot
+                    && output.send(snapshot).await.is_err()
+                {
+                    return;
                 }
             }
             drop(cancellation);

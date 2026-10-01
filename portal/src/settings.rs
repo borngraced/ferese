@@ -128,10 +128,10 @@ impl Settings {
     }
 
     async fn read(&self, namespace: &str, key: &str) -> zbus::fdo::Result<OwnedValue> {
-        if namespace == APPEARANCE {
-            if let Some(value) = self.0.read().await.values().remove(key) {
-                return Ok(value);
-            }
+        if namespace == APPEARANCE
+            && let Some(value) = self.0.read().await.values().remove(key)
+        {
+            return Ok(value);
         }
         Err(zbus::fdo::Error::InvalidArgs("Unknown setting".into()))
     }

@@ -148,17 +148,16 @@ impl Inhibit {
                                     ("screensaver-active".into(), Value::from(locked).try_into().unwrap()),
                                     ("session-state".into(), Value::from(phase).try_into().unwrap()),
                                 ]);
-                                if let Ok(emitter) = SignalEmitter::new(&connection, PATH) {
-                                    if Self::state_changed(
+                                if let Ok(emitter) = SignalEmitter::new(&connection, PATH)
+                                    && Self::state_changed(
                                         &emitter,
                                         OwnedObjectPath::try_from(path.clone()).unwrap(),
                                         values,
                                     )
                                     .await
                                     .is_err()
-                                    {
-                                        break;
-                                    }
+                                {
+                                    break;
                                 }
                             }
                             *last = Some((locked, phase, revision, token));
@@ -344,7 +343,7 @@ impl Inhibit {
         {
             Ok(2)
         } else {
-            let attempt = async {
+            async {
                 let bridge = Bridge::connect().map_err(zbus::fdo::Error::Failed)?;
                 let result = tokio::select! {
                     biased;
@@ -403,8 +402,7 @@ impl Inhibit {
                     }
                 }
             }
-            .await;
-            attempt
+            .await
         };
         drop(monitors);
         self.requests.end(connection, &handle).await;

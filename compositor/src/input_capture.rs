@@ -126,7 +126,7 @@ fn crossed(barrier: &Barrier, edge: Edge, from: (f64, f64), to: (f64, f64)) -> O
     } else {
         from.0 + (to.0 - from.0) * fraction
     };
-    (fraction >= 0.0 && fraction <= 1.0 && along >= start && along < end).then_some(fraction)
+    ((0.0..=1.0).contains(&fraction) && along >= start && along < end).then_some(fraction)
 }
 
 struct Session {

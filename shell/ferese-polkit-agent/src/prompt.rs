@@ -321,7 +321,7 @@ impl cosmic::Application for Prompt {
             });
         }
         let action = button::custom(ferese_theme::text("Authenticate", palette.font).size(13))
-            .class(ferese_theme::accent_button())
+            .class(ferese_theme::controls::authentication_button(palette.palette()))
             .height(Length::Fixed(36.))
             .padding([8, 16])
             .on_press_maybe((!self.waiting && !self.answer.is_empty()).then_some(Message::Submit));

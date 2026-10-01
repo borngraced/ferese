@@ -130,6 +130,34 @@ fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button 
     }
 }
 
+/// Authentication actions use normal text while enabled and muted text while disabled.
+/// Keep the disabled fill neutral so contrast correction cannot make it look active.
+pub fn authentication_button(palette: Palette) -> theme::Button {
+    let paint = move |enabled: bool, interaction: f32, focused: bool| {
+        let (fill, foreground) = if enabled {
+            let candidate = mix(palette.accent, palette.text, interaction);
+            crate::accent_pair(crate::composite(candidate, palette.card), palette.text)
+        } else {
+            (crate::composite(palette.card, palette.background), palette.muted)
+        };
+        button::Style {
+            background: Some(Background::Color(fill)),
+            text_color: Some(foreground),
+            icon_color: Some(foreground),
+            border_radius: palette.radius.into(),
+            outline_width: if focused { 1. } else { 0. },
+            outline_color: foreground,
+            ..Default::default()
+        }
+    };
+    theme::Button::Custom {
+        active: Box::new(move |focused, _| paint(true, 0., focused)),
+        hovered: Box::new(move |focused, _| paint(true, 0.06, focused)),
+        pressed: Box::new(move |focused, _| paint(true, 0.12, focused)),
+        disabled: Box::new(move |_| paint(false, 0., false)),
+    }
+}
+
 pub fn authentication_input(palette: Palette) -> theme::TextInput {
     let text = palette.text;
     let muted = palette.muted;
@@ -267,6 +295,40 @@ pub fn filled_button(fill: Color, foreground: Color, radius: f32, opacity: f32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn authentication_button_does_not_reverse_enabled_and_disabled_text() {
+        use cosmic::widget::button::Catalog;
+
+        let palette = Palette {
+            appearance: ferese_config::theme::Appearance::Dark,
+            background: Color::from_rgb8(17, 24, 33),
+            sidebar: Color::from_rgb8(17, 24, 33),
+            card: Color::from_rgb8(17, 24, 33),
+            accent: Color::from_rgb8(61, 123, 230),
+            on_accent: Color::from_rgb8(17, 24, 33),
+            text: Color::from_rgb8(244, 247, 251),
+            muted: Color::from_rgb8(135, 147, 162),
+            error: Color::from_rgb8(235, 98, 98),
+            radius: 10.,
+        };
+        let theme = palette.native_theme();
+        let class = authentication_button(palette);
+        for style in [
+            theme.active(false, false, &class),
+            theme.hovered(false, false, &class),
+            theme.pressed(false, false, &class),
+        ] {
+            assert_eq!(style.text_color, Some(palette.text));
+            let Some(Background::Color(fill)) = style.background else {
+                panic!("No fill")
+            };
+            assert!(crate::contrast(fill, palette.text) >= 4.5);
+        }
+        let disabled = theme.disabled(&class);
+        assert_eq!(disabled.text_color, Some(palette.muted));
+        assert_eq!(disabled.background, Some(Background::Color(palette.card)));
+    }
 
     #[test]
     fn switch_thumb_remains_readable_in_every_preset_and_state() {

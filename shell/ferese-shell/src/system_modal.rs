@@ -547,7 +547,6 @@ impl FereseShell {
                 surface.regions.clone(),
                 self.config.theme.material_radius,
             )
-            .into()
         } else {
             content
         };

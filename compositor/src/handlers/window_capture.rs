@@ -242,12 +242,11 @@ impl Ferese {
                 scale,
                 cursor.map(|rect| (&*self, rect)),
             )
-        } else if let Some(mut backend) = self.direct_backend.take() {
+        } else {
+            let mut backend = self.direct_backend.take()?;
             let result = backend.capture_window_frame(self, &window, &output, cursor);
             self.direct_backend = Some(backend);
             result
-        } else {
-            return None;
         };
         let pixels = result.ok()?;
         if let Some(toplevel) = window.toplevel() {

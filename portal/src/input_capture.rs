@@ -165,13 +165,11 @@ impl InputCapture {
                         if let Some(position) = event["cursor_position"]
                             .as_array()
                             .filter(|position| position.len() == 2)
-                        {
-                            if let Ok(position) =
+                            && let Ok(position) =
                                 Value::from((position[0].as_f64().unwrap_or(0.0), position[1].as_f64().unwrap_or(0.0)))
                                     .try_to_owned()
-                            {
-                                options.insert("cursor_position".into(), position);
-                            }
+                        {
+                            options.insert("cursor_position".into(), position);
                         }
                         Self::activated(&emitter, path.clone(), options).await
                     }

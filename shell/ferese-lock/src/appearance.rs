@@ -55,7 +55,7 @@ impl Appearance {
                 .unwrap_or(fallback)
                 .to_owned()
         };
-        let palette = ferese_theme::Palette::from_resolved(&theme);
+        let palette = ferese_theme::Palette::from_resolved(theme);
         let font = string("theme.typography.font_family", "Inter");
         let background = string("theme.background.path", ferese_config::default_wallpaper());
         let path = string("theme.background.lock_path", &background);

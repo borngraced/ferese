@@ -534,14 +534,12 @@ pub fn resolve_with_context(
             .get("geometry")
             .and_then(|value| value.get("shell_radius"))
             .is_none()
-        {
-            if let Some(radius) = document
+            && let Some(radius) = document
                 .get("appearance.corner_radius")
                 .and_then(Value::as_f64)
                 .or_else(|| document.get("theme.geometry.top_bar_radius").and_then(Value::as_f64))
-            {
-                tokens.geometry.shell_radius = radius;
-            }
+        {
+            tokens.geometry.shell_radius = radius;
         }
         let mut value = serde_json::to_value(&tokens).map_err(|e| e.to_string())?;
         for file in [&policy.file, &selection.file].into_iter().flatten() {
@@ -646,10 +644,10 @@ pub fn theme_path(directory: &Path, path: &Path) -> PathBuf {
     } else {
         directory.join(path)
     };
-    if let (Some(parent), Some(name)) = (path.parent(), path.file_name()) {
-        if let Ok(parent) = parent.canonicalize() {
-            return parent.join(name);
-        }
+    if let (Some(parent), Some(name)) = (path.parent(), path.file_name())
+        && let Ok(parent) = parent.canonicalize()
+    {
+        return parent.join(name);
     }
     path
 }

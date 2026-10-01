@@ -702,7 +702,7 @@ fn update_wallpaper(image: &Path, target: &str) -> Result<(), String> {
 }
 
 fn edit_wallpaper(path: &Path, image: &Path, target: &str) -> Result<(), String> {
-    let source = match std::fs::read_to_string(&path) {
+    let source = match std::fs::read_to_string(path) {
         Ok(source) => source,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error.to_string()),
@@ -736,7 +736,7 @@ fn edit_wallpaper(path: &Path, image: &Path, target: &str) -> Result<(), String>
     let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(|error| error.to_string())?;
     std::io::Write::write_all(&mut temp, document.to_string().as_bytes()).map_err(|error| error.to_string())?;
     temp.as_file().sync_all().map_err(|error| error.to_string())?;
-    if std::fs::read_to_string(&path).unwrap_or_default() != source {
+    if std::fs::read_to_string(path).unwrap_or_default() != source {
         return Err("Configuration changed; please try again".into());
     }
     temp.persist(path).map_err(|error| error.to_string())?;
