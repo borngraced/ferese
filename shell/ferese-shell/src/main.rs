@@ -532,18 +532,8 @@ impl cosmic::Application for FereseShell {
 
                         if let Some(menu) = &mut self.menu
                             && menu.id == id
-                            && menu.effects.is_none()
                         {
-                            match EffectsBinding::attach_role(&surface, menu.kind.material_role(), menu.progress()) {
-                                Ok(binding) => menu.effects = Some(binding),
-                                Err(error) => {
-                                    eprintln!("ferese-shell: popover material unavailable: {error}")
-                                }
-                            }
-
-                            if let Some(effects) = &menu.effects {
-                                let _ = effects.set_opacity(menu.progress());
-                            }
+                            menu.prepare_surface(&surface);
                         }
                     }
                     Err(error) => eprintln!("ferese-shell: native surface unavailable: {error}"),
@@ -1841,17 +1831,6 @@ impl FereseShell {
                         .as_ref()
                         .is_some_and(|surface| surface.id == id) =>
             {
-                // Iced emits the first xdg_popup configure as Window::Opened,
-                // not Popup::Configured. This is the popup's ready signal.
-                if let Some(menu) = &mut self.menu
-                    && menu.id == id
-                {
-                    menu.motion.begin(Instant::now());
-                    if let Some(effects) = &menu.effects {
-                        let _ = effects.set_opacity(menu.progress());
-                    }
-                }
-
                 Task::batch([
                     self.focus_system_modal(id),
                     window::run(id, native_wayland_surface)
@@ -1876,26 +1855,8 @@ impl FereseShell {
                             EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
                             return self.sync_notification_surface();
                         }
-                        wayland::PopupEvent::Focused => {
-                            if menu.effects.is_none() {
-                                match EffectsBinding::attach_role(&surface, menu.kind.material_role(), menu.progress())
-                                {
-                                    Ok(binding) => menu.effects = Some(binding),
-                                    Err(error) => eprintln!("ferese-shell: popover material unavailable: {error}"),
-                                }
-                                EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
-                            }
-                        }
                         wayland::PopupEvent::Configured { .. } => {
-                            menu.motion.begin(Instant::now());
-                            if menu.effects.is_none() {
-                                match EffectsBinding::attach_role(&surface, menu.kind.material_role(), menu.progress())
-                                {
-                                    Ok(binding) => menu.effects = Some(binding),
-                                    Err(error) => eprintln!("ferese-shell: popover material unavailable: {error}"),
-                                }
-                                EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
-                            }
+                            menu.prepare_surface(&surface);
                         }
                         _ => {}
                     }
@@ -1922,13 +1883,7 @@ impl FereseShell {
                 if let Some(menu) = &mut self.menu
                     && menu.effects.is_none()
                 {
-                    match EffectsBinding::attach_role(&surface, menu.kind.material_role(), menu.progress()) {
-                        Ok(binding) => menu.effects = Some(binding),
-                        Err(error) => {
-                            eprintln!("ferese-shell: popover material unavailable: {error}")
-                        }
-                    }
-                    EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
+                    menu.prepare_surface(&surface);
                 }
                 Task::none()
             }

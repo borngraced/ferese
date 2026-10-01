@@ -536,14 +536,7 @@ impl FereseShell {
             let palette = self.config.theme;
             let surface = self.menu.as_ref();
             let progress = surface.map_or(1.0, status_ui::OpenMenu::progress);
-            let opacity = if surface
-                .and_then(|surface| surface.effects.as_ref())
-                .is_some_and(|effects| effects.surface.version() >= 3)
-            {
-                1.0
-            } else {
-                progress
-            };
+            let opacity = 1.0;
             let color = move |rgba| color_with_opacity(rgba, opacity);
             let primary = color(palette.text_primary);
             let muted = color(palette.text_muted);

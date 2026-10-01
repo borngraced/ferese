@@ -51,10 +51,6 @@ impl Menu {
         if self == Self::Calendar { 270.0 } else { 720.0 }
     }
 
-    pub(super) fn material_role(self) -> Option<ferese_surface_effects_v1::Role> {
-        Some(ferese_surface_effects_v1::Role::Popover)
-    }
-
     fn title(self) -> &'static str {
         match self {
             Self::System => "Control Center",
@@ -90,6 +86,23 @@ pub struct OpenMenu {
 }
 
 impl OpenMenu {
+    pub(super) fn prepare_surface(&mut self, surface: &wl_surface::WlSurface) {
+        if self.effects.is_none() {
+            match EffectsBinding::attach_role(surface, None, 0.0) {
+                Ok(binding) => self.effects = Some(binding),
+                Err(error) => eprintln!("ferese-shell: popover material unavailable: {error}"),
+            }
+        }
+        if let Some(effects) = &self.effects {
+            let regions = self.regions.lock().unwrap();
+            if let Err(error) = effects.set_regions(&regions) {
+                eprintln!("ferese-shell: could not prepare popover material: {error}");
+            }
+        }
+        self.motion.begin(Instant::now());
+        super::EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
+    }
+
     pub fn progress(&self) -> f32 {
         self.motion.progress()
     }
@@ -406,7 +419,7 @@ impl FereseShell {
             .into();
         }
         let theme = self.config.theme;
-        let p = if menu.effects.is_some() { 1.0 } else { menu.progress() };
+        let p = 1.0;
         let kind = menu.kind;
         let primary = color_with_opacity(theme.text_primary, p);
         let muted = color_with_opacity(theme.text_muted, p);
