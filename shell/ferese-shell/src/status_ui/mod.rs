@@ -218,7 +218,7 @@ impl FereseShell {
                 text_color: Some(primary),
                 icon_color: Some(primary),
                 border: Border {
-                    color: color_with_opacity(theme.text_muted, 0.18 * p),
+                    color: color_with_opacity(theme.border, p),
                     width: 1.0,
                     radius: theme.material_radius.into(),
                 },

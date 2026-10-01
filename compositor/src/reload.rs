@@ -195,6 +195,62 @@ mod tests {
     }
 
     #[test]
+    fn live_reload_keeps_dimming_policy_independent_of_theme_transitions() {
+        if std::env::var_os("FERESE_DIM_RELOAD_TEST_CHILD").is_none() {
+            use std::os::unix::fs::PermissionsExt;
+
+            let directory = Directory::new();
+            std::fs::set_permissions(&directory.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "reload::tests::live_reload_keeps_dimming_policy_independent_of_theme_transitions",
+                    "--nocapture",
+                ])
+                .env("FERESE_DIM_RELOAD_TEST_CHILD", "1")
+                .env("XDG_RUNTIME_DIR", &directory.0)
+                .env("XDG_CONFIG_HOME", &directory.0)
+                .env_remove("FERESE_SOCKET")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let source = "appearance { inactive-dim { enabled #true; amount 0.25; }; }";
+        let directory = Directory::new();
+        let (_, runtime, candidate) = crate::theme::prepare(source, &directory.0).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
+        let display = smithay::reexports::wayland_server::Display::new().unwrap();
+        let mut state = crate::Ferese::new(&mut event_loop, display, runtime).unwrap();
+        state.config_source = Some(source.into());
+        state.theme_engine.snapshot.theme = candidate.theme.clone();
+        state.theme_engine.snapshot.presented = candidate.theme;
+
+        for enabled in [false, true, false] {
+            let source = format!("appearance {{ inactive-dim {{ enabled #{enabled}; amount 0.25; }}; }}");
+            state.reload_config_source(source).unwrap();
+            assert_eq!(state.inactive_dim.enabled, enabled);
+            let opacity = crate::dimming::target(
+                state.inactive_dim,
+                Some(ferese_layout::WindowId(1)),
+                ferese_layout::WindowId(2),
+                false,
+            );
+            assert_eq!(opacity, if enabled { 0.25 } else { 0.0 });
+        }
+        state
+            .reload_config_source("appearance { inactive-dim { enabled #false; }; }; theme { mode \"light\"; }".into())
+            .unwrap();
+        state.poll_theme();
+        assert!(!state.inactive_dim.enabled);
+    }
+
+    #[test]
     fn runtime_validation_rejects_bad_edits_before_application() {
         for source in [
             "animations {\n    speed 0\n}\n",

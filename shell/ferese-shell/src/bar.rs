@@ -300,7 +300,7 @@ pub(super) fn workspace_selector_style(
         background: if active {
             Some(Background::Color(color_with_opacity(shell_theme.accent, 0.16)))
         } else if occupied {
-            Some(Background::Color(color_with_opacity(shell_theme.text_primary, 0.04)))
+            Some(Background::Color(color_with_opacity(shell_theme.border, 0.3)))
         } else {
             None
         },
@@ -326,9 +326,9 @@ pub(super) fn bar_style(theme: ShellTheme, compositor_material: bool) -> contain
 
 pub(super) fn bar_group_style(theme: ShellTheme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(color_with_opacity(theme.text_primary, 0.035))),
+        background: Some(Background::Color(color_with_opacity(theme.border, 0.25))),
         border: Border {
-            color: color_with_opacity(theme.text_muted, 0.12),
+            color: color(theme.border),
             width: 1.0,
             radius: theme.material_radius.min(16.0).into(),
         },

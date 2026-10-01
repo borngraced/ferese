@@ -372,6 +372,7 @@ pub struct Ferese {
     window_rules: Vec<WindowRule>,
     window_rules_applied: HashSet<WindowId>,
     pub(crate) theme_settings: ThemeSettings,
+    pub(crate) inactive_dim: crate::config::InactiveDimSettings,
     animations_enabled: bool,
     animation_speed: f64,
     spring_config: SpringConfig,
@@ -450,6 +451,7 @@ pub struct RuntimeConfig {
     pub workspace_auto_back_and_forth: bool,
     pub window_rules: Vec<WindowRule>,
     pub theme_settings: ThemeSettings,
+    pub inactive_dim: crate::config::InactiveDimSettings,
     pub default_column_width: ColumnWidth,
     pub scrolling_focus_strategy: ViewportFocusStrategy,
     pub column_width_presets: Vec<ColumnWidth>,
@@ -602,6 +604,7 @@ impl Ferese {
             window_rules: config.window_rules,
             window_rules_applied: HashSet::new(),
             theme_settings: config.theme_settings,
+            inactive_dim: config.inactive_dim,
             animations_enabled: config.animations_enabled,
             animation_speed: config.animation_speed,
             spring_config: config.spring_config,
@@ -739,6 +742,7 @@ impl Ferese {
         self.portal_shortcuts.reconcile(&self.bindings, &self.input_settings);
         let old_rules = std::mem::replace(&mut self.window_rules, config.window_rules);
         self.theme_settings = config.theme_settings;
+        self.inactive_dim = config.inactive_dim;
         self.column_width_presets = config.column_width_presets;
         self.animations_enabled = config.animations_enabled;
         if !self.animations_enabled {

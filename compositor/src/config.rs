@@ -94,16 +94,13 @@ impl Config {
 
     pub(crate) fn resolved_theme_settings(
         theme: &ferese_config::theme::ResolvedTheme,
-        inactive_dim: InactiveDimSettings,
     ) -> Result<ThemeSettings, ConfigError> {
         let config = Self {
             theme: serde_json::from_value(serde_json::to_value(&theme.tokens).unwrap())
                 .expect("resolved theme matches runtime schema"),
             ..Self::default()
         };
-        let mut settings = config.theme_settings()?;
-        settings.inactive_dim = inactive_dim;
-        Ok(settings)
+        config.theme_settings()
     }
 
     pub(crate) fn runtime_config(&self) -> Result<crate::RuntimeConfig, ConfigError> {
@@ -126,6 +123,7 @@ impl Config {
             bindings,
             window_rules: self.window_rules()?,
             theme_settings: self.theme_settings()?,
+            inactive_dim: self.inactive_dim_settings()?,
             default_column_width: self.default_column_width()?,
             scrolling_focus_strategy: self.scrolling_focus_strategy(),
             column_width_presets: self.width_presets()?,
@@ -622,11 +620,6 @@ mod tests {
                 bar_background_color: RgbaColor([17.0 / 255.0, 24.0 / 255.0, 33.0 / 255.0, 1.0,]),
                 text_primary_color: RgbaColor([244.0 / 255.0, 247.0 / 255.0, 251.0 / 255.0, 1.0]),
                 shell_opacity: 0.78,
-                inactive_dim: InactiveDimSettings {
-                    enabled: false,
-                    amount: 0.15,
-                    duration_ms: 150.0
-                },
                 window_radius: 12.0,
                 shadow_offset_y: -2.0,
                 shadow_blur: 24.0,
@@ -756,15 +749,14 @@ mod tests {
 
     #[test]
     fn inactive_dimming_is_opt_in_and_configurable() {
-        let defaults = parse("").theme_settings().unwrap().inactive_dim;
+        let defaults = parse("").inactive_dim_settings().unwrap();
         assert!(!defaults.enabled);
         assert_eq!(defaults.amount, 0.15);
         assert_eq!(defaults.duration_ms, 150.0);
         let settings =
             parse("appearance {\n    inactive-dim {\n        enabled #true\n        amount 0.25\n        duration-ms 100\n    }\n}\n")
-                .theme_settings()
-                .unwrap()
-                .inactive_dim;
+                .inactive_dim_settings()
+                .unwrap();
         assert!(settings.enabled);
         assert_eq!(settings.amount, 0.25);
         assert_eq!(settings.duration_ms, 100.0);
@@ -777,7 +769,7 @@ mod tests {
         ] {
             assert!(
                 Config::parse_source(&format!("appearance {{ inactive-dim {{ {key} {value}; }} }}"))
-                    .and_then(|config| config.theme_settings())
+                    .and_then(|config| config.runtime_config())
                     .is_err()
             );
         }

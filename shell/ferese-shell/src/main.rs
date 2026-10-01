@@ -1070,6 +1070,25 @@ mod tests {
     }
 
     #[test]
+    fn bar_decoration_does_not_follow_transitional_text_contrast() {
+        let theme = config::ShellTheme::default();
+        let contrasted = config::ShellTheme {
+            text_primary: [0, 0, 0, 255],
+            text_muted: [255, 255, 255, 255],
+            ..theme
+        };
+        let before = bar_group_style(theme);
+        let after = bar_group_style(contrasted);
+        assert_eq!(before.border, after.border);
+        assert_eq!(before.background, after.background);
+        assert_eq!(before.border.color, color(theme.border));
+        assert_eq!(
+            workspace_selector_style(false, false, true, theme).background,
+            workspace_selector_style(false, false, true, contrasted).background,
+        );
+    }
+
+    #[test]
     fn workspace_selector_has_distinct_active_paint() {
         let theme = ShellTheme::default();
         let active = workspace_selector_style(true, false, false, theme);

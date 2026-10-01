@@ -69,7 +69,7 @@ impl Ferese {
             active
         });
 
-        let dim_settings = self.theme_settings.inactive_dim;
+        let dim_settings = self.inactive_dim;
         let duration = if self.animations_enabled {
             dim_settings.duration_ms
         } else {

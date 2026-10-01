@@ -1,6 +1,17 @@
 use super::*;
 
 impl Config {
+    pub(crate) fn inactive_dim_settings(&self) -> Result<InactiveDimSettings, ConfigError> {
+        Ok(InactiveDimSettings {
+            enabled: self.appearance.inactive_dim.enabled,
+            amount: unit_theme_value(self.appearance.inactive_dim.amount, "appearance.inactive_dim.amount")?,
+            duration_ms: nonnegative_theme_value(
+                self.appearance.inactive_dim.duration_ms,
+                "appearance.inactive_dim.duration_ms",
+            )?,
+        })
+    }
+
     pub fn theme_settings(&self) -> Result<ThemeSettings, ConfigError> {
         let border_width = nonnegative_theme_value(self.theme.geometry.border_width, "geometry.border_width")?;
         let focus_ring_width =
@@ -39,14 +50,6 @@ impl Config {
                 "surface.bar.background",
             )?,
             shell_opacity: unit_theme_value(self.theme.material.opacity, "material.opacity")?,
-            inactive_dim: InactiveDimSettings {
-                enabled: self.appearance.inactive_dim.enabled,
-                amount: unit_theme_value(self.appearance.inactive_dim.amount, "appearance.inactive_dim.amount")?,
-                duration_ms: nonnegative_theme_value(
-                    self.appearance.inactive_dim.duration_ms,
-                    "appearance.inactive_dim.duration_ms",
-                )?,
-            },
             window_radius,
             shadow_offset_y,
             shadow_blur,
@@ -210,7 +213,6 @@ pub struct ThemeSettings {
     pub bar_background_color: RgbaColor,
     pub text_primary_color: RgbaColor,
     pub shell_opacity: f64,
-    pub inactive_dim: InactiveDimSettings,
     pub window_radius: f64,
     pub shadow_offset_y: f64,
     pub shadow_blur: f64,
