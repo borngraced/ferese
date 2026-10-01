@@ -37,7 +37,7 @@ use smithay::wayland::presentation::Refresh;
 use crate::Ferese;
 use crate::config::{OutputModeRequest, OutputProfile, OutputSettings, OutputTransform};
 use crate::metrics::RenderMetrics;
-use crate::render::{animated_window_elements, cursorless_window_elements, frame_effect_metrics, redraw_output};
+use crate::render::{frame_effect_metrics, redraw_output, sampled_output_elements};
 
 pub struct DirectBackendState {
     pub session: LibSeatSession,
@@ -793,13 +793,12 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, plan: cr
         .scheduler
         .forecast_time(now, plan)
         .map_or(Duration::ZERO, |target| target.saturating_sub(now));
-    let mut forecast = state.forecast_render(&output.output, horizon);
+    let frame = state.sample_frame(&output.output, horizon);
     let rendered = {
-        let state = &mut *forecast;
         (|| -> Result<bool, Box<dyn Error>> {
             state.process_dmabuf_imports(&mut device.renderer);
             let (mut buffer, age) = output.surface.next_buffer()?;
-            let elements = animated_window_elements(state, &mut device.renderer, &output.output);
+            let elements = sampled_output_elements(state, &mut device.renderer, &output.output, true, &frame);
             let effects = frame_effect_metrics(&elements, output.output.current_scale().fractional_scale());
             let mut framebuffer = device.renderer.bind(&mut buffer)?;
             let result = output.damage_tracker.render_output(
@@ -814,7 +813,8 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, plan: cr
                 state.process_screencopies(&mut device.renderer, &framebuffer, &output.output, true);
 
             if cursorless_capture {
-                let cursorless_elements = cursorless_window_elements(state, &mut device.renderer, &output.output);
+                let cursorless_elements =
+                    sampled_output_elements(state, &mut device.renderer, &output.output, false, &frame);
                 redraw_output(
                     &mut device.renderer,
                     &mut framebuffer,
@@ -863,7 +863,7 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, plan: cr
     record_frame_schedule(&mut output, plan, render_started.elapsed(), submitted);
 
     if submitted && let Some(token) = output.callback_timer.take() {
-        forecast.loop_handle.remove(token);
+        state.loop_handle.remove(token);
     }
 
     match rendered {
@@ -873,8 +873,7 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, plan: cr
     }
 
     device.outputs.insert(crtc, output);
-    restore_device(&mut forecast, node, device);
-    drop(forecast);
+    restore_device(state, node, device);
     if !submitted {
         schedule_frame_callbacks(state, node, crtc, plan.present_at);
     }
@@ -1135,7 +1134,7 @@ fn remove_device(state: &mut Ferese, node: DrmNode) {
 
     let context = device.renderer.context_id().erased();
     state.wallpaper.forget_context(&context);
-    state.resize_snapshots.retain(|_, snapshot| snapshot.context != context);
+    state.render.forget_context(&context);
     for (crtc, mut output) in device.outputs {
         cancel_output_timers(&state.loop_handle, &mut output);
         state.display_handle.disable_global::<Ferese>(output.global);
@@ -1348,7 +1347,8 @@ fn send_frame_callbacks(state: &mut Ferese, output: &Output) {
         .elements()
         .filter(|window| {
             state
-                .window_ids
+                .windows
+                .ids()
                 .get(*window)
                 .is_some_and(|id| state.window_belongs_to_output(*id, output))
         })

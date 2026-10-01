@@ -81,7 +81,7 @@ impl CompositorHandler for Ferese {
                 if surface == &root {
                     if crate::state::window_has_buffer(&window) {
                         xdg_shell::apply_initial_window_rules(self, &window);
-                    } else if self.window_ids.contains_key(&window) {
+                    } else if self.windows.ids().contains_key(&window) {
                         self.remove_tiled_window(&window);
                         self.space.map_element(window.clone(), (0, 0), false);
                         self.restore_keyboard_focus();

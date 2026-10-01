@@ -43,7 +43,7 @@ impl Ferese {
             let Some(local) = surface_tree_position(root, surface, geometry.loc) else {
                 continue;
             };
-            let id = self.window_ids.get(window)?;
+            let id = self.windows.ids().get(window)?;
             let presented = self.presented_window_rect(*id)?;
             let (scale_x, scale_y) = self.visual_scale_for_window(window)?;
             let point = local.to_f64() + hint - geometry.loc.to_f64();
@@ -541,7 +541,7 @@ impl Ferese {
                             return;
                         }
                         if let Some(window) = self.window_under_visual(position)
-                            && let Some(id) = self.window_ids.get(&window).copied()
+                            && let Some(id) = self.windows.ids().get(&window).copied()
                         {
                             self.select_overview_window(id);
                         } else {
@@ -836,7 +836,7 @@ impl Ferese {
         }
 
         if let Some(window) = self.window_under_visual(position) {
-            let focused = self.window_ids.get(&window).copied();
+            let focused = self.windows.ids().get(&window).copied();
             if let Some(focused) = focused {
                 let result = if raise {
                     self.workspaces.focus_window(focused)
@@ -904,7 +904,7 @@ impl Ferese {
         let Some(window) = self.window_under_visual(position) else {
             return;
         };
-        if self.window_ids.get(&window).copied() == self.focused_window {
+        if self.windows.ids().get(&window).copied() == self.focused_window {
             return;
         }
 

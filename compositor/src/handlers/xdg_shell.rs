@@ -36,7 +36,7 @@ impl XdgShellHandler for Ferese {
         let Some(parent) = surface.parent() else {
             return;
         };
-        let parent = self.window_ids.iter().find_map(|(window, id)| {
+        let parent = self.windows.ids().iter().find_map(|(window, id)| {
             window
                 .toplevel()
                 .is_some_and(|toplevel| toplevel.wl_surface() == &parent)
@@ -60,7 +60,8 @@ impl XdgShellHandler for Ferese {
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
         // Hidden workspace windows are managed but unmapped from Space.
         let Some(window) = self
-            .window_ids
+            .windows
+            .ids()
             .keys()
             .chain(self.space.elements())
             .find(|window| {
@@ -185,7 +186,7 @@ impl XdgShellHandler for Ferese {
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        if let Some(id) = self.window_ids.iter().find_map(|(window, id)| {
+        if let Some(id) = self.windows.ids().iter().find_map(|(window, id)| {
             window
                 .toplevel()
                 .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
@@ -198,7 +199,7 @@ impl XdgShellHandler for Ferese {
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        if let Some(id) = self.window_ids.iter().find_map(|(window, id)| {
+        if let Some(id) = self.windows.ids().iter().find_map(|(window, id)| {
             window
                 .toplevel()
                 .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
@@ -215,7 +216,7 @@ impl XdgShellHandler for Ferese {
         surface: ToplevelSurface,
         _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
     ) {
-        if let Some(window) = self.window_ids.iter().find_map(|(window, id)| {
+        if let Some(window) = self.windows.ids().iter().find_map(|(window, id)| {
             window
                 .toplevel()
                 .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
@@ -228,7 +229,7 @@ impl XdgShellHandler for Ferese {
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        if let Some(window) = self.window_ids.iter().find_map(|(window, id)| {
+        if let Some(window) = self.windows.ids().iter().find_map(|(window, id)| {
             window
                 .toplevel()
                 .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
@@ -380,7 +381,7 @@ pub fn apply_initial_window_rules(state: &mut Ferese, window: &Window) {
         )
     });
 
-    let initial = !state.window_ids.contains_key(window);
+    let initial = !state.windows.ids().contains_key(window);
     let requested = initial.then(|| {
         toplevel.with_pending_state(|pending| {
             (
@@ -391,7 +392,7 @@ pub fn apply_initial_window_rules(state: &mut Ferese, window: &Window) {
     });
     if initial {
         let parent = toplevel.parent().and_then(|parent| {
-            state.window_ids.iter().find_map(|(candidate, id)| {
+            state.windows.ids().iter().find_map(|(candidate, id)| {
                 candidate
                     .toplevel()
                     .is_some_and(|surface| surface.wl_surface() == &parent)
@@ -402,7 +403,7 @@ pub fn apply_initial_window_rules(state: &mut Ferese, window: &Window) {
     }
     state.apply_initial_window_rules(window, app_id.as_deref(), title.as_deref(), transient);
     if let Some((maximized, fullscreen)) = requested
-        && let Some(id) = state.window_ids.get(window).copied()
+        && let Some(id) = state.windows.ids().get(window).copied()
     {
         if maximized {
             state.set_window_maximized(id, true);
@@ -424,7 +425,7 @@ impl Ferese {
             .find(|window| window.toplevel().is_some_and(|toplevel| toplevel.wl_surface() == &root));
         let geometry = (|| {
             if let Some(window) = window {
-                let id = *self.window_ids.get(window)?;
+                let id = *self.windows.ids().get(window)?;
                 let output = self
                     .space
                     .outputs()

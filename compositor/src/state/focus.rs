@@ -2,22 +2,23 @@ use super::*;
 
 impl Ferese {
     pub(super) fn focus_candidates(&self) -> Vec<WindowId> {
-        self.window_ids
+        self.windows
+            .ids()
             .iter()
             .filter_map(|(window, id)| {
                 self.workspaces.workspace_for_window(*id)?;
                 (window.toplevel().is_some()
                     && self.window_content_ready(window)
-                    && self.window_geometry.contains_key(id)
+                    && self.windows.geometry(id).is_some()
                     && self.output_workspaces.focused_output().is_some()
-                    && !self.closing_windows.contains_key(id))
+                    && !self.windows.record(*id).is_some_and(|record| record.closing.is_some()))
                 .then_some(*id)
             })
             .collect()
     }
 
     pub(crate) fn focus_preview_output(&self, id: WindowId) -> Option<OutputId> {
-        if self.closing_windows.contains_key(&id) {
+        if self.windows.record(id).is_some_and(|record| record.closing.is_some()) {
             return None;
         }
         self.workspaces

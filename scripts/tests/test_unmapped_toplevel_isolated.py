@@ -86,6 +86,7 @@ class UnmappedToplevelTest(unittest.TestCase):
                         text=True,
                     )
 
+                    visible_ids = []
                     for phase, visible in [
                         ("initial-empty", False),
                         ("visible", True),
@@ -110,9 +111,35 @@ class UnmappedToplevelTest(unittest.TestCase):
                             if time.monotonic() >= deadline:
                                 self.fail(f"{phase}: unexpected focused window {focused}")
                             time.sleep(0.05)
+                        if visible:
+                            visible_ids.append(focused["id"])
+                        if phase == "visible":
+                            # Leave a configure/resize outstanding when the buffer is detached.
+                            subprocess.run([str(ctl_binary), "toggle-maximized"], env=env,
+                                           capture_output=True, check=True)
+
                         client.stdin.write("\n")
                         client.stdin.flush()
+                    self.assertNotEqual(visible_ids[0], visible_ids[1], "remapping must allocate a fresh window identity")
                     self.assertEqual(client.wait(timeout=5), 0)
+
+                    deadline = time.monotonic() + 3
+                    while True:
+                        remaining = json.loads(subprocess.check_output(
+                            [str(ctl_binary), "get-windows"], env=env, text=True
+                        ))
+                        if not remaining:
+                            break
+                        if time.monotonic() >= deadline:
+                            self.fail(f"destroyed window still managed: {remaining}")
+                        time.sleep(0.05)
+
+                    subprocess.run([str(ctl_binary), "focus-last-window"], env=env,
+                                   capture_output=True, check=True)
+                    focused = json.loads(subprocess.check_output(
+                        [str(ctl_binary), "get-focused-window"], env=env, text=True
+                    ))
+                    self.assertIsNone(focused, "focus history must not restore a destroyed window")
                 finally:
                     if client and client.poll() is None:
                         client.terminate()

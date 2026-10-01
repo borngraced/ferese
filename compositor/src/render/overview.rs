@@ -31,9 +31,9 @@ pub(super) fn overview_chrome_element(
         focus_mix: 0.0,
     };
     let program = if key.1 == OverviewChromePart::Outline {
-        rounded_clip_program(state, renderer)?.border
+        rounded_clip_program(&mut state.render, renderer)?.border
     } else {
-        material_program(state, renderer)?.0
+        material_program(&mut state.render, renderer)?.0
     };
     let uniforms = |p: &BorderParameters| {
         if key.1 == OverviewChromePart::Outline {
@@ -51,7 +51,8 @@ pub(super) fn overview_chrome_element(
     };
     let context = renderer.context_id().erased();
     let chrome = &mut state
-        .overview_scrims
+        .render
+        .outputs
         .entry(output_id)
         .or_insert_with(|| OverviewScrim { chrome: HashMap::new() })
         .chrome;
@@ -89,15 +90,16 @@ pub(super) fn overview_strip_elements(
     output: &Output,
     output_geometry: Rectangle<i32, Logical>,
     scale: f64,
+    frame: &crate::state::FrameScene,
 ) -> Vec<AnimatedWindowRenderElement> {
-    let alpha = state.overview.opacity();
+    let alpha = frame.overview.opacity();
     if alpha <= 0.001 {
         return Vec::new();
     }
     let Some(bounds) = state.output_bounds_for(output) else {
         return Vec::new();
     };
-    let cards = state.overview_workspace_cards(output);
+    let cards = state.overview_workspace_cards_for_frame(output, Some(frame));
     let strip = crate::overview::workspace_strip(bounds);
     let panel = match (cards.first(), cards.last()) {
         (Some(first), Some(last)) => ferese_layout::Rect::new(
@@ -116,16 +118,17 @@ pub(super) fn overview_strip_elements(
     )
     .opacity;
     let mut elements = Vec::new();
-    let programs = rounded_clip_program(state, renderer);
+    let programs = rounded_clip_program(&mut state.render, renderer);
     // Resolve IDs once per strip, rather than scanning all managed windows
     // separately for every miniature. Own the handles so rendering can mutate state.
     let windows_by_id: std::collections::HashMap<_, _> = state
-        .window_ids
+        .windows
+        .ids()
         .iter()
         .map(|(window, id)| (*id, window.clone()))
         .collect();
     if let Some(output_id) = state.output_id(output)
-        && let Some(cache) = state.overview_scrims.get_mut(&output_id)
+        && let Some(cache) = state.render.outputs.get_mut(&output_id)
     {
         cache.chrome.retain(|(id, part), _| match part {
             OverviewChromePart::Caption => windows_by_id.keys().any(|window| window.0 == *id),
@@ -139,7 +142,7 @@ pub(super) fn overview_strip_elements(
         if !state.window_belongs_to_output(*id, output) {
             continue;
         }
-        let Some(rect) = state.presented_window_rect(*id) else {
+        let Some(rect) = frame.windows.get(id).map(|sample| sample.rect) else {
             continue;
         };
         let Some((buffer, size)) = state.overview_window_label(window, scale, rect.width) else {

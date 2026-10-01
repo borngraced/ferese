@@ -48,7 +48,7 @@ impl Ferese {
         };
 
         self.workspace_slides.remove(&output_id);
-        self.overview_scrims.remove(&output_id);
+        self.render.remove_output(output_id);
         self.pending_screencopies.retain(|capture| {
             if capture.output == *output {
                 capture.fail();
@@ -82,7 +82,8 @@ impl Ferese {
 
     pub(crate) fn reposition_output_floats(&mut self, output: OutputId, old: Rect, new: Rect) {
         let floats = self
-            .window_ids
+            .windows
+            .ids()
             .values()
             .filter_map(|id| {
                 let workspace = self.workspaces.workspace_for_window(*id)?;

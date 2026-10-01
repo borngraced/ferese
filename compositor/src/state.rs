@@ -6,9 +6,10 @@ mod layout;
 mod navigation;
 mod outputs;
 mod prediction;
+pub(crate) use prediction::FrameScene;
+mod window_registry;
 mod windows;
 
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::ffi::OsString;
@@ -28,7 +29,7 @@ use ferese_protocols::shell::v1::server::ferese_shell_v1::FereseShellV1;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::drm::{DrmEventTime, DrmNode};
 use smithay::backend::input::Keycode;
-use smithay::backend::renderer::{ErasedContextId, ImportDma};
+use smithay::backend::renderer::ImportDma;
 use smithay::desktop::space::SpaceElement;
 use smithay::desktop::utils::send_frames_surface_tree;
 use smithay::desktop::{LayerSurface, PopupKind, PopupManager, Space, Window, WindowSurfaceType, layer_map_for_output};
@@ -71,6 +72,7 @@ use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::xdg_activation::XdgActivationState;
 use smithay::wayland::xdg_foreign::XdgForeignState;
 use smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager;
+use window_registry::WindowRegistry;
 
 use crate::backends::direct::DirectBackendState;
 use crate::config::{Binding, DaemonConfig, InputSettings, OutputProfile, ThemeSettings};
@@ -86,11 +88,6 @@ use crate::ipc::IpcSocketGuard;
 use crate::overview::OverviewState;
 use crate::portal_session::PortalSession;
 use crate::portal_shortcuts::PortalShortcuts;
-use crate::render::{
-    BlurProgram, MaterialBuffers, MaterialProgram, OverviewScrim, ResizeSnapshot, RoundedClipPrograms,
-    WindowBorderBuffers, WindowShadowBuffers,
-};
-use crate::resize_transaction::ResizeTransaction;
 use crate::session_lock::{IdleSettings, Lock};
 use crate::shell_control::ShellSnapshot;
 use crate::stacking::WindowStack;
@@ -326,47 +323,23 @@ pub struct Ferese {
     pub output_workspaces: OutputWorkspaceMap,
     pub(crate) output_ids: HashMap<Output, OutputId>,
     output_identity_ids: HashMap<String, OutputId>,
-    pub window_ids: HashMap<Window, WindowId>,
-    pub window_geometry: HashMap<WindowId, WindowGeometry>,
-    resize_transactions: HashMap<WindowId, ResizeTransaction>,
-    pub(crate) resize_snapshots: HashMap<WindowId, ResizeSnapshot>,
+    pub(crate) windows: WindowRegistry<Window>,
+    pub(crate) render: crate::render::RenderResources,
     pub(crate) nested_backend: Option<NestedBackend>,
     pub(crate) wallpaper: WallpaperState,
-    maximized_windows: HashSet<WindowId>,
-    maximized_column_widths: HashMap<WindowId, ColumnWidth>,
     window_stack: WindowStack,
     floating_above_fullscreen: HashMap<WindowId, WindowId>,
-    natural_floating_pending: HashSet<WindowId>,
     floating_memory: crate::floating::Memory,
     floating_save_worker: crate::floating::SaveWorker,
-    floating_window_memory: HashMap<WindowId, crate::floating::Remembered>,
-    floating_placement_anchors: HashMap<WindowId, Rect>,
     floating_cascade: crate::floating::Cascade,
-    pub(crate) floating_resize_anchors: HashMap<WindowId, (bool, bool, Rect)>,
-    pub(crate) window_borders: HashMap<WindowId, WindowBorderBuffers>,
-    pub(crate) window_dims: HashMap<WindowId, WindowBorderBuffers>,
-    pub(crate) window_resize_fills: HashMap<WindowId, WindowBorderBuffers>,
-    pub(crate) window_dimming: HashMap<WindowId, DimAnimation>,
-    pub(crate) window_focus: HashMap<WindowId, DimAnimation>,
-    pub(crate) window_shadows: HashMap<WindowId, WindowShadowBuffers>,
-    pub(crate) rounded_clip_warnings: HashSet<ErasedContextId>,
-    pub(crate) rounded_clip_programs: HashMap<ErasedContextId, RoundedClipPrograms>,
-    pub(crate) overview_scrims: HashMap<OutputId, OverviewScrim>,
-    pub(crate) material_programs: HashMap<ErasedContextId, MaterialProgram>,
-    pub(crate) material_buffers: HashMap<WlSurface, MaterialBuffers>,
     pub(crate) portal_shortcuts: PortalShortcuts,
     pub(crate) pending_logout: Option<u32>,
     pub(crate) logout_query: Option<u32>,
     pub(crate) logout_owner: Option<ObjectId>,
-    pub(crate) blur_programs: HashMap<ErasedContextId, BlurProgram>,
     pub(crate) backdrop_generation: u64,
-    closing_windows: HashMap<WindowId, ClosingAnimation>,
     viewport_animations: HashMap<WorkspaceId, AnimatedValue>,
     focus_swipe: Option<FocusSwipe>,
     workspace_slides: HashMap<OutputId, WorkspaceSlide>,
-    scrolling_world_x: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
-    viewport_coupled_widths: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
-    pending_column_width_cycles: HashSet<WindowId>,
     pub focused_window: Option<WindowId>,
     pub(crate) focus_history: ferese_core::FocusHistory,
     pub(crate) focus_cycle: Option<ferese_core::FocusCycle>,
@@ -376,7 +349,6 @@ pub struct Ferese {
     pub(crate) bindings: Vec<Binding>,
     workspace_auto_back_and_forth: bool,
     window_rules: Vec<WindowRule>,
-    window_rules_applied: HashSet<WindowId>,
     pub(crate) theme_settings: ThemeSettings,
     pub(crate) inactive_dim: crate::config::InactiveDimSettings,
     animations_enabled: bool,
@@ -411,7 +383,6 @@ pub struct Ferese {
     pub(crate) shell_snapshot_serial: u32,
     pub(crate) last_shell_snapshot: Option<ShellSnapshot>,
     pub(crate) overview: crate::overview::OverviewState,
-    next_window_id: u64,
     next_output_id: u64,
     last_animation_tick: Instant,
     pub popups: PopupManager,
@@ -559,49 +530,25 @@ impl Ferese {
             output_workspaces: OutputWorkspaceMap::default(),
             output_ids: HashMap::new(),
             output_identity_ids: HashMap::new(),
-            window_ids: HashMap::new(),
-            window_geometry: HashMap::new(),
-            resize_transactions: HashMap::new(),
-            resize_snapshots: HashMap::new(),
+            windows: WindowRegistry::default(),
+            render: Default::default(),
             nested_backend: None,
             wallpaper: WallpaperState::with_wakeup(config.wallpaper, Some(event_loop.get_signal())),
-            maximized_windows: HashSet::new(),
-            maximized_column_widths: HashMap::new(),
             window_stack: WindowStack::default(),
             floating_above_fullscreen: HashMap::new(),
-            natural_floating_pending: HashSet::new(),
             floating_memory: crate::floating::Memory::path()
                 .map(|p| crate::floating::Memory::load(&p))
                 .unwrap_or_default(),
             floating_save_worker: Default::default(),
-            floating_window_memory: HashMap::new(),
-            floating_placement_anchors: HashMap::new(),
             floating_cascade: Default::default(),
-            floating_resize_anchors: HashMap::new(),
-            window_borders: HashMap::new(),
-            window_dims: HashMap::new(),
-            window_resize_fills: HashMap::new(),
-            window_dimming: HashMap::new(),
-            window_focus: HashMap::new(),
-            window_shadows: HashMap::new(),
-            rounded_clip_programs: HashMap::new(),
-            rounded_clip_warnings: HashSet::new(),
-            overview_scrims: HashMap::new(),
-            material_programs: HashMap::new(),
-            material_buffers: HashMap::new(),
             portal_shortcuts: PortalShortcuts::default(),
             pending_logout: None,
             logout_query: None,
             logout_owner: None,
-            blur_programs: HashMap::new(),
             backdrop_generation: 0,
-            closing_windows: HashMap::new(),
             viewport_animations: HashMap::new(),
             focus_swipe: None,
             workspace_slides: HashMap::new(),
-            scrolling_world_x: HashMap::new(),
-            viewport_coupled_widths: HashMap::new(),
-            pending_column_width_cycles: HashSet::new(),
             focused_window: None,
             focus_history: Default::default(),
             focus_cycle: None,
@@ -611,7 +558,6 @@ impl Ferese {
             bindings: config.bindings,
             workspace_auto_back_and_forth: config.workspace_auto_back_and_forth,
             window_rules: config.window_rules,
-            window_rules_applied: HashSet::new(),
             theme_settings: config.theme_settings,
             inactive_dim: config.inactive_dim,
             animations_enabled: config.animations_enabled,
@@ -641,7 +587,6 @@ impl Ferese {
             shell_snapshot_serial: 0,
             last_shell_snapshot: None,
             overview: OverviewState::with_font_family(config.overview_font_family),
-            next_window_id: 1,
             next_output_id: 1,
             last_animation_tick: start_time,
             popups: PopupManager::default(),

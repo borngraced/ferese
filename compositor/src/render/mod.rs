@@ -2,8 +2,8 @@ mod capture;
 mod decorations;
 mod materials;
 mod overview;
+mod resources;
 mod scene;
-
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,9 +13,10 @@ pub(crate) use capture::{capture_resize_snapshot, capture_window_buffer, capture
 use decorations::*;
 use materials::*;
 use overview::*;
+pub(crate) use resources::RenderResources;
 use scene::cursor_elements;
 pub(crate) use scene::{
-    animated_window_elements, cursorless_window_elements, frame_effect_metrics, layer_surfaces, output_elements,
+    animated_window_elements, frame_effect_metrics, layer_surfaces, output_elements, sampled_output_elements,
 };
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;

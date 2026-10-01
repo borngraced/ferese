@@ -29,6 +29,7 @@ impl Ferese {
         {
             self.focus_swipe = None;
         }
+
         let visible_workspaces = if self.viewport_animations.is_empty() {
             HashSet::new()
         } else {
@@ -38,10 +39,11 @@ impl Ferese {
                 .filter_map(|output| self.output_workspaces.active_workspace(*output))
                 .collect::<HashSet<_>>()
         };
+
         let windows = self
             .space
             .elements()
-            .filter_map(|window| self.window_ids.get(window).copied().map(|id| (window.clone(), id)))
+            .filter_map(|window| self.windows.ids().get(window).copied().map(|id| (window.clone(), id)))
             .collect::<Vec<_>>();
         let mut active_animation = false;
         let mut completed_slides = Vec::new();
@@ -49,16 +51,19 @@ impl Ferese {
             if slide.held_progress.is_some() {
                 continue;
             }
+
             if slide.advance(delta) {
                 active_animation = true;
             } else {
                 completed_slides.push(*output);
             }
         }
+
         self.dismissing_popups.retain_mut(|(root, popup, motion)| {
             if !smithay::utils::IsAlive::alive(popup.wl_surface()) {
                 return false;
             }
+
             let duration = if self.animations_enabled { 140.0 } else { 0.0 };
             let active = motion.advance_visual(0.0, delta, duration);
             crate::effects::fade_dismissed_surface(popup.wl_surface(), motion.current);
@@ -75,69 +80,72 @@ impl Ferese {
         } else {
             0.0
         };
+
         let mut dim_changed = false;
         // Include hidden workspace windows: overview can present them too.
         // Read selection once so these immutable fields can be borrowed alongside
-        // window_focus without allocating a temporary window-ID vector.
+        // each record without allocating a temporary window-ID vector.
         let selected_window = if self.overview.is_active() {
             self.overview.selected()
         } else {
             self.focused_window
         };
-        for id in self.window_ids.values().copied() {
+
+        for (&id, record) in self.windows.records_mut() {
             let selected = selected_window == Some(id);
             let target = if selected { 1.0 } else { 0.0 };
-            let focus = self
-                .window_focus
-                .entry(id)
-                .or_insert_with(|| crate::dimming::DimAnimation::new(target));
+            let focus = record
+                .focus
+                .get_or_insert_with(|| crate::dimming::DimAnimation::new(target));
             let previous = focus.current;
             active_animation |= focus.advance_visual(target, delta, duration);
             dim_changed |= previous != focus.current;
         }
+
         for (_, id) in &windows {
             let target = crate::dimming::target(dim_settings, self.focused_window, *id, self.overview.is_presenting());
-            let dim = self
-                .window_dimming
-                .entry(*id)
-                .or_insert_with(|| crate::dimming::DimAnimation::new(target));
+            let Some(record) = self.windows.record_mut(*id) else {
+                continue;
+            };
+
+            let dim = record
+                .dimming
+                .get_or_insert_with(|| crate::dimming::DimAnimation::new(target));
             let previous = dim.current;
             active_animation |= dim.advance_visual(target, delta, duration);
             dim_changed |= previous != dim.current;
         }
 
         let mut ready_to_close = Vec::new();
-        for (id, animation) in &mut self.closing_windows {
+        for (id, record) in self.windows.records_mut() {
+            let Some(animation) = &mut record.closing else { continue };
+
             if animation.advance(delta, self.animations_enabled) {
                 ready_to_close.push(*id);
             } else if !animation.close_sent {
                 active_animation = true;
             }
         }
+
         for id in ready_to_close {
             self.send_window_close(id);
         }
 
         let now = self.start_time.elapsed();
-        self.resize_transactions.retain(|id, transaction| {
-            if transaction.expired(now) {
-                tracing::warn!(?id, "resize presentation deadline reached");
-                false
-            } else {
-                true
-            }
-        });
+        self.windows.expire_transactions(now);
+
         let blocked_workspaces = self
-            .resize_transactions
-            .keys()
+            .windows
+            .resizing()
             .filter_map(|id| self.workspaces.workspace_for_window(*id))
             .collect::<HashSet<_>>();
         let animations_enabled = self.animations_enabled;
         let animation_speed = self.animation_speed;
-        self.resize_snapshots.retain(|id, snapshot| {
+        self.render.retain_snapshots(|id, snapshot| {
             if !animations_enabled {
                 return false;
             }
+
             let waiting_for_client = self
                 .workspaces
                 .workspace_for_window(*id)
@@ -145,7 +153,7 @@ impl Ferese {
             // A shrinking client's destination buffer arrives before the
             // animated bounds reach it. Keep the old native pixels covering
             // that strip rather than fading them into the neutral resize fill.
-            let uncovered = self.window_geometry.get(id).is_some_and(|geometry| {
+            let uncovered = self.windows.geometry(id).is_some_and(|geometry| {
                 geometry.client.committed_size.is_some_and(|size| {
                     crate::presentation::resize_needs_old_frame(
                         geometry.visual.current,
@@ -166,21 +174,24 @@ impl Ferese {
             if !blocked {
                 snapshot.commit.increment();
             }
+
             if !active {
                 tracing::debug!(?id, bytes = snapshot.bytes(), "released resize handoff snapshot");
             }
             active
         });
-        active_animation |= !self.resize_snapshots.is_empty();
+        active_animation |= self.render.snapshots().next().is_some();
         // Keep scheduling frames while waiting, so the deadline cannot stall.
         active_animation |= !blocked_workspaces.is_empty();
         for (workspace, viewport) in &mut self.viewport_animations {
             if !visible_workspaces.contains(workspace) {
                 continue;
             }
+
             if blocked_workspaces.contains(workspace) {
                 continue;
             }
+
             if let Some(swipe) = self.focus_swipe.as_ref().filter(|swipe| swipe.workspace == *workspace) {
                 viewport.current = swipe.position();
                 viewport.velocity = 0.0;
@@ -200,12 +211,19 @@ impl Ferese {
             {
                 continue;
             }
-            let Some(geometry) = self.window_geometry.get_mut(&id) else {
+
+            let Some(record) = self.windows.record_mut(id) else {
                 continue;
             };
+
+            let natural_pending = record.natural_floating_pending;
+            let Some(geometry) = record.geometry.as_mut() else {
+                continue;
+            };
+
             let zooming = geometry.is_zooming();
 
-            let coupled_target = self.viewport_coupled_widths.get(&id).map(|(_, width)| width.target);
+            let coupled_target = record.coupled_width.as_ref().map(|(_, width)| width.target);
             if coupled_target.is_some() {
                 geometry.visual.target.width = geometry.visual.current.width;
                 geometry.visual.velocity.width = 0.0;
@@ -214,7 +232,8 @@ impl Ferese {
             if let Some(target) = coupled_target {
                 geometry.visual.target.width = target;
             }
-            if let Some((workspace, world_x)) = self.scrolling_world_x.get_mut(&id)
+
+            if let Some((workspace, world_x)) = record.world_x.as_mut()
                 && let Some(viewport) = self.viewport_animations.get(workspace)
             {
                 if zooming {
@@ -225,12 +244,14 @@ impl Ferese {
                 } else {
                     world_x.snap();
                 }
+
                 if !zooming {
                     geometry.visual.current.x = world_x.current - viewport.current;
                     geometry.visual.velocity.x = world_x.velocity - viewport.velocity;
                 }
             }
-            if let Some((_, width)) = self.viewport_coupled_widths.get_mut(&id) {
+
+            if let Some((_, width)) = record.coupled_width.as_mut() {
                 let width_active = if self.animations_enabled {
                     width.advance(delta, self.viewport_spring_config)
                 } else {
@@ -244,6 +265,7 @@ impl Ferese {
                     settled_coupled_widths.push(id);
                 }
             }
+
             if let Some(size) = geometry.client.expire_wait(now) {
                 tracing::warn!(
                     ?id,
@@ -253,8 +275,9 @@ impl Ferese {
                     "client did not commit the final configured size within 500 ms"
                 );
             }
+
             if let Some(size) = geometry.presentation_size_request(now)
-                && !self.natural_floating_pending.contains(&id)
+                && !natural_pending
                 && let Some(toplevel) = window.toplevel()
             {
                 toplevel.with_pending_state(|state| {
@@ -262,20 +285,25 @@ impl Ferese {
                 });
                 toplevel.send_pending_configure();
             }
+
             let visual = geometry.visual.current;
             self.space
                 .map_element(window, (visual.x.round() as i32, visual.y.round() as i32), false);
         }
+
         for id in settled_coupled_widths {
-            self.viewport_coupled_widths.remove(&id);
+            self.windows.update(id, |record| record.coupled_width = None);
         }
+
         if !completed_slides.is_empty() {
             for output in completed_slides {
                 self.workspace_slides.remove(&output);
             }
+
             let visible = self.visible_workspace_ids();
             let visible_windows = self
-                .window_ids
+                .windows
+                .ids()
                 .values()
                 .copied()
                 .filter(|id| {
@@ -308,19 +336,15 @@ impl Ferese {
         scaled_animation_duration(duration, self.animations_enabled, self.animation_speed)
     }
 
-    pub(crate) fn closing_visual(&self, id: WindowId) -> (f64, f32) {
-        let Some(animation) = self.closing_windows.get(&id) else {
-            return (1.0, 1.0);
-        };
-        let eased = smoothstep(animation.progress);
-
-        (1.0 - eased * 0.02, (1.0 - eased) as f32)
+    pub(crate) fn workspace_slide_offset(&self, window: WindowId) -> (f64, f64) {
+        self.workspace_slide_offset_at(window, Duration::ZERO)
     }
 
-    pub(crate) fn workspace_slide_offset(&self, window: WindowId) -> (f64, f64) {
+    pub(super) fn workspace_slide_offset_at(&self, window: WindowId, delta: Duration) -> (f64, f64) {
         let Some(workspace) = self.workspaces.workspace_for_window(window) else {
             return (0.0, 0.0);
         };
+
         let Some(output_id) = self
             .workspace_slides
             .iter()
@@ -329,9 +353,11 @@ impl Ferese {
         else {
             return (0.0, 0.0);
         };
+
         let Some(slide) = self.workspace_slides.get(&output_id) else {
             return (0.0, 0.0);
         };
+
         let Some(size) = self
             .output_ids
             .iter()
@@ -341,6 +367,12 @@ impl Ferese {
         else {
             return (0.0, 0.0);
         };
+
+        let mut slide = slide.clone();
+        if slide.held_progress.is_none() && !delta.is_zero() {
+            slide.advance(delta);
+        }
+
         slide.offset(workspace, f64::from(size.w), f64::from(size.h))
     }
 

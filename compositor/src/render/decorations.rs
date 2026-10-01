@@ -1,8 +1,15 @@
 use super::*;
 
-pub(super) fn rounded_clip_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<RoundedClipPrograms> {
+pub(super) fn rounded_clip_program(
+    resources: &mut RenderResources,
+    renderer: &mut GlesRenderer,
+) -> Option<RoundedClipPrograms> {
     let context = renderer.context_id().erased();
-    if let Some(program) = state.rounded_clip_programs.get(&context) {
+    if let Some(program) = resources
+        .contexts
+        .get(&context)
+        .and_then(|programs| programs.rounded.as_ref())
+    {
         return Some(program.clone());
     }
 
@@ -51,11 +58,11 @@ pub(super) fn rounded_clip_program(state: &mut Ferese, renderer: &mut GlesRender
                 border,
                 shadow,
             };
-            state.rounded_clip_programs.insert(context, programs.clone());
+            resources.contexts.entry(context).or_default().rounded = Some(programs.clone());
             Some(programs)
         }
         Err(error) => {
-            if state.rounded_clip_warnings.insert(context) {
+            if !std::mem::replace(&mut resources.contexts.entry(context).or_default().rounded_warned, true) {
                 tracing::warn!(%error, "rounded-window shader unavailable; falling back to unrounded rendering");
             }
             None
@@ -65,7 +72,8 @@ pub(super) fn rounded_clip_program(state: &mut Ferese, renderer: &mut GlesRender
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn window_border_element(
-    state: &mut Ferese,
+    resources: &mut RenderResources,
+    theme: &crate::config::ThemeSettings,
     renderer: &GlesRenderer,
     id: ferese_layout::WindowId,
     geometry: Rectangle<i32, Logical>,
@@ -98,17 +106,13 @@ pub(super) fn window_border_element(
         ),
         None => (color, color, [0.0; 4]),
     };
-    let (focus_from, focus_to, focus_gradient_line) = match state.theme_settings.focus_ring_gradient {
+    let (focus_from, focus_to, focus_gradient_line) = match theme.focus_ring_gradient {
         Some(g) => (
             g.from.0,
             g.to.0,
             border_gradient_line(corners.rect, mode.size, output.current_transform().invert(), g.angle),
         ),
-        None => (
-            state.theme_settings.accent_color.0,
-            state.theme_settings.accent_color.0,
-            [0.0; 4],
-        ),
+        None => (theme.accent_color.0, theme.accent_color.0, [0.0; 4]),
     };
     let parameters = BorderParameters {
         geometry,
@@ -124,7 +128,7 @@ pub(super) fn window_border_element(
         focus_mix,
     };
     let context = renderer.context_id().erased();
-    let buffers = state.window_borders.entry(id).or_default();
+    let buffers = &mut resources.windows.entry(id).or_default().borders;
     if !buffers.contexts.contains_key(&context) {
         let element = PixelShaderElement::new(
             programs.border.clone(),
@@ -175,7 +179,7 @@ pub(super) fn border_uniforms(parameters: &BorderParameters) -> Vec<Uniform<'sta
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn window_tint_element(
-    state: &mut Ferese,
+    resources: &mut RenderResources,
     renderer: &mut GlesRenderer,
     id: ferese_layout::WindowId,
     geometry: Rectangle<i32, Logical>,
@@ -186,14 +190,14 @@ pub(super) fn window_tint_element(
 ) -> Option<PhysicalShaderElement> {
     if color[3] <= 0.0 {
         if resize_fill {
-            state.window_resize_fills.remove(&id);
+            resources.clear_tint(id, true);
         } else {
-            state.window_dims.remove(&id);
+            resources.clear_tint(id, false);
         }
         return None;
     }
     let mode = output.current_mode()?;
-    let program = material_program(state, renderer)?;
+    let program = material_program(resources, renderer)?;
     let parameters = BorderParameters {
         geometry,
         clip_rect: framebuffer_clip_rect(corners.rect, mode.size, output.current_transform().invert()),
@@ -219,9 +223,9 @@ pub(super) fn window_tint_element(
     };
     let context = renderer.context_id().erased();
     let buffers = if resize_fill {
-        state.window_resize_fills.entry(id).or_default()
+        &mut resources.windows.entry(id).or_default().resize_fill
     } else {
-        state.window_dims.entry(id).or_default()
+        &mut resources.windows.entry(id).or_default().dim
     };
     let cached = buffers.contexts.entry(context).or_insert_with(|| CachedBorder {
         element: PixelShaderElement::new(
@@ -251,7 +255,7 @@ pub(super) fn window_tint_element(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn window_shadow_element(
-    state: &mut Ferese,
+    resources: &mut RenderResources,
     renderer: &GlesRenderer,
     id: ferese_layout::WindowId,
     geometry: Rectangle<i32, Logical>,
@@ -287,7 +291,7 @@ pub(super) fn window_shadow_element(
         color,
     };
     let context = renderer.context_id().erased();
-    let buffers = state.window_shadows.entry(id).or_default();
+    let buffers = &mut resources.windows.entry(id).or_default().shadow;
     if !buffers.contexts.contains_key(&context) {
         let element = PixelShaderElement::new(
             programs.shadow.clone(),

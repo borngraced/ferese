@@ -186,7 +186,8 @@ impl Ferese {
             return None;
         }
         let window = self
-            .window_ids
+            .windows
+            .ids()
             .iter()
             .find(|(_, candidate)| **candidate == id)?
             .0
@@ -283,7 +284,7 @@ pub(super) fn copy_snapshot(state: &Ferese, resource: &ZwlrScreencopyFrameV1, da
     };
     if state.session_lock.active
         || !super::screencopy::capture_allowed()
-        || !state.window_ids.values().any(|id| *id == snapshot.id)
+        || !state.windows.ids().values().any(|id| *id == snapshot.id)
     {
         resource.failed();
         return;

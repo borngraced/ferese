@@ -1,49 +1,19 @@
 use super::*;
 
-/// Rendering samples an isolated forecast. Restore authoritative state before
-/// returning to input, client commits, or another monitor's render deadline.
-pub(crate) struct RenderForecast<'a> {
-    state: &'a mut Ferese,
-    geometry: Vec<(WindowId, WindowGeometry)>,
-    slides: HashMap<OutputId, WorkspaceSlide>,
-    closing: HashMap<WindowId, ClosingAnimation>,
-    focus: HashMap<WindowId, crate::dimming::DimAnimation>,
-    dimming: HashMap<WindowId, crate::dimming::DimAnimation>,
-    overview: Option<crate::overview::OverviewAnimationSnapshot>,
+/// Output-local presentation values. Sampling never changes authoritative
+/// geometry, configure barriers, animation clocks, or another output's view.
+pub(crate) struct FrameScene {
+    pub windows: HashMap<WindowId, WindowFrame>,
+    pub overview: crate::overview::OverviewMotion,
 }
 
-impl std::ops::Deref for RenderForecast<'_> {
-    type Target = Ferese;
-
-    fn deref(&self) -> &Ferese {
-        self.state
-    }
-}
-
-impl std::ops::DerefMut for RenderForecast<'_> {
-    fn deref_mut(&mut self) -> &mut Ferese {
-        self.state
-    }
-}
-
-impl Drop for RenderForecast<'_> {
-    fn drop(&mut self) {
-        if self.overview.is_none() {
-            return;
-        }
-
-        for (id, geometry) in self.geometry.drain(..) {
-            self.state.window_geometry.insert(id, geometry);
-        }
-
-        self.state.workspace_slides = std::mem::take(&mut self.slides);
-        self.state.closing_windows = std::mem::take(&mut self.closing);
-        self.state.window_focus = std::mem::take(&mut self.focus);
-        self.state.window_dimming = std::mem::take(&mut self.dimming);
-        if let Some(overview) = self.overview.take() {
-            self.state.overview.restore_prediction(overview);
-        }
-    }
+pub(crate) struct WindowFrame {
+    pub geometry: WindowGeometry,
+    pub rect: Rect,
+    pub close_scale: f64,
+    pub close_alpha: f32,
+    pub focus: f64,
+    pub dim: f64,
 }
 
 impl Ferese {
@@ -60,21 +30,24 @@ impl Ferese {
             return true;
         }
 
-        self.window_geometry.iter().any(|(id, geometry)| {
+        self.windows.records().any(|(id, record)| {
+            let Some(mut geometry) = record.geometry else {
+                return false;
+            };
+
             if !self.window_belongs_to_output(*id, output) {
                 return false;
             }
 
-            if self.resize_transactions.contains_key(id)
-                || self.resize_snapshots.contains_key(id)
-                || self.closing_windows.get(id).is_some_and(|close| !close.close_sent)
-                || self.window_focus.get(id).is_some_and(|focus| focus.is_animating())
-                || self.window_dimming.get(id).is_some_and(|dim| dim.is_animating())
+            if record.resize.is_some()
+                || self.render.snapshot(id).is_some()
+                || record.closing.as_ref().is_some_and(|close| !close.close_sent)
+                || record.focus.as_ref().is_some_and(|focus| focus.is_animating())
+                || record.dimming.as_ref().is_some_and(|dim| dim.is_animating())
             {
                 return true;
             }
 
-            let mut geometry = *geometry;
             if geometry.advance(Duration::ZERO, self.spring_config, self.animations_enabled) {
                 return true;
             }
@@ -90,104 +63,104 @@ impl Ferese {
                     .as_ref()
                     .is_some_and(|swipe| swipe.workspace == workspace);
                 !held && viewport.advance(Duration::ZERO, self.viewport_spring_config)
-            }) || self.viewport_coupled_widths.get(id).is_some_and(|(_, width)| {
+            }) || record.coupled_width.as_ref().is_some_and(|(_, width)| {
                 let mut width = *width;
                 width.advance(Duration::ZERO, self.viewport_spring_config)
             })
         })
     }
 
-    pub(crate) fn forecast_render(&mut self, output: &Output, horizon: Duration) -> RenderForecast<'_> {
-        if horizon.is_zero() || !self.animations_enabled || !self.output_has_animations(output) {
-            return RenderForecast {
-                state: self,
-                geometry: Vec::new(),
-                slides: HashMap::new(),
-                closing: HashMap::new(),
-                focus: HashMap::new(),
-                dimming: HashMap::new(),
-                overview: None,
-            };
-        }
-
-        let delta = if self.animations_enabled {
+    pub(crate) fn sample_frame(&self, output: &Output, horizon: Duration) -> FrameScene {
+        let delta = if self.animations_enabled && self.output_has_animations(output) {
             horizon.min(Duration::from_millis(100)).mul_f64(self.animation_speed)
         } else {
             Duration::ZERO
         };
 
-        let geometry = self
-            .window_geometry
-            .iter()
-            .filter(|(id, _)| self.window_belongs_to_output(**id, output))
-            .map(|(id, geometry)| (*id, *geometry))
-            .collect::<Vec<_>>();
-        let slides = self.workspace_slides.clone();
-        let closing = self.closing_windows.clone();
-        let focus = self.window_focus.clone();
-        let dimming = self.window_dimming.clone();
-        let overview = self.overview.predict(delta, self.spring_config);
+        let overview = self.overview.sample(delta, self.spring_config);
         let blocked = self
-            .resize_transactions
-            .keys()
+            .windows
+            .resizing()
             .filter_map(|id| self.workspaces.workspace_for_window(*id))
             .collect::<HashSet<_>>();
-        for (id, original) in &geometry {
-            let workspace = self.workspaces.workspace_for_window(*id);
-            if workspace.is_some_and(|workspace| blocked.contains(&workspace)) {
+        let mut windows = HashMap::new();
+
+        for (&id, record) in self.windows.records() {
+            let Some(original) = record.geometry else { continue };
+
+            if !self.window_belongs_to_output(id, output) {
                 continue;
             }
 
-            let world = self.scrolling_world_x.get(id).and_then(|(workspace, world)| {
+            let workspace = self.workspaces.workspace_for_window(id);
+            let world = record.world_x.as_ref().and_then(|(workspace, world)| {
                 let viewport = self.viewport_animations.get(workspace)?;
                 let held = self
                     .focus_swipe
                     .as_ref()
                     .is_some_and(|swipe| swipe.workspace == *workspace);
+
                 Some((*world, *viewport, held))
             });
+            let width = record.coupled_width.as_ref().map(|(_, width)| *width);
+            let geometry = if delta.is_zero() || workspace.is_some_and(|workspace| blocked.contains(&workspace)) {
+                original
+            } else {
+                predict_geometry(
+                    original,
+                    delta,
+                    self.spring_config,
+                    self.viewport_spring_config,
+                    world,
+                    width,
+                )
+            };
 
-            let width = self.viewport_coupled_widths.get(id).map(|(_, width)| *width);
-            let predicted = predict_geometry(
-                *original,
-                delta,
-                self.spring_config,
-                self.viewport_spring_config,
-                world,
-                width,
+            let mut rect = overview.presented_rect(id, geometry.visual.current);
+            if !overview.is_presenting() {
+                let (x, y) = self.workspace_slide_offset_at(id, delta);
+                rect.x += x;
+                rect.y += y;
+            }
+
+            let mut close = record.closing.as_ref().copied().unwrap_or_default();
+            if record.closing.is_some() && !delta.is_zero() {
+                close.advance(delta, true);
+            }
+
+            let eased = smoothstep(close.progress);
+            let focused = if self.overview.is_active() {
+                self.overview_selected(id)
+            } else {
+                self.focused_window == Some(id)
+            };
+
+            let sample_dim = |motion: Option<&DimAnimation>, fallback| {
+                let Some(mut motion) = motion.cloned() else {
+                    return fallback;
+                };
+
+                if !delta.is_zero() {
+                    motion.predict(delta, self.inactive_dim.duration_ms);
+                }
+
+                motion.current
+            };
+
+            windows.insert(
+                id,
+                WindowFrame {
+                    geometry,
+                    rect,
+                    close_scale: 1.0 - eased * 0.02,
+                    close_alpha: (1.0 - eased) as f32,
+                    focus: sample_dim(record.focus.as_ref(), if focused { 1.0 } else { 0.0 }),
+                    dim: sample_dim(record.dimming.as_ref(), 0.0),
+                },
             );
-            self.window_geometry.insert(*id, predicted);
         }
 
-        for slide in self
-            .workspace_slides
-            .values_mut()
-            .filter(|slide| slide.held_progress.is_none())
-        {
-            slide.advance(delta);
-        }
-
-        for close in self.closing_windows.values_mut() {
-            close.advance(delta, self.animations_enabled);
-        }
-
-        for focus in self.window_focus.values_mut() {
-            focus.predict(delta, self.inactive_dim.duration_ms);
-        }
-
-        for dim in self.window_dimming.values_mut() {
-            dim.predict(delta, self.inactive_dim.duration_ms);
-        }
-
-        RenderForecast {
-            state: self,
-            geometry,
-            slides,
-            closing,
-            focus,
-            dimming,
-            overview: Some(overview),
-        }
+        FrameScene { windows, overview }
     }
 }
 
@@ -235,7 +208,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires a private XDG_RUNTIME_DIR and permission to bind test sockets"]
-    fn render_forecast_restores_compositor_state_between_output_deadlines() {
+    fn frame_sampling_preserves_compositor_state_between_output_deadlines() {
         let runtime = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());
         assert!(
             runtime.starts_with(std::env::temp_dir()),
@@ -269,7 +242,14 @@ mod tests {
         state.workspaces.insert_window(id, Axis::Horizontal, 0.5).unwrap();
         let mut geometry = WindowGeometry::new(Rect::new(0., 0., 400., 300.), None);
         geometry.visual.set_target(Rect::new(600., 0., 400., 300.));
-        state.window_geometry.insert(id, geometry);
+        // This test isolates frame sampling from the protocol client fixture.
+        state.windows.records.insert(
+            id,
+            super::super::window_registry::WindowRecord {
+                geometry: Some(geometry),
+                ..Default::default()
+            },
+        );
         let tick = state.last_animation_tick;
         for horizon in [
             Duration::from_millis(16),
@@ -277,17 +257,27 @@ mod tests {
             Duration::from_millis(8),
         ] {
             {
-                let forecast = state.forecast_render(&output, horizon);
-                assert!(forecast.window_geometry[&id].visual.current.x > geometry.visual.current.x);
+                let forecast = state.sample_frame(&output, horizon);
+                assert!(forecast.windows[&id].geometry.visual.current.x > geometry.visual.current.x);
             }
 
-            assert_eq!(state.window_geometry[&id], geometry);
+            assert_eq!(*state.windows.geometry(&id).unwrap(), geometry);
             assert_eq!(state.last_animation_tick, tick);
         }
 
+        // A prediction must neither advance nor expire a client resize barrier.
+        state.windows.set_transaction(
+            id,
+            crate::resize_transaction::ResizeTransaction::new(9.into(), Duration::ZERO),
+        );
+        let blocked = state.sample_frame(&output, Duration::from_millis(16));
+        assert_eq!(blocked.windows[&id].geometry, geometry);
+        assert!(state.windows.transaction(&id).is_some());
+        state.windows.clear_transaction(&id);
+
         state.animations_enabled = false;
-        let forecast = state.forecast_render(&output, Duration::from_millis(16));
-        assert_eq!(forecast.window_geometry[&id], geometry);
+        let forecast = state.sample_frame(&output, Duration::from_millis(16));
+        assert_eq!(forecast.windows[&id].geometry, geometry);
     }
 
     #[test]

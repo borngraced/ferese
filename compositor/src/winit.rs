@@ -229,7 +229,8 @@ fn send_nested_frame_callbacks(state: &mut Ferese, output: &Output, refresh: Dur
     let time = state.start_time.elapsed();
     for window in state.space.elements().filter(|window| {
         state
-            .window_ids
+            .windows
+            .ids()
             .get(*window)
             .is_some_and(|id| state.window_belongs_to_output(*id, output))
     }) {

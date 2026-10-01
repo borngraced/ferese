@@ -43,7 +43,7 @@ impl XdgActivationHandler for Ferese {
             return;
         };
 
-        self.focused_window = self.window_ids.get(&window).copied();
+        self.focused_window = self.windows.ids().get(&window).copied();
         if let Some(focused) = self.focused_window
             && let Err(error) = self.workspaces.focus_window(focused)
         {

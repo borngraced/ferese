@@ -60,7 +60,7 @@ impl SeatHandler for Ferese {
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
         if let Some(id) = focused.and_then(|surface| {
-            self.window_ids.iter().find_map(|(window, id)| {
+            self.windows.ids().iter().find_map(|(window, id)| {
                 window
                     .toplevel()
                     .is_some_and(|toplevel| toplevel.wl_surface() == surface)
@@ -152,7 +152,7 @@ impl Ferese {
         {
             root = parent;
         }
-        let window = self.window_ids.iter().find_map(|(window, id)| {
+        let window = self.windows.ids().iter().find_map(|(window, id)| {
             window
                 .toplevel()
                 .is_some_and(|toplevel| toplevel.wl_surface() == &root)

@@ -45,14 +45,14 @@ pub(super) fn append_material_surface(
             )
         })
         .collect();
-    if let Some(buffers) = state.material_buffers.get_mut(surface) {
+    if let Some(buffers) = state.render.surfaces.get_mut(surface) {
         buffers.contexts.retain(|(_, index), _| *index < targets.len());
     }
     let material = (!materials.is_empty() && regions.is_none()).then_some(());
     let clip = material.as_ref().and_then(|_| {
         let corners = targets.first()?.1;
         let mode = output.current_mode()?;
-        let program = rounded_clip_program(state, renderer)?;
+        let program = rounded_clip_program(&mut state.render, renderer)?;
         Some((
             program,
             framebuffer_clip_rect(corners.rect, mode.size, output.current_transform().invert()),
@@ -195,11 +195,13 @@ pub(super) fn material_element(
         visible_framebuffer: framebuffer_clip_rect(corners.rect, mode.size, transform),
     };
     let context = renderer.context_id().erased();
-    let program = material_program(state, renderer)?;
-    let blur_program = (blur > 0.0).then(|| blur_program(state, renderer)).flatten();
+    let program = material_program(&mut state.render, renderer)?;
+    let blur_program = (blur > 0.0)
+        .then(|| blur_program(&mut state.render, renderer))
+        .flatten();
     let capture_rect = framebuffer_capture_rect(parameters.sample_framebuffer);
     let capture_size = Size::from((capture_rect[2], capture_rect[3]));
-    let buffers = state.material_buffers.entry(surface.clone()).or_default();
+    let buffers = state.render.surfaces.entry(surface.clone()).or_default();
     let capture = if let Some(blur_program) = blur_program {
         if buffers
             .captures
@@ -317,15 +319,19 @@ pub(super) fn material_blur_radius(style: crate::config::MaterialStyle, opacity:
     }
 }
 
-pub(super) fn blur_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<BlurProgram> {
+pub(super) fn blur_program(resources: &mut RenderResources, renderer: &mut GlesRenderer) -> Option<BlurProgram> {
     let context = renderer.context_id().erased();
-    if let Some(program) = state.blur_programs.get(&context) {
+    if let Some(program) = resources
+        .contexts
+        .get(&context)
+        .and_then(|programs| programs.blur.as_ref())
+    {
         return Some(program.clone());
     }
     match renderer.compile_custom_texture_shader(corner_shader(BLUR_SHADER), &blur_uniform_names()) {
         Ok(program) => {
             let program = BlurProgram(program);
-            state.blur_programs.insert(context, program.clone());
+            resources.contexts.entry(context).or_default().blur = Some(program.clone());
             Some(program)
         }
         Err(error) => {
@@ -380,9 +386,16 @@ pub(super) fn expanded_blur_region(
     )
 }
 
-pub(super) fn material_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<MaterialProgram> {
+pub(super) fn material_program(
+    resources: &mut RenderResources,
+    renderer: &mut GlesRenderer,
+) -> Option<MaterialProgram> {
     let context = renderer.context_id().erased();
-    if let Some(program) = state.material_programs.get(&context) {
+    if let Some(program) = resources
+        .contexts
+        .get(&context)
+        .and_then(|programs| programs.material.as_ref())
+    {
         return Some(program.clone());
     }
 
@@ -397,7 +410,7 @@ pub(super) fn material_program(state: &mut Ferese, renderer: &mut GlesRenderer) 
     match renderer.compile_custom_pixel_shader(corner_shader(MATERIAL_SHADER), &uniforms) {
         Ok(program) => {
             let program = MaterialProgram(program);
-            state.material_programs.insert(context, program.clone());
+            resources.contexts.entry(context).or_default().material = Some(program.clone());
             Some(program)
         }
         Err(error) => {

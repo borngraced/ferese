@@ -140,7 +140,8 @@ impl Ferese {
             tracing::warn!(%error, ?current, ?next, "failed to slide swipe focus");
         }
         let Some(window) = self
-            .window_ids
+            .windows
+            .ids()
             .iter()
             .find_map(|(window, id)| (*id == next).then(|| window.clone()))
         else {
@@ -277,7 +278,7 @@ impl Ferese {
 
         match self.workspaces.cycle_column_width(window, &self.column_width_presets) {
             Ok(true) => {
-                self.pending_column_width_cycles.insert(window);
+                self.windows.update(window, |w| w.column_width_pending = true);
                 self.relayout();
             }
             Ok(false) => {}
@@ -306,7 +307,8 @@ impl Ferese {
 
     pub(crate) fn activate_managed_window(&mut self, id: WindowId) -> bool {
         let Some(window) = self
-            .window_ids
+            .windows
+            .ids()
             .iter()
             .find_map(|(window, window_id)| (*window_id == id).then(|| window.clone()))
         else {
@@ -560,7 +562,7 @@ impl Ferese {
             return;
         }
         let surface = self.focused_window.and_then(|focused| {
-            self.window_ids.iter().find_map(|(window, id)| {
+            self.windows.ids().iter().find_map(|(window, id)| {
                 (*id == focused)
                     .then(|| window.toplevel())
                     .flatten()

@@ -89,12 +89,9 @@ type OverviewStateLabel =
 
 #[derive(Debug)]
 pub(crate) struct OverviewState {
-    active: bool,
+    motion: OverviewMotion,
     selected: Option<WindowId>,
     selection_workspace: Option<WorkspaceId>,
-    presentations: HashMap<WindowId, AnimatedRect>,
-    opacity: AnimatedValue,
-    exit_transition: Option<(f64, f64)>,
     strip_offsets: HashMap<OutputId, usize>,
     font_family: String,
     font_requests: Option<FontRequests>,
@@ -102,7 +99,9 @@ pub(crate) struct OverviewState {
     labels: OverviewStateLabel,
 }
 
-pub(crate) struct OverviewAnimationSnapshot {
+#[derive(Clone, Debug)]
+pub(crate) struct OverviewMotion {
+    active: bool,
     presentations: HashMap<WindowId, AnimatedRect>,
     opacity: AnimatedValue,
     exit_transition: Option<(f64, f64)>,
@@ -111,12 +110,9 @@ pub(crate) struct OverviewAnimationSnapshot {
 impl Default for OverviewState {
     fn default() -> Self {
         Self {
-            active: false,
+            motion: OverviewMotion::default(),
             selected: None,
             selection_workspace: None,
-            presentations: HashMap::new(),
-            opacity: AnimatedValue::new(0.0),
-            exit_transition: None,
             strip_offsets: HashMap::new(),
             font_family: "sans-serif".into(),
             font_requests: None,
@@ -167,27 +163,17 @@ fn centered_row_start(strip: Rect, count: usize, card_width: f64) -> f64 {
 
 impl OverviewState {
     pub(crate) fn is_animating(&self, spring: SpringConfig) -> bool {
-        self.exit_transition.is_some()
-            || (self.opacity.current - self.opacity.target).abs() > 0.001
-            || self.opacity.velocity.abs() > 0.005
-            || self.presentations.values().any(|rect| !rect.is_settled(spring))
+        self.motion.is_animating(spring)
     }
 
-    pub(crate) fn predict(&mut self, delta: Duration, spring: SpringConfig) -> OverviewAnimationSnapshot {
-        let snapshot = OverviewAnimationSnapshot {
-            presentations: self.presentations.clone(),
-            opacity: self.opacity,
-            exit_transition: self.exit_transition,
-        };
+    pub(crate) fn sample(&self, delta: Duration, spring: SpringConfig) -> OverviewMotion {
+        let mut motion = self.motion.clone();
 
-        self.advance(delta, spring, true);
-        snapshot
-    }
+        if !delta.is_zero() {
+            motion.advance(delta, spring, true);
+        }
 
-    pub(crate) fn restore_prediction(&mut self, snapshot: OverviewAnimationSnapshot) {
-        self.presentations = snapshot.presentations;
-        self.opacity = snapshot.opacity;
-        self.exit_transition = snapshot.exit_transition;
+        motion
     }
 
     pub(crate) fn set_font_family(&mut self, family: String) {
@@ -271,19 +257,20 @@ impl OverviewState {
     }
 
     pub(crate) fn is_active(&self) -> bool {
-        self.active
+        self.motion.active
     }
 
     pub(crate) fn is_presenting(&self) -> bool {
-        self.active || !self.presentations.is_empty() || self.opacity.current > 0.001
+        self.motion.is_presenting()
     }
 
+    #[cfg(test)]
     pub(crate) fn opacity(&self) -> f32 {
-        self.opacity.current.clamp(0.0, 1.0) as f32
+        self.motion.opacity()
     }
 
     fn select_workspace_windows(&mut self, windows: &[WindowId], preferred: Option<WindowId>) {
-        let visible = |id: &WindowId| windows.contains(id) && self.presentations.contains_key(id);
+        let visible = |id: &WindowId| windows.contains(id) && self.motion.presentations.contains_key(id);
         self.selected = self
             .selected
             .filter(visible)
@@ -296,11 +283,11 @@ impl OverviewState {
     }
 
     pub(crate) fn has_window_preview(&self, id: WindowId) -> bool {
-        self.presentations.contains_key(&id)
+        self.motion.presentations.contains_key(&id)
     }
 
     pub(crate) fn select_window(&mut self, id: WindowId) -> bool {
-        if !self.presentations.contains_key(&id) {
+        if !self.motion.presentations.contains_key(&id) {
             return false;
         }
         self.selection_workspace = None;
@@ -311,13 +298,14 @@ impl OverviewState {
     pub(crate) fn select_direction(&mut self, direction: Direction) -> bool {
         let Some(current) = self
             .selected
-            .and_then(|id| self.presentations.get(&id))
+            .and_then(|id| self.motion.presentations.get(&id))
             .map(|presentation| presentation.current)
         else {
             return false;
         };
         let current_center = rect_center(current);
         let next = self
+            .motion
             .presentations
             .iter()
             .filter(|(id, _)| Some(**id) != self.selected)
@@ -337,17 +325,7 @@ impl OverviewState {
     }
 
     pub(crate) fn presented_rect(&self, id: WindowId, normal: Rect) -> Rect {
-        let preview = self.presentations.get(&id).map_or(normal, |p| p.current);
-        if let Some((elapsed, _)) = self.exit_transition {
-            let t = 1.0 - (1.0 - (elapsed / EXIT_DURATION).clamp(0.0, 1.0)).powi(3);
-            return Rect::new(
-                preview.x + (normal.x - preview.x) * t,
-                preview.y + (normal.y - preview.y) * t,
-                preview.width + (normal.width - preview.width) * t,
-                preview.height + (normal.height - preview.height) * t,
-            );
-        }
-        preview
+        self.motion.presented_rect(id, normal)
     }
 
     fn enter(
@@ -357,23 +335,23 @@ impl OverviewState {
         animations_enabled: bool,
     ) {
         // Reverse a dismissal from the currently visible geometry, not the old grid.
-        if self.exit_transition.is_some() {
+        if self.motion.exit_transition.is_some() {
             let visible: Vec<_> = targets
                 .iter()
                 .map(|(id, (normal, _))| (*id, self.presented_rect(*id, *normal)))
                 .collect();
             for (id, rect) in visible {
-                if let Some(presentation) = self.presentations.get_mut(&id) {
+                if let Some(presentation) = self.motion.presentations.get_mut(&id) {
                     *presentation = AnimatedRect::new(rect);
                 }
             }
         }
-        self.exit_transition = None;
+        self.motion.exit_transition = None;
         self.selection_workspace = None;
-        self.active = true;
-        self.opacity.retarget_preserving_motion(1.0);
+        self.motion.active = true;
+        self.motion.opacity.retarget_preserving_motion(1.0);
         if !animations_enabled {
-            self.opacity.snap();
+            self.motion.opacity.snap();
         }
         self.strip_offsets.clear();
         self.selected = selected
@@ -383,10 +361,11 @@ impl OverviewState {
     }
 
     fn retarget(&mut self, targets: HashMap<WindowId, (Rect, Rect)>, animations_enabled: bool) {
-        self.presentations.retain(|id, _| targets.contains_key(id));
+        self.motion.presentations.retain(|id, _| targets.contains_key(id));
 
         for (id, (normal, target)) in targets {
             let presentation = self
+                .motion
                 .presentations
                 .entry(id)
                 .or_insert_with(|| AnimatedRect::new(normal));
@@ -396,20 +375,23 @@ impl OverviewState {
                 presentation.snap();
             }
         }
-        if self.selected.is_none_or(|id| !self.presentations.contains_key(&id)) {
-            self.selected = self.presentations.keys().copied().min_by_key(|id| id.0);
+        if self
+            .selected
+            .is_none_or(|id| !self.motion.presentations.contains_key(&id))
+        {
+            self.selected = self.motion.presentations.keys().copied().min_by_key(|id| id.0);
         }
     }
 
     fn exit(&mut self, normal: HashMap<WindowId, Rect>, animations_enabled: bool) {
-        self.active = false;
-        self.exit_transition = animations_enabled.then_some((0.0, self.opacity.current));
-        self.opacity.retarget_preserving_motion(0.0);
+        self.motion.active = false;
+        self.motion.exit_transition = animations_enabled.then_some((0.0, self.motion.opacity.current));
+        self.motion.opacity.retarget_preserving_motion(0.0);
         if !animations_enabled {
-            self.opacity.snap();
+            self.motion.opacity.snap();
         }
         self.selected = None;
-        self.presentations.retain(|id, presentation| {
+        self.motion.presentations.retain(|id, presentation| {
             let Some(target) = normal.get(id).copied() else {
                 return false;
             };
@@ -422,58 +404,12 @@ impl OverviewState {
         });
 
         if !animations_enabled {
-            self.presentations.clear();
+            self.motion.presentations.clear();
         }
     }
 
     pub(crate) fn advance(&mut self, delta: Duration, spring: SpringConfig, animations_enabled: bool) -> bool {
-        if let Some((elapsed, initial_opacity)) = self.exit_transition {
-            let elapsed = if animations_enabled {
-                elapsed + delta.as_secs_f64()
-            } else {
-                EXIT_DURATION
-            };
-            let remaining = (1.0 - elapsed / EXIT_DURATION).clamp(0.0, 1.0);
-            self.opacity.current = initial_opacity * remaining.powi(3);
-            if elapsed >= EXIT_DURATION {
-                self.exit_transition = None;
-                self.presentations.clear();
-                self.opacity.snap();
-                return false;
-            }
-            self.exit_transition = Some((elapsed, initial_opacity));
-            return true;
-        }
-        let mut active_animation = false;
-
-        for presentation in self.presentations.values_mut() {
-            if animations_enabled {
-                active_animation |= presentation.advance(delta, spring);
-            } else {
-                presentation.snap();
-            }
-        }
-
-        if !self.active && !active_animation {
-            self.presentations.clear();
-        }
-
-        if animations_enabled {
-            // Geometry's 0.1-pixel tolerance is far too coarse for opacity:
-            // it would abruptly drop the last ten percent of the fade.
-            active_animation |= self.opacity.advance(
-                delta,
-                SpringConfig {
-                    position_tolerance: 0.001,
-                    velocity_tolerance: 0.005,
-                    ..spring
-                },
-            );
-        } else {
-            self.opacity.snap();
-        }
-
-        active_animation
+        self.motion.advance(delta, spring, animations_enabled)
     }
 }
 
@@ -484,7 +420,7 @@ impl Ferese {
         }
         let selected = self
             .window_under_visual(point)
-            .and_then(|w| self.window_ids.get(&w).copied());
+            .and_then(|w| self.windows.ids().get(&w).copied());
 
         if selected.is_some() && self.overview.selected != selected {
             self.overview.selection_workspace = None;
@@ -574,7 +510,7 @@ impl Ferese {
     }
 
     pub(crate) fn select_overview_window(&mut self, id: WindowId) -> bool {
-        if !self.overview.is_active() || !self.overview.presentations.contains_key(&id) {
+        if !self.overview.is_active() || !self.overview.motion.presentations.contains_key(&id) {
             return false;
         }
 
@@ -594,7 +530,7 @@ impl Ferese {
         let targets = self.overview_targets();
         self.overview.retarget(targets, self.animations_enabled());
         if let Some(cycle) = self.focus_cycle.as_mut() {
-            let available = self.overview.presentations.keys().copied().collect::<Vec<_>>();
+            let available = self.overview.motion.presentations.keys().copied().collect::<Vec<_>>();
             if let Some(id) = cycle.reconcile(&available) {
                 self.overview.select_window(id);
             }
@@ -619,7 +555,7 @@ impl Ferese {
     }
 
     pub(crate) fn presented_window_rect(&self, id: WindowId) -> Option<Rect> {
-        let normal = self.window_geometry.get(&id)?.visual.current;
+        let normal = self.windows.geometry(&id)?.visual.current;
         let mut presented = self.overview.presented_rect(id, normal);
         if !self.overview.is_presenting() {
             let (x, y) = self.workspace_slide_offset(id);
@@ -630,7 +566,7 @@ impl Ferese {
     }
 
     pub(crate) fn inverse_presented_window_point(&self, id: WindowId, x: f64, y: f64) -> Option<(f64, f64)> {
-        let geometry = self.window_geometry.get(&id)?;
+        let geometry = self.windows.geometry(&id)?;
         if !self.overview.is_presenting() {
             let presented = self.presented_window_rect(id)?;
             return Some((x - presented.x, y - presented.y));
@@ -653,6 +589,14 @@ impl Ferese {
     }
 
     pub(crate) fn overview_workspace_cards(&self, output: &Output) -> Vec<WorkspaceCard> {
+        self.overview_workspace_cards_for_frame(output, None)
+    }
+
+    pub(crate) fn overview_workspace_cards_for_frame(
+        &self,
+        output: &Output,
+        frame: Option<&crate::state::FrameScene>,
+    ) -> Vec<WorkspaceCard> {
         let Some(bounds) = self.output_bounds_for(output) else {
             return Vec::new();
         };
@@ -698,7 +642,11 @@ impl Ferese {
                     .chain(workspace.floating.iter().copied())
                     .take(4)
                     .filter_map(|id| {
-                        let source = self.window_geometry.get(&id)?.visual.current;
+                        let source = frame
+                            .and_then(|frame| frame.windows.get(&id).map(|window| &window.geometry))
+                            .or_else(|| self.windows.geometry(&id))?
+                            .visual
+                            .current;
                         Some((id, source))
                     })
                     .collect::<Vec<_>>();
@@ -813,11 +761,11 @@ impl Ferese {
                         if self.focus_preview_output(*id) != Some(output_id) {
                             return None;
                         }
-                        Some((*id, self.window_geometry.get(id)?.visual.current))
+                        Some((*id, self.windows.geometry(id)?.visual.current))
                     })
                     .collect::<Vec<_>>();
                 for (id, target) in overview_layout(window_area(bounds), &windows) {
-                    targets.insert(id, (self.window_geometry[&id].visual.current, target));
+                    targets.insert(id, (self.windows.geometry(&id).unwrap().visual.current, target));
                 }
                 continue;
             }
@@ -829,13 +777,13 @@ impl Ferese {
                 .window_ids()
                 .chain(workspace.floating.iter().copied())
                 .filter_map(|id| {
-                    let normal = self.window_geometry.get(&id)?.visual.current;
+                    let normal = self.windows.geometry(&id)?.visual.current;
                     Some((id, normal))
                 })
                 .collect::<Vec<_>>();
 
             for (id, target) in overview_layout(window_area(bounds), &windows) {
-                let normal = self.window_geometry[&id].visual.current;
+                let normal = self.windows.geometry(&id).unwrap().visual.current;
                 targets.insert(id, (normal, target));
             }
         }
@@ -844,8 +792,8 @@ impl Ferese {
     }
 
     fn normal_window_rects(&self) -> HashMap<WindowId, Rect> {
-        self.window_geometry
-            .iter()
+        self.windows
+            .geometries()
             .map(|(id, geometry)| (*id, geometry.visual.current))
             .collect()
     }
@@ -1043,6 +991,36 @@ mod tests {
     }
 
     #[test]
+    fn sampling_overview_exit_does_not_finish_the_live_transition() {
+        let mut overview = OverviewState::default();
+        let id = WindowId(1);
+        let normal = Rect::new(0., 0., 800., 600.);
+        let thumbnail = Rect::new(100., 100., 200., 150.);
+        overview.enter(HashMap::from([(id, (normal, thumbnail))]), Some(id), false);
+        overview.exit(HashMap::from([(id, normal)]), true);
+        overview.advance(Duration::from_millis(170), SpringConfig::default(), true);
+        let before = overview.presented_rect(id, normal);
+        let opacity = overview.opacity();
+
+        let finished = overview.sample(Duration::from_millis(16), SpringConfig::default());
+        let earlier = overview.sample(Duration::from_millis(4), SpringConfig::default());
+
+        assert!(!finished.is_presenting());
+        assert_eq!(finished.presented_rect(id, normal), normal);
+        assert!(earlier.is_presenting());
+        assert!(earlier.opacity() < opacity);
+        assert!(overview.is_presenting());
+        assert_eq!(overview.presented_rect(id, normal), before);
+        assert_eq!(overview.opacity(), opacity);
+        assert_eq!(
+            overview
+                .sample(Duration::ZERO, SpringConfig::default())
+                .presented_rect(id, normal),
+            before
+        );
+    }
+
+    #[test]
     fn reversing_overview_preserves_current_opacity() {
         let mut overview = OverviewState::default();
         overview.enter(HashMap::new(), None, true);
@@ -1229,5 +1207,97 @@ mod tests {
         assert!(overview.select_direction(Direction::Right));
         assert_eq!(overview.selected(), Some(right));
         assert!(!overview.select_direction(Direction::Right));
+    }
+}
+
+impl Default for OverviewMotion {
+    fn default() -> Self {
+        Self {
+            active: false,
+            presentations: HashMap::new(),
+            opacity: AnimatedValue::new(0.0),
+            exit_transition: None,
+        }
+    }
+}
+
+impl OverviewMotion {
+    pub(crate) fn is_animating(&self, spring: SpringConfig) -> bool {
+        self.exit_transition.is_some()
+            || (self.opacity.current - self.opacity.target).abs() > 0.001
+            || self.opacity.velocity.abs() > 0.005
+            || self.presentations.values().any(|rect| !rect.is_settled(spring))
+    }
+
+    pub(crate) fn is_presenting(&self) -> bool {
+        self.active || !self.presentations.is_empty() || self.opacity.current > 0.001
+    }
+
+    pub(crate) fn opacity(&self) -> f32 {
+        self.opacity.current.clamp(0.0, 1.0) as f32
+    }
+
+    pub(crate) fn presented_rect(&self, id: WindowId, normal: Rect) -> Rect {
+        let preview = self.presentations.get(&id).map_or(normal, |p| p.current);
+        if let Some((elapsed, _)) = self.exit_transition {
+            let t = 1.0 - (1.0 - (elapsed / EXIT_DURATION).clamp(0.0, 1.0)).powi(3);
+            return Rect::new(
+                preview.x + (normal.x - preview.x) * t,
+                preview.y + (normal.y - preview.y) * t,
+                preview.width + (normal.width - preview.width) * t,
+                preview.height + (normal.height - preview.height) * t,
+            );
+        }
+        preview
+    }
+
+    pub(crate) fn advance(&mut self, delta: Duration, spring: SpringConfig, animations_enabled: bool) -> bool {
+        if let Some((elapsed, initial_opacity)) = self.exit_transition {
+            let elapsed = if animations_enabled {
+                elapsed + delta.as_secs_f64()
+            } else {
+                EXIT_DURATION
+            };
+            let remaining = (1.0 - elapsed / EXIT_DURATION).clamp(0.0, 1.0);
+            self.opacity.current = initial_opacity * remaining.powi(3);
+            if elapsed >= EXIT_DURATION {
+                self.exit_transition = None;
+                self.presentations.clear();
+                self.opacity.snap();
+                return false;
+            }
+            self.exit_transition = Some((elapsed, initial_opacity));
+            return true;
+        }
+        let mut active_animation = false;
+
+        for presentation in self.presentations.values_mut() {
+            if animations_enabled {
+                active_animation |= presentation.advance(delta, spring);
+            } else {
+                presentation.snap();
+            }
+        }
+
+        if !self.active && !active_animation {
+            self.presentations.clear();
+        }
+
+        if animations_enabled {
+            // Geometry's 0.1-pixel tolerance is far too coarse for opacity:
+            // it would abruptly drop the last ten percent of the fade.
+            active_animation |= self.opacity.advance(
+                delta,
+                SpringConfig {
+                    position_tolerance: 0.001,
+                    velocity_tolerance: 0.005,
+                    ..spring
+                },
+            );
+        } else {
+            self.opacity.snap();
+        }
+
+        active_animation
     }
 }

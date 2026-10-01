@@ -41,7 +41,7 @@ impl Ferese {
 
         let workspace = self.workspace_under_pointer(position)?;
         self.space.elements().rev().find_map(|window| {
-            let id = self.window_ids.get(window)?;
+            let id = self.windows.ids().get(window)?;
             if self.workspaces.workspace_for_window(*id) != Some(workspace) {
                 return None;
             }
@@ -71,7 +71,7 @@ impl Ferese {
     }
 
     pub(super) fn window_fills_visual_bounds(&self, id: WindowId, workspace: WorkspaceId) -> bool {
-        self.maximized_windows.contains(&id)
+        self.windows.record(id).is_some_and(|w| w.maximized)
             || self
                 .workspaces
                 .workspace(workspace)
@@ -137,7 +137,7 @@ impl Ferese {
                 return None;
             }
 
-            let id = self.window_ids.get(window)?;
+            let id = self.windows.ids().get(window)?;
             if self.workspaces.workspace_for_window(*id) != Some(workspace) {
                 return None;
             }
@@ -166,9 +166,9 @@ impl Ferese {
         };
 
         if overview_active {
-            let mut candidates = self.window_ids.keys().cloned().collect::<Vec<_>>();
+            let mut candidates = self.windows.ids().keys().cloned().collect::<Vec<_>>();
             // Match Overview's front-to-back render order during overlapping motion.
-            candidates.sort_by_key(|window| std::cmp::Reverse(self.window_ids.get(window).map_or(0, |id| id.0)));
+            candidates.sort_by_key(|window| std::cmp::Reverse(self.windows.ids().get(window).map_or(0, |id| id.0)));
             candidates.iter().find_map(hit)
         } else {
             self.space.elements().rev().find_map(hit)
@@ -199,8 +199,8 @@ impl Ferese {
         if !self.overview.is_presenting() {
             return Some((1.0, 1.0));
         }
-        let id = self.window_ids.get(window)?;
-        let geometry = self.window_geometry.get(id)?;
+        let id = self.windows.ids().get(window)?;
+        let geometry = self.windows.geometry(id)?;
         let source = geometry.client.committed_size?;
         let presented = self.presented_window_rect(*id)?;
 
@@ -215,7 +215,7 @@ impl Ferese {
     }
 
     pub(crate) fn visual_rect_for_window(&self, window: &Window) -> Option<Rectangle<i32, Logical>> {
-        let id = self.window_ids.get(window)?;
+        let id = self.windows.ids().get(window)?;
         let rect = self.presented_window_rect(*id)?;
         let size = ClientSize::from_rect(rect);
         Some(Rectangle::new(
@@ -227,9 +227,10 @@ impl Ferese {
     pub(crate) fn window_content_ready(&self, window: &Window) -> bool {
         window_has_buffer(window)
             && self
-                .window_ids
+                .windows
+                .ids()
                 .get(window)
-                .and_then(|id| self.window_geometry.get(id))
+                .and_then(|id| self.windows.geometry(id))
                 .is_some_and(|geometry| geometry.client.committed_size.is_some())
     }
 }

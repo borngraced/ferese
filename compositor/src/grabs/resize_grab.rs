@@ -159,10 +159,9 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
         self.last_size = constrained_size(self.initial_rect.size, delta, self.edges, minimum, maximum);
         let rect = resized_rect(self.initial_rect, self.last_size, self.edges);
         data.set_floating_window_geometry(&self.window, rect.loc, rect.size);
-        if let Some(id) = data.window_ids.get(&self.window).copied() {
-            data.floating_resize_anchors.insert(
-                id,
-                (
+        if let Some(id) = data.windows.ids().get(&self.window).copied() {
+            data.windows.update(id, |w| {
+                w.resize_anchor = Some((
                     self.edges.left(),
                     self.edges.top(),
                     ferese_layout::Rect::new(
@@ -171,8 +170,8 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
                         initial.size.w as f64,
                         initial.size.h as f64,
                     ),
-                ),
-            );
+                ))
+            });
         }
 
         surface.with_pending_state(|state| {

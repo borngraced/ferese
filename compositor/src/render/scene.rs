@@ -8,14 +8,6 @@ pub(crate) fn animated_window_elements(
     output_elements(state, renderer, output, true)
 }
 
-pub(crate) fn cursorless_window_elements(
-    state: &mut Ferese,
-    renderer: &mut GlesRenderer,
-    output: &Output,
-) -> Vec<AnimatedWindowRenderElement> {
-    output_elements(state, renderer, output, false)
-}
-
 pub(crate) fn frame_effect_metrics(_elements: &[AnimatedWindowRenderElement], _scale: f64) -> FrameEffectMetrics {
     FrameEffectMetrics
 }
@@ -26,8 +18,19 @@ pub(crate) fn output_elements(
     output: &Output,
     include_cursor: bool,
 ) -> Vec<AnimatedWindowRenderElement> {
+    let frame = state.sample_frame(output, Duration::ZERO);
+
+    sampled_output_elements(state, renderer, output, include_cursor, &frame)
+}
+
+pub(crate) fn sampled_output_elements(
+    state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    include_cursor: bool,
+    frame: &crate::state::FrameScene,
+) -> Vec<AnimatedWindowRenderElement> {
     if state.session_lock.active {
-        state.configure_lock_surfaces();
         let Some(geometry) = state.space.output_geometry(output) else {
             return Vec::new();
         };
@@ -83,29 +86,36 @@ pub(crate) fn output_elements(
         return Vec::new();
     };
     let scale = output.current_scale().fractional_scale();
-    let rounded_clip_program = rounded_clip_program(state, renderer);
+    let rounded_clip_program = rounded_clip_program(&mut state.render, renderer);
 
     let mut elements = if include_cursor {
         cursor_elements(state, renderer, output_geometry, scale)
     } else {
         Vec::new()
     };
-    let upper_layers: &[Layer] = if state.output_has_fullscreen(output) {
+    let upper_layers: &[Layer] = if state.output_has_fullscreen_for_frame(output, frame.overview.is_presenting()) {
         &[Layer::Overlay]
     } else {
         &[Layer::Overlay, Layer::Top]
     };
     elements.extend(layer_elements(state, renderer, output, upper_layers));
-    if state.overview.is_presenting() {
-        elements.extend(overview_strip_elements(state, renderer, output, output_geometry, scale));
+    if frame.overview.is_presenting() {
+        elements.extend(overview_strip_elements(
+            state,
+            renderer,
+            output,
+            output_geometry,
+            scale,
+            frame,
+        ));
     }
     let mut candidates = if state.overview.is_active() {
-        state.window_ids.keys().cloned().collect::<Vec<_>>()
+        state.windows.ids().keys().cloned().collect::<Vec<_>>()
     } else {
         state.space.elements().rev().cloned().collect::<Vec<_>>()
     };
     if state.overview.is_active() {
-        candidates.sort_by_key(|window| std::cmp::Reverse(state.window_ids.get(window).map_or(0, |id| id.0)));
+        candidates.sort_by_key(|window| std::cmp::Reverse(state.windows.ids().get(window).map_or(0, |id| id.0)));
     }
     let windows = candidates
         .iter()
@@ -115,20 +125,17 @@ pub(crate) fn output_elements(
             if !state.window_content_ready(window) {
                 return None;
             }
-            let id = *state.window_ids.get(window)?;
+            let id = *state.windows.ids().get(window)?;
             // Scrolling columns may sit outside their monitor's rectangle.
             // They must not reappear on a neighboring output just because
             // their global animated coordinates overlap it.
             if !state.window_belongs_to_output(id, output) {
                 return None;
             }
-            let visual = state.presented_window_rect(id)?;
-            let (close_scale, close_alpha) = state.closing_visual(id);
-            let visual = scaled_visual_rect(visual, close_scale);
-            let decoration_progress = state
-                .window_geometry
-                .get(&id)
-                .map_or(1.0, |geometry| geometry.decorations.clamp(0.0, 1.0));
+            let sample = frame.windows.get(&id)?;
+            let visual = scaled_visual_rect(sample.rect, sample.close_scale);
+            let close_alpha = sample.close_alpha;
+            let decoration_progress = sample.geometry.decorations.clamp(0.0, 1.0);
 
             Some((window.clone(), id, visual, decoration_progress, close_alpha))
         })
@@ -151,12 +158,12 @@ pub(crate) fn output_elements(
         let corners = RoundedRect::new(visual, output_geometry.loc, scale, window_radius);
         let pixels = corners.rect;
         // Only overview/close intentionally scale the complete application.
-        let scale_content = state.overview.is_presenting() || state.closing_visual(id).0 != 1.0;
+        let scale_content = frame.overview.is_presenting() || frame.windows[&id].close_scale != 1.0;
         let behavior = resize_content_behavior(scale_content);
 
-        let dim = state.window_dimming.get(&id).map_or(0.0, |dim| dim.current);
+        let dim = frame.windows[&id].dim;
         if let Some(overlay) = window_tint_element(
-            state,
+            &mut state.render,
             renderer,
             id,
             constrain,
@@ -175,22 +182,15 @@ pub(crate) fn output_elements(
             let shadow_blur = state.theme_settings.shadow_blur;
             let shadow_opacity = state.theme_settings.shadow_opacity;
             let shadow_color = state.theme_settings.shadow_color.0;
-            let focused = if state.overview.is_active() {
-                state.overview_selected(id)
-            } else {
-                state.focused_window == Some(id)
-            };
-            let focus = state
-                .window_focus
-                .get(&id)
-                .map_or(if focused { 1.0 } else { 0.0 }, |v| v.current);
+            let focus = frame.windows[&id].focus;
             let border_width = state.theme_settings.border_width
                 + (state.theme_settings.focus_ring_width - state.theme_settings.border_width) * focus;
             let border_color = state.theme_settings.border_color.0;
             let gradient = state.theme_settings.border_gradient;
 
             if let Some(border) = window_border_element(
-                state,
+                &mut state.render,
+                &state.theme_settings,
                 renderer,
                 id,
                 constrain,
@@ -207,7 +207,7 @@ pub(crate) fn output_elements(
                 elements.push(border.into());
             }
             let shadow = window_shadow_element(
-                state,
+                &mut state.render,
                 renderer,
                 id,
                 constrain,
@@ -221,7 +221,7 @@ pub(crate) fn output_elements(
                 &programs,
             );
             if !scale_content
-                && let Some(snapshot) = state.resize_snapshots.get(&id)
+                && let Some(snapshot) = state.render.snapshot(&id)
                 && snapshot.context == renderer.context_id().erased()
                 && (snapshot.scale - scale).abs() < 0.001
             {
@@ -260,10 +260,7 @@ pub(crate) fn output_elements(
                 corners,
                 scale,
                 close_alpha,
-                state
-                    .window_geometry
-                    .get(&id)
-                    .is_some_and(|geometry| geometry.presentation_changed),
+                frame.windows[&id].geometry.presentation_changed,
                 output,
                 programs.clone(),
                 behavior,
@@ -275,13 +272,15 @@ pub(crate) fn output_elements(
             {
                 let mut color = state.theme_settings.surface_base_color.0;
                 color[3] = close_alpha;
-                if let Some(fill) = window_tint_element(state, renderer, id, constrain, corners, color, true, output) {
+                if let Some(fill) =
+                    window_tint_element(&mut state.render, renderer, id, constrain, corners, color, true, output)
+                {
                     // Front-to-back: fill uncovered strips behind the native
                     // content instead of stretching it or exposing wallpaper.
                     elements.push(fill.into());
                 }
             } else {
-                state.window_resize_fills.remove(&id);
+                state.render.clear_tint(id, true);
             }
             if let Some(surface) = material_surface
                 && let Some((background, _)) = material_element(
@@ -370,7 +369,7 @@ pub(super) fn layer_elements(
             .collect::<Vec<_>>()
     };
 
-    state.material_buffers.retain(|surface, _| surface.is_alive());
+    state.render.surfaces.retain(|surface, _| surface.is_alive());
 
     let mut elements = Vec::new();
     for (geometry, layer) in layers {

@@ -338,7 +338,8 @@ impl Ferese {
 
     fn managed_window_snapshots(&self) -> Vec<ManagedWindowSnapshot> {
         let mut snapshots = self
-            .window_ids
+            .windows
+            .ids()
             .iter()
             .filter_map(|(window, id)| {
                 let workspace = self.workspaces.workspace_for_window(*id)?.0;

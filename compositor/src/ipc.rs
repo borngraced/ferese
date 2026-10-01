@@ -827,7 +827,8 @@ impl Ferese {
             return;
         };
         let Some(window) = self
-            .window_ids
+            .windows
+            .ids()
             .iter()
             .find(|(_, candidate)| **candidate == id)
             .map(|(window, _)| window.clone())
@@ -936,7 +937,8 @@ impl Ferese {
                 .and_then(|client| client.get_credentials(&self.display_handle).ok())
                 .is_some_and(|credentials| credentials.pid as u32 == pid)
         };
-        self.window_ids
+        self.windows
+            .ids()
             .keys()
             .filter_map(|window| window.toplevel())
             .any(|toplevel| belongs_to(toplevel.wl_surface()))
@@ -951,7 +953,8 @@ impl Ferese {
         use smithay::wayland::compositor::with_states;
         use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
         let mut windows = self
-            .window_ids
+            .windows
+            .ids()
             .iter()
             .filter_map(|(window, id)| {
                 let toplevel = window.toplevel()?;
