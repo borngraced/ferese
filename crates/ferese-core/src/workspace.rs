@@ -10,14 +10,9 @@ use ferese_layout::{
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct WorkspaceId(pub u64);
 
-pub fn workspace_order_key(name: &str, id: WorkspaceId) -> (u64, u64) {
-    (name.parse::<u64>().unwrap_or(u64::MAX), id.0)
-}
-
 #[derive(Debug)]
 pub struct Workspace {
     pub id: WorkspaceId,
-    pub name: String,
     pub layout: WorkspaceLayout,
     pub floating: Vec<WindowId>,
     pub last_focused: Option<WindowId>,
@@ -339,7 +334,6 @@ impl From<LayoutError> for WorkspaceError {
 pub struct WorkspaceSet {
     active: WorkspaceId,
     workspaces: HashMap<WorkspaceId, Workspace>,
-    names: HashMap<String, WorkspaceId>,
     window_workspaces: HashMap<WindowId, WorkspaceId>,
     placements: HashMap<WindowId, WindowPlacement>,
     default_layout_mode: LayoutMode,
@@ -436,19 +430,16 @@ impl WorkspaceSet {
         let active = WorkspaceId(1);
         let workspace = Workspace {
             id: active,
-            name: "1".to_owned(),
             layout: WorkspaceLayout::new(default_layout_mode, default_column_width, scrolling_focus_strategy),
             floating: Vec::new(),
             last_focused: None,
             fullscreen: None,
         };
         let workspaces = HashMap::from([(active, workspace)]);
-        let names = HashMap::from([("1".to_owned(), active)]);
 
         Self {
             active,
             workspaces,
-            names,
             window_workspaces: HashMap::new(),
             placements: HashMap::new(),
             default_layout_mode,
@@ -498,36 +489,6 @@ impl WorkspaceSet {
 
     pub fn iter(&self) -> impl Iterator<Item = &Workspace> {
         self.workspaces.values()
-    }
-
-    pub fn ordered(&self) -> Vec<&Workspace> {
-        let mut workspaces = self.iter().collect::<Vec<_>>();
-        workspaces.sort_unstable_by_key(|workspace| workspace_order_key(&workspace.name, workspace.id));
-        workspaces
-    }
-
-    pub fn prune_empty(&mut self, protected: &HashSet<WorkspaceId>) -> Vec<WorkspaceId> {
-        let mut empty = self
-            .workspaces
-            .values()
-            .filter(|workspace| workspace.layout.window_ids().next().is_none() && workspace.floating.is_empty())
-            .map(|workspace| workspace.id)
-            .collect::<Vec<_>>();
-        empty.sort_by_key(|id| id.0);
-        let visible_empty = empty.iter().any(|id| *id == self.active || protected.contains(id));
-        let spare = if visible_empty { None } else { empty.first().copied() };
-        let mut removed = Vec::new();
-        for id in empty {
-            if id == self.active || protected.contains(&id) || Some(id) == spare {
-                continue;
-            }
-            if let Some(workspace) = self.workspaces.remove(&id) {
-                self.names.remove(&workspace.name);
-                removed.push(id);
-            }
-        }
-        debug_assert!(self.validate().is_ok());
-        removed
     }
 
     pub fn workspace_for_window(&self, window: WindowId) -> Option<WorkspaceId> {
@@ -680,25 +641,39 @@ impl WorkspaceSet {
         Ok(changed)
     }
 
-    pub fn ensure_numeric(&mut self, index: u32) -> Result<WorkspaceId, WorkspaceError> {
+    pub fn remove_empty(&mut self, id: WorkspaceId) -> bool {
+        if id == self.active || !self.workspace(id).is_some_and(Workspace::is_empty) {
+            return false;
+        }
+
+        self.workspaces.remove(&id);
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture_workspace(&mut self, index: u32) -> Result<WorkspaceId, WorkspaceError> {
         if index == 0 {
             return Err(WorkspaceError::InvalidNumericName(index));
         }
 
-        let name = index.to_string();
-
-        if let Some(id) = self.names.get(&name) {
-            return Ok(*id);
+        while self.next_id <= u64::from(index) {
+            self.create_workspace();
         }
 
+        let id = WorkspaceId(u64::from(index));
+        self.workspace(id)
+            .map(|_| id)
+            .ok_or(WorkspaceError::UnknownWorkspace(id))
+    }
+
+    /// Creates an identity; display positions are assigned by the output owner.
+    pub fn create_workspace(&mut self) -> WorkspaceId {
         let id = WorkspaceId(self.next_id);
-        self.next_id += 1;
-        self.names.insert(name.clone(), id);
+        self.next_id = self.next_id.checked_add(1).expect("workspace IDs exhausted");
         self.workspaces.insert(
             id,
             Workspace {
                 id,
-                name,
                 layout: WorkspaceLayout::new(
                     self.default_layout_mode,
                     self.default_column_width,
@@ -711,11 +686,12 @@ impl WorkspaceSet {
         );
 
         debug_assert!(self.validate().is_ok());
-        Ok(id)
+        id
     }
 
-    pub fn switch_to_numeric(&mut self, index: u32) -> Result<Option<WindowId>, WorkspaceError> {
-        let workspace = self.ensure_numeric(index)?;
+    #[cfg(test)]
+    fn switch_to_fixture(&mut self, index: u32) -> Result<Option<WindowId>, WorkspaceError> {
+        let workspace = self.fixture_workspace(index)?;
         self.activate(workspace)
     }
 
@@ -798,17 +774,32 @@ impl WorkspaceSet {
         Ok(())
     }
 
-    pub fn move_window_to_numeric(
+    #[cfg(test)]
+    fn move_window_to_fixture(
         &mut self,
         window: WindowId,
         index: u32,
         axis: Axis,
         ratio: f64,
     ) -> Result<WorkspaceId, WorkspaceError> {
+        let destination = self.fixture_workspace(index)?;
+        self.move_window_to_workspace(window, destination, axis, ratio)
+    }
+
+    pub fn move_window_to_workspace(
+        &mut self,
+        window: WindowId,
+        destination_id: WorkspaceId,
+        axis: Axis,
+        ratio: f64,
+    ) -> Result<WorkspaceId, WorkspaceError> {
+        if self.workspace(destination_id).is_none() {
+            return Err(WorkspaceError::UnknownWorkspace(destination_id));
+        }
+
         let source_id = self
             .workspace_for_window(window)
             .ok_or(LayoutError::UnknownWindow(window))?;
-        let destination_id = self.ensure_numeric(index)?;
 
         if source_id == destination_id {
             return Ok(destination_id);
@@ -943,14 +934,11 @@ impl WorkspaceSet {
         if !self.workspaces.contains_key(&self.active) {
             return Err(WorkspaceError::InvalidState("active workspace is missing"));
         }
-        if self.names.len() != self.workspaces.len() {
-            return Err(WorkspaceError::InvalidState("workspace name index is inconsistent"));
-        }
 
         let mut seen_windows = HashSet::new();
 
         for (id, workspace) in &self.workspaces {
-            if workspace.id != *id || self.names.get(&workspace.name) != Some(id) {
+            if workspace.id != *id {
                 return Err(WorkspaceError::InvalidState("workspace index is inconsistent"));
             }
 
@@ -1034,70 +1022,6 @@ fn finite_or_zero(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn numeric_order_survives_pruning_and_recreation() {
-        let mut set = super::WorkspaceSet::default();
-        let original_first = set.active_id();
-        let second = set.ensure_numeric(2).unwrap();
-        set.activate(second).unwrap();
-        assert_eq!(set.prune_empty(&std::collections::HashSet::new()), vec![original_first]);
-
-        let tenth = set.ensure_numeric(10).unwrap();
-        let first = set.ensure_numeric(1).unwrap();
-        assert_ne!(first, original_first);
-        assert!(first.0 > tenth.0);
-        assert_eq!(
-            set.ordered()
-                .into_iter()
-                .map(|workspace| (workspace.name.as_str(), workspace.id))
-                .collect::<Vec<_>>(),
-            vec![("1", first), ("2", second), ("10", tenth)]
-        );
-        set.activate(first).unwrap();
-        assert_eq!(set.active().name, "1");
-        assert!(set.validate().is_ok());
-    }
-
-    #[test]
-    fn pruning_keeps_windows_and_one_empty_workspace() {
-        let mut set = super::WorkspaceSet::default();
-        let first = set.active_id();
-        set.insert_window(super::WindowId(1), super::Axis::Horizontal, 0.5)
-            .unwrap();
-        let floating = set.ensure_numeric(2).unwrap();
-        set.insert_floating_window(
-            super::WindowId(2),
-            floating,
-            super::Rect::new(0., 0., 100., 100.),
-            false,
-        )
-        .unwrap();
-        let spare = set.ensure_numeric(3).unwrap();
-        let excess = set.ensure_numeric(4).unwrap();
-        assert_eq!(set.prune_empty(&std::collections::HashSet::new()), vec![excess]);
-        assert!(set.workspace(first).is_some());
-        assert!(set.workspace(floating).is_some());
-        assert!(set.workspace(spare).is_some());
-        set.activate(spare).unwrap();
-        set.remove_window(super::WindowId(1)).unwrap();
-        assert_eq!(set.prune_empty(&std::collections::HashSet::new()), vec![first]);
-        assert!(set.validate().is_ok());
-        assert_ne!(set.ensure_numeric(1).unwrap(), first);
-    }
-
-    #[test]
-    fn pruning_never_removes_another_displays_active_workspace() {
-        let mut set = super::WorkspaceSet::default();
-        let first = set.active_id();
-        let second = set.ensure_numeric(2).unwrap();
-        let third = set.ensure_numeric(3).unwrap();
-        assert_eq!(
-            set.prune_empty(&std::collections::HashSet::from([first, second])),
-            vec![third]
-        );
-        assert!(set.workspace(second).is_some());
-    }
-
-    #[test]
     fn live_policy_updates_existing_layouts_and_default_widths_not_custom_widths() {
         let mut workspaces = WorkspaceSet::default();
         for id in 1..=3 {
@@ -1149,21 +1073,22 @@ mod tests {
         assert_eq!(layout.columns()[0].width, ColumnWidth::Proportion(0.5));
         assert_eq!(layout.default_width(), ColumnWidth::Full);
         assert_eq!(workspaces.workspace_for_window(WindowId(1)), Some(workspace));
-        workspaces.switch_to_numeric(2).unwrap();
+        workspaces.switch_to_fixture(2).unwrap();
         assert_eq!(workspaces.active().layout.mode(), LayoutMode::Tree);
         assert_eq!(workspaces.workspace_for_window(WindowId(1)), Some(workspace));
     }
     use super::*;
 
     #[test]
-    fn numeric_workspaces_are_created_lazily_with_stable_ids() {
+    fn workspace_creation_uses_fresh_ids() {
         let mut workspaces = WorkspaceSet::default();
         let first = workspaces.active_id();
-        let ninth = workspaces.ensure_numeric(9).unwrap();
+        let second = workspaces.create_workspace();
+        assert!(workspaces.remove_empty(second));
 
-        assert_eq!(workspaces.ensure_numeric(1), Ok(first));
-        assert_eq!(workspaces.ensure_numeric(9), Ok(ninth));
-        assert_ne!(first, ninth);
+        let third = workspaces.create_workspace();
+        assert_ne!(first, third);
+        assert_ne!(second, third);
         assert!(workspaces.validate().is_ok());
     }
 
@@ -1184,7 +1109,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(first.geometry[&WindowId(1)], Rect::new(4.0, 4.0, 992.0, 792.0));
-        workspaces.switch_to_numeric(2).unwrap();
+        workspaces.switch_to_fixture(2).unwrap();
         assert_eq!(workspaces.active().layout.mode(), LayoutMode::Scrolling);
     }
 
@@ -1193,11 +1118,11 @@ mod tests {
         let mut workspaces = WorkspaceSet::default();
         workspaces.insert_window(WindowId(1), Axis::Horizontal, 0.5).unwrap();
 
-        assert_eq!(workspaces.switch_to_numeric(2).unwrap(), None);
+        assert_eq!(workspaces.switch_to_fixture(2).unwrap(), None);
         workspaces.insert_window(WindowId(2), Axis::Horizontal, 0.5).unwrap();
 
-        assert_eq!(workspaces.switch_to_numeric(1).unwrap(), Some(WindowId(1)));
-        assert_eq!(workspaces.switch_to_numeric(2).unwrap(), Some(WindowId(2)));
+        assert_eq!(workspaces.switch_to_fixture(1).unwrap(), Some(WindowId(1)));
+        assert_eq!(workspaces.switch_to_fixture(2).unwrap(), Some(WindowId(2)));
         assert!(workspaces.validate().is_ok());
     }
 
@@ -1208,7 +1133,7 @@ mod tests {
         workspaces.insert_window(WindowId(2), Axis::Horizontal, 0.5).unwrap();
         let first = workspaces.active_id();
         let second = workspaces
-            .move_window_to_numeric(WindowId(2), 2, Axis::Horizontal, 0.5)
+            .move_window_to_fixture(WindowId(2), 2, Axis::Horizontal, 0.5)
             .unwrap();
 
         assert_eq!(workspaces.active_id(), first);
@@ -1247,7 +1172,7 @@ mod tests {
         let mut workspaces = WorkspaceSet::default();
         workspaces.insert_window(WindowId(1), Axis::Horizontal, 0.5).unwrap();
         workspaces
-            .move_window_to_numeric(WindowId(1), 2, Axis::Horizontal, 0.5)
+            .move_window_to_fixture(WindowId(1), 2, Axis::Horizontal, 0.5)
             .unwrap();
 
         assert_eq!(
@@ -1402,7 +1327,7 @@ mod tests {
         let mut workspaces = WorkspaceSet::default();
         workspaces.insert_window(WindowId(1), Axis::Horizontal, 0.5).unwrap();
         let parent_workspace = workspaces.active_id();
-        workspaces.switch_to_numeric(2).unwrap();
+        workspaces.switch_to_fixture(2).unwrap();
         workspaces
             .insert_floating_window(
                 WindowId(2),
@@ -1463,7 +1388,7 @@ mod tests {
 
         assert_eq!(workspaces.active().last_focused, Some(WindowId(2)));
         assert!(workspaces.focus_window(WindowId(2)).is_ok());
-        workspaces.switch_to_numeric(2).unwrap();
+        workspaces.switch_to_fixture(2).unwrap();
         assert_eq!(workspaces.activate(workspace).unwrap(), Some(WindowId(2)));
         assert_eq!(workspaces.active().fullscreen, Some(WindowId(1)));
         assert!(workspaces.validate().is_ok());
@@ -1474,13 +1399,13 @@ mod tests {
         let mut workspaces = WorkspaceSet::default();
         workspaces.insert_window(WindowId(1), Axis::Horizontal, 0.5).unwrap();
         workspaces.toggle_fullscreen(WindowId(1)).unwrap();
-        workspaces.switch_to_numeric(2).unwrap();
+        workspaces.switch_to_fixture(2).unwrap();
         workspaces.insert_window(WindowId(2), Axis::Horizontal, 0.5).unwrap();
         workspaces
-            .move_window_to_numeric(WindowId(2), 1, Axis::Horizontal, 0.5)
+            .move_window_to_fixture(WindowId(2), 1, Axis::Horizontal, 0.5)
             .unwrap();
 
-        assert_eq!(workspaces.switch_to_numeric(1).unwrap(), Some(WindowId(1)));
+        assert_eq!(workspaces.switch_to_fixture(1).unwrap(), Some(WindowId(1)));
         assert_eq!(workspaces.active().last_focused, Some(WindowId(1)));
         assert_eq!(
             workspaces.focus_window(WindowId(2)),
@@ -1586,13 +1511,13 @@ mod tests {
                 }
                 2 => {
                     workspaces
-                        .switch_to_numeric((random.rotate_left(11) % 4 + 1) as u32)
+                        .switch_to_fixture((random.rotate_left(11) % 4 + 1) as u32)
                         .unwrap();
                 }
                 3 if !windows.is_empty() => {
                     let window = windows[random as usize % windows.len()];
                     workspaces
-                        .move_window_to_numeric(
+                        .move_window_to_fixture(
                             window,
                             (random.rotate_left(17) % 4 + 1) as u32,
                             random_axis(random),
@@ -1649,5 +1574,15 @@ mod tests {
             (random.rotate_left(21) % 900 + 1) as f64,
             (random.rotate_left(33) % 700 + 1) as f64,
         )
+    }
+}
+
+impl Workspace {
+    pub fn window_count(&self) -> usize {
+        self.layout.window_ids().count() + self.floating.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.layout.window_ids().next().is_none() && self.floating.is_empty()
     }
 }

@@ -15,25 +15,23 @@ impl Ferese {
             self.next_output_id = self.next_output_id.saturating_add(1);
             id
         });
-        let fallback_workspace = (1..)
-            .find_map(|index| {
-                let workspace = self.workspaces.ensure_numeric(index).ok()?;
-                self.output_workspaces
-                    .output_for_workspace(workspace)
-                    .is_none()
-                    .then_some(workspace)
-            })
-            .expect("numeric workspaces are inexhaustible");
+        let fallback_workspace = self
+            .workspaces
+            .iter()
+            .filter(|workspace| self.output_workspaces.output_for_workspace(workspace.id).is_none())
+            .map(|workspace| workspace.id)
+            .min_by_key(|id| id.0)
+            .unwrap_or_else(|| self.workspaces.create_workspace());
         let geometry = OutputGeometry::new(geometry.loc.x, geometry.loc.y, geometry.size.w, geometry.size.h);
 
         let registration = self.output_workspaces.connect(output_id, geometry, fallback_workspace);
 
         match registration {
-            Ok(workspace) => {
+            Ok(_) => {
                 self.output_ids.insert(output.clone(), output_id);
-                if self.output_workspaces.focused_output() == Some(output_id) {
-                    self.activate_output_workspace(output_id, workspace);
-                }
+                self.restore_output_focus();
+                let visible = self.visible_workspace_ids();
+                self.reconcile_workspaces(&visible);
                 self.send_shell_snapshots();
             }
             Err(error) => {

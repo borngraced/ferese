@@ -237,7 +237,7 @@ pub(super) fn overview_strip_elements(
                 }
             }
         }
-        if let Some((buffer, size)) = state.overview_workspace_label(card.workspace, scale) {
+        if let Some((buffer, size)) = state.overview_workspace_label(card.index, scale) {
             let location = Point::<i32, Physical>::from((
                 ((card.rect.x - f64::from(output_geometry.loc.x) + card.rect.width * 0.5) * scale).round() as i32
                     - size.w / 2,

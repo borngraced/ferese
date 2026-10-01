@@ -394,16 +394,13 @@ impl Ferese {
         slide_direction: Option<SwipeDirection>,
         auto_back_and_forth: bool,
     ) {
-        let workspace = match self.workspaces.ensure_numeric(index) {
-            Ok(workspace) => workspace,
-            Err(error) => {
-                tracing::error!(%error, index, "failed to switch workspace");
-                return;
-            }
-        };
         let Some(output) = self.output_workspaces.focused_output() else {
             return;
         };
+        let Some(workspace) = self.output_workspaces.workspace_at(&self.workspaces, output, index) else {
+            return;
+        };
+
         let previous = self.output_workspaces.active_workspace(output);
         let owner = match self
             .output_workspaces
@@ -526,26 +523,23 @@ impl Ferese {
         let Some(window) = self.focused_window else {
             return;
         };
+        let Some(output) = self.output_workspaces.focused_output() else {
+            return;
+        };
+        let Some(destination) = self.output_workspaces.workspace_at(&self.workspaces, output, index) else {
+            return;
+        };
         let axis = self
             .output_bounds()
             .and_then(|bounds| {
-                let workspace = self.workspaces.ensure_numeric(index).ok()?;
-                let target = self.workspaces.workspace(workspace)?;
+                let target = self.workspaces.workspace(destination)?;
                 target.layout.automatic_axis(target.last_focused, bounds).ok()
             })
             .unwrap_or(Axis::Horizontal);
 
-        let destination = match self.workspaces.move_window_to_numeric(window, index, axis, 0.5) {
-            Ok(destination) => destination,
-            Err(error) => {
-                tracing::error!(%error, ?window, index, "failed to move window to workspace");
-                return;
-            }
-        };
-        if let Some(output) = self.output_workspaces.focused_output()
-            && let Err(error) = self.output_workspaces.assign_workspace(output, destination)
-        {
-            tracing::error!(%error, ?destination, "failed to assign destination workspace");
+        if let Err(error) = self.workspaces.move_window_to_workspace(window, destination, axis, 0.5) {
+            tracing::error!(%error, ?window, index, "failed to move window to workspace");
+            return;
         }
 
         self.focused_window = self.workspaces.active().last_focused;

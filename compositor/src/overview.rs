@@ -125,6 +125,7 @@ impl Default for OverviewState {
 #[derive(Clone, Debug)]
 pub(crate) struct WorkspaceCard {
     pub workspace: WorkspaceId,
+    pub index: u32,
     pub rect: Rect,
     pub selected: bool,
     pub windows: Vec<(WindowId, Rect)>,
@@ -459,12 +460,11 @@ impl Ferese {
 
     pub(crate) fn overview_workspace_label(
         &mut self,
-        workspace: WorkspaceId,
+        index: u32,
         scale: f64,
     ) -> Option<(MemoryRenderBuffer, smithay::utils::Size<i32, smithay::utils::Buffer>)> {
-        let name = self.workspaces.workspace(workspace)?.name.clone();
         self.overview
-            .label(&name, scale, self.theme_settings.text_primary_color.0)
+            .label(&index.to_string(), scale, self.theme_settings.text_primary_color.0)
     }
 
     pub(crate) fn set_overview_active(&mut self, active: bool) {
@@ -606,7 +606,12 @@ impl Ferese {
         let selected = self.output_workspaces.active_workspace(output_id);
         let strip = workspace_strip(bounds);
         let capacity = strip_capacity(strip);
-        let workspaces = self.workspaces.ordered();
+        let workspaces = self
+            .output_workspaces
+            .workspace_views(&self.workspaces)
+            .into_iter()
+            .filter(|view| view.output == output_id)
+            .collect::<Vec<_>>();
         let selected_index = workspaces
             .iter()
             .position(|workspace| Some(workspace.id) == selected)
@@ -629,7 +634,9 @@ impl Ferese {
             .skip(offset)
             .take(capacity)
             .enumerate()
-            .map(|(index, workspace)| {
+            .map(|(index, view)| {
+                let workspace = self.workspaces.workspace(view.id).expect("workspace view exists");
+
                 let rect = Rect::new(
                     start_x + index as f64 * (card_width + WORKSPACE_CARD_GAP),
                     strip.y + 12.0,
@@ -659,6 +666,7 @@ impl Ferese {
                 let windows = preview_layout(preview_bounds, &windows, 4.0, 4.0).into_iter().collect();
                 WorkspaceCard {
                     workspace: workspace.id,
+                    index: view.index,
                     rect,
                     selected: Some(workspace.id) == selected,
                     windows,
@@ -721,10 +729,10 @@ impl Ferese {
         };
         let capacity = strip_capacity(workspace_strip(bounds));
         let cards = self.overview_workspace_cards(&output);
-        let ordered = self.workspaces.ordered();
+        let ordered = self.output_workspaces.ordered_workspaces(&self.workspaces, output_id);
         let current = cards
             .first()
-            .and_then(|card| ordered.iter().position(|workspace| workspace.id == card.workspace))
+            .and_then(|card| ordered.iter().position(|id| *id == card.workspace))
             .unwrap_or(0);
         let next = if delta > 0.0 {
             current.saturating_add(1)

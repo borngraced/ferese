@@ -313,7 +313,7 @@ impl Ferese {
                 })
                 .collect::<HashSet<_>>();
             self.unmap_invisible_windows(&visible_windows);
-            self.prune_empty_workspaces(&visible);
+            self.reconcile_workspaces(&visible);
             self.send_shell_snapshots();
             active_animation = true;
         }

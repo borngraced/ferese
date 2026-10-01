@@ -781,39 +781,18 @@ impl Ferese {
         }
     }
 
-    pub(crate) fn relative_workspace_target(&mut self, next: bool) -> Option<ferese_core::WorkspaceId> {
+    pub(crate) fn relative_workspace_target(&self, next: bool) -> Option<ferese_core::WorkspaceId> {
         let output = self.output_workspaces.focused_output()?;
         let current = self.output_workspaces.active_workspace(output)?;
-        let mut candidates = self.workspaces.ordered();
-        candidates.retain(|workspace| {
-            self.output_workspaces
-                .output_for_workspace(workspace.id)
-                .is_none_or(|owner| owner == output)
-        });
-        let index = candidates.iter().position(|workspace| workspace.id == current)?;
+        let candidates = self.output_workspaces.ordered_workspaces(&self.workspaces, output);
+        let index = candidates.iter().position(|id| *id == current)?;
         let neighbor = if next {
-            index.checked_add(1)
+            index.checked_add(1)?
         } else {
-            index.checked_sub(1)
+            index.checked_sub(1)?
         };
-        if let Some(workspace) = neighbor.and_then(|index| candidates.get(index)) {
-            return Some(workspace.id);
-        }
-        if next
-            && self.workspaces.workspace(current).is_some_and(|workspace| {
-                workspace.layout.window_ids().next().is_some() || !workspace.floating.is_empty()
-            })
-        {
-            let number = self
-                .workspaces
-                .iter()
-                .filter_map(|workspace| workspace.name.parse::<u32>().ok())
-                .max()
-                .unwrap_or(1)
-                .checked_add(1)?;
-            return self.workspaces.ensure_numeric(number).ok();
-        }
-        None
+
+        candidates.get(neighbor).copied()
     }
 
     fn focus_window_at(&mut self, position: Point<f64, Logical>, serial: Serial, raise: bool) {

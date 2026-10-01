@@ -987,20 +987,25 @@ impl Ferese {
     }
 
     fn workspaces_json(&self) -> Value {
-        let active = self.workspaces.active_id();
         let workspaces = self
-            .workspaces
-            .ordered()
+            .output_workspaces
+            .workspace_views(&self.workspaces)
             .into_iter()
-            .map(|workspace| {
+            .map(|view| {
+                let workspace = self.workspaces.workspace(view.id).expect("workspace view exists");
                 let mode = match workspace.layout.mode() {
                     LayoutMode::Scrolling => "scrolling",
                     LayoutMode::Tree => "tree",
                 };
                 json!({
                     "id": workspace.id.0,
-                    "name": workspace.name,
-                    "active": workspace.id == active,
+                    "name": view.index.to_string(),
+                    "index": view.index,
+                    "output": view.output.0,
+                    "window_count": view.window_count,
+                    "visible": view.visible,
+                    "focused": view.focused,
+                    "active": view.focused,
                     "layout": mode,
                     "focused_window": workspace.last_focused.map(|window| window.0),
                     "fullscreen_window": workspace.fullscreen.map(|window| window.0),

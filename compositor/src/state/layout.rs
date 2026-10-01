@@ -15,11 +15,11 @@ impl Ferese {
         visible
     }
 
-    pub(super) fn prune_empty_workspaces(&mut self, visible: &HashSet<WorkspaceId>) {
-        let mut protected = visible.clone();
-        protected.extend(self.output_workspaces.history_workspaces());
-        for workspace in self.workspaces.prune_empty(&protected) {
-            self.output_workspaces.forget_workspace(workspace);
+    pub(super) fn reconcile_workspaces(&mut self, visible: &HashSet<WorkspaceId>) {
+        for workspace in self
+            .output_workspaces
+            .reconcile_workspaces(&mut self.workspaces, visible)
+        {
             self.viewport_animations.remove(&workspace);
         }
     }
@@ -52,7 +52,7 @@ impl Ferese {
     pub fn relayout(&mut self) {
         self.refresh_input_capture_zones();
         let visible_workspaces = self.visible_workspace_ids();
-        self.prune_empty_workspaces(&visible_workspaces);
+        self.reconcile_workspaces(&visible_workspaces);
         if self.session_lock.active {
             self.configure_lock_surfaces();
         }

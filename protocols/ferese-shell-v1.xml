@@ -110,7 +110,10 @@
       <arg name="output_hi" type="uint" summary="zero when the workspace has no output"/>
       <arg name="output_lo" type="uint" summary="zero when the workspace has no output"/>
       <arg name="name" type="string"/>
-      <arg name="active" type="uint" summary="one when visible on its output"/>
+      <arg name="index" type="uint" summary="one-based position on this output"/>
+      <arg name="window_count" type="uint" summary="managed windows, including floating windows"/>
+      <arg name="visible" type="uint" summary="one when displayed on its output"/>
+      <arg name="focused" type="uint" summary="one when visible on the focused output"/>
     </event>
 
     <event name="snapshot_end">

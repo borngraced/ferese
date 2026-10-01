@@ -38,20 +38,19 @@ impl FereseShell {
             .spacing(1)
             .align_y(cosmic::iced::Alignment::Center);
 
-        for workspace in &self.snapshot.workspaces {
+        for workspace in self
+            .snapshot
+            .workspaces_for_output(focused_output.map(|output| output.id))
+        {
             let active = workspace_active_on_bar(workspace.id, focused_output);
             let owner = workspace
                 .output
                 .and_then(|id| self.snapshot.outputs.iter().find(|output| output.id == id));
-            let occupied = self
-                .snapshot
-                .windows
-                .iter()
-                .any(|window| window.workspace == workspace.id);
+            let occupied = workspace.window_count > 0;
             let indicator = workspace_indicator(
                 &workspace.name,
                 active,
-                workspace.active && !active,
+                workspace.visible && !active,
                 occupied,
                 bar,
                 shell_theme,
@@ -59,8 +58,14 @@ impl FereseShell {
             let workspace_button = button::custom(indicator)
                 .name(format!(
                     "Workspace {}{}{}",
-                    workspace.name,
-                    if active { ", active" } else { "" },
+                    workspace.index,
+                    if workspace.focused {
+                        ", focused"
+                    } else if active {
+                        ", visible"
+                    } else {
+                        ""
+                    },
                     owner.map_or(String::new(), |output| format!(", on {}", output.name))
                 ))
                 .height(bar.control_height)

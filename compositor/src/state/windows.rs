@@ -287,10 +287,15 @@ impl Ferese {
             .automatic_axis(self.focused_window, bounds)
             .unwrap_or(Axis::Horizontal);
 
-        if let Some(workspace) = rule.workspace
-            && let Err(error) = self.workspaces.move_window_to_numeric(id, workspace, axis, 0.5)
+        if let Some(index) = rule.workspace
+            && let Some(output) = self
+                .workspaces
+                .workspace_for_window(id)
+                .and_then(|workspace| self.output_workspaces.output_for_workspace(workspace))
+            && let Some(workspace) = self.output_workspaces.workspace_at(&self.workspaces, output, index)
+            && let Err(error) = self.workspaces.move_window_to_workspace(id, workspace, axis, 0.5)
         {
-            tracing::warn!(%error, ?id, workspace, "failed to apply window workspace rule");
+            tracing::warn!(%error, ?id, ?workspace, "failed to apply window workspace rule");
         }
 
         let bounds = self.floating_bounds_for_window(id).unwrap_or(bounds);

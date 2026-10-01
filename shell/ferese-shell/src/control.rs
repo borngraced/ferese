@@ -19,6 +19,14 @@ pub(crate) struct ShellSnapshot {
     pub(crate) windows: Vec<WindowSnapshot>,
 }
 
+impl ShellSnapshot {
+    pub(crate) fn workspaces_for_output(&self, output: Option<u64>) -> impl Iterator<Item = &WorkspaceSnapshot> {
+        self.workspaces
+            .iter()
+            .filter(move |workspace| output.is_some() && workspace.output == output)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct OutputSnapshot {
     pub(crate) id: u64,
@@ -32,7 +40,10 @@ pub(crate) struct WorkspaceSnapshot {
     pub(crate) id: u64,
     pub(crate) name: String,
     pub(crate) output: Option<u64>,
-    pub(crate) active: bool,
+    pub(crate) index: u32,
+    pub(crate) window_count: u32,
+    pub(crate) visible: bool,
+    pub(crate) focused: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -249,7 +260,10 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
                 output_hi,
                 output_lo,
                 name,
-                active,
+                index,
+                window_count,
+                visible,
+                focused,
             } => {
                 let output = join_id(output_hi, output_lo);
 
@@ -257,7 +271,10 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
                     id: join_id(workspace_hi, workspace_lo),
                     name,
                     output: (output != 0).then_some(output),
-                    active: active != 0,
+                    index,
+                    window_count,
+                    visible: visible != 0,
+                    focused: focused != 0,
                 });
             }
             ferese_shell_v1::Event::Window {
@@ -286,9 +303,6 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
                 });
             }
             ferese_shell_v1::Event::SnapshotEnd { serial } if state.serial.take() == Some(serial) => {
-                state.pending.workspaces.sort_unstable_by_key(|workspace| {
-                    ferese_core::workspace_order_key(&workspace.name, ferese_core::WorkspaceId(workspace.id))
-                });
                 let _ = state.sender.send(ControlUpdate::Snapshot(state.pending.clone()));
             }
             ferese_shell_v1::Event::LogoutRequested { serial, output_name } => {
@@ -346,5 +360,43 @@ mod tests {
         assert!(config.is_none());
         append_config_chunk(&mut config, "ignored after overflow");
         assert!(config.is_none());
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+
+    #[test]
+    fn each_bar_uses_its_own_order_and_authoritative_occupancy() {
+        let workspace = |id, output, index, window_count| WorkspaceSnapshot {
+            id,
+            output: Some(output),
+            index,
+            name: index.to_string(),
+            window_count,
+            visible: index == 1,
+            focused: output == 1 && index == 1,
+        };
+        let snapshot = ShellSnapshot {
+            workspaces: vec![workspace(7, 1, 1, 2), workspace(9, 1, 2, 0), workspace(3, 2, 1, 0)],
+            ..Default::default()
+        };
+
+        let left = snapshot.workspaces_for_output(Some(1)).collect::<Vec<_>>();
+        assert_eq!(
+            left.iter().map(|workspace| workspace.id).collect::<Vec<_>>(),
+            vec![7, 9]
+        );
+        assert_eq!(left[0].window_count, 2);
+        assert_eq!(
+            snapshot
+                .workspaces_for_output(Some(2))
+                .map(|workspace| workspace.id)
+                .collect::<Vec<_>>(),
+            vec![3]
+        );
+        assert_eq!(snapshot.workspaces_for_output(None).count(), 0);
+        assert_eq!(snapshot.workspaces_for_output(Some(99)).count(), 0);
     }
 }

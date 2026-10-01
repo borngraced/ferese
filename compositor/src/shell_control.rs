@@ -318,20 +318,17 @@ impl Ferese {
     }
 
     fn workspace_snapshots(&self) -> Vec<WorkspaceSnapshot> {
-        self.workspaces
-            .ordered()
+        self.output_workspaces
+            .workspace_views(&self.workspaces)
             .into_iter()
-            .map(|workspace| {
-                let output = self.output_workspaces.output_for_workspace(workspace.id);
-                let active =
-                    output.is_some_and(|output| self.output_workspaces.active_workspace(output) == Some(workspace.id));
-
-                WorkspaceSnapshot {
-                    id: workspace.id,
-                    output,
-                    name: workspace.name.clone(),
-                    active,
-                }
+            .map(|view| WorkspaceSnapshot {
+                id: view.id,
+                output: Some(view.output),
+                name: view.index.to_string(),
+                index: view.index,
+                window_count: view.window_count as u32,
+                visible: view.visible,
+                focused: view.focused,
             })
             .collect()
     }
@@ -456,7 +453,10 @@ impl ShellSnapshot {
                 output_hi,
                 output_lo,
                 workspace.name.clone(),
-                u32::from(workspace.active),
+                workspace.index,
+                workspace.window_count,
+                u32::from(workspace.visible),
+                u32::from(workspace.focused),
             );
         }
         for snapshot in &self.windows {
@@ -499,7 +499,10 @@ struct WorkspaceSnapshot {
     id: WorkspaceId,
     output: Option<OutputId>,
     name: String,
-    active: bool,
+    index: u32,
+    window_count: u32,
+    visible: bool,
+    focused: bool,
 }
 
 fn split_id(id: u64) -> (u32, u32) {
@@ -559,7 +562,10 @@ mod tests {
                 id: WorkspaceId(1),
                 output: Some(OutputId(1)),
                 name: "1".into(),
-                active: true,
+                index: 1,
+                window_count: 1,
+                visible: true,
+                focused: true,
             }],
             windows: vec![ManagedWindowSnapshot {
                 id: WindowId(1),
@@ -575,7 +581,10 @@ mod tests {
             |s| s.outputs[0].active_workspace = WorkspaceId(2),
             |s| s.outputs.clear(),
             |s| s.workspaces[0].output = None,
-            |s| s.workspaces[0].active = false,
+            |s| s.workspaces[0].visible = false,
+            |s| s.workspaces[0].focused = false,
+            |s| s.workspaces[0].index = 2,
+            |s| s.workspaces[0].window_count = 0,
             |s| s.workspaces[0].name = "renamed".into(),
             |s| s.windows[0].workspace = 2,
             |s| s.windows[0].title = "new title".into(),

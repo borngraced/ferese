@@ -1016,7 +1016,7 @@ mod tests {
             let mut workspaces = WorkspaceSet::default();
             let first = workspaces.active_id();
             workspaces.insert_window(WindowId(1), Axis::Horizontal, 0.5).unwrap();
-            let second = workspaces.ensure_numeric(2).unwrap();
+            let second = workspaces.create_workspace();
             workspaces.activate(second).unwrap();
             workspaces.insert_window(WindowId(2), Axis::Horizontal, 0.5).unwrap();
             workspaces.insert_window(WindowId(3), Axis::Horizontal, 0.5).unwrap();
@@ -1027,7 +1027,7 @@ mod tests {
                 .connect(OutputId(1), OutputGeometry::new(0, 0, 1920, 1080), first)
                 .unwrap();
             let owner = if assignment == Some(OutputId(2)) {
-                let third = workspaces.ensure_numeric(3).unwrap();
+                let third = workspaces.create_workspace();
                 outputs
                     .connect(OutputId(2), OutputGeometry::new(1920, 0, 1920, 1080), third)
                     .unwrap();

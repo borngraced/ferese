@@ -107,10 +107,6 @@ impl OutputWorkspaceMap {
         self.outputs.get(&output).and_then(|state| state.previous)
     }
 
-    pub fn history_workspaces(&self) -> impl Iterator<Item = WorkspaceId> + '_ {
-        self.outputs.values().filter_map(|state| state.previous)
-    }
-
     pub fn output_for_workspace(&self, workspace: WorkspaceId) -> Option<OutputId> {
         self.assignments.get(&workspace).copied()
     }
@@ -171,6 +167,19 @@ impl OutputWorkspaceMap {
                 let revision_matches = self.revision(evacuated.workspace) == evacuated.revision;
 
                 if assignment_matches && revision_matches {
+                    // Cleanup may have removed every other workspace while this
+                    // monitor was disconnected. Never strand the donor output;
+                    // the reconnecting monitor can use its fresh fallback.
+                    if evacuated
+                        .target
+                        .and_then(|target| self.outputs.get(&target))
+                        .is_some_and(|state| {
+                            state.workspaces.len() == 1 && state.workspaces.contains(&evacuated.workspace)
+                        })
+                    {
+                        continue;
+                    }
+
                     if let Some(target) = evacuated.target
                         && let Some(target_state) = self.outputs.get_mut(&target)
                     {
@@ -414,6 +423,22 @@ impl OutputWorkspaceMap {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn reconnect_cannot_reclaim_the_donor_monitors_only_workspace() {
+        let mut outputs = OutputWorkspaceMap::default();
+        outputs.connect(OutputId(1), geometry(0), WorkspaceId(1)).unwrap();
+        outputs.connect(OutputId(2), geometry(1920), WorkspaceId(2)).unwrap();
+        outputs.focus_output(OutputId(2)).unwrap();
+        outputs.disconnect(OutputId(2)).unwrap();
+        assert!(outputs.forget_workspace(WorkspaceId(1)));
+
+        outputs.connect(OutputId(2), geometry(1920), WorkspaceId(3)).unwrap();
+
+        assert_eq!(outputs.active_workspace(OutputId(1)), Some(WorkspaceId(2)));
+        assert_eq!(outputs.active_workspace(OutputId(2)), Some(WorkspaceId(3)));
+        assert!(outputs.validate());
+    }
+
+    #[test]
     fn forgetting_an_inactive_workspace_prevents_hotplug_resurrection() {
         let mut outputs = super::OutputWorkspaceMap::default();
         let display = super::OutputId(1);
@@ -528,33 +553,6 @@ mod tests {
             outputs.select_workspace(OutputId(99), WorkspaceId(2), true),
             Err(OutputError::UnknownOutput(OutputId(99)))
         );
-    }
-
-    #[test]
-    fn empty_previous_workspace_survives_pruning_until_history_moves_on() {
-        let mut workspaces = crate::WorkspaceSet::default();
-        let first = workspaces.active_id();
-        let second = workspaces.ensure_numeric(2).unwrap();
-        let third = workspaces.ensure_numeric(3).unwrap();
-        let mut outputs = OutputWorkspaceMap::default();
-        let display = OutputId(1);
-        outputs.connect(display, geometry(0), first).unwrap();
-        outputs.switch_workspace(display, second).unwrap();
-        workspaces.activate(second).unwrap();
-        let protected = outputs.history_workspaces().chain([second]).collect();
-        let removed = workspaces.prune_empty(&protected);
-        assert!(removed.contains(&third));
-        assert!(workspaces.workspace(first).is_some());
-        let third = workspaces.ensure_numeric(3).unwrap();
-        outputs.switch_workspace(display, third).unwrap();
-        workspaces.activate(third).unwrap();
-        let protected = outputs.history_workspaces().chain([third]).collect();
-        for workspace in workspaces.prune_empty(&protected) {
-            outputs.forget_workspace(workspace);
-        }
-        assert!(workspaces.workspace(first).is_none());
-        assert!(workspaces.workspace(second).is_some());
-        assert_eq!(outputs.previous_workspace(display), Some(second));
     }
 
     #[test]

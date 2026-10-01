@@ -221,18 +221,20 @@ theme {
 
 ## Workspaces
 
-A single-output session starts with workspace 1. Numbered workspace shortcuts create
-workspaces on demand; switching forward past the last workspace also creates the
-next one when the current workspace contains windows. Empty workspaces are
-cleaned up automatically, keeping at most one spare empty workspace in addition to
-visible workspaces and each monitor's previous workspace. Additional displays
-receive their own workspace.
+Each monitor has an independent list of workspaces, numbered from 1. Its bar,
+overview strip, and numeric shortcuts use that same order. Numbers change when
+empty workspaces are removed; internal workspace IDs stay stable.
 
-`Super+Escape` returns to the previous workspace on the focused monitor. Repeat
-it to switch between the two most recently visited workspaces. Switching to a
-workspace on another monitor updates that monitor's history. History is cleared
-for a disconnected monitor; it does not jump to a workspace reclaimed by another
-monitor on reconnect. With no previous workspace, the action does nothing.
+One empty workspace is always available at the end of each monitor's list.
+Opening or moving a window there creates another spare. An empty workspace stays
+while displayed or participating in a swipe, then disappears after you leave it.
+Selecting a number beyond the current list selects the trailing empty workspace.
+Window-rule workspace numbers also refer to positions on the window's monitor.
+
+`Super+Escape` returns to the previous surviving workspace on the focused monitor.
+History does not keep abandoned empty workspaces alive. With no previous workspace,
+the action does nothing. Disconnecting a monitor clears its history; occupied
+workspaces move to another monitor and can return when it reconnects.
 
 Enable **Settings → Windows → Toggle back with the same workspace shortcut**, or:
 
