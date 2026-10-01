@@ -27,6 +27,8 @@ pub struct Config {
     #[serde(default)]
     layout: LayoutConfig,
     #[serde(default)]
+    workspaces: WorkspacesConfig,
+    #[serde(default)]
     input: InputConfig,
     #[serde(default)]
     theme: ThemeConfig,
@@ -315,6 +317,7 @@ impl Config {
             lock_idle: self.lock_screen.validate()?,
             autostart: self.autostart.clone(),
             layout_mode: self.layout_mode(),
+            workspace_auto_back_and_forth: self.workspaces.auto_back_and_forth,
             gap_config: self.gap_config()?,
             input_settings,
             bindings,
@@ -500,6 +503,7 @@ pub enum BindingAction {
     Resize(ferese_layout::Direction),
     SwitchWorkspace(u8),
     SwitchRelativeWorkspace(bool),
+    WorkspaceBackAndForth,
     MoveToWorkspace(u8),
     ToggleFullscreen,
     ToggleMaximized,
@@ -598,6 +602,7 @@ impl Binding {
             BindingAction::Move(direction) => format!("Move window {direction:?}"),
             BindingAction::Resize(direction) => format!("Resize window {direction:?}"),
             BindingAction::SwitchWorkspace(index) => format!("Go to workspace {index}"),
+            BindingAction::WorkspaceBackAndForth => "Return to last workspace on this monitor".into(),
             BindingAction::MoveToWorkspace(index) => format!("Move window to workspace {index}"),
             BindingAction::SwitchRelativeWorkspace(next) => {
                 if *next { "Next workspace" } else { "Previous workspace" }.into()
@@ -816,6 +821,12 @@ impl Default for SpringSettings {
             damping: default_spring_damping(),
         }
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct WorkspacesConfig {
+    #[serde(default)]
+    auto_back_and_forth: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1495,6 +1506,10 @@ fn parse_action(
             no_argument()?;
             Ok(BindingAction::SwitchRelativeWorkspace(action == "workspace-next"))
         }
+        "workspace-back-and-forth" => {
+            no_argument()?;
+            Ok(BindingAction::WorkspaceBackAndForth)
+        }
         "spawn" => {
             let command = required_argument()?;
             let argv = commands
@@ -1591,6 +1606,7 @@ fn default_bindings() -> Vec<BindingConfig> {
         binding("Super+]", "expel", None),
         binding("Super+Shift+Space", "toggle-floating", None),
         binding("Super+Tab", "toggle-overview", None),
+        binding("Super+Escape", "workspace-back-and-forth", None),
         binding("Super+Shift+E", "exit", None),
     ];
 
@@ -1871,6 +1887,34 @@ pub(crate) fn config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_back_and_forth_config_is_optional_and_bindable() {
+        let defaults = Config::default().runtime_config().unwrap();
+        assert!(!defaults.workspace_auto_back_and_forth);
+        assert!(
+            defaults
+                .bindings
+                .iter()
+                .any(|binding| binding.action == BindingAction::WorkspaceBackAndForth)
+        );
+        let configured = parse(
+            "workspaces {\n auto-back-and-forth #true\n}\nbinding \"Super+BackSpace\" \"workspace-back-and-forth\"\n",
+        )
+        .runtime_config()
+        .unwrap();
+        assert!(configured.workspace_auto_back_and_forth);
+        assert_eq!(
+            configured
+                .bindings
+                .iter()
+                .filter(|binding| binding.action == BindingAction::WorkspaceBackAndForth)
+                .count(),
+            2
+        );
+        assert!(parse_action("workspace-back-and-forth", Some("2"), &HashMap::new()).is_err());
+        assert!(Config::parse_source("workspaces {\n auto-back-and-forth \"yes\"\n}\n").is_err());
+    }
 
     #[test]
     fn packaged_and_custom_kdl_pass_runtime_validation() {
@@ -2328,7 +2372,7 @@ mod tests {
         let input = config.input_settings().unwrap();
         let bindings = config.bindings(&input).unwrap();
 
-        assert_eq!(bindings.len(), 48);
+        assert_eq!(bindings.len(), 49);
         for (shift, action) in [
             (false, BindingAction::ToggleMaximized),
             (true, BindingAction::ToggleFullscreen),
@@ -2371,14 +2415,14 @@ mod tests {
 
         let input = replaced.input_settings().unwrap();
         let bindings = replaced.bindings(&input).unwrap();
-        assert_eq!(bindings.len(), 48);
+        assert_eq!(bindings.len(), 49);
         assert!(bindings.iter().any(|binding| {
             binding.action == BindingAction::Spawn(vec!["foot".to_owned(), "--app-id".to_owned(), "work".to_owned()])
         }));
 
         let input = unbound.input_settings().unwrap();
         let bindings = unbound.bindings(&input).unwrap();
-        assert_eq!(bindings.len(), 47);
+        assert_eq!(bindings.len(), 48);
         assert!(!bindings.iter().any(|binding| binding.action == BindingAction::Close));
     }
 

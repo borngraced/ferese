@@ -928,7 +928,7 @@ impl cosmic::Application for App {
                     );
                 }
                 Page::Shortcuts => {
-                    body = body.push(self.note("Keyboard and swipe bindings share the same actions. Use Swipe3Up, Swipe3Down, Swipe3Left, or Swipe3Right as a shortcut (also supports 4 or 5 fingers). Actions include toggle-overview, spawn, focus, move, workspace-next, workspace-previous, and none. Leave Argument empty for actions such as toggle-overview or none."));
+                    body = body.push(self.note("Keyboard and swipe bindings share the same actions. Use Swipe3Up, Swipe3Down, Swipe3Left, or Swipe3Right as a shortcut (also supports 4 or 5 fingers). Actions include toggle-overview, spawn, focus, move, workspace-next, workspace-previous, workspace-back-and-forth, and none. Leave Argument empty for actions such as toggle-overview or none."));
                     let mut gestures = row([]).spacing(6);
                     for (keys, label) in [
                         ("Swipe3Up", "Customize swipe up"),

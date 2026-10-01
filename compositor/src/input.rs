@@ -987,8 +987,9 @@ impl Ferese {
             BindingAction::Move(direction) => self.move_direction(direction),
             BindingAction::Resize(direction) => self.resize_direction(direction),
             BindingAction::SwitchRelativeWorkspace(next) => self.switch_relative_workspace(next, None),
+            BindingAction::WorkspaceBackAndForth => self.workspace_back_and_forth(),
             BindingAction::SwitchWorkspace(workspace) => {
-                self.switch_workspace(u32::from(workspace));
+                self.switch_workspace_from_binding(u32::from(workspace));
             }
             BindingAction::MoveToWorkspace(workspace) => {
                 self.move_focused_to_workspace(u32::from(workspace));

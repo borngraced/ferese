@@ -141,9 +141,24 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(String, Value),
                 ));
             }
         },
-        "toggle-floating" | "toggle-fullscreen" | "toggle-maximized" | "toggle-layout" | "toggle-overview"
-        | "cycle-column-width" | "center-column" | "consume" | "expel" | "close" | "get-focused-window"
-        | "get-windows" | "get-workspaces" | "get-outputs" | "reload-config" | "exit" | "request-logout" => {
+        "toggle-floating"
+        | "toggle-fullscreen"
+        | "toggle-maximized"
+        | "toggle-layout"
+        | "toggle-overview"
+        | "cycle-column-width"
+        | "center-column"
+        | "consume"
+        | "expel"
+        | "close"
+        | "get-focused-window"
+        | "get-windows"
+        | "get-workspaces"
+        | "get-outputs"
+        | "reload-config"
+        | "exit"
+        | "request-logout"
+        | "workspace-back-and-forth" => {
             if !positional.is_empty() {
                 return Err(format!("{command} does not accept arguments"));
             }
@@ -172,7 +187,7 @@ fn socket_path() -> Result<PathBuf, io::Error> {
 }
 
 fn usage() -> String {
-    "usage: feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl screenshot-window <window-id>\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
+    "usage: feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl screenshot-window <window-id>\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl workspace-back-and-forth\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
 }
 
 #[cfg(test)]
@@ -202,6 +217,11 @@ mod tests {
             parse_args(["cycle-column-width".to_owned()]).unwrap(),
             ("cycle-column-width".to_owned(), json!({}))
         );
+        assert_eq!(
+            parse_args(["workspace-back-and-forth".into()]).unwrap(),
+            ("workspace-back-and-forth".into(), json!({}))
+        );
+        assert!(parse_args(["workspace-back-and-forth".into(), "2".into()]).is_err());
     }
 
     #[test]

@@ -650,6 +650,7 @@ impl Ferese {
             "move" => self.move_direction(direction_arg(args)?),
             "resize" => self.resize_direction(direction_arg(args)?),
             "workspace" => self.switch_workspace(workspace_arg(args)?),
+            "workspace-back-and-forth" => self.workspace_back_and_forth(),
             "move-to-workspace" => self.move_focused_to_workspace(workspace_arg(args)?),
             "toggle-floating" => self.toggle_focused_floating(),
             "toggle-fullscreen" => self.toggle_focused_fullscreen(),

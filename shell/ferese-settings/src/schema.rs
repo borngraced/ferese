@@ -824,6 +824,12 @@ pub fn fields(page: Page) -> Vec<Field> {
             ),
         ],
         Page::Windows => vec![
+            toggle(
+                "workspaces.auto_back_and_forth",
+                "Toggle back with the same workspace shortcut",
+                "Press the current workspace's shortcut again to return to the previous workspace on this monitor.",
+                false,
+            ),
             choice(
                 "layout.mode",
                 "Layout for new workspaces",

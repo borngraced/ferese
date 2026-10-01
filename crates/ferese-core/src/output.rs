@@ -59,7 +59,17 @@ pub enum WorkspaceSwitch {
 struct OutputState {
     geometry: OutputGeometry,
     active: WorkspaceId,
+    previous: Option<WorkspaceId>,
     workspaces: HashSet<WorkspaceId>,
+}
+
+impl OutputState {
+    fn activate(&mut self, workspace: WorkspaceId) {
+        if self.active != workspace {
+            self.previous = self.workspaces.contains(&self.active).then_some(self.active);
+            self.active = workspace;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -93,6 +103,14 @@ impl OutputWorkspaceMap {
         self.outputs.get(&output).map(|state| state.active)
     }
 
+    pub fn previous_workspace(&self, output: OutputId) -> Option<WorkspaceId> {
+        self.outputs.get(&output).and_then(|state| state.previous)
+    }
+
+    pub fn history_workspaces(&self) -> impl Iterator<Item = WorkspaceId> + '_ {
+        self.outputs.values().filter_map(|state| state.previous)
+    }
+
     pub fn output_for_workspace(&self, workspace: WorkspaceId) -> Option<OutputId> {
         self.assignments.get(&workspace).copied()
     }
@@ -105,6 +123,9 @@ impl OutputWorkspaceMap {
             && let Some(output) = self.outputs.get_mut(&owner)
         {
             output.workspaces.remove(&workspace);
+            if output.previous == Some(workspace) {
+                output.previous = None;
+            }
         }
         self.revisions.remove(&workspace);
         self.evacuations.retain(|_, record| {
@@ -154,6 +175,9 @@ impl OutputWorkspaceMap {
                         && let Some(target_state) = self.outputs.get_mut(&target)
                     {
                         target_state.workspaces.remove(&evacuated.workspace);
+                        if target_state.previous == Some(evacuated.workspace) {
+                            target_state.previous = None;
+                        }
                         if target_state.active == evacuated.workspace
                             && let Some(active) = target_state
                                 .workspaces
@@ -161,7 +185,7 @@ impl OutputWorkspaceMap {
                                 .copied()
                                 .min_by_key(|workspace| workspace.0)
                         {
-                            target_state.active = active;
+                            target_state.activate(active);
                         }
                     }
                     self.assignments.insert(evacuated.workspace, output);
@@ -194,6 +218,7 @@ impl OutputWorkspaceMap {
             OutputState {
                 geometry,
                 active,
+                previous: None,
                 workspaces: reclaimed.into_iter().collect(),
             },
         );
@@ -229,7 +254,7 @@ impl OutputWorkspaceMap {
                 self.outputs
                     .get_mut(&target)
                     .expect("migration target is connected")
-                    .active = removed.active;
+                    .activate(removed.active);
             }
         }
 
@@ -276,14 +301,14 @@ impl OutputWorkspaceMap {
             self.outputs
                 .get_mut(&owner)
                 .expect("workspace owner is connected")
-                .active = workspace;
+                .activate(workspace);
             return Ok(WorkspaceSwitch::FocusedExisting(owner));
         }
 
         let reassigned = self.assignments.insert(workspace, output) != Some(output);
         let state = self.outputs.get_mut(&output).expect("output was checked above");
         state.workspaces.insert(workspace);
-        state.active = workspace;
+        state.activate(workspace);
         self.focused = Some(output);
         if reassigned {
             self.bump_revision(workspace);
@@ -291,6 +316,20 @@ impl OutputWorkspaceMap {
 
         debug_assert!(self.validate());
         Ok(WorkspaceSwitch::Activated(output))
+    }
+
+    pub fn select_workspace(
+        &mut self,
+        output: OutputId,
+        workspace: WorkspaceId,
+        auto_back_and_forth: bool,
+    ) -> Result<WorkspaceSwitch, OutputError> {
+        let workspace = if auto_back_and_forth && self.active_workspace(output) == Some(workspace) {
+            self.previous_workspace(output).unwrap_or(workspace)
+        } else {
+            workspace
+        };
+        self.switch_workspace(output, workspace)
     }
 
     pub fn assign_workspace(&mut self, output: OutputId, workspace: WorkspaceId) -> Result<OutputId, OutputError> {
@@ -351,6 +390,12 @@ impl OutputWorkspaceMap {
             if !state.workspaces.contains(&state.active) {
                 return false;
             }
+            if state
+                .previous
+                .is_some_and(|previous| previous == state.active || !state.workspaces.contains(&previous))
+            {
+                return false;
+            }
             for workspace in &state.workspaces {
                 if self.assignments.get(workspace) != Some(output) {
                     return false;
@@ -404,6 +449,112 @@ mod tests {
 
     fn geometry(x: i32) -> OutputGeometry {
         OutputGeometry::new(x, 0, 1_920, 1_080)
+    }
+
+    #[test]
+    fn history_tracks_actual_switches_and_toggles_without_replacing_it_on_a_noop() {
+        let mut outputs = OutputWorkspaceMap::default();
+        let display = OutputId(1);
+        outputs.connect(display, geometry(0), WorkspaceId(1)).unwrap();
+        assert_eq!(outputs.previous_workspace(display), None);
+        outputs.select_workspace(display, WorkspaceId(1), true).unwrap();
+        assert_eq!(outputs.previous_workspace(display), None);
+        outputs.switch_workspace(display, WorkspaceId(2)).unwrap();
+        outputs.switch_workspace(display, WorkspaceId(2)).unwrap();
+        assert_eq!(outputs.previous_workspace(display), Some(WorkspaceId(1)));
+        outputs.select_workspace(display, WorkspaceId(2), false).unwrap();
+        assert_eq!(outputs.active_workspace(display), Some(WorkspaceId(2)));
+        for expected in [WorkspaceId(1), WorkspaceId(2), WorkspaceId(1)] {
+            let current = outputs.active_workspace(display).unwrap();
+            outputs.select_workspace(display, current, true).unwrap();
+            assert_eq!(outputs.active_workspace(display), Some(expected));
+            assert_eq!(outputs.previous_workspace(display), Some(current));
+        }
+        assert!(outputs.validate());
+    }
+
+    #[test]
+    fn another_monitors_workspace_updates_only_its_owners_history() {
+        let mut outputs = OutputWorkspaceMap::default();
+        let left = OutputId(1);
+        let right = OutputId(2);
+        outputs.connect(left, geometry(0), WorkspaceId(1)).unwrap();
+        outputs.connect(right, geometry(1920), WorkspaceId(2)).unwrap();
+        outputs.switch_workspace(left, WorkspaceId(3)).unwrap();
+        outputs.switch_workspace(right, WorkspaceId(4)).unwrap();
+        assert_eq!(
+            outputs.select_workspace(left, WorkspaceId(2), true),
+            Ok(WorkspaceSwitch::FocusedExisting(right))
+        );
+        assert_eq!(outputs.active_workspace(left), Some(WorkspaceId(3)));
+        assert_eq!(outputs.previous_workspace(left), Some(WorkspaceId(1)));
+        assert_eq!(outputs.previous_workspace(right), Some(WorkspaceId(4)));
+        let previous = outputs.previous_workspace(right).unwrap();
+        outputs.switch_workspace(right, previous).unwrap();
+        assert_eq!(outputs.active_workspace(right), Some(WorkspaceId(4)));
+        assert_eq!(outputs.previous_workspace(right), Some(WorkspaceId(2)));
+        assert!(outputs.validate());
+    }
+
+    #[test]
+    fn reconnect_clears_history_for_workspaces_reclaimed_by_another_output() {
+        let mut outputs = OutputWorkspaceMap::default();
+        let left = OutputId(1);
+        let right = OutputId(2);
+        outputs.connect(left, geometry(0), WorkspaceId(1)).unwrap();
+        outputs.connect(right, geometry(1920), WorkspaceId(2)).unwrap();
+        outputs.focus_output(right).unwrap();
+        outputs.disconnect(right).unwrap();
+        assert_eq!(outputs.previous_workspace(left), Some(WorkspaceId(1)));
+        outputs.switch_workspace(left, WorkspaceId(1)).unwrap();
+        assert_eq!(outputs.previous_workspace(left), Some(WorkspaceId(2)));
+        outputs.connect(right, geometry(1920), WorkspaceId(3)).unwrap();
+        assert_eq!(outputs.previous_workspace(left), None);
+        assert_eq!(outputs.previous_workspace(right), None);
+        assert!(outputs.validate());
+    }
+
+    #[test]
+    fn forgetting_a_previous_workspace_clears_its_history() {
+        let mut outputs = OutputWorkspaceMap::default();
+        let display = OutputId(1);
+        outputs.connect(display, geometry(0), WorkspaceId(1)).unwrap();
+        outputs.switch_workspace(display, WorkspaceId(2)).unwrap();
+        assert!(outputs.forget_workspace(WorkspaceId(1)));
+        assert_eq!(outputs.previous_workspace(display), None);
+        outputs.select_workspace(display, WorkspaceId(2), true).unwrap();
+        assert_eq!(outputs.active_workspace(display), Some(WorkspaceId(2)));
+        assert_eq!(
+            outputs.select_workspace(OutputId(99), WorkspaceId(2), true),
+            Err(OutputError::UnknownOutput(OutputId(99)))
+        );
+    }
+
+    #[test]
+    fn empty_previous_workspace_survives_pruning_until_history_moves_on() {
+        let mut workspaces = crate::WorkspaceSet::default();
+        let first = workspaces.active_id();
+        let second = workspaces.ensure_numeric(2).unwrap();
+        let third = workspaces.ensure_numeric(3).unwrap();
+        let mut outputs = OutputWorkspaceMap::default();
+        let display = OutputId(1);
+        outputs.connect(display, geometry(0), first).unwrap();
+        outputs.switch_workspace(display, second).unwrap();
+        workspaces.activate(second).unwrap();
+        let protected = outputs.history_workspaces().chain([second]).collect();
+        let removed = workspaces.prune_empty(&protected);
+        assert!(removed.contains(&third));
+        assert!(workspaces.workspace(first).is_some());
+        let third = workspaces.ensure_numeric(3).unwrap();
+        outputs.switch_workspace(display, third).unwrap();
+        workspaces.activate(third).unwrap();
+        let protected = outputs.history_workspaces().chain([third]).collect();
+        for workspace in workspaces.prune_empty(&protected) {
+            outputs.forget_workspace(workspace);
+        }
+        assert!(workspaces.workspace(first).is_none());
+        assert!(workspaces.workspace(second).is_some());
+        assert_eq!(outputs.previous_workspace(display), Some(second));
     }
 
     #[test]

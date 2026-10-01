@@ -276,6 +276,7 @@ pub struct Ferese {
     gap_config: GapConfig,
     pub(crate) input_settings: InputSettings,
     pub(crate) bindings: Vec<Binding>,
+    workspace_auto_back_and_forth: bool,
     window_rules: Vec<WindowRule>,
     window_rules_applied: HashSet<WindowId>,
     pub(crate) theme_settings: ThemeSettings,
@@ -354,6 +355,7 @@ pub struct RuntimeConfig {
     pub gap_config: GapConfig,
     pub input_settings: InputSettings,
     pub bindings: Vec<Binding>,
+    pub workspace_auto_back_and_forth: bool,
     pub window_rules: Vec<WindowRule>,
     pub theme_settings: ThemeSettings,
     pub default_column_width: ColumnWidth,
@@ -495,6 +497,7 @@ impl Ferese {
             gap_config: config.gap_config,
             input_settings: config.input_settings,
             bindings: config.bindings,
+            workspace_auto_back_and_forth: config.workspace_auto_back_and_forth,
             window_rules: config.window_rules,
             window_rules_applied: HashSet::new(),
             theme_settings: config.theme_settings,
@@ -631,6 +634,7 @@ impl Ferese {
         self.gap_config = config.gap_config;
         self.input_settings = config.input_settings;
         self.bindings = config.bindings;
+        self.workspace_auto_back_and_forth = config.workspace_auto_back_and_forth;
         self.portal_shortcuts.reconcile(&self.bindings, &self.input_settings);
         let old_rules = std::mem::replace(&mut self.window_rules, config.window_rules);
         self.theme_settings = config.theme_settings;
@@ -1505,7 +1509,9 @@ impl Ferese {
     }
 
     fn prune_empty_workspaces(&mut self, visible: &HashSet<WorkspaceId>) {
-        for workspace in self.workspaces.prune_empty(visible) {
+        let mut protected = visible.clone();
+        protected.extend(self.output_workspaces.history_workspaces());
+        for workspace in self.workspaces.prune_empty(&protected) {
             self.output_workspaces.forget_workspace(workspace);
             self.viewport_animations.remove(&workspace);
         }
@@ -2768,14 +2774,32 @@ impl Ferese {
     }
 
     pub fn switch_workspace(&mut self, index: u32) {
-        self.switch_workspace_internal(index, None);
+        self.switch_workspace_internal(index, None, false);
+    }
+
+    pub(crate) fn switch_workspace_from_binding(&mut self, index: u32) {
+        self.switch_workspace_internal(index, None, self.workspace_auto_back_and_forth);
+    }
+
+    pub(crate) fn workspace_back_and_forth(&mut self) {
+        let Some(output) = self.output_workspaces.focused_output() else {
+            return;
+        };
+        if let Some(workspace) = self.output_workspaces.previous_workspace(output) {
+            self.activate_managed_workspace(workspace);
+        }
     }
 
     pub(crate) fn switch_workspace_from_swipe(&mut self, index: u32, direction: SwipeDirection) {
-        self.switch_workspace_internal(index, Some(direction));
+        self.switch_workspace_internal(index, Some(direction), false);
     }
 
-    fn switch_workspace_internal(&mut self, index: u32, slide_direction: Option<SwipeDirection>) {
+    fn switch_workspace_internal(
+        &mut self,
+        index: u32,
+        slide_direction: Option<SwipeDirection>,
+        auto_back_and_forth: bool,
+    ) {
         let workspace = match self.workspaces.ensure_numeric(index) {
             Ok(workspace) => workspace,
             Err(error) => {
@@ -2787,7 +2811,10 @@ impl Ferese {
             return;
         };
         let previous = self.output_workspaces.active_workspace(output);
-        let owner = match self.output_workspaces.switch_workspace(output, workspace) {
+        let owner = match self
+            .output_workspaces
+            .select_workspace(output, workspace, auto_back_and_forth)
+        {
             Ok(ferese_core::WorkspaceSwitch::Activated(output))
             | Ok(ferese_core::WorkspaceSwitch::FocusedExisting(output)) => output,
             Err(error) => {
@@ -2795,6 +2822,10 @@ impl Ferese {
                 return;
             }
         };
+        let workspace = self
+            .output_workspaces
+            .active_workspace(owner)
+            .expect("workspace owner is connected");
         self.update_workspace_slide(output, owner, previous, workspace, slide_direction);
         self.activate_output_workspace(owner, workspace);
 

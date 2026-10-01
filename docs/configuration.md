@@ -206,9 +206,29 @@ theme {
 A single-output session starts with workspace 1. Numbered workspace shortcuts create
 workspaces on demand; switching forward past the last workspace also creates the
 next one when the current workspace contains windows. Empty workspaces are
-cleaned up automatically, keeping at most one empty workspace in addition to
-any empty workspace currently shown on another display. Additional displays
+cleaned up automatically, keeping at most one spare empty workspace in addition to
+visible workspaces and each monitor's previous workspace. Additional displays
 receive their own workspace.
+
+`Super+Escape` returns to the previous workspace on the focused monitor. Repeat
+it to switch between the two most recently visited workspaces. Switching to a
+workspace on another monitor updates that monitor's history. History is cleared
+for a disconnected monitor; it does not jump to a workspace reclaimed by another
+monitor on reconnect. With no previous workspace, the action does nothing.
+
+Enable **Settings → Windows → Toggle back with the same workspace shortcut**, or:
+
+```kdl
+workspaces {
+    auto-back-and-forth #true
+}
+```
+
+This defaults to `#false`. When enabled, pressing a `workspace` binding for the
+current workspace returns to the previous one. Explicit `feresectl workspace N`
+commands and overview selection still select the requested workspace directly.
+Use `feresectl workspace-back-and-forth` for an explicit toggle, or bind
+`workspace-back-and-forth` to another key or gesture. The action takes no argument.
 
 ## Input
 
@@ -289,6 +309,7 @@ invalid. A disabled binding must omit `action` and `argument`.
 | `focus`, `move`, `resize` | `"left"`, `"right"`, `"up"`, `"down"` |
 | `workspace`, `move-to-workspace` | Workspace number string, 1–255 |
 | `workspace-next`, `workspace-previous` | None; next/previous workspace on this monitor |
+| `workspace-back-and-forth` | None; return to the previous workspace on this monitor |
 | `none` | None; ignore this trigger |
 | `close`, `exit`, `toggle-maximized`, `toggle-fullscreen`, `toggle-layout`, `cycle-column-width`, `center-column`, `consume`, `expel`, `toggle-floating`, `toggle-overview` | None |
 
@@ -304,6 +325,7 @@ Super+Shift+H/J/K/L move; Super+Ctrl+H/J/K/L resize; Super+1–9 workspace;
 Super+Shift+1–9 move to workspace; Super+R width cycle; Super+C center;
 Super+[/] consume/expel; Super+F maximize; Super+Shift+F fullscreen;
 Super+M layout; Super+Shift+Space floating; Super+Tab overview;
+Super+Escape previous visited workspace;
 Super+Shift+S area screenshot; Print Screen whole-screen screenshot;
 Super+Shift+E logout confirmation.
 

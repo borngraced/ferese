@@ -68,6 +68,11 @@ layout {
     smart-gaps #false
 }
 
+workspaces {
+    // Press the current workspace's shortcut again to return to the previous one.
+    auto-back-and-forth #false
+}
+
 scrolling {
     default-column-width 0.5
     focus-strategy "paged"

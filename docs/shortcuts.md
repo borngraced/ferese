@@ -56,9 +56,15 @@ overview.
 | --- | --- |
 | Super + 1–9 | Switch to that workspace |
 | Super + Shift + 1–9 | Move the window to that workspace |
+| Super + Escape | Toggle between the last two visited workspaces on this monitor |
 
 Workspaces are created as needed. Selecting one visible on another monitor focuses
 that monitor.
+
+To make pressing the current workspace's shortcut toggle back too, enable
+**Settings → Windows → Toggle back with the same workspace shortcut**. It is off
+by default. The action can also be bound as `workspace-back-and-forth` or run with
+`feresectl workspace-back-and-forth`.
 
 ## Desktop actions
 
