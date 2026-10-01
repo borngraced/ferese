@@ -252,7 +252,7 @@ impl cosmic::Application for Picker {
                     } else {
                         "Choose what to share"
                     })
-                    .size(18),
+                    .size(17),
                     self.text(format!(
                         "{} {app}",
                         if self.prompt.window_capture {

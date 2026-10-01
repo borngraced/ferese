@@ -91,7 +91,9 @@ static void close_window(void *data, struct xdg_toplevel *top) {
 static const struct xdg_toplevel_listener top_listener = {.configure = size, .close = close_window};
 #ifdef FERESE_TEST_DECORATION
 static void decoration_configure(void *data, struct zxdg_toplevel_decoration_v1 *decoration, uint32_t mode) {
-    (void)data; (void)decoration; (void)mode;
+    (void)data; (void)decoration;
+    printf("decoration %u\n", mode);
+    fflush(stdout);
 }
 static const struct zxdg_toplevel_decoration_v1_listener decoration_listener = {.configure = decoration_configure};
 #endif
@@ -115,7 +117,10 @@ int main(int argc, char **argv) {
         struct zxdg_toplevel_decoration_v1 *decoration =
             zxdg_decoration_manager_v1_get_toplevel_decoration(decoration_manager, top);
         zxdg_toplevel_decoration_v1_add_listener(decoration, &decoration_listener, NULL);
-        zxdg_toplevel_decoration_v1_set_mode(decoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+        zxdg_toplevel_decoration_v1_set_mode(decoration,
+            argc >= 7 && !strcmp(argv[6], "server")
+                ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+                : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
     }
 #endif
     xdg_toplevel_set_app_id(top, argc >= 2 ? argv[1] : "ferese.test.floating-size");

@@ -264,6 +264,7 @@ impl Ferese {
             })
             .and_then(|parent| self.presented_window_rect(parent))
             .and_then(|rect| intersection(rect, work));
+        let dialog = crate::window_rules::is_native_dialog(app.as_deref());
         let remembered = id
             .and_then(|id| self.floating_window_memory.get(&id))
             .or_else(|| {
@@ -273,7 +274,7 @@ impl Ferese {
                     None
                 }
             })
-            .filter(|entry| entry.output == output)
+            .filter(|entry| !dialog && entry.output == output)
             .and_then(|entry| entry.restore(&outputs));
         let (width, height) = overrides.unwrap_or_default();
         let constraints = window
@@ -301,7 +302,9 @@ impl Ferese {
             constraints,
         );
         let dimensions = (sized.width, sized.height);
-        let rect = if let Some(parent) = parent_rect {
+        let rect = if dialog {
+            centered(dimensions, work)
+        } else if let Some(parent) = parent_rect {
             centered(dimensions, parent)
         } else if let Some(mut rect) = remembered {
             rect.width = dimensions.0;
@@ -341,7 +344,7 @@ impl Ferese {
             return;
         };
         let (app, parent) = Self::floating_metadata(window);
-        if parent.is_some() {
+        if parent.is_some() || crate::window_rules::is_native_dialog(app.as_deref()) {
             return;
         }
         // A drag can finish on another output without changing workspace ownership.

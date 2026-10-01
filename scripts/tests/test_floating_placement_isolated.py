@@ -49,6 +49,9 @@ class FloatingPlacementTest(unittest.TestCase):
                                                                 ("reopen", [.55, .55, .25, .3]),
                                                                 ("rule-size", [.55, .55, .25, .3]),
                                                                 ("tiled", [.55, .55, .25, .3])]}))
+            saved = json.loads(memory.read_text())
+            saved["dev.ferese.ScreenShare"] = {"output": "ferese-winit", "fractions": [.8, .1, .12, .1]}
+            memory.write_text(json.dumps(saved))
             before = memory.read_bytes()
             display = Path(os.environ["WAYLAND_DISPLAY"])
             if not display.is_absolute():
@@ -158,6 +161,37 @@ class FloatingPlacementTest(unittest.TestCase):
                                     if time.monotonic() > deadline:
                                         self.fail("closed client remained mapped")
                                     time.sleep(.01)
+                    # Dialogs retain their natural size and center even with stale
+                    # ordinary-window placement saved by an older compositor.
+                    for attempt in range(2):
+                        with (root / f"dialog-{attempt}.log").open("w+") as client_log:
+                            client = launch([str(root / "client"), "dev.ferese.ScreenShare",
+                                             "400", "360", "configured", "decorated", "server"],
+                                            stdout=client_log, stderr=log)
+                            deadline = time.monotonic() + 5
+                            while True:
+                                dialog = next((w for w in command("get-windows")
+                                               if w["app_id"] == "dev.ferese.ScreenShare"), None)
+                                if dialog and (dialog["width"], dialog["height"]) == (400, 360):
+                                    break
+                                if time.monotonic() > deadline:
+                                    self.fail(f"dialog restored stale size: {dialog}")
+                                time.sleep(.025)
+                            output = next(o for o in command("get-outputs") if o["enabled"])
+                            self.assertAlmostEqual(dialog["x"] + 200, output["x"] + output["width"] / 2, delta=1)
+                            self.assertAlmostEqual(dialog["y"] + 180, output["y"] + output["height"] / 2, delta=1)
+                            time.sleep(.2)
+                            client_log.seek(0)
+                            modes = [line for line in client_log.read().splitlines() if line.startswith("decoration ")]
+                            self.assertTrue(modes)
+                            self.assertTrue(all(line == "decoration 2" for line in modes), modes)
+                            client.terminate()
+                            client.wait(timeout=3)
+                            deadline = time.monotonic() + 5
+                            while any(w["app_id"] == "dev.ferese.ScreenShare" for w in command("get-windows")):
+                                if time.monotonic() > deadline:
+                                    self.fail("closed dialog remained mapped")
+                                time.sleep(.025)
                     for mode in ["fullscreen", "maximized"]:
                         app = "ferese.test.placement." + mode
                         if mode == "maximized":

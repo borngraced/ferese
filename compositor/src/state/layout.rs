@@ -310,15 +310,7 @@ impl Ferese {
                             | state.states.unset(xdg_toplevel::State::TiledBottom)
                     };
 
-                    let decoration_mode = if is_floating && !is_fullscreen && !is_maximized {
-                        DecorationMode::ClientSide
-                    } else {
-                        DecorationMode::ServerSide
-                    };
-                    let decoration_changed = state.decoration_mode != Some(decoration_mode);
-                    state.decoration_mode = Some(decoration_mode);
-
-                    fullscreen_changed || maximized_changed || tiled_changed || decoration_changed
+                    fullscreen_changed || maximized_changed || tiled_changed
                 });
 
                 if (natural_pending || requested_size.is_some() || state_changed)

@@ -66,15 +66,7 @@ pub fn validate(configured: &[WindowRuleConfig]) -> Result<Vec<WindowRule>, Stri
 pub fn resolve(rules: &[WindowRule], app_id: Option<&str>, title: Option<&str>, transient: bool) -> WindowRuleResult {
     let app_id = app_id.map(normalize_app_id);
     let mut result = WindowRuleResult::default();
-    if matches!(
-        app_id.as_deref(),
-        Some(
-            "dev.ferese.authentication"
-                | "dev.ferese.screenshare"
-                | "dev.ferese.screenshot"
-                | "dev.ferese.portaldialog"
-        )
-    ) {
+    if is_native_dialog(app_id.as_deref()) {
         result.floating = Some(true);
     }
 
@@ -153,6 +145,18 @@ fn positive_dimension(value: Option<f64>, index: usize, field: &'static str) -> 
             "window_rules[{index}].{field} must be a positive finite number"
         ))
     }
+}
+
+pub(crate) fn is_native_dialog(app_id: Option<&str>) -> bool {
+    matches!(
+        app_id.map(normalize_app_id).as_deref(),
+        Some(
+            "dev.ferese.authentication"
+                | "dev.ferese.screenshare"
+                | "dev.ferese.screenshot"
+                | "dev.ferese.portaldialog"
+        )
+    )
 }
 
 fn normalize_app_id(value: &str) -> String {

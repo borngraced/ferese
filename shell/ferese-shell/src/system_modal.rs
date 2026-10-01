@@ -439,12 +439,12 @@ impl FereseShell {
             let rows = match &modal.content {
                 Content::Power(action) => {
                     let mut rows = column![
-                        text(action.title()).size(23),
+                        text(action.title()).size(17),
                         text(action.description())
-                            .size(14)
+                            .size(13)
                             .class(theme::Text::Color(palette.muted)),
                     ]
-                    .spacing(12);
+                    .spacing(10);
                     if let Some(inhibitors) = &modal.inhibitors
                         && !inhibitors.reasons.is_empty()
                     {
@@ -529,8 +529,8 @@ impl FereseShell {
             container(rows)
                 .id("ferese-blur-card")
                 .width(Length::Fill)
-                .max_width(if modal.is_guide() { 600 } else { 440 })
-                .padding(24)
+                .max_width(if modal.is_guide() { 600 } else { 360 })
+                .padding(if modal.is_guide() { 24 } else { 18 })
                 .class(theme::Container::custom(move |_| container::Style {
                     background: (!material)
                         .then_some(Background::Color(color_with_opacity(theme.surface_popover, 1.0))),

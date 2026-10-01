@@ -282,7 +282,7 @@ fn check_grab(seat: &Seat<Ferese>, surface: &WlSurface, serial: Serial) -> Optio
 
 impl XdgDecorationHandler for Ferese {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
-        let mode = self.decoration_mode_for(&toplevel);
+        let mode = Mode::ServerSide;
         toplevel.with_pending_state(|state| state.decoration_mode = Some(mode));
 
         // Wait for the initial surface commit so app-id and saved floating
@@ -294,28 +294,13 @@ impl XdgDecorationHandler for Ferese {
         }
     }
 
-    fn request_mode(&mut self, toplevel: ToplevelSurface, _mode: Mode) {
-        let mode = self.decoration_mode_for(&toplevel);
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: Mode) {
         set_decoration_mode(&toplevel, mode);
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        let mode = self.decoration_mode_for(&toplevel);
+        let mode = Mode::ServerSide;
         set_decoration_mode(&toplevel, mode);
-    }
-}
-
-impl Ferese {
-    fn decoration_mode_for(&self, toplevel: &ToplevelSurface) -> Mode {
-        self.space
-            .elements()
-            .find(|window| {
-                window
-                    .toplevel()
-                    .is_some_and(|candidate| candidate.wl_surface() == toplevel.wl_surface())
-            })
-            .filter(|window| self.is_floating_window(window))
-            .map_or(Mode::ServerSide, |_| Mode::ClientSide)
     }
 }
 

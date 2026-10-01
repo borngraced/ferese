@@ -16,7 +16,8 @@ impl Ferese {
                 || pending.states.contains(xdg_toplevel::State::Maximized)
         });
         let rule = resolve_window_rules(&self.window_rules, app_id.as_deref(), title.as_deref(), transient);
-        if transient
+        if crate::window_rules::is_native_dialog(app_id.as_deref())
+            || transient
             || special_mode
             || rule.fullscreen == Some(true)
             || !rule.floating.unwrap_or(rule.width.is_some() || rule.height.is_some())
@@ -71,14 +72,17 @@ impl Ferese {
         if let Some(pointer) = self.seat.get_pointer() {
             self.focus_output_at(pointer.current_location());
         }
-        let remembered_work = app_id.and_then(|app| self.floating_memory.get(app)).and_then(|entry| {
-            let outputs = self.floating_outputs();
-            entry.restore(&outputs)?;
-            outputs
-                .into_iter()
-                .find(|(name, _)| *name == entry.output)
-                .map(|(_, work)| work)
-        });
+        let remembered_work = app_id
+            .filter(|app| !crate::window_rules::is_native_dialog(Some(app)))
+            .and_then(|app| self.floating_memory.get(app))
+            .and_then(|entry| {
+                let outputs = self.floating_outputs();
+                entry.restore(&outputs)?;
+                outputs
+                    .into_iter()
+                    .find(|(name, _)| *name == entry.output)
+                    .map(|(_, work)| work)
+            });
         if let Some(work) = remembered_work {
             self.focus_output_at((work.x + work.width / 2.0, work.y + work.height / 2.0).into());
         }
