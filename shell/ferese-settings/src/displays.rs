@@ -23,7 +23,7 @@ impl Mode {
     }
 
     pub fn label(self) -> String {
-        if self.refresh % 1000 == 0 {
+        if self.refresh.is_multiple_of(1000) {
             format!("{} Hz", self.refresh / 1000)
         } else {
             format!("{:.3} Hz", f64::from(self.refresh) / 1000.)
