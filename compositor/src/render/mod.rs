@@ -96,6 +96,8 @@ render_elements! {
 
 const ROUNDED_TEXTURE_SHADER: &str = include_str!("shaders/rounded_texture_shader.frag");
 
+const ROUNDED_SOLID_SHADER: &str = include_str!("shaders/rounded_solid_shader.frag");
+
 const ROUNDED_BORDER_SHADER: &str = include_str!("shaders/rounded_border_shader.frag");
 
 const WINDOW_SHADOW_SHADER: &str = include_str!("shaders/window_shadow_shader.frag");
@@ -280,6 +282,7 @@ impl RenderElement<GlesRenderer> for BlurRenderElement {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RoundedClipPrograms {
+    solid: GlesPixelProgram,
     texture: GlesTexProgram,
     border: GlesPixelProgram,
     shadow: GlesPixelProgram,
@@ -390,7 +393,7 @@ pub(crate) struct WindowShadowBuffers {
 #[derive(Debug)]
 struct RoundedSurfaceRenderElement {
     inner: WaylandSurfaceRenderElement<GlesRenderer>,
-    program: GlesTexProgram,
+    programs: RoundedClipPrograms,
     clip_rect: [f32; 4],
     radius: f32,
     clip_changed: bool,
@@ -459,13 +462,25 @@ impl RenderElement<GlesRenderer> for RoundedSurfaceRenderElement {
                 opaque_regions,
                 self.transform(),
                 self.alpha(),
-                Some(&self.program),
+                Some(&self.programs.texture),
                 &[
                     Uniform::new("clip_rect", self.clip_rect),
                     Uniform::new("radius", self.radius),
                 ],
             ),
-            WaylandSurfaceTexture::SolidColor(_) => self.inner.draw(frame, src, dst, damage, opaque_regions),
+            WaylandSurfaceTexture::SolidColor(color) => frame.render_pixel_shader_to(
+                &self.programs.solid,
+                src,
+                dst,
+                (dst.size.w, dst.size.h).into(),
+                Some(damage),
+                self.alpha(),
+                &[
+                    Uniform::new("clip_rect", self.clip_rect),
+                    Uniform::new("radius", self.radius),
+                    Uniform::new("color", color.components()),
+                ],
+            ),
         }
     }
 
@@ -516,6 +531,65 @@ mod tests {
 
     #[test]
     #[ignore = "requires an EGL rendering device"]
+    fn solid_corner_mask_preserves_premultiplied_color() {
+        use smithay::backend::allocator::Fourcc;
+        use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
+        use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture, Uniform, UniformName, UniformType};
+        use smithay::backend::renderer::{Bind, Color32F, ExportMem, Frame, Offscreen, Renderer};
+        let device = EGLDevice::enumerate().unwrap().last().expect("an EGL device");
+        let display = unsafe { EGLDisplay::new(device).unwrap() };
+        let context = EGLContext::new(&display).unwrap();
+        let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
+        let program = renderer
+            .compile_custom_pixel_shader(
+                &super::corner_shader(super::ROUNDED_SOLID_SHADER),
+                &[
+                    UniformName::new("clip_rect", UniformType::_4f),
+                    UniformName::new("radius", UniformType::_1f),
+                    UniformName::new("color", UniformType::_4f),
+                ],
+            )
+            .unwrap();
+        let size = (32, 32).into();
+        let mut texture: GlesTexture = renderer.create_buffer(Fourcc::Abgr8888, size).unwrap();
+        let rect = Rectangle::<i32, Physical>::from_size((32, 32).into());
+        for (radius, corner_alpha, inset) in [(12.0f32, 0u8, 0.0f32), (0.0, 64, 0.0), (0.0, 48, 0.25)] {
+            let mut target = renderer.bind(&mut texture).unwrap();
+            {
+                let mut frame = renderer
+                    .render(&mut target, (32, 32).into(), Transform::Normal)
+                    .unwrap();
+                frame.clear(Color32F::TRANSPARENT, &[rect]).unwrap();
+                frame
+                    .render_pixel_shader_to(
+                        &program,
+                        Rectangle::from_size(size.to_f64()),
+                        rect,
+                        size,
+                        Some(&[rect]),
+                        0.5,
+                        &[
+                            Uniform::new("clip_rect", [inset, inset, 32.0 - 2.0 * inset, 32.0 - 2.0 * inset]),
+                            Uniform::new("radius", radius),
+                            Uniform::new("color", [0.5f32, 0.0, 0.0, 0.5]),
+                        ],
+                    )
+                    .unwrap();
+                let _ = frame.finish().unwrap();
+            }
+            let mapping = renderer
+                .copy_framebuffer(&target, Rectangle::from_size(size), Fourcc::Abgr8888)
+                .unwrap();
+            let pixels = renderer.map_texture(&mapping).unwrap();
+            let center = (16 * 32 + 16) * 4;
+            assert!(pixels[center].abs_diff(64) <= 1);
+            assert!(pixels[center + 3].abs_diff(64) <= 1);
+            assert!(pixels[3].abs_diff(corner_alpha) <= 1);
+        }
+    }
+
+    #[test]
+    #[ignore = "requires an EGL rendering device"]
     fn shared_corner_shaders_compile() {
         use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
         use smithay::backend::renderer::gles::GlesRenderer;
@@ -529,6 +603,7 @@ mod tests {
                 .unwrap();
         }
         for source in [
+            super::ROUNDED_SOLID_SHADER,
             super::ROUNDED_BORDER_SHADER,
             super::WINDOW_SHADOW_SHADER,
             super::MATERIAL_SHADER,

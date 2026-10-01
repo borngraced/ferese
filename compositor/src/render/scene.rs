@@ -265,7 +265,7 @@ pub(crate) fn output_elements(
                     .get(&id)
                     .is_some_and(|geometry| geometry.presentation_changed),
                 output,
-                programs.texture.clone(),
+                programs.clone(),
                 behavior,
             ));
             let source = window.geometry().size;

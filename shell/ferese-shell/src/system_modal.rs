@@ -541,6 +541,7 @@ impl FereseShell {
                         width: 1.0,
                         radius: theme.material_radius.into(),
                     },
+                    snap: true,
                     ..Default::default()
                 }))
                 .into()

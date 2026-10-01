@@ -433,12 +433,19 @@ pub(super) fn wallpaper_fallback_style(_theme: &cosmic::Theme) -> container::Sty
     }
 }
 
+fn encode_regions(regions: &[[f32; 5]]) -> Vec<u8> {
+    regions
+        .iter()
+        .flat_map(|region| region.iter().flat_map(|value| value.to_ne_bytes()))
+        .collect()
+}
+
 pub(super) struct EffectsBinding {
     connection: Connection,
     _manager: FereseEffectsManagerV1,
     pub(super) surface: FereseSurfaceEffectsV1,
     _queue: EventQueue<EffectsState>,
-    regions: std::cell::RefCell<Option<Vec<[i32; 5]>>>,
+    regions: std::cell::RefCell<Option<Vec<[f32; 5]>>>,
     opacity: std::cell::Cell<Option<u32>>,
 }
 
@@ -463,13 +470,11 @@ impl EffectsBinding {
         let connection = Connection::from_backend(backend);
         let (globals, queue) = registry_queue_init::<EffectsState>(&connection)?;
         let qh = queue.handle();
-        let manager = globals.bind::<FereseEffectsManagerV1, _, _>(&qh, 1..=3, ())?;
+        let manager = globals.bind::<FereseEffectsManagerV1, _, _>(&qh, 3..=3, ())?;
         let effects = manager.get_surface_effects(surface, &qh, ());
 
         let opacity = (opacity.clamp(0.0, 1.0) * 1000.0).round() as u32;
-        if effects.version() >= 3 {
-            effects.set_opacity(opacity);
-        }
+        effects.set_opacity(opacity);
         if let Some(role) = role {
             effects.set_role(role);
         } else {
@@ -487,24 +492,19 @@ impl EffectsBinding {
         })
     }
 
-    pub(super) fn set_regions(&self, regions: &[[i32; 5]]) -> Result<(), Box<dyn std::error::Error>> {
+    pub(super) fn set_regions(&self, regions: &[[f32; 5]]) -> Result<(), Box<dyn std::error::Error>> {
         self.set_material_regions(regions, ferese_surface_effects_v1::Role::Popover)
     }
 
     pub(super) fn set_material_regions(
         &self,
-        regions: &[[i32; 5]],
+        regions: &[[f32; 5]],
         role: ferese_surface_effects_v1::Role,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        if self.surface.version() < 2 || self.regions.borrow().as_deref() == Some(regions) {
+        if self.regions.borrow().as_deref() == Some(regions) {
             return Ok(());
         }
-        self.surface.set_regions(
-            regions
-                .iter()
-                .flat_map(|r| r.iter().flat_map(|v| v.to_ne_bytes()))
-                .collect(),
-        );
+        self.surface.set_regions(encode_regions(regions));
         if regions.is_empty() {
             self.surface.clear_role();
         } else {
@@ -529,7 +529,7 @@ impl EffectsBinding {
 
     pub(super) fn set_opacity(&self, opacity: f32) -> Result<(), Box<dyn std::error::Error>> {
         let opacity = (opacity.clamp(0.0, 1.0) * 1000.0).round() as u32;
-        if self.surface.version() >= 3 && self.opacity.get() != Some(opacity) {
+        if self.opacity.get() != Some(opacity) {
             self.surface.set_opacity(opacity);
             self.connection.flush()?;
             self.opacity.set(Some(opacity));
@@ -554,3 +554,17 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for EffectsState {
 
 delegate_noop!(EffectsState: ignore FereseEffectsManagerV1);
 delegate_noop!(EffectsState: ignore FereseSurfaceEffectsV1);
+
+#[cfg(test)]
+mod region_encoding_tests {
+    #[test]
+    fn fractional_region_encoding_preserves_values() {
+        let regions = [[0.25, -0.75, 100.5, 40.25, 14.0]];
+        let bytes = super::encode_regions(&regions);
+        let decoded: Vec<_> = bytes
+            .chunks_exact(4)
+            .map(|v| f32::from_ne_bytes(v.try_into().unwrap()))
+            .collect();
+        assert_eq!(decoded, regions[0]);
+    }
+}

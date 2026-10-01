@@ -228,7 +228,7 @@ pub(super) fn overview_strip_elements(
                         alpha,
                         true,
                         output,
-                        programs.texture.clone(),
+                        programs.clone(),
                         ConstrainScaleBehavior::Stretch,
                     ));
                 }

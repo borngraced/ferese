@@ -467,6 +467,7 @@ impl FereseShell {
                     width: if history { 0.0 } else { 1.0 },
                     radius: palette.material_radius.into(),
                 },
+                snap: true,
                 ..Default::default()
             }));
         let card: Element<'_, cosmic::Action<Message>> = card.into();
@@ -738,6 +739,7 @@ impl FereseShell {
                         width: 1.0,
                         radius: palette.material_radius.into(),
                     },
+                    snap: true,
                     ..Default::default()
                 }))
                 .into();

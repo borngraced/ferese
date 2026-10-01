@@ -32,11 +32,22 @@ pub(super) fn rounded_clip_program(state: &mut Ferese, renderer: &mut GlesRender
     let texture = renderer.compile_custom_texture_shader(&corner_shader(ROUNDED_TEXTURE_SHADER), &texture_uniforms);
     let border = renderer.compile_custom_pixel_shader(&corner_shader(ROUNDED_BORDER_SHADER), &border_uniforms);
     let shadow = renderer.compile_custom_pixel_shader(&corner_shader(WINDOW_SHADOW_SHADER), &shadow_uniforms);
-    let compiled = texture.and_then(|texture| border.and_then(|border| shadow.map(|shadow| (texture, border, shadow))));
+    let solid = renderer.compile_custom_pixel_shader(
+        &corner_shader(ROUNDED_SOLID_SHADER),
+        &[
+            UniformName::new("clip_rect", UniformType::_4f),
+            UniformName::new("radius", UniformType::_1f),
+            UniformName::new("color", UniformType::_4f),
+        ],
+    );
+    let compiled = texture.and_then(|texture| {
+        border.and_then(|border| shadow.and_then(|shadow| solid.map(|solid| (texture, border, shadow, solid))))
+    });
     match compiled {
-        Ok((texture, border, shadow)) => {
+        Ok((texture, border, shadow, solid)) => {
             let programs = RoundedClipPrograms {
                 texture,
+                solid,
                 border,
                 shadow,
             };
@@ -343,7 +354,7 @@ pub(super) fn rounded_window_elements(
     alpha: f32,
     clip_changed: bool,
     output: &Output,
-    program: GlesTexProgram,
+    programs: RoundedClipPrograms,
     behavior: ConstrainScaleBehavior,
 ) -> Vec<AnimatedWindowRenderElement> {
     let Some(toplevel) = window.toplevel() else {
@@ -390,7 +401,7 @@ pub(super) fn rounded_window_elements(
         .map(|inner| {
             RoundedSurfaceRenderElement {
                 inner,
-                program: program.clone(),
+                programs: programs.clone(),
                 clip_rect: clip,
                 radius,
                 clip_changed,

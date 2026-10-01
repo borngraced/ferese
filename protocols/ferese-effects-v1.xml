@@ -81,8 +81,11 @@
 
     <request name="set_regions" since="2">
       <description summary="restrict material to rounded surface-local rectangles">
-        An array of native-endian signed 32-bit tuples (x, y, width, height,
-        radius), measured in logical pixels. At most 32 rectangles are allowed.
+        An array of native-endian IEEE 754 binary32 tuples (x, y, width, height,
+        radius) in logical pixels. All values must be finite and have magnitude
+        at most 32768; width and height must be positive and radius nonnegative.
+        At most 32 rectangles are allowed. Invalid arrays are ignored.
+        Coordinates are rounded only after output scaling.
         An empty array disables material painting without clearing the role.
         Surfaces which never send this request retain full-surface materials.
       </description>

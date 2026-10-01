@@ -6,5 +6,6 @@ float rounded_rect_distance(vec2 point, vec4 rect, float radius) {
 }
 
 float edge_coverage(float distance) {
-    return 1.0 - smoothstep(-0.5, 0.5, distance);
+    // Match Iced/WGPU quad edges: a one-physical-pixel linear ramp.
+    return clamp(0.5 - distance, 0.0, 1.0);
 }

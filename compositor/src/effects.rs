@@ -56,7 +56,7 @@ struct SurfaceEffectsState {
     attached: AtomicBool,
     generation: AtomicU64,
     role: Mutex<Option<SemanticRole>>,
-    regions: Mutex<Option<Vec<[i32; 5]>>>,
+    regions: Mutex<Option<Vec<[f64; 5]>>>,
     opacity: Mutex<u32>,
     presentation_supported: AtomicBool,
     dismissing: AtomicBool,
@@ -183,7 +183,7 @@ impl Dispatch<FereseSurfaceMaterialV1, SurfaceEffectsUserData> for Ferese {
     }
 }
 
-pub(crate) fn surface_regions(surface: &WlSurface) -> Option<Vec<[i32; 5]>> {
+pub(crate) fn surface_regions(surface: &WlSurface) -> Option<Vec<[f64; 5]>> {
     with_states(surface, |states| {
         states
             .data_map
@@ -195,7 +195,7 @@ pub(crate) fn surface_regions(surface: &WlSurface) -> Option<Vec<[i32; 5]>> {
     })
 }
 
-fn decode_regions(bytes: &[u8]) -> Option<Vec<[i32; 5]>> {
+fn decode_regions(bytes: &[u8]) -> Option<Vec<[f64; 5]>> {
     if !bytes.len().is_multiple_of(20) || bytes.len() > 32 * 20 {
         return None;
     }
@@ -204,9 +204,12 @@ fn decode_regions(bytes: &[u8]) -> Option<Vec<[i32; 5]>> {
         .0
         .iter()
         .map(|tuple| {
-            let values: [i32; 5] = std::array::from_fn(|index| i32::from_ne_bytes(tuple.as_chunks::<4>().0[index]));
-            (values[2] > 0 && values[3] > 0 && values[4] >= 0 && values.iter().all(|v| v.abs_diff(0) <= 32768))
-                .then_some(values)
+            let values: [f64; 5] = std::array::from_fn(|i| f64::from(f32::from_ne_bytes(tuple.as_chunks::<4>().0[i])));
+            (values[2] > 0.0
+                && values[3] > 0.0
+                && values[4] >= 0.0
+                && values.iter().all(|v| v.is_finite() && v.abs() <= 32768.0))
+            .then_some(values)
         })
         .collect()
 }
@@ -439,15 +442,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rounded_regions_are_bounded_and_validated() {
-        let region = [12_i32, 8, 120, 48, 11];
-        let bytes: Vec<_> = region.into_iter().flat_map(i32::to_ne_bytes).collect();
-        assert_eq!(decode_regions(&bytes), Some(vec![region]));
+    fn fractional_regions_validate_all_wire_values() {
+        let region = [0.25f32, -0.75, 100.5, 40.25, 13.5];
+        let encode = |r: [f32; 5]| r.into_iter().flat_map(f32::to_ne_bytes).collect::<Vec<_>>();
+        let bytes = encode(region);
+        assert_eq!(decode_regions(&bytes), Some(vec![region.map(f64::from)]));
         assert_eq!(decode_regions(&[]), Some(vec![]));
         assert!(decode_regions(&bytes[..19]).is_none());
         assert!(decode_regions(&bytes.repeat(33)).is_none());
-        for invalid in [[0_i32, 0, 0, 48, 11], [0, 0, 120, 48, -1], [i32::MIN, 0, 120, 48, 11]] {
-            assert!(decode_regions(&invalid.into_iter().flat_map(i32::to_ne_bytes).collect::<Vec<_>>()).is_none());
+        for index in 0..5 {
+            for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 32769.0] {
+                let mut bad = region;
+                bad[index] = invalid;
+                assert!(decode_regions(&encode(bad)).is_none());
+            }
+        }
+        for (index, value) in [(2, 0.0), (3, -1.0), (4, -0.25)] {
+            let mut bad = region;
+            bad[index] = value;
+            assert!(decode_regions(&encode(bad)).is_none());
         }
     }
 

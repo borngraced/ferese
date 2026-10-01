@@ -3,7 +3,7 @@ use cosmic::iced::advanced::{Clipboard, Layout, Renderer as _, Shell, Widget, la
 use cosmic::iced::{Event, Length, Rectangle, Size, Transformation, Vector};
 use cosmic::{Element, Theme};
 
-pub type Regions = std::sync::Arc<std::sync::Mutex<Vec<[i32; 5]>>>;
+pub type Regions = std::sync::Arc<std::sync::Mutex<Vec<[f32; 5]>>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
 #[serde(default)]
@@ -463,18 +463,18 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
 struct CollectRegions(Vec<Rectangle>);
 
 impl CollectRegions {
-    fn into_regions(self, translation: Vector, radius: f32) -> Vec<[i32; 5]> {
+    fn into_regions(self, translation: Vector, radius: f32) -> Vec<[f32; 5]> {
         self.0
             .into_iter()
             .take(32)
             .filter(|r| r.width > 0.0 && r.height > 0.0)
             .map(|r| {
                 [
-                    (r.x + translation.x).round() as i32,
-                    (r.y + translation.y).round() as i32,
-                    r.width.round() as i32,
-                    r.height.round() as i32,
-                    radius.round().max(0.0) as i32,
+                    r.x + translation.x,
+                    r.y + translation.y,
+                    r.width,
+                    r.height,
+                    radius.max(0.0),
                 ]
             })
             .collect()
@@ -509,13 +509,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn material_regions_preserve_fractional_layout_and_translation() {
+        let collector = CollectRegions(vec![Rectangle::new((0.25, 2.5).into(), (100.25, 40.5).into())]);
+        assert_eq!(
+            collector.into_regions(Vector::new(0.125, -0.25), 13.5),
+            vec![[0.375, 2.25, 100.25, 40.5, 13.5]]
+        );
+    }
+
+    #[test]
     fn centered_modal_material_tracks_surface_position_and_animation() {
         let mut collector = CollectRegions(Vec::new());
         let card = Rectangle::new((380.0, 420.0).into(), (440.0, 220.0).into());
         widget::Operation::container(&mut collector, Some(&widget::Id::new("ferese-blur-card")), card);
         assert_eq!(
             collector.into_regions(Vector::new(0.0, -2.0), 14.0),
-            vec![[380, 418, 440, 220, 14]]
+            vec![[380., 418., 440., 220., 14.]]
         );
     }
 

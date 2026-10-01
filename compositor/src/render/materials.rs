@@ -20,23 +20,12 @@ pub(super) fn append_material_surface(
         };
     let regions = crate::effects::surface_regions(surface);
     let targets: Vec<_> = match &regions {
-        None => vec![(geometry, radius as f32)],
+        None => vec![(geometry, RoundedRect::from_logical(geometry, scale, radius))],
         Some(regions) => regions
             .iter()
-            .filter_map(|r| {
-                Rectangle::new(
-                    (content_origin.x + r[0], content_origin.y + r[1]).into(),
-                    (r[2], r[3]).into(),
-                )
-                .intersection(geometry)
-                .map(|rect| (rect, r[4] as f32))
-            })
+            .filter_map(|r| material_region_geometry(*r, geometry, content_origin, scale))
             .collect(),
     };
-    let targets: Vec<_> = targets
-        .into_iter()
-        .map(|(rect, radius)| (rect, RoundedRect::from_logical(rect, scale, f64::from(radius))))
-        .collect();
     let materials: Vec<_> = targets
         .iter()
         .enumerate()
@@ -65,7 +54,7 @@ pub(super) fn append_material_surface(
         let mode = output.current_mode()?;
         let program = rounded_clip_program(state, renderer)?;
         Some((
-            program.texture,
+            program,
             framebuffer_clip_rect(corners.rect, mode.size, output.current_transform().invert()),
             corners.radius,
         ))
@@ -84,7 +73,7 @@ pub(super) fn append_material_surface(
         let element = if let Some((program, clip_rect, radius)) = &clip {
             WindowContentRenderElement::Rounded(RoundedSurfaceRenderElement {
                 inner: element,
-                program: program.clone(),
+                programs: program.clone(),
                 clip_rect: *clip_rect,
                 radius: *radius,
                 clip_changed: false,
@@ -100,6 +89,27 @@ pub(super) fn append_material_surface(
         elements.push(background);
         elements.push(shadow);
     }
+}
+
+/// Preserve the surface-local fractional edges until the shared physical snap.
+fn material_region_geometry(
+    region: [f64; 5],
+    geometry: Rectangle<i32, Logical>,
+    origin: Point<i32, Logical>,
+    scale: f64,
+) -> Option<(Rectangle<i32, Logical>, RoundedRect)> {
+    let rect = Rectangle::<f64, Logical>::new(
+        (f64::from(origin.x) + region[0], f64::from(origin.y) + region[1]).into(),
+        (region[2], region[3]).into(),
+    )
+    .intersection(geometry.to_f64())?;
+    let corners = RoundedRect::new(
+        ferese_layout::Rect::new(rect.loc.x, rect.loc.y, rect.size.w, rect.size.h),
+        (0, 0).into(),
+        scale,
+        region[4],
+    );
+    Some((rect.to_i32_up(), corners))
 }
 
 pub(super) struct MaterialSurface {
@@ -422,5 +432,24 @@ pub(super) fn blur_damage(
     } else {
         // A new scene needs its entire sampling halo repainted before capture.
         DamageSet::from_slice(&[Rectangle::from_size((size.w, size.h).into())])
+    }
+}
+
+#[cfg(test)]
+mod region_geometry_tests {
+    use super::*;
+
+    #[test]
+    fn fractional_regions_snap_once_in_output_pixels() {
+        let bounds = Rectangle::from_size((200, 100).into());
+        let (_, corners) = material_region_geometry([0.4, 0.4, 100.4, 40.4, 14.0], bounds, (0, 0).into(), 1.5).unwrap();
+        assert_eq!(corners.rect, Rectangle::new((1, 1).into(), (150, 60).into()));
+        assert_eq!(corners.radius, 21.0);
+        // The old logical rounding would put this at physical (0, 0).
+        let (_, clipped) =
+            material_region_geometry([-0.4, -0.4, 100.4, 40.4, 100.0], bounds, (0, 0).into(), 1.5).unwrap();
+        assert_eq!(clipped.rect, Rectangle::from_size((150, 60).into()));
+        assert_eq!(clipped.radius, 30.0);
+        assert!(material_region_geometry([300.0, 0.0, 10.0, 10.0, 2.0], bounds, (0, 0).into(), 1.5).is_none());
     }
 }
