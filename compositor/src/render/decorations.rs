@@ -29,11 +29,11 @@ pub(super) fn rounded_clip_program(state: &mut Ferese, renderer: &mut GlesRender
         UniformName::new("opacity", UniformType::_1f),
         UniformName::new("shadow_color", UniformType::_4f),
     ];
-    let texture = renderer.compile_custom_texture_shader(&corner_shader(ROUNDED_TEXTURE_SHADER), &texture_uniforms);
-    let border = renderer.compile_custom_pixel_shader(&corner_shader(ROUNDED_BORDER_SHADER), &border_uniforms);
-    let shadow = renderer.compile_custom_pixel_shader(&corner_shader(WINDOW_SHADOW_SHADER), &shadow_uniforms);
+    let texture = renderer.compile_custom_texture_shader(corner_shader(ROUNDED_TEXTURE_SHADER), &texture_uniforms);
+    let border = renderer.compile_custom_pixel_shader(corner_shader(ROUNDED_BORDER_SHADER), &border_uniforms);
+    let shadow = renderer.compile_custom_pixel_shader(corner_shader(WINDOW_SHADOW_SHADER), &shadow_uniforms);
     let solid = renderer.compile_custom_pixel_shader(
-        &corner_shader(ROUNDED_SOLID_SHADER),
+        corner_shader(ROUNDED_SOLID_SHADER),
         &[
             UniformName::new("clip_rect", UniformType::_4f),
             UniformName::new("radius", UniformType::_1f),

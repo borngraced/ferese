@@ -562,8 +562,10 @@ mod region_encoding_tests {
         let regions = [[0.25, -0.75, 100.5, 40.25, 14.0]];
         let bytes = super::encode_regions(&regions);
         let decoded: Vec<_> = bytes
-            .chunks_exact(4)
-            .map(|v| f32::from_ne_bytes(v.try_into().unwrap()))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&v| f32::from_ne_bytes(v))
             .collect();
         assert_eq!(decoded, regions[0]);
     }

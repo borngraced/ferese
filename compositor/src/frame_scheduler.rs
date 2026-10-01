@@ -192,14 +192,20 @@ impl FrameScheduler {
         })
     }
 
-    pub fn callback_deadline(&self, now: Duration, target: Duration) -> Duration {
+    pub fn callback_deadline(&self, now: Duration, target: Duration) -> Option<Duration> {
+        // A timer from a callback-only update must yield to a later submission.
+        // Its page flip will release callbacks using the observed refresh phase.
+        if self.submitted.is_some() {
+            return None;
+        }
+
         let tolerance = Duration::from_micros(500).min(self.interval / 8);
         if target <= now
             && self
                 .last_callback
                 .is_none_or(|last| last + self.interval <= now + tolerance)
         {
-            return now;
+            return Some(now);
         }
 
         let earliest = self
@@ -207,7 +213,7 @@ impl FrameScheduler {
             .map_or(now, |last| last + self.interval)
             .max(target)
             .max(now);
-        self.phase_at_or_after(earliest)
+        Some(self.phase_at_or_after(earliest))
     }
 
     pub fn callback_sent(&mut self, now: Duration) {
@@ -298,7 +304,35 @@ mod tests {
         scheduler.callback_sent(ms(110));
         scheduler.request(ms(108));
         assert_eq!(scheduler.plan(ms(108)).unwrap().present_at, ms(120));
-        assert_eq!(scheduler.callback_deadline(ms(111), ms(110)), ms(120));
+        assert_eq!(scheduler.callback_deadline(ms(111), ms(110)).unwrap(), ms(120));
+    }
+
+    #[test]
+    fn callback_only_timer_waits_for_a_later_submission_even_when_it_misses_its_target() {
+        let mut scheduler = FrameScheduler::new(ms(10));
+        scheduler.presented(ms(100));
+        scheduler.request(ms(101));
+        let unchanged = scheduler.plan(ms(101)).unwrap();
+        scheduler.begin();
+        scheduler.rendered(unchanged, ms(108), ms(1), false);
+        let callback_at = scheduler.callback_deadline(ms(108), unchanged.present_at).unwrap();
+        assert_eq!(callback_at, ms(110));
+
+        scheduler.request(ms(109));
+        let changed = scheduler.plan(ms(109)).unwrap();
+        scheduler.begin();
+        scheduler.rendered(changed, ms(118), ms(1), true);
+
+        // The old timer is dispatched late, after a new frame was queued.
+        // Neither that timer nor the predicted refresh can release callbacks.
+        assert_eq!(scheduler.callback_deadline(ms(118), callback_at), None);
+        assert_eq!(scheduler.callback_deadline(ms(120), changed.present_at), None);
+        assert_eq!(scheduler.callback_deadline(ms(129), callback_at), None);
+
+        scheduler.presented(ms(130));
+        assert_eq!(scheduler.callback_deadline(ms(130), ms(130)), Some(ms(130)));
+        scheduler.callback_sent(ms(130));
+        assert_eq!(scheduler.callback_deadline(ms(130), callback_at), Some(ms(140)));
     }
 
     #[test]
@@ -323,9 +357,9 @@ mod tests {
         scheduler.callback_sent(ms(100) + Duration::from_micros(80));
         scheduler.presented(ms(110));
         let now = ms(110) + Duration::from_micros(10);
-        assert_eq!(scheduler.callback_deadline(now, now), now);
+        assert_eq!(scheduler.callback_deadline(now, now).unwrap(), now);
         scheduler.callback_sent(now);
-        assert_eq!(scheduler.callback_deadline(now, now), ms(120));
+        assert_eq!(scheduler.callback_deadline(now, now).unwrap(), ms(120));
     }
 
     #[test]

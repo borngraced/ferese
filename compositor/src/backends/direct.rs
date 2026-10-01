@@ -862,6 +862,10 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, plan: cr
     let submitted = rendered.as_ref().is_ok_and(|submitted| *submitted);
     record_frame_schedule(&mut output, plan, render_started.elapsed(), submitted);
 
+    if submitted && let Some(token) = output.callback_timer.take() {
+        forecast.loop_handle.remove(token);
+    }
+
     match rendered {
         Ok(true) => tracing::trace!(?node, ?crtc, "queued DRM frame"),
         Ok(false) => (),
@@ -1262,12 +1266,15 @@ fn schedule_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handl
         return;
     };
 
-    if output.callback_timer.is_some() {
+    if output.callback_timer.is_some() || output.frame_pending {
         return;
     }
 
     let identity = output.output.clone();
-    let callback_at = output.scheduler.callback_deadline(timestamp, target);
+    let Some(callback_at) = output.scheduler.callback_deadline(timestamp, target) else {
+        return;
+    };
+
     if callback_at <= timestamp {
         deliver_frame_callbacks(state, node, crtc, &identity);
         return;
@@ -1313,12 +1320,15 @@ fn deliver_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle
     };
 
     output.callback_timer = None;
-    if !backend.active || !device.drm.is_active() || state.session_lock.sleeping {
+    if !backend.active || !device.drm.is_active() || state.session_lock.sleeping || output.frame_pending {
         return;
     }
 
     let timestamp = monotonic_now();
-    let next = output.scheduler.callback_deadline(timestamp, timestamp);
+    let Some(next) = output.scheduler.callback_deadline(timestamp, timestamp) else {
+        return;
+    };
+
     if next > timestamp {
         schedule_frame_callbacks(state, node, crtc, next);
         return;

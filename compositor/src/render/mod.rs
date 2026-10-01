@@ -542,7 +542,7 @@ mod tests {
         let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
         let program = renderer
             .compile_custom_pixel_shader(
-                &super::corner_shader(super::ROUNDED_SOLID_SHADER),
+                super::corner_shader(super::ROUNDED_SOLID_SHADER),
                 &[
                     UniformName::new("clip_rect", UniformType::_4f),
                     UniformName::new("radius", UniformType::_1f),
@@ -599,7 +599,7 @@ mod tests {
         let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
         for source in [super::ROUNDED_TEXTURE_SHADER, super::BLUR_SHADER] {
             renderer
-                .compile_custom_texture_shader(&super::corner_shader(source), &[])
+                .compile_custom_texture_shader(super::corner_shader(source), &[])
                 .unwrap();
         }
         for source in [
@@ -609,7 +609,7 @@ mod tests {
             super::MATERIAL_SHADER,
         ] {
             renderer
-                .compile_custom_pixel_shader(&super::corner_shader(source), &[])
+                .compile_custom_pixel_shader(super::corner_shader(source), &[])
                 .unwrap();
         }
     }
@@ -627,7 +627,7 @@ mod tests {
         let context = EGLContext::new(&display).unwrap();
         let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
         let program = renderer
-            .compile_custom_texture_shader(&super::corner_shader(super::BLUR_SHADER), &super::blur_uniform_names())
+            .compile_custom_texture_shader(super::corner_shader(super::BLUR_SHADER), &super::blur_uniform_names())
             .unwrap();
         let size = (32, 32).into();
         let mut pixels = vec![128u8; 32 * 32 * 4];

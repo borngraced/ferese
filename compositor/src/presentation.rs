@@ -430,19 +430,21 @@ mod tests {
         let start = Duration::ZERO;
         let refresh = Duration::from_millis(16);
         let mut clock = crate::frame_scheduler::FrameScheduler::new(refresh);
-        assert_eq!(clock.callback_deadline(start, start), start);
+        assert_eq!(clock.callback_deadline(start, start).unwrap(), start);
         clock.callback_sent(start);
         for millisecond in 1..16 {
             assert_eq!(
-                clock.callback_deadline(start + Duration::from_millis(millisecond), start),
+                clock
+                    .callback_deadline(start + Duration::from_millis(millisecond), start)
+                    .unwrap(),
                 start + refresh
             );
         }
 
         let late = start + Duration::from_millis(50);
-        assert_eq!(clock.callback_deadline(late, late), late);
+        assert_eq!(clock.callback_deadline(late, late).unwrap(), late);
         clock.callback_sent(late);
-        assert_eq!(clock.callback_deadline(late, late), late + refresh);
+        assert_eq!(clock.callback_deadline(late, late).unwrap(), late + refresh);
     }
 
     #[test]
@@ -454,11 +456,11 @@ mod tests {
         fast.callback_sent(start);
         fast.callback_sent(start + Duration::from_millis(8));
         assert_eq!(
-            slow.callback_deadline(start + Duration::from_millis(8), start),
+            slow.callback_deadline(start + Duration::from_millis(8), start).unwrap(),
             start + Duration::from_millis(16)
         );
         assert_eq!(
-            fast.callback_deadline(start + Duration::from_millis(8), start),
+            fast.callback_deadline(start + Duration::from_millis(8), start).unwrap(),
             start + Duration::from_millis(16)
         );
     }

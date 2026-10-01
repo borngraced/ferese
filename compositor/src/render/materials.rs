@@ -322,7 +322,7 @@ pub(super) fn blur_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> O
     if let Some(program) = state.blur_programs.get(&context) {
         return Some(program.clone());
     }
-    match renderer.compile_custom_texture_shader(&corner_shader(BLUR_SHADER), &blur_uniform_names()) {
+    match renderer.compile_custom_texture_shader(corner_shader(BLUR_SHADER), &blur_uniform_names()) {
         Ok(program) => {
             let program = BlurProgram(program);
             state.blur_programs.insert(context, program.clone());
@@ -394,7 +394,7 @@ pub(super) fn material_program(state: &mut Ferese, renderer: &mut GlesRenderer) 
         UniformName::new("shadow_rect", UniformType::_4f),
         UniformName::new("shadow_values", UniformType::_2f),
     ];
-    match renderer.compile_custom_pixel_shader(&corner_shader(MATERIAL_SHADER), &uniforms) {
+    match renderer.compile_custom_pixel_shader(corner_shader(MATERIAL_SHADER), &uniforms) {
         Ok(program) => {
             let program = MaterialProgram(program);
             state.material_programs.insert(context, program.clone());
