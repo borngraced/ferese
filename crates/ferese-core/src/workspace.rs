@@ -359,6 +359,33 @@ impl Default for WorkspaceSet {
 }
 
 impl WorkspaceSet {
+    pub fn new(
+        default_layout_mode: LayoutMode,
+        default_column_width: ColumnWidth,
+        scrolling_focus_strategy: ViewportFocusStrategy,
+    ) -> Self {
+        let active = WorkspaceId(1);
+        let workspace = Workspace {
+            id: active,
+            layout: WorkspaceLayout::new(default_layout_mode, default_column_width, scrolling_focus_strategy),
+            floating: Vec::new(),
+            last_focused: None,
+            fullscreen: None,
+        };
+        let workspaces = HashMap::from([(active, workspace)]);
+
+        Self {
+            active,
+            workspaces,
+            window_workspaces: HashMap::new(),
+            placements: HashMap::new(),
+            default_layout_mode,
+            default_column_width,
+            scrolling_focus_strategy,
+            next_id: 2,
+        }
+    }
+
     pub fn reconfigure_live(
         &mut self,
         mode: LayoutMode,
@@ -425,33 +452,6 @@ impl WorkspaceSet {
                 layout.set_default_width(width);
                 layout.set_focus_strategy(strategy);
             }
-        }
-    }
-
-    pub fn new(
-        default_layout_mode: LayoutMode,
-        default_column_width: ColumnWidth,
-        scrolling_focus_strategy: ViewportFocusStrategy,
-    ) -> Self {
-        let active = WorkspaceId(1);
-        let workspace = Workspace {
-            id: active,
-            layout: WorkspaceLayout::new(default_layout_mode, default_column_width, scrolling_focus_strategy),
-            floating: Vec::new(),
-            last_focused: None,
-            fullscreen: None,
-        };
-        let workspaces = HashMap::from([(active, workspace)]);
-
-        Self {
-            active,
-            workspaces,
-            window_workspaces: HashMap::new(),
-            placements: HashMap::new(),
-            default_layout_mode,
-            default_column_width,
-            scrolling_focus_strategy,
-            next_id: 2,
         }
     }
 

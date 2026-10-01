@@ -393,7 +393,7 @@ pub struct Ferese {
     pub(crate) shell_resources: Vec<Weak<FereseShellV1>>,
     pub(crate) shell_snapshot_serial: u32,
     pub(crate) last_shell_snapshot: Option<ShellSnapshot>,
-    pub(crate) overview: crate::overview::OverviewState,
+    pub(crate) overview: OverviewState,
     next_output_id: u64,
     last_animation_tick: Instant,
     pub popups: PopupManager,

@@ -538,6 +538,7 @@ impl Ferese {
                         if self.click_overview_workspace(position) {
                             return;
                         }
+
                         if let Some(window) = self.window_under_visual(position)
                             && let Some(id) = self.windows.ids().get(&window).copied()
                         {
