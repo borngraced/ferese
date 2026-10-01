@@ -1,7 +1,7 @@
 mod prompt;
 mod session;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -16,33 +16,110 @@ const AUTHORITY_INTERFACE: &str = "org.freedesktop.PolicyKit1.Authority";
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum PromptEvent {
-    Start { message: String, user: String },
-    Request { prompt: String, echo: bool },
-    Info { text: String },
-    Error { text: String },
-    Response { value: String },
+    Start(AuthenticationRequest),
+    Request {
+        generation: Generation,
+        prompt: String,
+        echo: bool,
+    },
+    Info {
+        generation: Generation,
+        text: String,
+    },
+    Error {
+        generation: Generation,
+        text: String,
+    },
+    Response {
+        generation: Generation,
+        uid: u32,
+        value: String,
+    },
+    IdentityChanged {
+        generation: Generation,
+        uid: u32,
+    },
+    SelectIdentity {
+        generation: Generation,
+        uid: u32,
+    },
     Cancel,
 }
 
 type Identity = (String, HashMap<String, OwnedValue>);
 
-#[derive(Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+struct Generation {
+    selection: u64,
+    attempt: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct IdentityChoice {
+    uid: u32,
+    name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct AuthenticationRequest {
+    generation: Generation,
+    message: String,
+    icon_name: String,
+    details: BTreeMap<String, String>,
+    vendor_name: String,
+    vendor_url: String,
+    identities: Vec<IdentityChoice>,
+    selected_uid: u32,
+}
+
+#[derive(Serialize, Deserialize, zbus::zvariant::Type)]
+struct ActionDescription {
+    action_id: String,
+    description: String,
+    message: String,
+    vendor_name: String,
+    vendor_url: String,
+    icon_name: String,
+    implicit_any: u32,
+    implicit_inactive: u32,
+    implicit_active: u32,
+    annotations: HashMap<String, String>,
+}
+
 struct Agent {
+    connection: zbus::Connection,
     active: Mutex<HashMap<String, Arc<AtomicBool>>>,
+}
+
+impl Agent {
+    async fn vendor(&self, action_id: &str) -> (String, String) {
+        let lookup = async {
+            let authority = zbus::Proxy::new(&self.connection, AUTHORITY, AUTHORITY_PATH, AUTHORITY_INTERFACE).await?;
+            let locale = std::env::var("LANG").unwrap_or_default();
+            let actions: Vec<ActionDescription> = authority.call("EnumerateActions", &(locale,)).await?;
+            Ok::<_, zbus::Error>(actions.into_iter().find(|action| action.action_id == action_id))
+        };
+        // Missing metadata must never prevent authentication or cancellation.
+        match tokio::time::timeout(std::time::Duration::from_secs(2), lookup).await {
+            Ok(Ok(Some(action))) => (action.vendor_name, action.vendor_url),
+            _ => (String::new(), String::new()),
+        }
+    }
 }
 
 #[zbus::interface(name = "org.freedesktop.PolicyKit1.AuthenticationAgent")]
 impl Agent {
     async fn begin_authentication(
         &self,
-        _action_id: String,
+        action_id: String,
         message: String,
-        _icon_name: String,
-        _details: HashMap<String, String>,
+        icon_name: String,
+        details: HashMap<String, String>,
         cookie: String,
         identities: Vec<Identity>,
     ) -> zbus::fdo::Result<()> {
-        let uid = choose_identity(&identities)
+        let allowed = available_identities(&identities);
+        let uid = choose_identity(&allowed)
             .ok_or_else(|| zbus::fdo::Error::Failed("No supported authentication identity".into()))?;
         let cancelled = Arc::new(AtomicBool::new(false));
 
@@ -54,15 +131,31 @@ impl Agent {
             active.insert(cookie.clone(), cancelled.clone());
         }
 
+        let (vendor_name, vendor_url) = self.vendor(&action_id).await;
+        let request = AuthenticationRequest {
+            generation: Generation::default(),
+            message,
+            icon_name,
+            details: details.into_iter().collect(),
+            vendor_name,
+            vendor_url,
+            identities: allowed
+                .into_iter()
+                .map(|uid| IdentityChoice {
+                    uid,
+                    name: session::username(uid),
+                })
+                .collect(),
+            selected_uid: uid,
+        };
         let result = tokio::task::spawn_blocking({
             let cookie = cookie.clone();
-            move || session::authenticate(uid, message.chars().take(240).collect(), cookie, cancelled)
+            move || session::authenticate(request, cookie, cancelled)
         })
-        .await
-        .map_err(|error| zbus::fdo::Error::Failed(error.to_string()))?;
+        .await;
 
         self.active.lock().unwrap().remove(&cookie);
-        match result {
+        match result.map_err(|error| zbus::fdo::Error::Failed(error.to_string()))? {
             Ok(true) => Ok(()),
             Ok(false) => Err(zbus::fdo::Error::Failed("Authentication cancelled".into())),
             Err(error) => Err(zbus::fdo::Error::Failed(error)),
@@ -76,19 +169,28 @@ impl Agent {
     }
 }
 
-fn choose_identity(identities: &[Identity]) -> Option<u32> {
-    let available: Vec<_> = identities
+const MAX_IDENTITIES: usize = 16;
+
+fn available_identities(identities: &[Identity]) -> Vec<u32> {
+    let mut available = Vec::new();
+    for uid in identities
         .iter()
         .filter(|(kind, _)| kind == "unix-user")
-        .filter_map(|(_, details)| {
-            details
-                .get("uid")
-                .and_then(|uid| u32::try_from(uid.clone()).ok())
-                .filter(|uid| *uid <= i32::MAX as u32)
-        })
-        .collect();
-    let current = unsafe { libc::geteuid() };
+        .filter_map(|(_, details)| details.get("uid").and_then(|uid| u32::try_from(uid.clone()).ok()))
+        .filter(|uid| *uid <= i32::MAX as u32)
+    {
+        if !available.contains(&uid) {
+            available.push(uid);
+            if available.len() == MAX_IDENTITIES {
+                break;
+            }
+        }
+    }
+    available
+}
 
+fn choose_identity(available: &[u32]) -> Option<u32> {
+    let current = unsafe { libc::geteuid() };
     available
         .iter()
         .copied()
@@ -157,9 +259,16 @@ fn login_session_subject(id: String) -> (String, HashMap<String, Value<'static>>
 }
 
 async fn run_agent() -> Result<(), Box<dyn std::error::Error>> {
-    let connection = zbus::connection::Builder::system()?
-        .serve_at(AGENT_PATH, Agent::default())?
-        .build()
+    let connection = zbus::Connection::system().await?;
+    connection
+        .object_server()
+        .at(
+            AGENT_PATH,
+            Agent {
+                connection: connection.clone(),
+                active: Mutex::new(HashMap::new()),
+            },
+        )
         .await?;
     let subject = session_subject(&connection).await?;
     let authority = zbus::Proxy::new(&connection, AUTHORITY, AUTHORITY_PATH, AUTHORITY_INTERFACE).await?;
@@ -193,6 +302,205 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
+    pub(super) fn request_fixture() -> AuthenticationRequest {
+        AuthenticationRequest {
+            generation: Generation::default(),
+            message: "Authorize this complete request ".repeat(30),
+            icon_name: "system-software-install".into(),
+            details: BTreeMap::from([
+                ("program".into(), "/usr/bin/example".into()),
+                ("command_line".into(), "example --long-detail".into()),
+            ]),
+            vendor_name: "Example Vendor".into(),
+            vendor_url: "https://example.test/vendor".into(),
+            identities: vec![
+                IdentityChoice {
+                    uid: 1000,
+                    name: "current".into(),
+                },
+                IdentityChoice {
+                    uid: 1001,
+                    name: "other".into(),
+                },
+            ],
+            selected_uid: 1000,
+        }
+    }
+
+    #[test]
+    fn complete_request_survives_the_prompt_protocol() {
+        let request = request_fixture();
+        let encoded = serde_json::to_string(&PromptEvent::Start(request.clone())).unwrap();
+        let PromptEvent::Start(decoded) = serde_json::from_str(&encoded).unwrap() else {
+            panic!("Missing Start")
+        };
+        assert_eq!(decoded, request);
+        assert!(decoded.message.len() > 240);
+        assert!(encoded.contains("\"type\":\"start\""));
+    }
+
+    #[test]
+    fn prompt_protocol_keeps_selection_response_and_echo_fields() {
+        let selection: PromptEvent =
+            serde_json::from_str(r#"{"type":"select_identity","generation":{"selection":2,"attempt":0},"uid":1001}"#)
+                .unwrap();
+        assert!(matches!(
+            selection,
+            PromptEvent::SelectIdentity {
+                uid: 1001,
+                generation: Generation {
+                    selection: 2,
+                    attempt: 0
+                }
+            }
+        ));
+        let response = PromptEvent::Response {
+            generation: Generation {
+                selection: 2,
+                attempt: 1,
+            },
+            uid: 1001,
+            value: "test-response".into(),
+        };
+        let decoded = serde_json::from_str(&serde_json::to_string(&response).unwrap()).unwrap();
+        assert!(
+            matches!(decoded, PromptEvent::Response { uid: 1001, generation: Generation { selection: 2, attempt: 1 }, value } if value == "test-response")
+        );
+        for echo in [true, false] {
+            let event = PromptEvent::Request {
+                generation: Generation {
+                    selection: 2,
+                    attempt: 1,
+                },
+                prompt: "Password:".into(),
+                echo,
+            };
+            let decoded = serde_json::from_str(&serde_json::to_string(&event).unwrap()).unwrap();
+            assert!(
+                matches!(decoded, PromptEvent::Request { generation: Generation { selection: 2, attempt: 1 }, prompt, echo: actual } if prompt == "Password:" && actual == echo)
+            );
+        }
+    }
+
+    #[test]
+    fn only_supported_unique_user_identities_are_offered() {
+        let identities = vec![
+            (
+                "unix-user".into(),
+                HashMap::from([("uid".into(), OwnedValue::from(1000u32))]),
+            ),
+            (
+                "unix-user".into(),
+                HashMap::from([("uid".into(), OwnedValue::from(1000u32))]),
+            ),
+            (
+                "unix-group".into(),
+                HashMap::from([("gid".into(), OwnedValue::from(1001u32))]),
+            ),
+            (
+                "unix-user".into(),
+                HashMap::from([("uid".into(), OwnedValue::from(u32::MAX))]),
+            ),
+            ("unix-user".into(), HashMap::new()),
+        ];
+        assert_eq!(available_identities(&identities), vec![1000]);
+        assert_eq!(choose_identity(&[]), None);
+        assert_eq!(choose_identity(&[1001]), Some(1001));
+    }
+
+    #[test]
+    fn offered_identities_are_capped_before_username_lookups() {
+        let identities: Vec<_> = (0..4096u32)
+            .map(|uid| {
+                (
+                    "unix-user".into(),
+                    HashMap::from([("uid".into(), OwnedValue::from(uid))]),
+                )
+            })
+            .collect();
+        assert_eq!(
+            available_identities(&identities),
+            (0..MAX_IDENTITIES as u32).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn metadata_signature_matches_polkit_action_descriptions() {
+        use zbus::zvariant::Type;
+        assert_eq!(ActionDescription::SIGNATURE.to_string(), "(ssssssuuua{ss})");
+    }
+
+    struct PrivateBus(std::process::Child);
+
+    impl Drop for PrivateBus {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    struct MockAuthority;
+
+    #[zbus::interface(name = "org.freedesktop.PolicyKit1.Authority")]
+    impl MockAuthority {
+        fn enumerate_actions(&self, _locale: String) -> Vec<ActionDescription> {
+            vec![ActionDescription {
+                action_id: "test.action".into(),
+                description: "Test action".into(),
+                message: "Authorize test".into(),
+                vendor_name: "Test vendor".into(),
+                vendor_url: "https://example.test/vendor".into(),
+                icon_name: "system-software-install".into(),
+                implicit_any: 0,
+                implicit_inactive: 0,
+                implicit_active: 1,
+                annotations: HashMap::new(),
+            }]
+        }
+    }
+
+    #[tokio::test]
+    async fn vendor_metadata_uses_real_dbus_encoding_and_is_optional() {
+        use std::io::{BufRead, BufReader};
+        use std::process::{Command, Stdio};
+        let mut bus = PrivateBus(
+            Command::new("dbus-daemon")
+                .args(["--session", "--nofork", "--print-address=1"])
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        let mut address = String::new();
+        BufReader::new(bus.0.stdout.take().unwrap())
+            .read_line(&mut address)
+            .unwrap();
+        let server = zbus::connection::Builder::address(address.trim())
+            .unwrap()
+            .name(AUTHORITY)
+            .unwrap()
+            .serve_at(AUTHORITY_PATH, MockAuthority)
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let connection = zbus::connection::Builder::address(address.trim())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+        let agent = Agent {
+            connection,
+            active: Mutex::new(HashMap::new()),
+        };
+        assert_eq!(
+            agent.vendor("test.action").await,
+            ("Test vendor".into(), "https://example.test/vendor".into())
+        );
+        assert_eq!(agent.vendor("missing.action").await, (String::new(), String::new()));
+        server.close().await.unwrap();
+        assert_eq!(agent.vendor("test.action").await, (String::new(), String::new()));
+    }
+
     #[test]
     fn desktop_agent_registers_for_the_login_session() {
         let (kind, details) = login_session_subject("test-session".into());
@@ -219,6 +527,9 @@ mod tests {
                 HashMap::from([("uid".to_owned(), OwnedValue::from(uid))]),
             )
         };
-        assert_eq!(choose_identity(&[identity(0), identity(current)]), Some(current));
+        assert_eq!(
+            choose_identity(&available_identities(&[identity(0), identity(current)])),
+            Some(current)
+        );
     }
 }
