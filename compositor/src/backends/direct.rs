@@ -1469,15 +1469,6 @@ fn create_output(
         output.add_mode(mode);
     }
     output.set_preferred(output_mode);
-    output.change_current_state(
-        Some(output_mode),
-        Some(output_transform(settings.transform)),
-        Some(Scale::Fractional(settings.scale)),
-        Some({
-            let [x, y] = settings.position.unwrap_or([0, 0]);
-            (x, y).into()
-        }),
-    );
     let position = settings.position.unwrap_or_else(|| {
         let x = state
             .space
@@ -1488,6 +1479,12 @@ fn create_output(
             .unwrap_or(0);
         [x, 0]
     });
+    output.change_current_state(
+        Some(output_mode),
+        Some(output_transform(settings.transform)),
+        Some(Scale::Fractional(settings.scale)),
+        Some((position[0], position[1]).into()),
+    );
     state.space.map_output(&output, (position[0], position[1]));
     state.register_output(&output, identity);
     (output, global)

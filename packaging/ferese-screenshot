@@ -60,9 +60,14 @@ directory=${pictures:-$HOME/Pictures}/Screenshots
 mkdir -p -- "$directory" || fail 'Could not create the screenshot directory.'
 file=$(mktemp "$directory/Screenshot-$(date +%Y-%m-%d_%H-%M-%S)-XXXXXX.png") || fail 'Could not create the screenshot file.'
 input=''
-trap '[[ -z $input ]] || rm -f -- "$input"; [[ -s $file ]] || rm -f -- "$file"' EXIT
+capture_error=''
+trap '[[ -z $input ]] || rm -f -- "$input"; [[ -z $capture_error ]] || rm -f -- "$capture_error"; [[ -s $file ]] || rm -f -- "$file"' EXIT
 input=$(mktemp "$XDG_RUNTIME_DIR/ferese-screenshot-XXXXXX.png") || fail 'Could not create the temporary capture.'
-feresectl screenshot "${capture_args[@]}" >"$input" || fail 'Could not capture the screen. Ferese must be running, unlocked, and reachable over its socket.'
+capture_error=$(mktemp "$XDG_RUNTIME_DIR/ferese-screenshot-error-XXXXXX") || fail 'Could not create the capture log.'
+if ! feresectl screenshot "${capture_args[@]}" >"$input" 2>"$capture_error"; then
+    detail=$(<"$capture_error")
+    fail "Could not capture the screen. ${detail:-The compositor returned no error details.}"
+fi
 # Size the editor to the image that was actually captured, so a small area
 # selection does not open a huge window and a multi-monitor --all capture is not
 # sized from whichever output happened to be focused. Satty treats this as a

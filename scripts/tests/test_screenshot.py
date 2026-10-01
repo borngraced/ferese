@@ -165,6 +165,17 @@ class ScreenshotTest(unittest.TestCase):
                 first.terminate()
             first.communicate(timeout=3)
 
+    def test_capture_failure_reports_the_compositor_error(self):
+        detail = 'invalid_request: The requested region does not intersect any enabled output'
+        self.bins.joinpath('feresectl').write_text(
+            '#!/bin/bash\nprintf "%s\\n" "' + detail + '" >&2\nexit 1\n')
+        result = self.run_script('--all')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(detail.encode(), result.stderr)
+        self.assertNotIn(b'must be running', result.stderr)
+        self.assertFalse((self.root / 'editors').exists())
+        self.assertEqual(list(self.root.glob('ferese-screenshot-*')), [])
+
     def test_area_selection_is_passed_through(self):
         self.bins.joinpath('slurp').write_text(
             '#!/bin/bash\nprintf "10,-20 300x200"\n')
