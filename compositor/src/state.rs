@@ -473,7 +473,7 @@ impl Ferese {
         crate::shell_control::init_global(&display_handle);
 
         let alpha_modifier_state = AlphaModifierState::new::<Self>(&display_handle);
-        let compositor_state = CompositorState::new::<Self>(&display_handle);
+        let compositor_state = CompositorState::new_v6::<Self>(&display_handle);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let decoration_state = XdgDecorationState::new::<Self>(&display_handle);

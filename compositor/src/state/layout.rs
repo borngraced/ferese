@@ -81,9 +81,8 @@ impl Ferese {
                 continue;
             };
             let fullscreen_bounds = self.full_output_bounds_for(&output).unwrap_or(bounds);
-            let scale = output.current_scale().fractional_scale();
             for layer in layer_map_for_output(&output).layers() {
-                crate::handlers::set_surface_tree_scale(layer.wl_surface(), scale);
+                crate::handlers::set_surface_tree_output(layer.wl_surface(), &output);
             }
             let Some(workspace) = self.workspaces.workspace(workspace_id) else {
                 continue;
@@ -140,7 +139,7 @@ impl Ferese {
                     continue;
                 }
                 if let Some(toplevel) = window.toplevel() {
-                    crate::handlers::set_surface_tree_scale(toplevel.wl_surface(), scale);
+                    crate::handlers::set_surface_tree_output(toplevel.wl_surface(), &output);
                 }
 
                 let is_maximized = self.maximized_windows.contains(id) && workspace_fullscreen != Some(*id);

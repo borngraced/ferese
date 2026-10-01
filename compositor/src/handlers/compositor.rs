@@ -49,7 +49,16 @@ impl CompositorHandler for Ferese {
             .compositor_state
     }
 
+    fn new_surface(&mut self, surface: &WlSurface) {
+        self.update_surface_preferences(surface);
+    }
+
+    fn new_subsurface(&mut self, surface: &WlSurface, _parent: &WlSurface) {
+        self.update_surface_preferences(surface);
+    }
+
     fn commit(&mut self, surface: &WlSurface) {
+        self.update_surface_preferences(surface);
         self.capture_resize_before_commit(surface);
         if self.surface_affects_backdrop(surface) {
             self.backdrop_generation = self.backdrop_generation.wrapping_add(1);

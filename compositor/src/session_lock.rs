@@ -202,6 +202,7 @@ impl Ferese {
 
     pub(crate) fn configure_lock_surfaces(&mut self) {
         for (output, surface) in &self.session_lock.surfaces {
+            crate::handlers::set_surface_tree_output(surface.wl_surface(), output);
             if let Some(geometry) = self.space.output_geometry(output) {
                 surface.with_pending_state(|state| {
                     state.size = Some((geometry.size.w as u32, geometry.size.h as u32).into())
@@ -316,6 +317,7 @@ impl SessionLockHandler for Ferese {
         {
             surface
                 .with_pending_state(|state| state.size = Some((geometry.size.w as u32, geometry.size.h as u32).into()));
+            crate::handlers::set_surface_tree_output(surface.wl_surface(), &output);
             self.session_lock.surfaces.insert(output, surface);
             self.focus_lock_surface();
         }

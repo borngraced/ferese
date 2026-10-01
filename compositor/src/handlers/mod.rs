@@ -79,18 +79,7 @@ impl OutputHandler for Ferese {}
 
 impl FractionalScaleHandler for Ferese {
     fn new_fractional_scale(&mut self, surface: WlSurface) {
-        let scale = self
-            .space
-            .outputs()
-            .next()
-            .map(|output| output.current_scale().fractional_scale())
-            .unwrap_or(1.0);
-
-        with_states(&surface, |states| {
-            with_fractional_scale(states, |surface_scale| {
-                surface_scale.set_preferred_scale(scale);
-            });
-        });
+        self.update_surface_preferences(&surface);
     }
 }
 
@@ -140,43 +129,69 @@ impl KeyboardShortcutsInhibitHandler for Ferese {
 }
 
 impl Ferese {
-    pub fn update_fractional_scale(&self, scale: f64) {
-        for window in self.space.elements() {
-            let Some(toplevel) = window.toplevel() else {
-                continue;
-            };
+    pub(crate) fn update_surface_preferences(&self, surface: &WlSurface) {
+        use smithay::desktop::{WindowSurfaceType, find_popup_root_surface};
+        use smithay::wayland::compositor::get_parent;
 
-            set_surface_tree_scale(toplevel.wl_surface(), scale);
+        let mut root = surface.clone();
+        while let Some(parent) = get_parent(&root) {
+            root = parent;
         }
-
-        // Layer surfaces are not Space elements. Use their own output's scale,
-        // rather than broadcasting one output's density to every bar.
-        for output in self.space.outputs() {
-            let scale = output.current_scale().fractional_scale();
-            let layers: Vec<_> = layer_map_for_output(output).layers().cloned().collect();
-            for layer in layers {
-                set_surface_tree_scale(layer.wl_surface(), scale);
-            }
+        if let Some(popup) = self.popups.find_popup(&root)
+            && let Ok(parent) = find_popup_root_surface(&popup)
+        {
+            root = parent;
         }
+        let window = self.window_ids.iter().find_map(|(window, id)| {
+            window
+                .toplevel()
+                .is_some_and(|toplevel| toplevel.wl_surface() == &root)
+                .then_some(*id)
+        });
+        let output = self.space.outputs().find(|output| {
+            window.is_some_and(|id| self.window_belongs_to_output(id, output))
+                || layer_map_for_output(output)
+                    .layer_for_surface(&root, WindowSurfaceType::ALL)
+                    .is_some()
+                || self
+                    .session_lock
+                    .surfaces
+                    .get(output)
+                    .is_some_and(|lock| lock.wl_surface() == &root)
+        });
+        // Hidden workspaces retain their last output preferences until presented again.
+        if window.is_some() && output.is_none() {
+            return;
+        }
+        let output = output
+            .or_else(|| self.focused_output())
+            .or_else(|| self.space.outputs().next());
+        with_states(surface, |states| set_surface_preferences(surface, states, output));
     }
 }
 
-pub(crate) fn set_surface_tree_scale(surface: &WlSurface, scale: f64) {
+fn set_surface_preferences(
+    surface: &WlSurface,
+    states: &smithay::wayland::compositor::SurfaceData,
+    output: Option<&smithay::output::Output>,
+) {
+    let scale = output.map_or(1.0, |output| output.current_scale().fractional_scale());
+    let transform = output.map_or(smithay::utils::Transform::Normal, |output| output.current_transform());
+    smithay::wayland::compositor::send_surface_state(surface, states, scale.ceil() as i32, transform);
+    with_fractional_scale(states, |surface_scale| surface_scale.set_preferred_scale(scale));
+}
+
+pub(crate) fn set_surface_tree_output(surface: &WlSurface, output: &smithay::output::Output) {
     let update_tree = |root: &WlSurface| {
         with_surface_tree_downward(
             root,
             (),
             |_, _, &()| TraversalAction::DoChildren(()),
-            |_, states, &()| {
-                with_fractional_scale(states, |surface_scale| {
-                    surface_scale.set_preferred_scale(scale);
-                });
-            },
+            |surface, states, &()| set_surface_preferences(surface, states, Some(output)),
             |_, _, &()| true,
         );
     };
     update_tree(surface);
-    // XDG popups are separate surface trees, not wl_subsurfaces.
     for (popup, _) in PopupManager::popups_for_surface(surface) {
         update_tree(popup.wl_surface());
     }

@@ -31,20 +31,19 @@ impl WlrLayerShellHandler for Ferese {
         }
 
         tracing::debug!(%namespace, output = %output.name(), "mapped layer surface");
-        super::set_surface_tree_scale(layer.wl_surface(), output.current_scale().fractional_scale());
+        super::set_surface_tree_output(layer.wl_surface(), &output);
         self.relayout();
         crate::backends::direct::render_all(self);
     }
 
     fn new_popup(&mut self, parent: LayerSurface, popup: PopupSurface) {
-        let scale = self.space.outputs().find_map(|output| {
+        let output = self.space.outputs().find(|output| {
             layer_map_for_output(output)
                 .layers()
                 .any(|layer| layer.wl_surface() == parent.wl_surface())
-                .then(|| output.current_scale().fractional_scale())
         });
-        if let Some(scale) = scale {
-            super::set_surface_tree_scale(popup.wl_surface(), scale);
+        if let Some(output) = output {
+            super::set_surface_tree_output(popup.wl_surface(), output);
         }
         self.unconstrain_popup(&popup);
         if let Err(error) = self.popups.track_popup(PopupKind::Xdg(popup)) {

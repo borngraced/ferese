@@ -70,7 +70,6 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
     let clock = Clock::<Monotonic>::new();
     let mut sequence = 0_u64;
     let mut missed_deadlines = 0_u64;
-    let mut output_scale = initial_scale;
     let mut render_metrics = RenderMetrics::from_environment(output.name());
 
     // Do not request a redraw recursively: a no-damage redraw has no EGL
@@ -111,11 +110,6 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                         Some(Scale::Fractional(scale)),
                         None,
                     );
-
-                    if scale != output_scale {
-                        output_scale = scale;
-                        state.update_fractional_scale(scale);
-                    }
 
                     state.relayout();
                     if let Err(error) = state.display_handle.flush_clients() {
