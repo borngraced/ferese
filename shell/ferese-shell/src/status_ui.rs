@@ -24,6 +24,19 @@ pub enum Menu {
 }
 
 impl Menu {
+    fn action_error(self, error: &status::ActionError) -> Option<&str> {
+        let relevant = self == Self::System
+            || matches!(
+                (self, &error.action),
+                (Self::Network, Action::Wifi(_))
+                    | (Self::Bluetooth, Action::Bluetooth(_))
+                    | (Self::Audio, Action::Volume(_) | Action::Mute(_))
+                    | (Self::Battery, Action::Brightness(_) | Action::PowerProfile(_))
+                    | (Self::Notifications, Action::Dnd(_) | Action::Notifications)
+            );
+        relevant.then_some(error.message.as_str())
+    }
+
     fn width(self) -> f32 {
         match self {
             Self::System => 360.0,
@@ -818,7 +831,11 @@ impl FereseShell {
             }
         }
 
-        if let Some(error) = &self.status_error {
+        if let Some(error) = self
+            .status_error
+            .as_ref()
+            .and_then(|error| menu.kind.action_error(error))
+        {
             rows = rows.push(text(error).size(12).class(theme::Text::Color(Color {
                 a: p,
                 ..Color::from_rgb8(230, 172, 90)
@@ -1271,6 +1288,41 @@ fn status_icon(kind: Menu, s: &Snapshot) -> (&'static [u8], bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn failed_controls_only_show_errors_in_related_popups() {
+        for (action, relevant) in [
+            (Action::Bluetooth(true), Menu::Bluetooth),
+            (Action::Wifi(true), Menu::Network),
+            (Action::Volume(50), Menu::Audio),
+            (Action::Mute(true), Menu::Audio),
+            (Action::Brightness(50), Menu::Battery),
+            (Action::PowerProfile("balanced"), Menu::Battery),
+            (Action::Dnd(true), Menu::Notifications),
+        ] {
+            let error = status::ActionError {
+                action,
+                message: "control failed".into(),
+            };
+            for menu in [
+                Menu::Network,
+                Menu::Bluetooth,
+                Menu::Audio,
+                Menu::Battery,
+                Menu::Calendar,
+                Menu::Recording,
+                Menu::Notifications,
+                Menu::System,
+            ] {
+                assert_eq!(
+                    menu.action_error(&error),
+                    (menu == relevant || menu == Menu::System).then_some("control failed"),
+                    "{menu:?} showed the wrong control error: {:?}",
+                    error.action
+                );
+            }
+        }
+    }
+
     #[test]
     fn connection_captions_fit_one_short_line() {
         assert_eq!(super::connection_caption("88%"), "88%");

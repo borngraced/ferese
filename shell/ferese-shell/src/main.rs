@@ -165,7 +165,7 @@ struct FereseShell {
     status: status::Snapshot,
     recorder: recording::Recorder,
     calendar_offset: i32,
-    status_error: Option<String>,
+    status_error: Option<status::ActionError>,
     theme_error: Option<String>,
     menu: Option<status_ui::OpenMenu>,
     system_modal: Option<system_modal::SystemModal>,

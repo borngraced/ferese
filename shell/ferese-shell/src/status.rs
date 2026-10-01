@@ -85,10 +85,16 @@ impl Action {
 }
 
 #[derive(Clone, Debug)]
+pub struct ActionError {
+    pub action: Action,
+    pub message: String,
+}
+
+#[derive(Clone, Debug)]
 pub struct Update {
     pub snapshot: Snapshot,
     pub generation: u64,
-    pub error: Option<String>,
+    pub error: Option<ActionError>,
 }
 
 pub struct Service {
@@ -123,7 +129,7 @@ impl Updates {
     }
 }
 
-type PollState = (Mutex<(u64, bool, Option<String>, bool)>, Condvar);
+type PollState = (Mutex<(u64, bool, Option<ActionError>, bool)>, Condvar);
 
 fn wait_for_poll(shared: &PollState) -> Option<u64> {
     let state = shared
@@ -141,7 +147,7 @@ impl Service {
         let (updates, rx) = tokio::sync::watch::channel(None);
         // Polling and writes have separate workers: a missing D-Bus service must
         // never hold up volume/brightness changes. Publish only coherent polls.
-        let shared = Arc::new((Mutex::new((0u64, false, None::<String>, false)), Condvar::new()));
+        let shared = Arc::new((Mutex::new((0u64, false, None::<ActionError>, false)), Condvar::new()));
         let polling = shared.clone();
 
         thread::spawn(move || {
@@ -190,7 +196,9 @@ impl Service {
                         state.1 = true;
                     }
                     let settings = settings.lock().unwrap().clone();
-                    let error = execute(&action, settings.as_deref()).err();
+                    let error = execute(&action, settings.as_deref())
+                        .err()
+                        .map(|message| ActionError { action, message });
                     let mut state = shared.0.lock().unwrap();
                     state.1 = false;
                     state.2 = error;
@@ -210,11 +218,13 @@ impl Service {
         }
     }
 
-    pub fn send(&mut self, action: Action) -> Result<(), String> {
+    pub fn send(&mut self, action: Action) -> Result<(), ActionError> {
         let generation = self.generation + 1;
-        self.tx
-            .try_send((generation, action))
-            .map_err(|_| "Controls are busy; please try again".to_owned())?;
+        let error_action = action.clone();
+        self.tx.try_send((generation, action)).map_err(|_| ActionError {
+            action: error_action,
+            message: "Controls are busy; please try again".to_owned(),
+        })?;
         self.generation = generation;
 
         Ok(())
@@ -745,7 +755,10 @@ mod tests {
                     ..Snapshot::default()
                 },
                 generation,
-                error: Some("service unavailable".into()),
+                error: Some(ActionError {
+                    action: Action::Bluetooth(true),
+                    message: "service unavailable".into(),
+                }),
             })
         };
         let (sender, receiver) = tokio::sync::watch::channel(None);
@@ -763,7 +776,9 @@ mod tests {
         };
         assert_eq!(update.generation, 2);
         assert_eq!(update.snapshot.brightness, Some(42));
-        assert_eq!(update.error.as_deref(), Some("service unavailable"));
+        let error = update.error.as_ref().unwrap();
+        assert_eq!(error.message, "service unavailable");
+        assert!(matches!(error.action, Action::Bluetooth(true)));
         assert!(stream.as_mut().poll_next(&mut context).is_pending());
         let before = wakes.0.load(Ordering::Relaxed);
         thread::spawn(move || {
