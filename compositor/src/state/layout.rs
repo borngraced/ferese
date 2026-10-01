@@ -261,15 +261,27 @@ impl Ferese {
                     .remove(&id)
                     .filter(|(previous_workspace, _)| *previous_workspace == workspace)
                     .map(|(_, world_x)| world_x)
-                    .unwrap_or_else(|| AnimatedValue::new(restored_world_x));
+                    .unwrap_or_else(|| {
+                        let mut world = AnimatedValue::new(restored_world_x);
+                        world.velocity = geometry.visual.velocity.x
+                            + self
+                                .viewport_animations
+                                .get(&workspace)
+                                .map_or(0.0, |viewport| viewport.velocity);
+                        world
+                    });
                 animated_world_x.set_target(world_x);
                 if !self.animations_enabled {
                     animated_world_x.snap();
                 }
 
-                if !geometry.is_zooming() {
-                    geometry.visual.current.x = animated_world_x.current - viewport_x;
-                    geometry.visual.velocity.x = animated_world_x.velocity;
+                if let Some(viewport) = self.viewport_animations.get(&workspace) {
+                    super::animation::sync_scrolling_coordinates(
+                        geometry,
+                        &mut animated_world_x,
+                        viewport,
+                        geometry.is_zooming(),
+                    );
                 }
                 record.world_x = Some((workspace, animated_world_x));
 
@@ -347,6 +359,14 @@ impl Ferese {
                     && had_geometry
                     && self.animations_enabled
                 {
+                    self.paused_workspaces.extend(self.workspaces.workspace_for_window(id));
+                    #[cfg(feature = "resize-metrics")]
+                    self.resize_metrics.begin(
+                        id,
+                        self.workspaces.workspace_for_window(id),
+                        &self.windows.record(id).unwrap().app_id,
+                        now,
+                    );
                     self.windows.set_transaction(
                         id,
                         crate::resize_transaction::ResizeTransaction::new(serial, now)

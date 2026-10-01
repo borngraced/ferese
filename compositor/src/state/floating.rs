@@ -164,6 +164,9 @@ impl Ferese {
 
         // Direct manipulation follows the pointer, including while the client is
         // still drawing its next buffer. Rendering and hit testing share this rect.
+        #[cfg(feature = "resize-metrics")]
+        self.resize_metrics
+            .end(id, self.start_time.elapsed(), crate::resize_metrics::End::Cancelled);
         self.windows.clear_transaction(&id);
         self.render.clear_snapshot(&id);
         let Some(record) = self.windows.record_mut(id) else {

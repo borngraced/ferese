@@ -101,6 +101,23 @@ class PortalTest(unittest.TestCase):
                 connection = Gio.DBusConnection.new_for_address_sync(env["DBUS_SESSION_BUS_ADDRESS"],
                     Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION, None, None)
                 backend = launch("backend", [str(binary)])
+                # The frontend can D-Bus-activate an installed backend if it
+                # starts before this test's binary owns its service name.
+                def backend_ready():
+                    bus_name = "org.freedesktop.DBus"
+                    impl_name = "org.freedesktop.impl.portal.desktop.ferese"
+                    owner = connection.call_sync(bus_name, "/org/freedesktop/DBus", bus_name,
+                        "NameHasOwner", GLib.Variant("(s)", (impl_name,)), GLib.VariantType("(b)"),
+                        Gio.DBusCallFlags.NONE, 1000, None).unpack()[0]
+                    if not owner:
+                        return False
+
+                    pid = connection.call_sync(bus_name, "/org/freedesktop/DBus", bus_name,
+                        "GetConnectionUnixProcessID", GLib.Variant("(s)", (impl_name,)), GLib.VariantType("(u)"),
+                        Gio.DBusCallFlags.NONE, 1000, None).unpack()[0]
+                    return pid == backend.pid
+
+                until(backend_ready)
                 frontend = launch("frontend", [os.environ.get("FERESE_TEST_PORTAL_FRONTEND", "/usr/libexec/xdg-desktop-portal")])
                 name, path, iface = "org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.ScreenCast"
                 responses = {}

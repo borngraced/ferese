@@ -244,6 +244,7 @@ Installer options:
 ```sh
 ./scripts/install.sh --dry-run
 ./scripts/install.sh --offline --release-id my-build
+./scripts/install.sh --resize-metrics
 ./scripts/install.sh --skip-build
 ```
 
@@ -251,6 +252,10 @@ Use `--dry-run` to see the planned commands, `--offline` when dependencies are a
 cached, or `--skip-build` after building every component from the revision you want to
 install. The latter uses binaries already in `target/release/`, and
 `./scripts/install.sh --help` lists all available options.
+
+Use `--resize-metrics` to enable resize-barrier counters and duration histograms in
+the release build. Ferese prints the measurements to its session log on normal exit.
+This option requires building and cannot be combined with `--skip-build`.
 
 ## Logout and recovery
 

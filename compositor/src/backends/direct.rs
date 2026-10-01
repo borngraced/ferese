@@ -660,6 +660,7 @@ pub(crate) fn sleep_locked_outputs(state: &mut Ferese) {
 }
 
 pub(crate) fn wake_locked_outputs(state: &mut Ferese) {
+    state.reset_animation_clock();
     if let Some(backend) = state.direct_backend.as_mut() {
         for device in backend.devices.values_mut() {
             for output in device.outputs.values_mut() {

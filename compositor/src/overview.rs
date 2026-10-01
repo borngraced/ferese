@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
 use ab_glyph::{Font, FontArc, FontVec, ScaleFont};
-use ferese_animation::{AnimatedRect, AnimatedValue, SpringConfig};
+use ferese_animation::{AnimatedRect, AnimatedValue, CrossingPolicy, SpringConfig};
 use ferese_core::{OutputId, WorkspaceId};
 use ferese_layout::{Direction, Rect, WindowId};
 use smithay::backend::allocator::Fourcc;
@@ -1016,7 +1016,7 @@ impl OverviewMotion {
 
         for presentation in self.presentations.values_mut() {
             if animations_enabled {
-                active_animation |= presentation.advance(delta, spring);
+                active_animation |= presentation.advance_with_policy(delta, spring, CrossingPolicy::NoCrossing);
             } else {
                 presentation.snap();
             }
@@ -1029,13 +1029,14 @@ impl OverviewMotion {
         if animations_enabled {
             // Geometry's 0.1-pixel tolerance is far too coarse for opacity:
             // it would abruptly drop the last ten percent of the fade.
-            active_animation |= self.opacity.advance(
+            active_animation |= self.opacity.advance_with_policy(
                 delta,
                 SpringConfig {
                     position_tolerance: 0.001,
                     velocity_tolerance: 0.005,
                     ..spring
                 },
+                CrossingPolicy::NoCrossing,
             );
         } else {
             self.opacity.snap();

@@ -2,6 +2,10 @@ use super::*;
 
 impl Ferese {
     pub fn register_output(&mut self, output: &Output, identity: String) {
+        if self.output_ids.is_empty() {
+            self.reset_animation_clock();
+        }
+
         if self.session_lock.active {
             self.session_lock.output_added(output);
             self.lock_input_activity();

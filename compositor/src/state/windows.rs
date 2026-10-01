@@ -424,6 +424,9 @@ impl Ferese {
         };
 
         self.focus_history.remove(id);
+        #[cfg(feature = "resize-metrics")]
+        self.resize_metrics
+            .end(id, self.start_time.elapsed(), crate::resize_metrics::End::Cancelled);
         self.render.remove_window(id);
         self.window_stack.remove(id);
         self.floating_above_fullscreen.remove(&id);
@@ -541,6 +544,12 @@ impl Ferese {
             .transaction(&id)
             .is_some_and(|transaction| transaction.accepts(committed_serial))
         {
+            #[cfg(feature = "resize-metrics")]
+            {
+                self.measure_resize_pauses(self.start_time.elapsed());
+                self.resize_metrics
+                    .end(id, self.start_time.elapsed(), crate::resize_metrics::End::Commit);
+            }
             self.windows.clear_transaction(&id);
         }
 
@@ -578,6 +587,9 @@ impl Ferese {
                 // This is the first mapped client buffer, not a user resize.
                 // Do not animate from the temporary placement box.
                 self.windows.set_geometry(id, WindowGeometry::new(rect, Some(size)));
+                #[cfg(feature = "resize-metrics")]
+                self.resize_metrics
+                    .end(id, self.start_time.elapsed(), crate::resize_metrics::End::Cancelled);
                 self.windows.clear_transaction(&id);
                 self.relayout();
             }
@@ -614,6 +626,9 @@ impl Ferese {
 
             if self.workspaces.set_floating_rect(id, rect).is_ok() {
                 self.windows.set_geometry(id, WindowGeometry::new(rect, Some(size)));
+                #[cfg(feature = "resize-metrics")]
+                self.resize_metrics
+                    .end(id, self.start_time.elapsed(), crate::resize_metrics::End::Cancelled);
                 self.windows.clear_transaction(&id);
                 self.render.clear_snapshot(&id);
                 self.relayout();

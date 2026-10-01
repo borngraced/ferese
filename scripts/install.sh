@@ -13,6 +13,7 @@ Run from any directory as your normal user. Existing user config is preserved.
   --skip-build     Install existing target/release binaries
   --replace-portal-config  Back up and replace existing Ferese portal configuration
   --offline        Build using only cached Cargo dependencies
+  --resize-metrics Build with resize-barrier measurements (reported on exit)
   --dry-run        Print commands without building or installing
   -h, --help       Show this help
 
@@ -48,6 +49,7 @@ release_id="$(date -u +%Y%m%d-%H%M%S)-$$"
 skip_build=false
 replace_portal_config=false
 offline=false
+resize_metrics=false
 dry_run=false
 while (($#)); do
     case $1 in
@@ -59,12 +61,17 @@ while (($#)); do
         --skip-build) skip_build=true; shift ;;
         --replace-portal-config) replace_portal_config=true; shift ;;
         --offline) offline=true; shift ;;
+        --resize-metrics) resize_metrics=true; shift ;;
         --dry-run) dry_run=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) fail "unknown option: $1 (see --help)" ;;
     esac
 done
 [[ $release_id =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || fail 'invalid release ID'
+if $skip_build && $resize_metrics; then
+    fail '--resize-metrics requires a build; omit --skip-build'
+fi
+
 [[ $(uname -s) == Linux ]] || fail 'Ferese requires Linux'
 for tool in desktop-file-validate dbus-run-session; do
     command -v "$tool" >/dev/null || fail "required command not found: $tool"
@@ -79,6 +86,7 @@ build=(cargo build --manifest-path "$repo_dir/Cargo.toml"
     --target-dir "$repo_dir/target" --release --locked
     -p ferese -p ferese-shell -p ferese-settings -p feresectl -p ferese-lock -p ferese-polkit-agent -p xdg-desktop-portal-ferese)
 if $offline; then build+=(--offline); fi
+if $resize_metrics; then build+=(--features ferese/resize-metrics); fi
 if ! $skip_build; then
     ((EUID != 0)) || fail 'build as your normal user, without sudo (or use --skip-build)'
     command -v cargo >/dev/null || fail 'install the Rust toolchain and Cargo first'

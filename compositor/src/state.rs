@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calloop::LoopHandle;
-use ferese_animation::{AnimatedValue, ClientSize, PresentationMode, SpringConfig, WindowGeometry};
+use ferese_animation::{AnimatedValue, ClientSize, CrossingPolicy, PresentationMode, SpringConfig, WindowGeometry};
 use ferese_core::{
     LayoutMode, OutputGeometry, OutputId, OutputWorkspaceMap, WindowPlacement, WorkspaceId, WorkspaceLayout,
     WorkspaceSet,
@@ -348,6 +348,9 @@ pub struct Ferese {
     pub(crate) logout_owner: Option<ObjectId>,
     pub(crate) backdrop_generation: u64,
     viewport_animations: HashMap<WorkspaceId, AnimatedValue>,
+    paused_workspaces: HashSet<WorkspaceId>,
+    #[cfg(feature = "resize-metrics")]
+    pub(crate) resize_metrics: crate::resize_metrics::ResizeMetrics,
     focus_swipe: Option<FocusSwipe>,
     workspace_slides: HashMap<OutputId, WorkspaceSlide>,
     workspace_slide_offsets: HashMap<WorkspaceId, (f64, f64)>,
@@ -574,6 +577,9 @@ impl Ferese {
             logout_owner: None,
             backdrop_generation: 0,
             viewport_animations: HashMap::new(),
+            paused_workspaces: HashSet::new(),
+            #[cfg(feature = "resize-metrics")]
+            resize_metrics: crate::resize_metrics::ResizeMetrics::default(),
             focus_swipe: None,
             workspace_slides: HashMap::new(),
             workspace_slide_offsets: HashMap::new(),

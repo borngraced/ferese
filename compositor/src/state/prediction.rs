@@ -89,10 +89,15 @@ impl Ferese {
                     .focus_swipe
                     .as_ref()
                     .is_some_and(|swipe| swipe.workspace == workspace);
-                !held && viewport.advance(Duration::ZERO, self.viewport_spring_config)
+                !held
+                    && viewport.advance_with_policy(
+                        Duration::ZERO,
+                        self.viewport_spring_config,
+                        CrossingPolicy::NoCrossing,
+                    )
             }) || record.coupled_width.as_ref().is_some_and(|(_, width)| {
                 let mut width = *width;
-                width.advance(Duration::ZERO, self.viewport_spring_config)
+                width.advance_with_policy(Duration::ZERO, self.viewport_spring_config, CrossingPolicy::NoCrossing)
             })
         })
     }
@@ -100,7 +105,7 @@ impl Ferese {
     pub(crate) fn sample_frame(&self, output: &Output, horizon: Duration) -> FrameScene {
         let animating = self.output_has_animations(output);
         let delta = if self.animations_enabled && animating {
-            horizon.min(Duration::from_millis(100)).mul_f64(self.animation_speed)
+            horizon.mul_f64(self.animation_speed)
         } else {
             Duration::ZERO
         };
@@ -219,9 +224,9 @@ fn predict_geometry(
     if let Some((mut world, mut viewport, held)) = world
         && !zooming
     {
-        world.advance(delta, spring);
+        world.advance_with_policy(delta, spring, CrossingPolicy::NoCrossing);
         if !held {
-            viewport.advance(delta, viewport_spring);
+            viewport.advance_with_policy(delta, viewport_spring, CrossingPolicy::NoCrossing);
         }
 
         predicted.visual.current.x = world.current - viewport.current;
@@ -229,7 +234,7 @@ fn predict_geometry(
     }
 
     if let Some(mut width) = width {
-        width.advance(delta, viewport_spring);
+        width.advance_with_policy(delta, viewport_spring, CrossingPolicy::NoCrossing);
         predicted.visual.current.width = width.current;
         predicted.visual.velocity.width = width.velocity;
     }
@@ -463,9 +468,9 @@ mod tests {
             Some((world, viewport, false)),
             Some(width),
         );
-        world.advance(delta, spring);
-        viewport.advance(delta, spring);
-        width.advance(delta, spring);
+        world.advance_with_policy(delta, spring, CrossingPolicy::NoCrossing);
+        viewport.advance_with_policy(delta, spring, CrossingPolicy::NoCrossing);
+        width.advance_with_policy(delta, spring, CrossingPolicy::NoCrossing);
         assert_eq!(predicted.visual.current.x, world.current - viewport.current);
         assert_eq!(predicted.visual.current.width, width.current);
         assert_eq!(predicted.visual.target, geometry.visual.target);

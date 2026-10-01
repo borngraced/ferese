@@ -2,8 +2,15 @@ use std::time::Duration;
 
 use ferese_layout::Rect;
 
-const MAX_FRAME_DELTA: Duration = Duration::from_millis(100);
-const MAX_STEP_SECONDS: f64 = 1.0 / 240.0;
+mod spring;
+
+/// Crossing behavior belongs to the property, not the physical solver.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CrossingPolicy {
+    NoCrossing,
+    AllowOvershoot,
+}
+
 const CLIENT_COMMIT_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,32 +100,35 @@ impl AnimatedValue {
         self.velocity = 0.0;
     }
 
+    /// Compatibility entry point; existing presentation properties do not cross.
     pub fn advance(&mut self, delta: Duration, config: SpringConfig) -> bool {
+        self.advance_with_policy(delta, config, CrossingPolicy::NoCrossing)
+    }
+
+    pub fn advance_with_policy(&mut self, delta: Duration, config: SpringConfig, policy: CrossingPolicy) -> bool {
         let config = config.normalized();
-        if (self.current - self.target).abs() <= config.position_tolerance
-            && self.velocity.abs() <= config.velocity_tolerance
-        {
+        let settled = |value: &Self| {
+            (value.current - value.target).abs() <= config.position_tolerance
+                && value.velocity.abs() <= config.velocity_tolerance
+        };
+        if delta.is_zero() {
+            return !settled(self);
+        }
+
+        if settled(self) {
             self.snap();
             return false;
         }
 
-        let seconds = delta.min(MAX_FRAME_DELTA).as_secs_f64();
-        let steps = (seconds / MAX_STEP_SECONDS).ceil().max(1.0) as usize;
-        let step = seconds / steps as f64;
-
-        for _ in 0..steps {
-            let previous_error = self.current - self.target;
-            advance_value(&mut self.current, self.target, &mut self.velocity, step, config);
-            let current_error = self.current - self.target;
-            if previous_error != 0.0 && previous_error.signum() != current_error.signum() {
-                self.snap();
-                break;
-            }
-        }
-
-        if (self.current - self.target).abs() <= config.position_tolerance
-            && self.velocity.abs() <= config.velocity_tolerance
-        {
+        advance_property(
+            &mut self.current,
+            self.target,
+            &mut self.velocity,
+            delta.as_secs_f64(),
+            config,
+            policy,
+        );
+        if settled(self) {
             self.snap();
             false
         } else {
@@ -146,34 +156,54 @@ impl AnimatedRect {
     }
 
     pub fn advance(&mut self, delta: Duration, config: SpringConfig) -> bool {
+        self.advance_with_policy(delta, config, CrossingPolicy::NoCrossing)
+    }
+
+    pub fn advance_with_policy(&mut self, delta: Duration, config: SpringConfig, policy: CrossingPolicy) -> bool {
+        let config = config.normalized();
+        if delta.is_zero() {
+            return !self.is_settled(config);
+        }
+
         if self.is_settled(config) {
             self.snap();
             return false;
         }
 
-        let config = config.normalized();
-        let seconds = delta.min(MAX_FRAME_DELTA).as_secs_f64();
-        let steps = (seconds / MAX_STEP_SECONDS).ceil().max(1.0) as usize;
-        let step = seconds / steps as f64;
-
-        for _ in 0..steps {
-            advance_value(&mut self.current.x, self.target.x, &mut self.velocity.x, step, config);
-            advance_value(&mut self.current.y, self.target.y, &mut self.velocity.y, step, config);
-            advance_value(
-                &mut self.current.width,
-                self.target.width,
-                &mut self.velocity.width,
-                step,
-                config,
-            );
-            advance_value(
-                &mut self.current.height,
-                self.target.height,
-                &mut self.velocity.height,
-                step,
-                config,
-            );
-        }
+        // The old crossing clamp applied independently to each component.
+        let dt = delta.as_secs_f64();
+        advance_property(
+            &mut self.current.x,
+            self.target.x,
+            &mut self.velocity.x,
+            dt,
+            config,
+            policy,
+        );
+        advance_property(
+            &mut self.current.y,
+            self.target.y,
+            &mut self.velocity.y,
+            dt,
+            config,
+            policy,
+        );
+        advance_property(
+            &mut self.current.width,
+            self.target.width,
+            &mut self.velocity.width,
+            dt,
+            config,
+            policy,
+        );
+        advance_property(
+            &mut self.current.height,
+            self.target.height,
+            &mut self.velocity.height,
+            dt,
+            config,
+            policy,
+        );
 
         if self.is_settled(config) {
             self.snap();
@@ -300,9 +330,15 @@ impl WindowGeometry {
 
     pub fn set_logical_target(&mut self, rect: Rect, now: Duration) -> Option<ClientSize> {
         let rect = normalized_rect(rect);
+        if self.zoom.is_some() {
+            return self.set_presentation_mode(rect, self.mode, now);
+        }
+
+        let before = self.visual.current;
         let size = ClientSize::from_rect(rect);
         self.logical = rect;
         self.visual.set_target(rect);
+        debug_assert_eq!(self.visual.current, before);
 
         self.client.request_size(size, now).then_some(size)
     }
@@ -321,6 +357,7 @@ impl WindowGeometry {
 
     pub fn set_presentation_mode(&mut self, rect: Rect, mode: PresentationMode, now: Duration) -> Option<ClientSize> {
         let rect = normalized_rect(rect);
+        let before = (self.visual.current, self.decorations);
         if self.mode != mode || (self.zoom.is_some() && self.logical != rect) {
             let mut progress = AnimatedValue::new(0.0);
             progress.set_target(1.0);
@@ -348,6 +385,7 @@ impl WindowGeometry {
         self.mode = mode;
         self.logical = rect;
         self.visual.set_target(rect);
+        debug_assert_eq!((self.visual.current, self.decorations), before);
         self.presentation_size_request(now)
     }
 
@@ -398,6 +436,10 @@ impl WindowGeometry {
             return false;
         }
 
+        if delta.is_zero() {
+            return self.zoom.is_some() || !self.visual.is_settled(config);
+        }
+
         if let Some(zoom) = &mut self.zoom {
             let target = self.visual.target;
             // Spring tolerances describe pixels and pixels/second, whereas this
@@ -413,7 +455,9 @@ impl WindowGeometry {
                 velocity_tolerance: config.velocity_tolerance / travel,
                 ..config
             };
-            let active = zoom.progress.advance(delta, progress_config);
+            let active = zoom
+                .progress
+                .advance_with_policy(delta, progress_config, CrossingPolicy::NoCrossing);
             let p = zoom.progress.current;
             let lerp = |a: f64, b: f64| a + (b - a) * p;
             self.visual.current = Rect::new(
@@ -443,7 +487,8 @@ impl WindowGeometry {
             return active;
         }
 
-        self.visual.advance(delta, config)
+        self.visual
+            .advance_with_policy(delta, config, CrossingPolicy::NoCrossing)
     }
 
     pub fn inverse_visual_point(&self, x: f64, y: f64) -> Option<(f64, f64)> {
@@ -467,17 +512,25 @@ impl WindowGeometry {
     }
 }
 
-fn advance_value(current: &mut f64, target: f64, velocity: &mut f64, delta: f64, config: SpringConfig) {
-    let acceleration = (-config.stiffness * (*current - target) - config.damping * *velocity) / config.mass;
-    *velocity += acceleration * delta;
-    let previous_error = *current - target;
-    *current += *velocity * delta;
-    let current_error = *current - target;
-
-    if previous_error != 0.0 && previous_error.signum() != current_error.signum() {
+fn advance_property(
+    current: &mut f64,
+    target: f64,
+    velocity: &mut f64,
+    dt: f64,
+    config: SpringConfig,
+    policy: CrossingPolicy,
+) {
+    if policy == CrossingPolicy::NoCrossing && spring::crosses(*current, *velocity, target, dt, config) {
         *current = target;
         *velocity = 0.0;
+    } else {
+        (*current, *velocity) = spring::solve(*current, *velocity, target, dt, config);
     }
+}
+
+#[cfg(test)]
+fn advance_value(current: &mut f64, target: f64, velocity: &mut f64, dt: f64, config: SpringConfig) {
+    (*current, *velocity) = spring::solve(*current, *velocity, target, dt, config);
 }
 
 fn finite_or_zero(value: f64) -> f64 {
@@ -893,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn scalar_spring_does_not_overshoot_target() {
+    fn scalar_presentation_clamp_does_not_overshoot_and_clears_velocity() {
         let mut value = AnimatedValue::new(0.0);
         value.velocity = 20_000.0;
         value.set_target(100.0);
@@ -901,6 +954,9 @@ mod tests {
         for _ in 0..60 {
             value.advance(Duration::from_secs_f64(1.0 / 60.0), SpringConfig::default());
             assert!(value.current <= 100.0);
+            if value.current == value.target {
+                assert_eq!(value.velocity, 0.0);
+            }
         }
     }
 
@@ -1024,3 +1080,6 @@ mod tests {
         assert_eq!(geometry.visual.current, target);
     }
 }
+
+#[cfg(test)]
+mod traces;

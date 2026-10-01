@@ -22,6 +22,8 @@ mod presentation;
 mod private_client;
 mod reload;
 mod render;
+#[cfg(feature = "resize-metrics")]
+mod resize_metrics;
 mod resize_transaction;
 mod session_lock;
 mod shell_control;
@@ -142,6 +144,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             tracing::warn!(%error, "failed to flush Wayland clients");
         }
     });
+
+    #[cfg(feature = "resize-metrics")]
+    state.resize_metrics.dump();
 
     runner.borrow_mut().stop();
     if let Some(child) = &mut child {
