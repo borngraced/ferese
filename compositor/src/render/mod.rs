@@ -4,6 +4,7 @@ mod materials;
 mod overview;
 mod resources;
 mod scene;
+mod shader;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,6 +19,7 @@ use scene::cursor_elements;
 pub(crate) use scene::{
     animated_window_elements, frame_effect_metrics, layer_surfaces, output_elements, sampled_output_elements,
 };
+pub(crate) use shader::SharedPixelShaderElement;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::SolidColorRenderElement;
@@ -31,7 +33,6 @@ use smithay::backend::renderer::element::utils::{
 use smithay::backend::renderer::element::{
     Element, Id, Kind as RenderElementKind, RenderElement, UnderlyingStorage, render_elements,
 };
-use smithay::backend::renderer::gles::element::PixelShaderElement;
 use smithay::backend::renderer::gles::{
     GlesError, GlesFrame, GlesPixelProgram, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName,
     UniformType,
@@ -66,7 +67,7 @@ render_elements! {
     Memory=MemoryRenderElement,
     Solid=SolidColorRenderElement,
     LockSurface=WaylandSurfaceRenderElement<GlesRenderer>,
-    Border=PixelShaderElement,
+    Border=SharedPixelShaderElement,
     Blur=BlurRenderElement,
     Effect=PhysicalShaderElement,
     Native=NativeTextureElement,
@@ -132,7 +133,7 @@ struct BlurRenderElement {
     commit: CommitCounter,
     geometry: Rectangle<i32, Logical>,
     capture_rect: [i32; 4],
-    uniforms: Vec<Uniform<'static>>,
+    uniforms: Arc<[Uniform<'static>]>,
 }
 
 impl BlurRenderElement {
@@ -150,7 +151,7 @@ impl BlurRenderElement {
             commit: CommitCounter::default(),
             geometry: parameters.sample_geometry,
             capture_rect: framebuffer_capture_rect(parameters.sample_framebuffer),
-            uniforms: blur_uniforms(parameters),
+            uniforms: blur_uniforms(parameters).into(),
         }
     }
 
@@ -158,7 +159,7 @@ impl BlurRenderElement {
         self.capture_dirty.store(true, Ordering::Relaxed);
         self.geometry = parameters.sample_geometry;
         self.capture_rect = framebuffer_capture_rect(parameters.sample_framebuffer);
-        self.uniforms = blur_uniforms(parameters);
+        self.uniforms = blur_uniforms(parameters).into();
         self.commit.increment();
     }
 }
@@ -327,7 +328,7 @@ struct MaterialParameters {
 
 #[derive(Clone, Debug)]
 enum MaterialElement {
-    Fill(PixelShaderElement),
+    Fill(SharedPixelShaderElement),
     Blur(BlurRenderElement),
 }
 
@@ -335,7 +336,7 @@ enum MaterialElement {
 struct CachedMaterial {
     element: MaterialElement,
     parameters: MaterialParameters,
-    shadow: PixelShaderElement,
+    shadow: SharedPixelShaderElement,
 }
 
 #[derive(Debug, Default)]
@@ -361,7 +362,7 @@ struct BorderParameters {
 
 #[derive(Debug)]
 struct CachedBorder {
-    element: PixelShaderElement,
+    element: SharedPixelShaderElement,
     parameters: BorderParameters,
 }
 
@@ -382,7 +383,7 @@ struct ShadowParameters {
 
 #[derive(Debug)]
 struct CachedShadow {
-    element: PixelShaderElement,
+    element: SharedPixelShaderElement,
     parameters: ShadowParameters,
 }
 

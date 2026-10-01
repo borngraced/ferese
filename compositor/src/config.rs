@@ -11,9 +11,9 @@ use std::path::PathBuf;
 
 use appearance::*;
 pub use appearance::{BorderGradient, InactiveDimSettings, MaterialStyle, ThemeSettings};
-pub(crate) use bindings::physical_keymap;
 use bindings::*;
 pub use bindings::{Binding, BindingAction};
+pub(crate) use bindings::{BindingSet, physical_keymap};
 use ferese_animation::SpringConfig;
 use ferese_core::LayoutMode;
 use ferese_layout::{ColumnWidth, Direction, GapConfig, ViewportFocusStrategy};
@@ -939,18 +939,19 @@ mod tests {
         assert!(bindings.iter().any(|binding| {
             binding.modifiers.logo
                 && binding.trigger == BindingTrigger::Keysym(keysyms::KEY_Return)
-                && binding.action == BindingAction::Spawn(vec!["foot".to_owned()])
+                && binding.action == BindingAction::Spawn(vec!["foot".to_owned()].into())
         }));
         assert!(bindings.iter().any(|binding| {
             binding.modifiers.logo
                 && binding.modifiers.shift
                 && binding.trigger == BindingTrigger::Keysym(keysyms::KEY_s)
-                && binding.action == BindingAction::Spawn(vec!["ferese-screenshot".to_owned()])
+                && binding.action == BindingAction::Spawn(vec!["ferese-screenshot".to_owned()].into())
         }));
         assert!(bindings.iter().any(|binding| {
             binding.trigger == BindingTrigger::Keysym(keysyms::KEY_Print)
                 && binding.modifiers == BindingModifiers::default()
-                && binding.action == BindingAction::Spawn(vec!["ferese-screenshot".to_owned(), "--full".to_owned()])
+                && binding.action
+                    == BindingAction::Spawn(vec!["ferese-screenshot".to_owned(), "--full".to_owned()].into())
         }));
         assert!(bindings.iter().any(|binding| {
             binding.modifiers.logo
@@ -970,7 +971,8 @@ mod tests {
         let bindings = replaced.bindings(&input).unwrap();
         assert_eq!(bindings.len(), 53);
         assert!(bindings.iter().any(|binding| {
-            binding.action == BindingAction::Spawn(vec!["foot".to_owned(), "--app-id".to_owned(), "work".to_owned()])
+            binding.action
+                == BindingAction::Spawn(vec!["foot".to_owned(), "--app-id".to_owned(), "work".to_owned()].into())
         }));
 
         let input = unbound.input_settings().unwrap();

@@ -1,3 +1,5 @@
+use smithay::desktop::Window;
+
 use super::*;
 
 pub(crate) fn animated_window_elements(
@@ -109,39 +111,42 @@ pub(crate) fn sampled_output_elements(
             frame,
         ));
     }
-    let mut candidates = if state.overview.is_active() {
-        state.windows.ids().keys().cloned().collect::<Vec<_>>()
-    } else {
-        state.space.elements().rev().cloned().collect::<Vec<_>>()
+    let prepare_window = |window: &Window| {
+        // Configure immediately, but present the frame/shadow only after
+        // the first buffer commit has settled the actual client geometry.
+        if !state.window_content_ready(window) {
+            return None;
+        }
+        let id = *state.windows.ids().get(window)?;
+        // Scrolling columns may sit outside their monitor's rectangle.
+        // They must not reappear on a neighboring output just because
+        // their global animated coordinates overlap it.
+        if !state.window_belongs_to_output(id, output) {
+            return None;
+        }
+        let sample = frame.windows.get(&id)?;
+        let visual = scaled_visual_rect(sample.rect, sample.close_scale);
+        let close_alpha = sample.close_alpha;
+        let decoration_progress = sample.geometry.decorations.clamp(0.0, 1.0);
+
+        Some((window.clone(), id, sample, visual, decoration_progress, close_alpha))
     };
-    if state.overview.is_active() {
-        candidates.sort_by_key(|window| std::cmp::Reverse(state.windows.ids().get(window).map_or(0, |id| id.0)));
-    }
-    let windows = candidates
-        .iter()
-        .filter_map(|window| {
-            // Configure immediately, but present the frame/shadow only after
-            // the first buffer commit has settled the actual client geometry.
-            if !state.window_content_ready(window) {
-                return None;
-            }
-            let id = *state.windows.ids().get(window)?;
-            // Scrolling columns may sit outside their monitor's rectangle.
-            // They must not reappear on a neighboring output just because
-            // their global animated coordinates overlap it.
-            if !state.window_belongs_to_output(id, output) {
-                return None;
-            }
-            let sample = frame.windows.get(&id)?;
-            let visual = scaled_visual_rect(sample.rect, sample.close_scale);
-            let close_alpha = sample.close_alpha;
-            let decoration_progress = sample.geometry.decorations.clamp(0.0, 1.0);
+    let windows = if state.overview.is_active() {
+        state
+            .windows
+            .overview_windows()
+            .filter_map(prepare_window)
+            .collect::<Vec<_>>()
+    } else {
+        state
+            .space
+            .elements()
+            .rev()
+            .filter_map(prepare_window)
+            .collect::<Vec<_>>()
+    };
 
-            Some((window.clone(), id, visual, decoration_progress, close_alpha))
-        })
-        .collect::<Vec<_>>();
-
-    for (window, id, visual, decoration_progress, close_alpha) in windows {
+    for (window, id, sample, visual, decoration_progress, close_alpha) in windows {
         let constrain = rounded_visual_rect(visual, output_geometry.loc);
         let material_surface = window
             .toplevel()
@@ -158,10 +163,10 @@ pub(crate) fn sampled_output_elements(
         let corners = RoundedRect::new(visual, output_geometry.loc, scale, window_radius);
         let pixels = corners.rect;
         // Only overview/close intentionally scale the complete application.
-        let scale_content = frame.overview.is_presenting() || frame.windows[&id].close_scale != 1.0;
+        let scale_content = frame.overview.is_presenting() || sample.close_scale != 1.0;
         let behavior = resize_content_behavior(scale_content);
 
-        let dim = frame.windows[&id].dim;
+        let dim = sample.dim;
         if let Some(overlay) = window_tint_element(
             &mut state.render,
             renderer,
@@ -182,7 +187,7 @@ pub(crate) fn sampled_output_elements(
             let shadow_blur = state.theme_settings.shadow_blur;
             let shadow_opacity = state.theme_settings.shadow_opacity;
             let shadow_color = state.theme_settings.shadow_color.0;
-            let focus = frame.windows[&id].focus;
+            let focus = sample.focus;
             let border_width = state.theme_settings.border_width
                 + (state.theme_settings.focus_ring_width - state.theme_settings.border_width) * focus;
             let border_color = state.theme_settings.border_color.0;
@@ -245,10 +250,7 @@ pub(crate) fn sampled_output_elements(
                             ))),
                             alpha: crate::presentation::handoff_alpha(snapshot.elapsed) * close_alpha,
                             program: Some(programs.texture.clone()),
-                            uniforms: vec![
-                                Uniform::new("clip_rect", clip).into_owned(),
-                                Uniform::new("radius", corners.radius).into_owned(),
-                            ],
+                            uniforms: vec![Uniform::new("clip_rect", clip), Uniform::new("radius", corners.radius)],
                         }
                         .into(),
                     );
@@ -260,7 +262,7 @@ pub(crate) fn sampled_output_elements(
                 corners,
                 scale,
                 close_alpha,
-                frame.windows[&id].geometry.presentation_changed,
+                sample.geometry.presentation_changed,
                 output,
                 programs.clone(),
                 behavior,

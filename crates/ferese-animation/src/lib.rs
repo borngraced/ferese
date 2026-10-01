@@ -234,6 +234,10 @@ impl ClientGeometry {
         matches_target
     }
 
+    pub fn waiting_for_commit(&self) -> bool {
+        self.waiting_since.is_some()
+    }
+
     pub fn timed_out(&self, now: Duration) -> bool {
         self.waiting_since
             .is_some_and(|started| now.saturating_sub(started) >= CLIENT_COMMIT_TIMEOUT)

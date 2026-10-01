@@ -84,6 +84,7 @@ impl CompositorHandler for Ferese {
                     } else if self.windows.ids().contains_key(&window) {
                         self.remove_tiled_window(&window);
                         self.space.map_element(window.clone(), (0, 0), false);
+                        self.invalidate_window_stacking();
                         self.restore_keyboard_focus();
                     }
                     if window

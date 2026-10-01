@@ -120,8 +120,9 @@ fn dispatch_frame(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, identit
         backend.animation_active = animating;
     }
 
-    render_output(state, node, crtc, plan);
-    if state.output_has_animations(identity) {
+    let output_animating = render_output(state, node, crtc, plan);
+
+    if output_animating {
         request_frame(state, node, crtc);
     }
 

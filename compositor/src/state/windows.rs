@@ -115,7 +115,7 @@ impl Ferese {
             return;
         }
 
-        self.windows.register(window.clone(), id);
+        self.windows.register_window(window.clone(), id);
         self.windows.update(id, |w| w.placement_anchor = Some(anchor));
 
         if rule.width.is_none() && rule.height.is_none() && client_size(&window).is_none() && remembered_work.is_none()
@@ -156,7 +156,7 @@ impl Ferese {
             return;
         }
 
-        self.windows.register(window.clone(), id);
+        self.windows.register_window(window.clone(), id);
         self.window_stack.insert(id);
         if focus_new_window {
             self.focused_window = Some(id);
@@ -196,7 +196,7 @@ impl Ferese {
             return;
         }
 
-        self.windows.register(window.clone(), id);
+        self.windows.register_window(window.clone(), id);
         self.window_stack.insert(id);
         if client_size(&window).is_none() {
             self.windows.update(id, |w| w.natural_floating_pending = true);
@@ -649,7 +649,7 @@ impl Ferese {
     }
 
     pub(crate) fn close_managed_window(&mut self, id: WindowId) -> bool {
-        if !self.windows.ids().values().any(|window_id| *window_id == id) {
+        if !self.windows.window(id).is_some() {
             return false;
         }
 
@@ -666,12 +666,7 @@ impl Ferese {
     }
 
     pub(super) fn send_window_close(&self, id: WindowId) {
-        let Some(toplevel) = self
-            .windows
-            .ids()
-            .iter()
-            .find_map(|(window, window_id)| (*window_id == id).then(|| window.toplevel()).flatten())
-        else {
+        let Some(toplevel) = self.windows.window(id).and_then(|window| window.toplevel()) else {
             return;
         };
 

@@ -59,14 +59,7 @@ impl SeatHandler for Ferese {
     }
 
     fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
-        if let Some(id) = focused.and_then(|surface| {
-            self.windows.ids().iter().find_map(|(window, id)| {
-                window
-                    .toplevel()
-                    .is_some_and(|toplevel| toplevel.wl_surface() == surface)
-                    .then_some(*id)
-            })
-        }) {
+        if let Some(id) = focused.and_then(|surface| self.windows.id_for_surface(surface)) {
             self.focus_history.record(id);
         }
         if let Some(inhibitor) = self.active_shortcuts_inhibitor.take()
@@ -152,12 +145,7 @@ impl Ferese {
         {
             root = parent;
         }
-        let window = self.windows.ids().iter().find_map(|(window, id)| {
-            window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == &root)
-                .then_some(*id)
-        });
+        let window = self.windows.id_for_surface(&root);
         let output = self.space.outputs().find(|output| {
             window.is_some_and(|id| self.window_belongs_to_output(id, output))
                 || layer_map_for_output(output)

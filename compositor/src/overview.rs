@@ -84,8 +84,17 @@ pub(crate) fn init_font_loader(
     Ok(())
 }
 
-type OverviewStateLabel =
-    HashMap<(String, u64, [u32; 4]), (MemoryRenderBuffer, smithay::utils::Size<i32, smithay::utils::Buffer>)>;
+type LabelBuffer = (MemoryRenderBuffer, smithay::utils::Size<i32, smithay::utils::Buffer>);
+type LabelStyle = (u64, [u32; 4]);
+type OverviewStateLabel = HashMap<String, HashMap<LabelStyle, LabelBuffer>>;
+
+#[derive(Debug)]
+struct WindowLabel {
+    revision: u64,
+    limit: usize,
+    style: LabelStyle,
+    buffer: LabelBuffer,
+}
 
 #[derive(Debug)]
 pub(crate) struct OverviewState {
@@ -97,6 +106,8 @@ pub(crate) struct OverviewState {
     font_requests: Option<FontRequests>,
     font: Option<FontArc>,
     labels: OverviewStateLabel,
+    window_labels: HashMap<WindowId, WindowLabel>,
+    label_count: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +129,8 @@ impl Default for OverviewState {
             font_requests: None,
             font: None,
             labels: HashMap::new(),
+            window_labels: HashMap::new(),
+            label_count: 0,
         }
     }
 }
@@ -163,6 +176,17 @@ fn centered_row_start(strip: Rect, count: usize, card_width: f64) -> f64 {
 }
 
 impl OverviewState {
+    pub(crate) fn needs_tick(&self) -> bool {
+        self.motion.exit_transition.is_some()
+            || self.motion.opacity.current != self.motion.opacity.target
+            || self.motion.opacity.velocity != 0.0
+            || self
+                .motion
+                .presentations
+                .values()
+                .any(|rect| rect.current != rect.target || rect.velocity != ferese_animation::RectVelocity::default())
+    }
+
     pub(crate) fn is_animating(&self, spring: SpringConfig) -> bool {
         self.motion.is_animating(spring)
     }
@@ -200,6 +224,8 @@ impl OverviewState {
         }
         self.font = font;
         self.labels.clear();
+        self.window_labels.clear();
+        self.label_count = 0;
         true
     }
 
@@ -209,8 +235,8 @@ impl OverviewState {
         scale: f64,
         color: [f32; 4],
     ) -> Option<(MemoryRenderBuffer, smithay::utils::Size<i32, smithay::utils::Buffer>)> {
-        let key = (text.to_owned(), scale.to_bits(), color.map(f32::to_bits));
-        if let Some(buffer) = self.labels.get(&key) {
+        let key = (scale.to_bits(), color.map(f32::to_bits));
+        if let Some(buffer) = self.labels.get(text).and_then(|styles| styles.get(&key)) {
             return Some(buffer.clone());
         }
         let font = self.font.as_ref()?;
@@ -249,11 +275,16 @@ impl OverviewState {
         }
         let buffer =
             MemoryRenderBuffer::from_slice(&pixels, Fourcc::Abgr8888, (width, height), 1, Transform::Normal, None);
-        if self.labels.len() >= 128 {
+        if self.label_count >= 128 {
             self.labels.clear();
+            self.label_count = 0;
         }
         let label = (buffer, (width, height).into());
-        self.labels.insert(key, label.clone());
+        self.labels
+            .entry(text.to_owned())
+            .or_default()
+            .insert(key, label.clone());
+        self.label_count += 1;
         Some(label)
     }
 
@@ -430,32 +461,53 @@ impl Ferese {
         }
     }
 
-    pub(crate) fn overview_window_label(
-        &mut self,
-        window: &smithay::desktop::Window,
-        scale: f64,
-        width: f64,
-    ) -> Option<(MemoryRenderBuffer, smithay::utils::Size<i32, smithay::utils::Buffer>)> {
-        use smithay::wayland::compositor::with_states;
-        use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
-        let surface = window.toplevel()?.wl_surface();
-        let title = with_states(surface, |states| {
-            let data = states.data_map.get::<XdgToplevelSurfaceData>()?.lock().ok()?;
-            data.title
-                .clone()
-                .filter(|title| !title.trim().is_empty())
-                .or_else(|| data.app_id.clone())
-        })
-        .unwrap_or_else(|| "Window".into());
-        let limit = ((width - 16.0) / 8.0).clamp(1.0, 48.0) as usize;
-        let mut chars = title.chars().filter(|c| !c.is_control());
-        let mut title: String = chars.by_ref().take(limit).collect();
-        if chars.next().is_some() {
-            title.pop();
-            title.push('…');
-        }
+    pub(crate) fn retain_overview_labels(&mut self) {
         self.overview
-            .label(&title, scale, self.theme_settings.text_primary_color.0)
+            .window_labels
+            .retain(|id, _| self.windows.window(*id).is_some());
+    }
+
+    pub(crate) fn overview_window_label(&mut self, id: WindowId, scale: f64, width: f64) -> Option<LabelBuffer> {
+        let record = self.windows.record(id)?;
+        let limit = ((width - 16.0) / 8.0).clamp(1.0, 48.0) as usize;
+        let color = self.theme_settings.text_primary_color.0;
+        let style = (scale.to_bits(), color.map(f32::to_bits));
+
+        if let Some(label) = self.overview.window_labels.get(&id)
+            && label.revision == record.metadata_revision
+            && label.limit == limit
+            && label.style == style
+        {
+            return Some(label.buffer.clone());
+        }
+
+        let title = if !record.title.trim().is_empty() {
+            &record.title
+        } else if !record.app_id.is_empty() {
+            &record.app_id
+        } else {
+            "Window"
+        };
+        let mut chars = title.chars().filter(|c| !c.is_control());
+        let mut text: String = chars.by_ref().take(limit).collect();
+
+        if chars.next().is_some() {
+            text.pop();
+            text.push('…');
+        }
+
+        let revision = record.metadata_revision;
+        let buffer = self.overview.label(&text, scale, color)?;
+        self.overview.window_labels.insert(
+            id,
+            WindowLabel {
+                revision,
+                limit,
+                style,
+                buffer: buffer.clone(),
+            },
+        );
+        Some(buffer)
     }
 
     pub(crate) fn overview_workspace_label(
@@ -608,9 +660,7 @@ impl Ferese {
         let capacity = strip_capacity(strip);
         let workspaces = self
             .output_workspaces
-            .workspace_views(&self.workspaces)
-            .into_iter()
-            .filter(|view| view.output == output_id)
+            .workspace_views_for_output(&self.workspaces, output_id)
             .collect::<Vec<_>>();
         let selected_index = workspaces
             .iter()
@@ -903,6 +953,15 @@ fn directional_distance(direction: Direction, current: (f64, f64), candidate: (f
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tiny_overview_target_changes_still_get_a_settling_tick() {
+        let mut overview = OverviewState::default();
+        assert!(!overview.needs_tick());
+        overview.motion.opacity.set_target(0.0001);
+        assert!(!overview.is_animating(SpringConfig::default()));
+        assert!(overview.needs_tick());
+    }
 
     fn test_font() -> FontArc {
         FontArc::try_from_slice(include_bytes!("../../assets/fonts/Comfortaa-Regular.otf")).unwrap()

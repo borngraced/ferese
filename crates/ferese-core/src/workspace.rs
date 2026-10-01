@@ -7,7 +7,7 @@ use ferese_layout::{
     SizeConstraints, ViewportFocusStrategy, WindowId,
 };
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct WorkspaceId(pub u64);
 
 #[derive(Debug)]
@@ -78,11 +78,17 @@ impl WorkspaceLayout {
         }
     }
 
-    pub fn window_ids(&self) -> Box<dyn Iterator<Item = WindowId> + '_> {
-        match self {
-            Self::Scrolling(layout) => Box::new(layout.window_ids()),
-            Self::Tree(layout) => Box::new(layout.window_ids()),
-        }
+    pub fn window_ids(&self) -> impl Iterator<Item = WindowId> + '_ {
+        let scrolling = match self {
+            Self::Scrolling(layout) => Some(layout.window_ids()),
+            Self::Tree(_) => None,
+        };
+        let tree = match self {
+            Self::Tree(layout) => Some(layout.window_ids()),
+            Self::Scrolling(_) => None,
+        };
+
+        scrolling.into_iter().flatten().chain(tree.into_iter().flatten())
     }
 
     pub fn insert(

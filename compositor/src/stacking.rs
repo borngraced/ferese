@@ -21,6 +21,7 @@ pub(crate) fn layer_priority(floating: bool, zooming: bool, fullscreen: bool, ab
 pub(crate) struct WindowStack {
     order: Vec<WindowId>,
     ranks: HashMap<WindowId, usize>,
+    revision: u64,
 }
 
 impl WindowStack {
@@ -28,12 +29,14 @@ impl WindowStack {
         if let std::collections::hash_map::Entry::Vacant(entry) = self.ranks.entry(id) {
             entry.insert(self.order.len());
             self.order.push(id);
+            self.revision = self.revision.wrapping_add(1);
         }
     }
 
     pub fn remove(&mut self, id: WindowId) {
         if let Some(rank) = self.ranks.remove(&id) {
             self.order.remove(rank);
+            self.revision = self.revision.wrapping_add(1);
             for (rank, candidate) in self.order.iter().enumerate().skip(rank) {
                 self.ranks.insert(*candidate, rank);
             }
@@ -41,6 +44,10 @@ impl WindowStack {
     }
 
     pub fn raise(&mut self, id: WindowId) {
+        if self.order.last() == Some(&id) {
+            return;
+        }
+
         self.remove(id);
         self.insert(id);
     }
@@ -48,11 +55,112 @@ impl WindowStack {
     pub fn rank(&self, id: WindowId) -> usize {
         self.ranks.get(&id).copied().unwrap_or(usize::MAX)
     }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+}
+
+/// Desired order survives coordinate-only remaps, which Smithay also raises.
+pub(crate) struct StackingCache<W> {
+    order: Vec<W>,
+    revision: Option<u64>,
+    dirty: bool,
+    remapped: bool,
+}
+
+impl<W> Default for StackingCache<W> {
+    fn default() -> Self {
+        Self {
+            order: Vec::new(),
+            revision: None,
+            dirty: true,
+            remapped: true,
+        }
+    }
+}
+
+impl<W> StackingCache<W> {
+    pub fn invalidate(&mut self) {
+        self.dirty = true;
+    }
+
+    pub fn remapped(&mut self) {
+        self.remapped = true;
+    }
+
+    pub fn needs_rebuild(&self, revision: u64, mapped: usize) -> bool {
+        self.dirty || self.revision != Some(revision) || self.order.len() != mapped
+    }
+
+    pub fn needs_restore(&self) -> bool {
+        self.remapped
+    }
+
+    pub fn replace(&mut self, order: Vec<W>, revision: u64) {
+        self.order = order;
+        self.revision = Some(revision);
+        self.dirty = false;
+        self.remapped = true;
+    }
+
+    pub fn order(&self) -> &[W] {
+        &self.order
+    }
+
+    pub fn restored(&mut self) {
+        self.remapped = false;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clean_stacking_and_coordinate_remaps_do_not_require_resorting() {
+        let mut cache = StackingCache::default();
+        assert!(cache.needs_rebuild(1, 2));
+        cache.replace(vec!["first", "second"], 1);
+        cache.restored();
+        let storage = cache.order().as_ptr();
+
+        for _ in 0..100 {
+            assert!(!cache.needs_rebuild(1, 2));
+            assert!(!cache.needs_restore());
+            assert_eq!(cache.order().as_ptr(), storage);
+        }
+
+        cache.remapped();
+        assert!(!cache.needs_rebuild(1, 2));
+        assert!(cache.needs_restore());
+        assert_eq!(cache.order(), ["first", "second"]);
+        cache.restored();
+        assert!(cache.needs_rebuild(2, 2));
+        assert!(cache.needs_rebuild(1, 1));
+        cache.invalidate();
+        assert!(cache.needs_rebuild(1, 2));
+    }
+
+    #[test]
+    fn stack_revision_changes_only_when_membership_or_rank_changes() {
+        let mut stack = WindowStack::default();
+        stack.insert(WindowId(1));
+        let first = stack.revision();
+        stack.insert(WindowId(1));
+        stack.raise(WindowId(1));
+        stack.remove(WindowId(9));
+        assert_eq!(stack.revision(), first);
+
+        stack.insert(WindowId(2));
+        let second = stack.revision();
+        assert_ne!(second, first);
+        stack.raise(WindowId(1));
+        assert_ne!(stack.revision(), second);
+        let raised = stack.revision();
+        stack.remove(WindowId(1));
+        assert_ne!(stack.revision(), raised);
+    }
 
     #[test]
     fn cached_ranks_match_reference_order_after_mixed_operations() {

@@ -76,7 +76,7 @@ use smithay::wayland::xdg_toplevel_icon::XdgToplevelIconManager;
 use window_registry::WindowRegistry;
 
 use crate::backends::direct::DirectBackendState;
-use crate::config::{Binding, DaemonConfig, InputSettings, OutputProfile, ThemeSettings};
+use crate::config::{Binding, BindingSet, DaemonConfig, InputSettings, OutputProfile, ThemeSettings};
 use crate::cursor::{NamedCursor, cursor_theme, load_named_cursor};
 use crate::dimming::DimAnimation;
 use crate::gestures::{Swipe, SwipeDirection};
@@ -91,7 +91,7 @@ use crate::portal_session::PortalSession;
 use crate::portal_shortcuts::PortalShortcuts;
 use crate::session_lock::{IdleSettings, Lock};
 use crate::shell_control::ShellSnapshot;
-use crate::stacking::WindowStack;
+use crate::stacking::{StackingCache, WindowStack};
 use crate::wallpaper::{WallpaperConfig, WallpaperState};
 use crate::window_rules::{WindowRule, resolve as resolve_window_rules};
 use crate::winit::NestedBackend;
@@ -228,8 +228,13 @@ impl WorkspaceSlide {
     }
 
     fn progress(&self) -> f64 {
+        self.progress_at(Duration::ZERO)
+    }
+
+    fn progress_at(&self, delta: Duration) -> f64 {
         self.held_progress.unwrap_or_else(|| {
-            smoothstep((self.elapsed.as_secs_f64() / WORKSPACE_SLIDE_DURATION.as_secs_f64()).min(1.0))
+            let elapsed = self.elapsed.saturating_add(delta).min(WORKSPACE_SLIDE_DURATION);
+            smoothstep(elapsed.as_secs_f64() / WORKSPACE_SLIDE_DURATION.as_secs_f64())
         })
     }
 
@@ -260,6 +265,7 @@ impl WorkspaceSlide {
         self.items.iter().any(|item| item.workspace == workspace)
     }
 
+    #[cfg(test)]
     fn offset(&self, workspace: WorkspaceId, width: f64, height: f64) -> (f64, f64) {
         let progress = self.progress();
         let position = self
@@ -323,12 +329,15 @@ pub struct Ferese {
     pub workspaces: WorkspaceSet,
     pub output_workspaces: OutputWorkspaceMap,
     pub(crate) output_ids: HashMap<Output, OutputId>,
+    outputs_by_id: HashMap<OutputId, Output>,
+    pub(crate) output_names: HashMap<OutputId, String>,
     output_identity_ids: HashMap<String, OutputId>,
     pub(crate) windows: WindowRegistry<Window>,
     pub(crate) render: crate::render::RenderResources,
     pub(crate) nested_backend: Option<NestedBackend>,
     pub(crate) wallpaper: WallpaperState,
     window_stack: WindowStack,
+    stacking_cache: StackingCache<Window>,
     floating_above_fullscreen: HashMap<WindowId, WindowId>,
     floating_memory: crate::floating::Memory,
     floating_save_worker: crate::floating::SaveWorker,
@@ -341,13 +350,14 @@ pub struct Ferese {
     viewport_animations: HashMap<WorkspaceId, AnimatedValue>,
     focus_swipe: Option<FocusSwipe>,
     workspace_slides: HashMap<OutputId, WorkspaceSlide>,
+    workspace_slide_offsets: HashMap<WorkspaceId, (f64, f64)>,
     pub focused_window: Option<WindowId>,
     pub(crate) focus_history: ferese_core::FocusHistory,
     pub(crate) focus_cycle: Option<ferese_core::FocusCycle>,
     column_width_presets: Vec<ColumnWidth>,
     gap_config: GapConfig,
     pub(crate) input_settings: InputSettings,
-    pub(crate) bindings: Vec<Binding>,
+    pub(crate) bindings: BindingSet,
     workspace_auto_back_and_forth: bool,
     window_rules: Vec<WindowRule>,
     pub(crate) theme_settings: ThemeSettings,
@@ -543,12 +553,15 @@ impl Ferese {
             ),
             output_workspaces: OutputWorkspaceMap::default(),
             output_ids: HashMap::new(),
+            outputs_by_id: HashMap::new(),
+            output_names: HashMap::new(),
             output_identity_ids: HashMap::new(),
             windows: WindowRegistry::default(),
             render: Default::default(),
             nested_backend: None,
             wallpaper: WallpaperState::with_wakeup(config.wallpaper, Some(event_loop.get_signal())),
             window_stack: WindowStack::default(),
+            stacking_cache: StackingCache::default(),
             floating_above_fullscreen: HashMap::new(),
             floating_memory: crate::floating::Memory::path()
                 .map(|p| crate::floating::Memory::load(&p))
@@ -563,13 +576,14 @@ impl Ferese {
             viewport_animations: HashMap::new(),
             focus_swipe: None,
             workspace_slides: HashMap::new(),
+            workspace_slide_offsets: HashMap::new(),
             focused_window: None,
             focus_history: Default::default(),
             focus_cycle: None,
             column_width_presets: config.column_width_presets,
             gap_config: config.gap_config,
             input_settings: config.input_settings,
-            bindings: config.bindings,
+            bindings: config.bindings.into(),
             workspace_auto_back_and_forth: config.workspace_auto_back_and_forth,
             window_rules: config.window_rules,
             theme_settings: config.theme_settings,
@@ -707,7 +721,7 @@ impl Ferese {
             .map_err(|error| error.to_string())?;
         self.gap_config = config.gap_config;
         self.input_settings = config.input_settings;
-        self.bindings = config.bindings;
+        self.bindings = config.bindings.into();
         self.workspace_auto_back_and_forth = config.workspace_auto_back_and_forth;
         self.portal_shortcuts.reconcile(&self.bindings, &self.input_settings);
         let old_rules = std::mem::replace(&mut self.window_rules, config.window_rules);
@@ -717,6 +731,7 @@ impl Ferese {
         self.animations_enabled = config.animations_enabled;
         if !self.animations_enabled {
             self.workspace_slides.clear();
+            self.workspace_slide_offsets.clear();
         }
         self.animation_speed = config.animation_speed;
         self.spring_config = config.spring_config;
@@ -976,6 +991,22 @@ impl ClientData for ClientState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sampling_slide_progress_matches_advancing_without_mutating_the_slide() {
+        let slide = WorkspaceSlide::new(None, WorkspaceId(1), WorkspaceId(2), SwipeDirection::Left);
+
+        for delta in [Duration::ZERO, Duration::from_millis(8), Duration::from_secs(1)] {
+            let mut advanced = slide.clone();
+            advanced.advance(delta);
+            assert_eq!(slide.progress_at(delta), advanced.progress());
+            assert_eq!(slide.elapsed, WORKSPACE_SLIDE_FIRST_FRAME);
+        }
+
+        let mut held = slide;
+        held.held_progress = Some(0.37);
+        assert_eq!(held.progress_at(Duration::from_secs(1)), 0.37);
+    }
+
     #[test]
     fn configured_motion_policy_scales_durations_and_reduced_motion_wins() {
         for (source, milliseconds) in [

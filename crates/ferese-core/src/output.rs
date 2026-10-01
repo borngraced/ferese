@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt;
 
@@ -60,7 +60,7 @@ struct OutputState {
     geometry: OutputGeometry,
     active: WorkspaceId,
     previous: Option<WorkspaceId>,
-    workspaces: HashSet<WorkspaceId>,
+    workspaces: BTreeSet<WorkspaceId>,
 }
 
 impl OutputState {
@@ -87,7 +87,7 @@ struct EvacuationRecord {
 
 #[derive(Debug, Default)]
 pub struct OutputWorkspaceMap {
-    outputs: HashMap<OutputId, OutputState>,
+    outputs: BTreeMap<OutputId, OutputState>,
     assignments: HashMap<WorkspaceId, OutputId>,
     revisions: HashMap<WorkspaceId, u64>,
     evacuations: HashMap<OutputId, EvacuationRecord>,
@@ -95,6 +95,13 @@ pub struct OutputWorkspaceMap {
 }
 
 impl OutputWorkspaceMap {
+    pub fn assigned_workspaces(&self, output: OutputId) -> impl DoubleEndedIterator<Item = WorkspaceId> + '_ {
+        self.outputs
+            .get(&output)
+            .into_iter()
+            .flat_map(|state| state.workspaces.iter().copied())
+    }
+
     pub fn focused_output(&self) -> Option<OutputId> {
         self.focused
     }

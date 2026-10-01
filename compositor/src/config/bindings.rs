@@ -1,4 +1,9 @@
+use std::sync::Arc;
+
 use super::*;
+
+mod index;
+pub(crate) use index::BindingSet;
 
 impl Config {
     pub fn bindings(&self, input: &InputSettings) -> Result<Vec<Binding>, ConfigError> {
@@ -280,7 +285,7 @@ pub(super) fn parse_action(
             let argv = commands
                 .get(command)
                 .ok_or_else(|| ConfigError::Binding(format!("unknown command {command:?}")))?;
-            Ok(BindingAction::Spawn(argv.clone()))
+            Ok(BindingAction::Spawn(argv.clone().into()))
         }
         "close" => {
             no_argument()?;
@@ -440,7 +445,7 @@ pub(super) struct BindingModifiers {
 #[derive(Clone, Debug, PartialEq)]
 pub enum BindingAction {
     None,
-    Spawn(Vec<String>),
+    Spawn(Arc<[String]>),
     Close,
     Exit,
     Focus(ferese_layout::Direction),

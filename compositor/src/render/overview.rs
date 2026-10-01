@@ -40,12 +40,12 @@ pub(super) fn overview_chrome_element(
             border_uniforms(p)
         } else {
             vec![
-                Uniform::new("visible_rect", p.clip_rect).into_owned(),
-                Uniform::new("material_radius", p.radius).into_owned(),
-                Uniform::new("tint", p.color).into_owned(),
-                Uniform::new("paint_mode", 0.0_f32).into_owned(),
-                Uniform::new("shadow_rect", p.clip_rect).into_owned(),
-                Uniform::new("shadow_values", [0.0_f32; 2]).into_owned(),
+                Uniform::new("visible_rect", p.clip_rect),
+                Uniform::new("material_radius", p.radius),
+                Uniform::new("tint", p.color),
+                Uniform::new("paint_mode", 0.0_f32),
+                Uniform::new("shadow_rect", p.clip_rect),
+                Uniform::new("shadow_values", [0.0_f32; 2]),
             ]
         }
     };
@@ -61,7 +61,7 @@ pub(super) fn overview_chrome_element(
         .or_default()
         .entry(context)
         .or_insert_with(|| CachedBorder {
-            element: PixelShaderElement::new(
+            element: SharedPixelShaderElement::new(
                 program,
                 geometry,
                 None,
@@ -119,33 +119,31 @@ pub(super) fn overview_strip_elements(
     .opacity;
     let mut elements = Vec::new();
     let programs = rounded_clip_program(&mut state.render, renderer);
-    // Resolve IDs once per strip, rather than scanning all managed windows
-    // separately for every miniature. Own the handles so rendering can mutate state.
-    let windows_by_id: std::collections::HashMap<_, _> = state
-        .windows
-        .ids()
+    state.retain_overview_labels();
+
+    let card_ids = cards
         .iter()
-        .map(|(window, id)| (*id, window.clone()))
-        .collect();
+        .map(|card| card.workspace.0)
+        .collect::<std::collections::HashSet<_>>();
     if let Some(output_id) = state.output_id(output)
         && let Some(cache) = state.render.outputs.get_mut(&output_id)
     {
         cache.chrome.retain(|(id, part), _| match part {
-            OverviewChromePart::Caption => windows_by_id.keys().any(|window| window.0 == *id),
-            OverviewChromePart::Card | OverviewChromePart::Outline => cards.iter().any(|card| card.workspace.0 == *id),
+            OverviewChromePart::Caption => state.windows.window(ferese_layout::WindowId(*id)).is_some(),
+            OverviewChromePart::Card | OverviewChromePart::Outline => card_ids.contains(id),
             OverviewChromePart::Strip => true,
         });
     }
     // Cached title textures are independent of window content and stay readable
     // when thumbnails are small. Their pills use the shell's material and radius.
-    for (id, window) in &windows_by_id {
+    for id in frame.windows.keys() {
         if !state.window_belongs_to_output(*id, output) {
             continue;
         }
         let Some(rect) = frame.windows.get(id).map(|sample| sample.rect) else {
             continue;
         };
-        let Some((buffer, size)) = state.overview_window_label(window, scale, rect.width) else {
+        let Some((buffer, size)) = state.overview_window_label(*id, scale, rect.width) else {
             continue;
         };
         let width = (f64::from(size.w) / scale + 16.0).min(rect.width);
@@ -222,7 +220,7 @@ pub(super) fn overview_strip_elements(
         }
         if let Some(programs) = &programs {
             for (id, rect) in &card.windows {
-                if let Some(window) = windows_by_id.get(id) {
+                if let Some(window) = state.windows.window(*id) {
                     elements.extend(rounded_window_elements(
                         renderer,
                         window,

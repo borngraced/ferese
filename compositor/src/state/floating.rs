@@ -17,12 +17,7 @@ impl Ferese {
             Some(WindowPlacement::Floating { rect }) => rect,
             None => return,
         };
-        if let Some(handle) = self
-            .windows
-            .ids()
-            .iter()
-            .find_map(|(handle, id)| (*id == window).then_some(handle.clone()))
-        {
+        if let Some(handle) = self.windows.window(window).cloned() {
             if matches!(
                 self.workspaces.placement(window),
                 Some(WindowPlacement::Floating { .. })
@@ -178,6 +173,10 @@ impl Ferese {
             .geometry
             .get_or_insert_with(|| WindowGeometry::new(rect, client_size(window)));
 
+        if geometry.is_zooming() {
+            self.stacking_cache.invalidate();
+        }
+
         if let Some(size) = geometry.follow_pointer(rect, self.start_time.elapsed())
             && let Some(toplevel) = window.toplevel()
         {
@@ -188,7 +187,7 @@ impl Ferese {
         }
         self.windows.update(id, |record| record.world_x = None);
         self.windows.update(id, |record| record.coupled_width = None);
-        self.space.map_element(window.clone(), location, false);
+        self.map_window_geometry(window.clone(), location);
         self.sync_window_stacking();
         // Move/resize/cancel callbacks run with Smithay's pointer mutex held.
         // Cursor rendering reads current_location(), which would lock it again.
@@ -269,14 +268,7 @@ impl Ferese {
         let (app, parent) = Self::floating_metadata(window);
         let parent_rect = parent
             .as_ref()
-            .and_then(|surface| {
-                self.windows.ids().iter().find_map(|(window, id)| {
-                    window
-                        .toplevel()
-                        .is_some_and(|top| top.wl_surface() == surface)
-                        .then_some(*id)
-                })
-            })
+            .and_then(|surface| self.windows.id_for_surface(surface))
             .and_then(|parent| self.presented_window_rect(parent))
             .and_then(|rect| intersection(rect, work));
         let dialog = crate::window_rules::is_native_dialog(app.as_deref());
@@ -420,10 +412,9 @@ impl Ferese {
             .workspaces
             .workspace_for_window(window)
             .and_then(|workspace| self.output_workspaces.output_for_workspace(workspace));
-        self.output_ids
-            .iter()
-            .find(|(_, id)| Some(**id) == output_id)
-            .and_then(|(output, _)| self.output_bounds_for(output))
+        output_id
+            .and_then(|id| self.outputs_by_id.get(&id))
+            .and_then(|output| self.output_bounds_for(output))
             .or_else(|| self.output_bounds())
     }
 

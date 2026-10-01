@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use ferese_layout::WindowId;
 
 /// Most recent focus first. Layer surfaces and temporary selections do not enter this list.
@@ -19,19 +21,19 @@ impl FocusHistory {
         self.windows.retain(|id| *id != window);
     }
 
-    pub fn candidates(&self, current: Option<WindowId>, mut available: Vec<WindowId>) -> Vec<WindowId> {
-        available.sort_unstable_by_key(|id| id.0);
-        available.dedup();
-        let mut ordered = Vec::with_capacity(available.len());
-        for id in current
-            .into_iter()
-            .chain(self.windows.iter().copied())
-            .chain(available.iter().copied())
-        {
-            if available.contains(&id) && !ordered.contains(&id) {
+    pub fn candidates(&self, current: Option<WindowId>, available: impl AsRef<[WindowId]>) -> Vec<WindowId> {
+        let mut remaining = available.as_ref().iter().copied().collect::<HashSet<_>>();
+        let mut ordered = Vec::with_capacity(remaining.len());
+
+        for id in current.into_iter().chain(self.windows.iter().copied()) {
+            if remaining.remove(&id) {
                 ordered.push(id);
             }
         }
+
+        let mut tail = remaining.into_iter().collect::<Vec<_>>();
+        tail.sort_unstable_by_key(|id| id.0);
+        ordered.extend(tail);
         ordered
     }
 }
@@ -62,6 +64,8 @@ impl FocusCycle {
     }
 
     pub fn advance(&mut self, reverse: bool, available: &[WindowId]) -> Option<WindowId> {
+        let available = available.iter().copied().collect::<HashSet<_>>();
+
         // Keep the old index when the selected window disappears so forward
         // traversal selects its successor rather than skipping over it.
         let old = self
@@ -90,6 +94,41 @@ impl FocusCycle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn indexed_candidates_preserve_linear_order_with_duplicates_and_missing_windows() {
+        let mut history = FocusHistory::default();
+
+        for id in [7, 2, 5, 9, 2] {
+            history.record(WindowId(id));
+        }
+
+        for mask in 0..1024 {
+            let available = (0..10)
+                .filter(|id| mask & (1 << id) != 0)
+                .flat_map(|id| [WindowId(id), WindowId(id)])
+                .collect::<Vec<_>>();
+
+            for current in [None, Some(WindowId(2)), Some(WindowId(99))] {
+                let mut sorted = available.clone();
+                sorted.sort_unstable_by_key(|id| id.0);
+                sorted.dedup();
+                let mut expected = Vec::new();
+
+                for id in current
+                    .into_iter()
+                    .chain(history.windows.iter().copied())
+                    .chain(sorted.iter().copied())
+                {
+                    if sorted.contains(&id) && !expected.contains(&id) {
+                        expected.push(id);
+                    }
+                }
+
+                assert_eq!(history.candidates(current, &available), expected);
+            }
+        }
+    }
 
     #[test]
     fn history_is_unique_filters_unavailable_and_last_focus_toggles() {

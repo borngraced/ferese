@@ -59,6 +59,7 @@ impl Ferese {
         // Consume idle time before setting new targets; it must not become a
         // large first animation step after a keypress on an idle desktop.
         self.advance_animations(Instant::now());
+        self.stacking_cache.invalidate();
         self.arrange_layers();
         let mut previous_scrolling_world_x = self.windows.take_world_positions();
         let pending_column_width_cycles = self.windows.take_column_width_requests();
@@ -303,7 +304,7 @@ impl Ferese {
 
             let location = (visual.x.round() as i32, visual.y.round() as i32);
 
-            self.space.map_element(window.clone(), location, false);
+            self.map_window_geometry(window.clone(), location.into());
             if let Some(toplevel) = window.toplevel() {
                 let state_changed = toplevel.with_pending_state(|state| {
                     if natural_pending {
@@ -372,39 +373,66 @@ impl Ferese {
         }
 
         self.space.raise_element(window, activate);
+        self.stacking_cache.remapped();
         self.sync_window_stacking();
     }
 
+    pub(crate) fn invalidate_window_stacking(&mut self) {
+        self.stacking_cache.invalidate();
+    }
+
     pub(crate) fn sync_window_stacking(&mut self) {
-        let mut windows = self.space.elements().cloned().collect::<Vec<_>>();
-        windows.sort_by_key(|window| {
-            let id = self.windows.ids().get(window).copied();
-            let geometry = id.and_then(|id| self.windows.geometry(&id));
-            let floating =
-                id.is_some_and(|id| matches!(self.workspaces.placement(id), Some(WindowPlacement::Floating { .. })));
-            let priority = crate::stacking::layer_priority(
-                floating,
-                geometry.is_some_and(|geometry| geometry.is_zooming()),
-                geometry.is_some_and(|geometry| geometry.is_fullscreen()),
-                floating
-                    && id.is_some_and(|id| {
-                        self.floating_above_fullscreen.get(&id).is_some_and(|parent| {
-                            self.workspaces
-                                .workspace_for_window(id)
-                                .and_then(|workspace| self.workspaces.workspace(workspace))
-                                .is_some_and(|workspace| workspace.fullscreen == Some(*parent))
-                        })
-                    }),
-            );
-            (priority, id.map_or(usize::MAX, |id| self.window_stack.rank(id)))
-        });
-        if stacking_order_settled(self.space.elements(), &windows, |window| window.z_index()) {
+        let revision = self.window_stack.revision();
+        let rebuild = self.stacking_cache.needs_rebuild(revision, self.space.elements().len());
+
+        if !rebuild && !self.stacking_cache.needs_restore() {
             return;
         }
 
-        for window in windows {
-            self.space.raise_element(&window, false);
+        if rebuild {
+            let mut windows = self.space.elements().cloned().collect::<Vec<_>>();
+            windows.sort_by_key(|window| {
+                let id = self.windows.ids().get(window).copied();
+                let geometry = id.and_then(|id| self.windows.geometry(&id));
+                let floating = id
+                    .is_some_and(|id| matches!(self.workspaces.placement(id), Some(WindowPlacement::Floating { .. })));
+                let priority = crate::stacking::layer_priority(
+                    floating,
+                    geometry.is_some_and(|geometry| geometry.is_zooming()),
+                    geometry.is_some_and(|geometry| geometry.is_fullscreen()),
+                    floating
+                        && id.is_some_and(|id| {
+                            self.floating_above_fullscreen.get(&id).is_some_and(|parent| {
+                                self.workspaces
+                                    .workspace_for_window(id)
+                                    .and_then(|workspace| self.workspaces.workspace(workspace))
+                                    .is_some_and(|workspace| workspace.fullscreen == Some(*parent))
+                            })
+                        }),
+                );
+                (priority, id.map_or(usize::MAX, |id| self.window_stack.rank(id)))
+            });
+            self.stacking_cache.replace(windows, revision);
         }
+
+        if !stacking_order_settled(self.space.elements(), self.stacking_cache.order(), |window| {
+            window.z_index()
+        }) {
+            for window in self.stacking_cache.order() {
+                self.space.raise_element(window, false);
+            }
+        }
+
+        self.stacking_cache.restored();
+    }
+
+    pub(crate) fn map_window_geometry(&mut self, window: Window, location: Point<i32, Logical>) {
+        if self.space.element_location(&window) == Some(location) {
+            return;
+        }
+
+        self.space.map_element(window, location, false);
+        self.stacking_cache.remapped();
     }
 
     pub(super) fn tiled_layout(&mut self, bounds: Rect) -> Result<LayoutResult, ferese_layout::LayoutError> {

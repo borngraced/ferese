@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 use smithay::backend::renderer::element::{
     Element, Id, Kind, RenderElement, RenderElementPresentationState, RenderElementStates,
 };
-use smithay::backend::renderer::gles::element::PixelShaderElement;
 use smithay::backend::renderer::gles::{GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform};
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet};
 use smithay::desktop::utils::OutputPresentationFeedback;
@@ -14,6 +13,8 @@ use smithay::reexports::wayland_protocols::wp::presentation_time::server::wp_pre
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Buffer, Logical, Physical, Point, Rectangle, Scale, Transform};
 use smithay::wayland::compositor::SurfaceData;
+
+use crate::render::SharedPixelShaderElement;
 
 pub(crate) const HANDOFF: Duration = Duration::from_millis(80);
 pub(crate) const SNAPSHOT_BUDGET: usize = 64 * 1024 * 1024;
@@ -164,7 +165,7 @@ pub(crate) fn advance_handoff(
 /// A shader canvas whose damage/paint destination uses the shared pixel edges.
 #[derive(Clone, Debug)]
 pub(crate) struct PhysicalShaderElement {
-    pub inner: PixelShaderElement,
+    pub inner: SharedPixelShaderElement,
     pub geometry: Rectangle<i32, Physical>,
 }
 

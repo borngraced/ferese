@@ -27,6 +27,10 @@ pub(crate) struct DimAnimation {
 }
 
 impl DimAnimation {
+    pub(crate) fn needs_update(&self, target: f64) -> bool {
+        self.target != target || self.current != target
+    }
+
     pub(crate) fn is_animating(&self) -> bool {
         self.current != self.target
     }

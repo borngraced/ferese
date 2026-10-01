@@ -4,8 +4,6 @@ use ferese_protocols::shell::v1::server::ferese_shell_manager_v1::FereseShellMan
 use ferese_protocols::shell::v1::server::ferese_shell_v1::FereseShellV1;
 use ferese_protocols::shell::v1::server::{ferese_shell_manager_v1, ferese_shell_v1};
 use smithay::reexports::wayland_server::{Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource};
-use smithay::wayland::compositor::with_states;
-use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
 
 use crate::Ferese;
 use crate::private_client::ClientCapabilities;
@@ -270,10 +268,15 @@ impl Ferese {
             self.last_shell_snapshot = None;
             return;
         }
-        let snapshot = self.shell_snapshot();
-        if self.last_shell_snapshot.as_ref() == Some(&snapshot) {
+        if self
+            .last_shell_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| self.shell_snapshot_matches(snapshot))
+        {
             return;
         }
+
+        let snapshot = self.shell_snapshot();
         for resource in &self.shell_resources {
             if let Ok(shell) = resource.upgrade() {
                 self.shell_snapshot_serial = self.shell_snapshot_serial.wrapping_add(1);
@@ -281,6 +284,65 @@ impl Ferese {
             }
         }
         self.last_shell_snapshot = Some(snapshot);
+    }
+
+    fn shell_snapshot_matches(&self, snapshot: &ShellSnapshot) -> bool {
+        let mut outputs = self.output_workspaces.connected_outputs();
+
+        for previous in &snapshot.outputs {
+            if outputs.next() != Some(previous.id)
+                || self.output_names.get(&previous.id) != Some(&previous.name)
+                || self.output_workspaces.active_workspace(previous.id) != Some(previous.active_workspace)
+                || (self.output_workspaces.focused_output() == Some(previous.id)) != previous.focused
+            {
+                return false;
+            }
+        }
+
+        if outputs.next().is_some() {
+            return false;
+        }
+
+        let mut workspaces = self.output_workspaces.workspace_views_iter(&self.workspaces);
+
+        for previous in &snapshot.workspaces {
+            let Some(view) = workspaces.next() else {
+                return false;
+            };
+
+            if previous.id != view.id
+                || previous.output != Some(view.output)
+                || previous.index != view.index
+                || previous.window_count != view.window_count as u32
+                || previous.visible != view.visible
+                || previous.focused != view.focused
+            {
+                return false;
+            }
+        }
+
+        if workspaces.next().is_some() {
+            return false;
+        }
+
+        let mut windows = self.windows.ordered_ids().filter_map(|id| self.shell_window_data(id));
+
+        for previous in &snapshot.windows {
+            let Some((id, workspace, app_id, title, state)) = windows.next() else {
+                return false;
+            };
+
+            if previous.id != id
+                || previous.workspace != workspace
+                || previous.app_id != app_id
+                || previous.title != title
+                || previous.state != state
+            {
+                return false;
+            }
+        }
+
+        windows.next().is_none()
     }
 
     fn shell_snapshot(&self) -> ShellSnapshot {
@@ -319,8 +381,7 @@ impl Ferese {
 
     fn workspace_snapshots(&self) -> Vec<WorkspaceSnapshot> {
         self.output_workspaces
-            .workspace_views(&self.workspaces)
-            .into_iter()
+            .workspace_views_iter(&self.workspaces)
             .map(|view| WorkspaceSnapshot {
                 id: view.id,
                 output: Some(view.output),
@@ -333,56 +394,46 @@ impl Ferese {
             .collect()
     }
 
+    fn shell_window_data(&self, id: WindowId) -> Option<(WindowId, u64, &str, &str, ferese_shell_v1::WindowState)> {
+        let workspace = self.workspaces.workspace_for_window(id)?;
+        let record = self.windows.record(id)?;
+        self.windows.window(id)?.toplevel()?;
+        let mut state = ferese_shell_v1::WindowState::empty();
+
+        if self.focused_window == Some(id) {
+            state |= ferese_shell_v1::WindowState::Focused;
+        }
+
+        if self
+            .workspaces
+            .workspace(workspace)
+            .is_some_and(|workspace| workspace.fullscreen == Some(id))
+        {
+            state |= ferese_shell_v1::WindowState::Fullscreen;
+        }
+
+        if matches!(
+            self.workspaces.placement(id),
+            Some(ferese_core::WindowPlacement::Floating { .. })
+        ) {
+            state |= ferese_shell_v1::WindowState::Floating;
+        }
+
+        Some((id, workspace.0, &record.app_id, &record.title, state))
+    }
+
     fn managed_window_snapshots(&self) -> Vec<ManagedWindowSnapshot> {
-        let mut snapshots = self
-            .windows
-            .ids()
-            .iter()
-            .filter_map(|(window, id)| {
-                let workspace = self.workspaces.workspace_for_window(*id)?.0;
-                let toplevel = window.toplevel()?;
-                let (app_id, title) = with_states(toplevel.wl_surface(), |states| {
-                    let attributes = states
-                        .data_map
-                        .get::<XdgToplevelSurfaceData>()
-                        .expect("xdg toplevel state exists")
-                        .lock()
-                        .expect("xdg toplevel state is not poisoned");
-
-                    (
-                        attributes.app_id.clone().unwrap_or_default(),
-                        attributes.title.clone().unwrap_or_default(),
-                    )
-                });
-                let mut state = ferese_shell_v1::WindowState::empty();
-
-                if self.focused_window == Some(*id) {
-                    state |= ferese_shell_v1::WindowState::Focused;
-                }
-                if self
-                    .workspaces
-                    .workspace_for_window(*id)
-                    .and_then(|workspace| self.workspaces.workspace(workspace))
-                    .is_some_and(|workspace| workspace.fullscreen == Some(*id))
-                {
-                    state |= ferese_shell_v1::WindowState::Fullscreen;
-                }
-                if self.is_floating_window(window) {
-                    state |= ferese_shell_v1::WindowState::Floating;
-                }
-
-                Some(ManagedWindowSnapshot {
-                    id: *id,
-                    workspace,
-                    app_id,
-                    title,
-                    state,
-                })
+        self.windows
+            .ordered_ids()
+            .filter_map(|id| self.shell_window_data(id))
+            .map(|(id, workspace, app_id, title, state)| ManagedWindowSnapshot {
+                id,
+                workspace,
+                app_id: app_id.to_owned(),
+                title: title.to_owned(),
+                state,
             })
-            .collect::<Vec<_>>();
-
-        snapshots.sort_by_key(|snapshot| snapshot.id.0);
-        snapshots
+            .collect()
     }
 
     fn handle_shell_window_request(
@@ -530,6 +581,66 @@ fn send_request_failed(shell: &FereseShellV1, request: ferese_shell_v1::FailedRe
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[ignore = "requires a private XDG_RUNTIME_DIR and permission to bind test sockets"]
+    fn snapshot_precheck_detects_membership_selection_and_output_changes() {
+        use smithay::output::{Output, PhysicalProperties, Subpixel};
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        use super::*;
+
+        let runtime = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());
+        assert!(runtime.starts_with(std::env::temp_dir()));
+        let mut event_loop = EventLoop::try_new().unwrap();
+        let config = crate::config::Config::default().runtime_config().unwrap();
+        let mut state = Ferese::new(&mut event_loop, Display::new().unwrap(), config).unwrap();
+        let output = Output::new(
+            "snapshot-test".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "test".into(),
+                model: "test".into(),
+            },
+        );
+        output.change_current_state(
+            Some(smithay::output::Mode {
+                size: (800, 600).into(),
+                refresh: 60_000,
+            }),
+            Some(smithay::utils::Transform::Normal),
+            None,
+            Some((0, 0).into()),
+        );
+        state.space.map_output(&output, (0, 0));
+        state.register_output(&output, "snapshot-test".into());
+        let original = state.shell_snapshot();
+
+        for _ in 0..100 {
+            assert!(state.shell_snapshot_matches(&original));
+        }
+
+        state
+            .workspaces
+            .insert_window(WindowId(99), ferese_layout::Axis::Horizontal, 0.5)
+            .unwrap();
+        assert!(!state.shell_snapshot_matches(&original));
+        let occupied = state.shell_snapshot();
+        assert!(state.shell_snapshot_matches(&occupied));
+        let output_id = state.output_ids[&output];
+        let next = state.workspaces.create_workspace();
+        state.output_workspaces.assign_workspace(output_id, next).unwrap();
+        assert!(!state.shell_snapshot_matches(&occupied));
+        let assigned = state.shell_snapshot();
+        state.output_workspaces.switch_workspace(output_id, next).unwrap();
+        assert!(!state.shell_snapshot_matches(&assigned));
+        let selected = state.shell_snapshot();
+        assert!(state.shell_snapshot_matches(&selected));
+        state.unregister_output(&output);
+        assert!(!state.shell_snapshot_matches(&selected));
+    }
+
     #[test]
     fn logout_serial_cannot_authorize_a_different_session_query() {
         assert!(super::logout_confirmation_matches(Some(42), Some(9), 42, 9));

@@ -248,7 +248,7 @@ pub(super) fn material_element(
                 capture.dirty.clone(),
             ))
         } else {
-            MaterialElement::Fill(PixelShaderElement::new(
+            MaterialElement::Fill(SharedPixelShaderElement::new(
                 program.0.clone(),
                 geometry,
                 parameters.opaque.then(|| vec![Rectangle::from_size(geometry.size)]),
@@ -264,7 +264,7 @@ pub(super) fn material_element(
         .or_insert_with(|| CachedMaterial {
             element: make_element(),
             parameters: parameters.clone(),
-            shadow: PixelShaderElement::new(
+            shadow: SharedPixelShaderElement::new(
                 program.0.clone(),
                 parameters.shadow_bounds,
                 None,
@@ -356,14 +356,14 @@ pub(super) fn blur_uniform_names() -> [UniformName<'static>; 8] {
 
 pub(super) fn blur_uniforms(p: &MaterialParameters) -> Vec<Uniform<'static>> {
     vec![
-        Uniform::new("visible_rect", p.visible_framebuffer).into_owned(),
-        Uniform::new("material_radius", p.radius).into_owned(),
-        Uniform::new("texture_size", [p.sample_framebuffer[2], p.sample_framebuffer[3]]).into_owned(),
-        Uniform::new("capture_origin", [p.sample_framebuffer[0], p.sample_framebuffer[1]]).into_owned(),
-        Uniform::new("blur_radius", p.blur).into_owned(),
-        Uniform::new("presentation_alpha", p.presentation_alpha).into_owned(),
-        Uniform::new("background_opacity", p.background_opacity).into_owned(),
-        Uniform::new("tint", p.tint).into_owned(),
+        Uniform::new("visible_rect", p.visible_framebuffer),
+        Uniform::new("material_radius", p.radius),
+        Uniform::new("texture_size", [p.sample_framebuffer[2], p.sample_framebuffer[3]]),
+        Uniform::new("capture_origin", [p.sample_framebuffer[0], p.sample_framebuffer[1]]),
+        Uniform::new("blur_radius", p.blur),
+        Uniform::new("presentation_alpha", p.presentation_alpha),
+        Uniform::new("background_opacity", p.background_opacity),
+        Uniform::new("tint", p.tint),
     ]
 }
 
@@ -426,12 +426,12 @@ pub(super) fn material_uniforms(parameters: &MaterialParameters) -> Vec<Uniform<
 
 pub(super) fn decoration_uniforms(parameters: &MaterialParameters, paint_mode: f32) -> Vec<Uniform<'static>> {
     vec![
-        Uniform::new("paint_mode", paint_mode).into_owned(),
-        Uniform::new("shadow_rect", parameters.shadow_rect).into_owned(),
-        Uniform::new("shadow_values", parameters.shadow_values).into_owned(),
-        Uniform::new("visible_rect", parameters.visible_framebuffer).into_owned(),
-        Uniform::new("material_radius", parameters.radius).into_owned(),
-        Uniform::new("tint", parameters.tint).into_owned(),
+        Uniform::new("paint_mode", paint_mode),
+        Uniform::new("shadow_rect", parameters.shadow_rect),
+        Uniform::new("shadow_values", parameters.shadow_values),
+        Uniform::new("visible_rect", parameters.visible_framebuffer),
+        Uniform::new("material_radius", parameters.radius),
+        Uniform::new("tint", parameters.tint),
     ]
 }
 

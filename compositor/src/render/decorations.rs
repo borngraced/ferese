@@ -130,7 +130,7 @@ pub(super) fn window_border_element(
     let context = renderer.context_id().erased();
     let buffers = &mut resources.windows.entry(id).or_default().borders;
     if !buffers.contexts.contains_key(&context) {
-        let element = PixelShaderElement::new(
+        let element = SharedPixelShaderElement::new(
             programs.border.clone(),
             geometry,
             None,
@@ -164,16 +164,16 @@ pub(super) fn window_border_element(
 
 pub(super) fn border_uniforms(parameters: &BorderParameters) -> Vec<Uniform<'static>> {
     vec![
-        Uniform::new("clip_rect", parameters.clip_rect).into_owned(),
-        Uniform::new("radius", parameters.radius).into_owned(),
-        Uniform::new("border_width", parameters.width).into_owned(),
-        Uniform::new("border_color", parameters.color).into_owned(),
-        Uniform::new("border_color_to", parameters.color_to).into_owned(),
-        Uniform::new("gradient_line", parameters.gradient_line).into_owned(),
-        Uniform::new("focus_color", parameters.focus_color).into_owned(),
-        Uniform::new("focus_color_to", parameters.focus_color_to).into_owned(),
-        Uniform::new("focus_gradient_line", parameters.focus_gradient_line).into_owned(),
-        Uniform::new("focus_mix", parameters.focus_mix).into_owned(),
+        Uniform::new("clip_rect", parameters.clip_rect),
+        Uniform::new("radius", parameters.radius),
+        Uniform::new("border_width", parameters.width),
+        Uniform::new("border_color", parameters.color),
+        Uniform::new("border_color_to", parameters.color_to),
+        Uniform::new("gradient_line", parameters.gradient_line),
+        Uniform::new("focus_color", parameters.focus_color),
+        Uniform::new("focus_color_to", parameters.focus_color_to),
+        Uniform::new("focus_gradient_line", parameters.focus_gradient_line),
+        Uniform::new("focus_mix", parameters.focus_mix),
     ]
 }
 
@@ -213,12 +213,12 @@ pub(super) fn window_tint_element(
     };
     let uniforms = |p: &BorderParameters| {
         vec![
-            Uniform::new("visible_rect", p.clip_rect).into_owned(),
-            Uniform::new("material_radius", p.radius).into_owned(),
-            Uniform::new("tint", p.color).into_owned(),
-            Uniform::new("paint_mode", 0.0_f32).into_owned(),
-            Uniform::new("shadow_rect", p.clip_rect).into_owned(),
-            Uniform::new("shadow_values", [0.0_f32; 2]).into_owned(),
+            Uniform::new("visible_rect", p.clip_rect),
+            Uniform::new("material_radius", p.radius),
+            Uniform::new("tint", p.color),
+            Uniform::new("paint_mode", 0.0_f32),
+            Uniform::new("shadow_rect", p.clip_rect),
+            Uniform::new("shadow_values", [0.0_f32; 2]),
         ]
     };
     let context = renderer.context_id().erased();
@@ -228,7 +228,7 @@ pub(super) fn window_tint_element(
         &mut resources.windows.entry(id).or_default().dim
     };
     let cached = buffers.contexts.entry(context).or_insert_with(|| CachedBorder {
-        element: PixelShaderElement::new(
+        element: SharedPixelShaderElement::new(
             program.0,
             geometry,
             None,
@@ -293,7 +293,7 @@ pub(super) fn window_shadow_element(
     let context = renderer.context_id().erased();
     let buffers = &mut resources.windows.entry(id).or_default().shadow;
     if !buffers.contexts.contains_key(&context) {
-        let element = PixelShaderElement::new(
+        let element = SharedPixelShaderElement::new(
             programs.shadow.clone(),
             bounds,
             None,
@@ -331,11 +331,11 @@ pub(super) fn window_shadow_element(
 
 pub(super) fn shadow_uniforms(parameters: &ShadowParameters) -> Vec<Uniform<'static>> {
     vec![
-        Uniform::new("shadow_rect", parameters.shadow_rect).into_owned(),
-        Uniform::new("radius", parameters.radius).into_owned(),
-        Uniform::new("blur", parameters.blur).into_owned(),
-        Uniform::new("opacity", parameters.opacity).into_owned(),
-        Uniform::new("shadow_color", parameters.color).into_owned(),
+        Uniform::new("shadow_rect", parameters.shadow_rect),
+        Uniform::new("radius", parameters.radius),
+        Uniform::new("blur", parameters.blur),
+        Uniform::new("opacity", parameters.opacity),
+        Uniform::new("shadow_color", parameters.color),
     ]
 }
 

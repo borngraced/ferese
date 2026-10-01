@@ -29,6 +29,8 @@ impl Ferese {
         match registration {
             Ok(_) => {
                 self.output_ids.insert(output.clone(), output_id);
+                self.outputs_by_id.insert(output_id, output.clone());
+                self.output_names.insert(output_id, output.name());
                 self.restore_output_focus();
                 let visible = self.visible_workspace_ids();
                 self.reconcile_workspaces(&visible);
@@ -45,6 +47,8 @@ impl Ferese {
             return;
         };
 
+        self.outputs_by_id.remove(&output_id);
+        self.output_names.remove(&output_id);
         self.workspace_slides.remove(&output_id);
         self.render.remove_output(output_id);
         self.pending_screencopies.retain(|capture| {
@@ -113,9 +117,7 @@ impl Ferese {
 
     pub(crate) fn focused_output(&self) -> Option<&Output> {
         let focused = self.output_workspaces.focused_output()?;
-        self.output_ids
-            .iter()
-            .find_map(|(output, id)| (*id == focused).then_some(output))
+        self.outputs_by_id.get(&focused)
     }
 
     pub(crate) fn restore_output_focus(&mut self) {

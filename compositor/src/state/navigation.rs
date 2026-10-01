@@ -139,12 +139,7 @@ impl Ferese {
         {
             tracing::warn!(%error, ?current, ?next, "failed to slide swipe focus");
         }
-        let Some(window) = self
-            .windows
-            .ids()
-            .iter()
-            .find_map(|(window, id)| (*id == next).then(|| window.clone()))
-        else {
+        let Some(window) = self.windows.window(next).cloned() else {
             return;
         };
         let Some(surface) = window.toplevel().map(|toplevel| toplevel.wl_surface().clone()) else {
@@ -306,12 +301,7 @@ impl Ferese {
     }
 
     pub(crate) fn activate_managed_window(&mut self, id: WindowId) -> bool {
-        let Some(window) = self
-            .windows
-            .ids()
-            .iter()
-            .find_map(|(window, window_id)| (*window_id == id).then(|| window.clone()))
-        else {
+        let Some(window) = self.windows.window(id).cloned() else {
             return false;
         };
         if !activate_window_workspace(&mut self.workspaces, &mut self.output_workspaces, id) {
@@ -441,6 +431,7 @@ impl Ferese {
                 .get_mut(&output)
                 .expect("gesture output exists")
                 .held_progress = Some(progress);
+            self.refresh_workspace_slide_offsets();
             self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
             self.cursor_redraw_pending = true;
             return;
@@ -555,14 +546,11 @@ impl Ferese {
             self.focus_lock_surface();
             return;
         }
-        let surface = self.focused_window.and_then(|focused| {
-            self.windows.ids().iter().find_map(|(window, id)| {
-                (*id == focused)
-                    .then(|| window.toplevel())
-                    .flatten()
-                    .map(|toplevel| toplevel.wl_surface().clone())
-            })
-        });
+        let surface = self
+            .focused_window
+            .and_then(|focused| self.windows.window(focused))
+            .and_then(|window| window.toplevel())
+            .map(|toplevel| toplevel.wl_surface().clone());
 
         self.seat.get_keyboard().expect("seat has a keyboard").set_focus(
             self,

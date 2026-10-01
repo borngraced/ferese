@@ -364,18 +364,14 @@ impl Ferese {
                             .into_iter()
                             .map(|symbol| symbol.raw())
                             .collect::<Vec<_>>();
-                        let action = data.bindings.iter().find_map(|binding| {
-                            binding
-                                .matches(
-                                    keycode,
-                                    &raw_symbols,
-                                    modifiers.logo,
-                                    modifiers.ctrl,
-                                    modifiers.alt,
-                                    modifiers.shift,
-                                )
-                                .then(|| binding.action.clone())
-                        });
+                        let action = data.bindings.action_for_key(
+                            keycode,
+                            &raw_symbols,
+                            modifiers.logo,
+                            modifiers.ctrl,
+                            modifiers.alt,
+                            modifiers.shift,
+                        );
                         if data.focus_cycle.is_some()
                             && state == KeyState::Pressed
                             && !matches!(action, Some(BindingAction::FocusMru(_)))
@@ -405,6 +401,8 @@ impl Ferese {
 
                         if state == KeyState::Pressed {
                             data.intercepted_keys.insert(keycode);
+                            let action = action.clone();
+
                             if let BindingAction::FocusMru(reverse) = action {
                                 data.cycle_focus(reverse, modifiers.alt);
                             } else {
@@ -814,6 +812,8 @@ impl Ferese {
             return;
         }
 
+        let previous = self.focused_window;
+
         if let Some(window) = self.window_under_visual(position) {
             let focused = self.windows.ids().get(&window).copied();
             if let Some(focused) = focused {
@@ -833,8 +833,21 @@ impl Ferese {
             } else {
                 // Hover transfers keyboard focus without changing the persistent
                 // stack: an exposed window must not cover the floats above it.
-                for mapped in self.space.elements() {
-                    mapped.set_activated(mapped == &window);
+                if let Some(previous) = previous
+                    .filter(|id| Some(*id) != focused)
+                    .and_then(|id| self.windows.window(id))
+                {
+                    previous.set_activated(false);
+
+                    if let Some(toplevel) = previous.toplevel() {
+                        toplevel.send_pending_configure();
+                    }
+                }
+
+                window.set_activated(true);
+
+                if let Some(toplevel) = window.toplevel() {
+                    toplevel.send_pending_configure();
                 }
             }
             let surface = window
@@ -844,15 +857,17 @@ impl Ferese {
                 .clone();
             keyboard.set_focus(self, Some(surface), serial);
         } else {
+            if let Some(previous) = previous.and_then(|id| self.windows.window(id)) {
+                previous.set_activated(false);
+
+                if let Some(toplevel) = previous.toplevel() {
+                    toplevel.send_pending_configure();
+                }
+            }
+
             self.focused_window = None;
             keyboard.set_focus(self, Option::<WlSurface>::None, serial);
         }
-
-        self.space.elements().for_each(|window| {
-            if let Some(toplevel) = window.toplevel() {
-                toplevel.send_pending_configure();
-            }
-        });
 
         if raise {
             self.relayout();
@@ -987,11 +1002,11 @@ impl Ferese {
     fn execute_binding(&mut self, action: BindingAction) {
         match action {
             BindingAction::None => {}
-            BindingAction::Spawn(mut argv) => {
-                let program = argv.remove(0);
+            BindingAction::Spawn(argv) => {
+                let (program, args) = argv.split_first().expect("binding commands are validated");
 
-                match Command::new(&program)
-                    .args(argv)
+                match Command::new(program)
+                    .args(args)
                     .env("WAYLAND_DISPLAY", &self.socket_name)
                     .env_remove("WAYLAND_SOCKET")
                     .spawn()

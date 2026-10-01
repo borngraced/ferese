@@ -166,10 +166,7 @@ impl Ferese {
         };
 
         if overview_active {
-            let mut candidates = self.windows.ids().keys().cloned().collect::<Vec<_>>();
-            // Match Overview's front-to-back render order during overlapping motion.
-            candidates.sort_by_key(|window| std::cmp::Reverse(self.windows.ids().get(window).map_or(0, |id| id.0)));
-            candidates.iter().find_map(hit)
+            self.windows.overview_windows().find_map(hit)
         } else {
             self.space.elements().rev().find_map(hit)
         }

@@ -773,7 +773,13 @@ fn lid_hides_panel(closed: bool, external_available: bool) -> bool {
     closed && external_available
 }
 
-fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, plan: crate::frame_scheduler::FramePlan) {
+// Return the sampled scene's activity so dispatch does not rescan the windows.
+fn render_output(
+    state: &mut Ferese,
+    node: DrmNode,
+    crtc: crtc::Handle,
+    plan: crate::frame_scheduler::FramePlan,
+) -> bool {
     if state.session_lock.active && state.session_lock.sleeping {
         sleep_locked_outputs(state);
         let asleep = state
@@ -783,7 +789,7 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, plan: cr
             .and_then(|device| device.outputs.get(&crtc))
             .is_none_or(|output| output.power_off || output.frame_pending);
         if asleep {
-            return;
+            return false;
         }
     }
 
@@ -798,18 +804,18 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, plan: cr
         .as_mut()
         .and_then(|backend| backend.devices.remove(&node))
     else {
-        return;
+        return false;
     };
 
     let Some(mut output) = device.outputs.remove(&crtc) else {
         restore_device(state, node, device);
-        return;
+        return false;
     };
 
     if !device.drm.is_active() || output.frame_pending {
         device.outputs.insert(crtc, output);
         restore_device(state, node, device);
-        return;
+        return false;
     }
 
     let render_started = Instant::now();
@@ -826,7 +832,7 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, plan: cr
             let effects = frame_effect_metrics(&elements, output.output.current_scale().fractional_scale());
             let flags = planes::frame_flags(
                 state.output_has_fullscreen_for_frame(&output.output, frame.overview.is_presenting()),
-                state.output_has_animations(&output.output),
+                frame.animating,
                 state.session_lock.active,
             );
             let result =
@@ -919,6 +925,8 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, plan: cr
     if !submitted {
         schedule_frame_callbacks(state, node, crtc, plan.present_at);
     }
+
+    frame.animating
 }
 
 fn restore_device(state: &mut Ferese, node: DrmNode, device: DirectDevice) {

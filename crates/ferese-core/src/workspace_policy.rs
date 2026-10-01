@@ -15,46 +15,58 @@ pub struct WorkspaceView {
 
 impl OutputWorkspaceMap {
     pub fn workspace_views(&self, workspaces: &WorkspaceSet) -> Vec<WorkspaceView> {
-        let mut outputs = self.connected_outputs().collect::<Vec<_>>();
-        outputs.sort_unstable();
+        self.workspace_views_iter(workspaces).collect()
+    }
 
-        outputs
-            .into_iter()
-            .flat_map(|output| {
-                self.ordered_workspaces(workspaces, output)
-                    .into_iter()
-                    .enumerate()
-                    .map(move |(index, id)| {
-                        let visible = self.active_workspace(output) == Some(id);
-                        WorkspaceView {
-                            id,
-                            output,
-                            index: index as u32 + 1,
-                            window_count: workspaces.workspace(id).unwrap().window_count(),
-                            visible,
-                            focused: visible && self.focused_output() == Some(output),
-                        }
-                    })
+    pub fn workspace_views_iter<'a>(
+        &'a self,
+        workspaces: &'a WorkspaceSet,
+    ) -> impl Iterator<Item = WorkspaceView> + 'a {
+        self.connected_outputs()
+            .flat_map(move |output| self.workspace_views_for_output(workspaces, output))
+    }
+
+    pub fn workspace_views_for_output<'a>(
+        &'a self,
+        workspaces: &'a WorkspaceSet,
+        output: OutputId,
+    ) -> impl Iterator<Item = WorkspaceView> + 'a {
+        self.ordered_workspace_ids(workspaces, output)
+            .enumerate()
+            .map(move |(index, id)| {
+                let visible = self.active_workspace(output) == Some(id);
+
+                WorkspaceView {
+                    id,
+                    output,
+                    index: index as u32 + 1,
+                    window_count: workspaces.workspace(id).unwrap().window_count(),
+                    visible,
+                    focused: visible && self.focused_output() == Some(output),
+                }
             })
-            .collect()
+    }
+
+    pub fn ordered_workspace_ids<'a>(
+        &'a self,
+        workspaces: &'a WorkspaceSet,
+        output: OutputId,
+    ) -> impl DoubleEndedIterator<Item = WorkspaceId> + 'a {
+        self.assigned_workspaces(output)
+            .filter(|id| workspaces.workspace(*id).is_some())
     }
 
     pub fn ordered_workspaces(&self, workspaces: &WorkspaceSet, output: OutputId) -> Vec<WorkspaceId> {
-        let mut ids = workspaces
-            .iter()
-            .filter(|workspace| self.output_for_workspace(workspace.id) == Some(output))
-            .map(|workspace| workspace.id)
-            .collect::<Vec<_>>();
-        ids.sort_unstable_by_key(|id| id.0);
-        ids
+        self.ordered_workspace_ids(workspaces, output).collect()
     }
 
     /// Out-of-range numeric selection resolves to the trailing spare. Looking
     /// up a gesture target never creates workspaces or changes history.
     pub fn workspace_at(&self, workspaces: &WorkspaceSet, output: OutputId, index: u32) -> Option<WorkspaceId> {
         let index = index.checked_sub(1)? as usize;
-        let ids = self.ordered_workspaces(workspaces, output);
-        ids.get(index).or_else(|| ids.last()).copied()
+        self.ordered_workspace_ids(workspaces, output)
+            .nth(index)
+            .or_else(|| self.ordered_workspace_ids(workspaces, output).next_back())
     }
 
     /// Reconcile after membership, selection, output, or transition changes.
@@ -68,17 +80,15 @@ impl OutputWorkspaceMap {
             workspaces.activate(active).expect("output's active workspace exists");
         }
 
-        let mut protected = transitions.clone();
+        let mut protected = HashSet::new();
         let outputs = self.connected_outputs().collect::<Vec<_>>();
         for output in outputs {
-            let ordered = self.ordered_workspaces(workspaces, output);
+            let last = self.ordered_workspace_ids(workspaces, output).next_back();
             if let Some(active) = self.active_workspace(output) {
                 protected.insert(active);
             }
 
-            let spare = ordered
-                .last()
-                .copied()
+            let spare = last
                 .filter(|id| workspaces.workspace(*id).is_some_and(|w| w.is_empty()))
                 .unwrap_or_else(|| {
                     let id = workspaces.create_workspace();
@@ -91,7 +101,10 @@ impl OutputWorkspaceMap {
         let removed = workspaces
             .iter()
             .filter(|workspace| {
-                workspace.is_empty() && !protected.contains(&workspace.id) && workspace.id != workspaces.active_id()
+                workspace.is_empty()
+                    && !protected.contains(&workspace.id)
+                    && !transitions.contains(&workspace.id)
+                    && workspace.id != workspaces.active_id()
             })
             .map(|workspace| workspace.id)
             .collect::<Vec<_>>();

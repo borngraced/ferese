@@ -49,7 +49,7 @@ impl Ferese {
         let available = self.focus_candidates();
         if !preview {
             self.cancel_focus_cycle();
-            let order = self.focus_history.candidates(self.focused_window, available.clone());
+            let order = self.focus_history.candidates(self.focused_window, &available);
             let mut cycle = ferese_core::FocusCycle::new(order, self.focused_window);
             if let Some(id) = cycle.advance(reverse, &available) {
                 self.activate_managed_window(id);
@@ -57,7 +57,7 @@ impl Ferese {
             return;
         }
         if self.focus_cycle.is_none() {
-            let order = self.focus_history.candidates(self.focused_window, available.clone());
+            let order = self.focus_history.candidates(self.focused_window, &available);
             if order.len() < 2 {
                 return;
             }

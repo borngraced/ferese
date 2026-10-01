@@ -30,25 +30,38 @@ impl XdgShellHandler for Ferese {
         // discoverable, but do not mutate/focus the layout until its initial
         // commit supplies the metadata needed to resolve placement rules.
         self.space.map_element(window, (0, 0), false);
+        self.invalidate_window_stacking();
+    }
+
+    fn title_changed(&mut self, surface: ToplevelSurface) {
+        if self.windows.refresh_metadata(surface.wl_surface()) {
+            self.send_shell_snapshots();
+            self.cursor_redraw_pending = true;
+        }
+    }
+
+    fn app_id_changed(&mut self, surface: ToplevelSurface) {
+        if self.windows.refresh_metadata(surface.wl_surface()) {
+            self.send_shell_snapshots();
+            self.cursor_redraw_pending = true;
+        }
     }
 
     fn parent_changed(&mut self, surface: ToplevelSurface) {
         let Some(parent) = surface.parent() else {
             return;
         };
-        let parent = self.windows.ids().iter().find_map(|(window, id)| {
-            window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == &parent)
-                .then_some(*id)
-        });
+        let parent = self.windows.id_for_surface(&parent);
         let child = self
-            .space
-            .elements()
-            .find(|window| {
-                window
-                    .toplevel()
-                    .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+            .windows
+            .id_for_surface(surface.wl_surface())
+            .and_then(|id| self.windows.window(id))
+            .or_else(|| {
+                self.space.elements().find(|window| {
+                    window
+                        .toplevel()
+                        .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+                })
             })
             .cloned();
 
@@ -61,13 +74,14 @@ impl XdgShellHandler for Ferese {
         // Hidden workspace windows are managed but unmapped from Space.
         let Some(window) = self
             .windows
-            .ids()
-            .keys()
-            .chain(self.space.elements())
-            .find(|window| {
-                window
-                    .toplevel()
-                    .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+            .id_for_surface(surface.wl_surface())
+            .and_then(|id| self.windows.window(id))
+            .or_else(|| {
+                self.space.elements().find(|window| {
+                    window
+                        .toplevel()
+                        .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
+                })
             })
             .cloned()
         else {
@@ -186,12 +200,7 @@ impl XdgShellHandler for Ferese {
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        if let Some(id) = self.windows.ids().iter().find_map(|(window, id)| {
-            window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
-                .then_some(*id)
-        }) {
+        if let Some(id) = self.windows.id_for_surface(surface.wl_surface()) {
             self.set_window_maximized(id, true);
         } else {
             surface.with_pending_state(|state| state.states.set(ToplevelState::Maximized));
@@ -199,12 +208,7 @@ impl XdgShellHandler for Ferese {
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        if let Some(id) = self.windows.ids().iter().find_map(|(window, id)| {
-            window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
-                .then_some(*id)
-        }) {
+        if let Some(id) = self.windows.id_for_surface(surface.wl_surface()) {
             self.set_window_maximized(id, false);
         } else {
             surface.with_pending_state(|state| state.states.unset(ToplevelState::Maximized));
@@ -216,12 +220,7 @@ impl XdgShellHandler for Ferese {
         surface: ToplevelSurface,
         _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
     ) {
-        if let Some(window) = self.windows.ids().iter().find_map(|(window, id)| {
-            window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
-                .then_some(*id)
-        }) {
+        if let Some(window) = self.windows.id_for_surface(surface.wl_surface()) {
             self.set_window_fullscreen(window, true);
         } else {
             surface.with_pending_state(|state| state.states.set(ToplevelState::Fullscreen));
@@ -229,12 +228,7 @@ impl XdgShellHandler for Ferese {
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        if let Some(window) = self.windows.ids().iter().find_map(|(window, id)| {
-            window
-                .toplevel()
-                .is_some_and(|toplevel| toplevel.wl_surface() == surface.wl_surface())
-                .then_some(*id)
-        }) {
+        if let Some(window) = self.windows.id_for_surface(surface.wl_surface()) {
             self.set_window_fullscreen(window, false);
         } else {
             surface.with_pending_state(|state| state.states.unset(ToplevelState::Fullscreen));
@@ -391,14 +385,9 @@ pub fn apply_initial_window_rules(state: &mut Ferese, window: &Window) {
         })
     });
     if initial {
-        let parent = toplevel.parent().and_then(|parent| {
-            state.windows.ids().iter().find_map(|(candidate, id)| {
-                candidate
-                    .toplevel()
-                    .is_some_and(|surface| surface.wl_surface() == &parent)
-                    .then_some(*id)
-            })
-        });
+        let parent = toplevel
+            .parent()
+            .and_then(|parent| state.windows.id_for_surface(&parent));
         state.add_rule_placed_window(window.clone(), app_id.as_deref(), title.as_deref(), parent);
     }
     state.apply_initial_window_rules(window, app_id.as_deref(), title.as_deref(), transient);

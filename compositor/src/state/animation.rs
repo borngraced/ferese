@@ -20,7 +20,56 @@ impl Ferese {
         self.last_animation_tick = Instant::now();
     }
 
+    fn animations_need_tick(&self) -> bool {
+        if self.focus_swipe.is_some()
+            || !self.workspace_slides.is_empty()
+            || !self.dismissing_popups.is_empty()
+            || self.render.snapshots().next().is_some()
+            || self.overview.needs_tick()
+        {
+            return true;
+        }
+
+        let moving = |value: &AnimatedValue| value.current != value.target || value.velocity != 0.0;
+
+        if self.viewport_animations.iter().any(|(workspace, viewport)| {
+            self.output_workspaces
+                .output_for_workspace(*workspace)
+                .is_some_and(|output| self.output_workspaces.active_workspace(output) == Some(*workspace))
+                && moving(viewport)
+        }) {
+            return true;
+        }
+
+        let selected = if self.overview.is_active() {
+            self.overview.selected()
+        } else {
+            self.focused_window
+        };
+
+        self.windows.records().any(|(&id, record)| {
+            let focus = if selected == Some(id) { 1.0 } else { 0.0 };
+            let dim = crate::dimming::target(
+                self.inactive_dim,
+                self.focused_window,
+                id,
+                self.overview.is_presenting(),
+            );
+
+            record_needs_tick(record, focus, dim, || {
+                self.windows
+                    .window(id)
+                    .is_some_and(|window| self.space.element_location(window).is_some())
+            })
+        })
+    }
+
     pub(super) fn advance_animations_by(&mut self, delta: std::time::Duration) -> bool {
+        if !self.animations_need_tick() {
+            self.sync_window_stacking();
+            return false;
+        }
+
         let delta = delta.mul_f64(self.animation_speed);
         if self
             .focus_swipe
@@ -30,21 +79,6 @@ impl Ferese {
             self.focus_swipe = None;
         }
 
-        let visible_workspaces = if self.viewport_animations.is_empty() {
-            HashSet::new()
-        } else {
-            self.space
-                .outputs()
-                .filter_map(|output| self.output_ids.get(output))
-                .filter_map(|output| self.output_workspaces.active_workspace(*output))
-                .collect::<HashSet<_>>()
-        };
-
-        let windows = self
-            .space
-            .elements()
-            .filter_map(|window| self.windows.ids().get(window).copied().map(|id| (window.clone(), id)))
-            .collect::<Vec<_>>();
         let mut active_animation = false;
         let mut completed_slides = Vec::new();
         for (output, slide) in &mut self.workspace_slides {
@@ -102,9 +136,12 @@ impl Ferese {
             dim_changed |= previous != focus.current;
         }
 
-        for (_, id) in &windows {
-            let target = crate::dimming::target(dim_settings, self.focused_window, *id, self.overview.is_presenting());
-            let Some(record) = self.windows.record_mut(*id) else {
+        for window in self.space.elements() {
+            let Some(id) = self.windows.ids().get(window).copied() else {
+                continue;
+            };
+            let target = crate::dimming::target(dim_settings, self.focused_window, id, self.overview.is_presenting());
+            let Some(record) = self.windows.record_mut(id) else {
                 continue;
             };
 
@@ -184,7 +221,11 @@ impl Ferese {
         // Keep scheduling frames while waiting, so the deadline cannot stall.
         active_animation |= !blocked_workspaces.is_empty();
         for (workspace, viewport) in &mut self.viewport_animations {
-            if !visible_workspaces.contains(workspace) {
+            if !self
+                .output_workspaces
+                .output_for_workspace(*workspace)
+                .is_some_and(|output| self.output_workspaces.active_workspace(output) == Some(*workspace))
+            {
                 continue;
             }
 
@@ -202,8 +243,13 @@ impl Ferese {
             }
         }
 
-        let mut settled_coupled_widths = Vec::new();
-        for (window, id) in windows {
+        let mut remaps = Vec::new();
+
+        for window in self.space.elements() {
+            let Some(id) = self.windows.ids().get(window).copied() else {
+                continue;
+            };
+
             if self
                 .workspaces
                 .workspace_for_window(id)
@@ -229,6 +275,11 @@ impl Ferese {
                 geometry.visual.velocity.width = 0.0;
             }
             active_animation |= geometry.advance(delta, self.spring_config, self.animations_enabled);
+
+            if zooming != geometry.is_zooming() {
+                self.stacking_cache.invalidate();
+            }
+
             if let Some(target) = coupled_target {
                 geometry.visual.target.width = target;
             }
@@ -262,7 +313,7 @@ impl Ferese {
                 geometry.visual.current.width = width.current;
                 geometry.visual.velocity.width = width.velocity;
                 if !width_active {
-                    settled_coupled_widths.push(id);
+                    record.coupled_width = None;
                 }
             }
 
@@ -287,12 +338,18 @@ impl Ferese {
             }
 
             let visual = geometry.visual.current;
-            self.space
-                .map_element(window, (visual.x.round() as i32, visual.y.round() as i32), false);
+            let location = (visual.x.round() as i32, visual.y.round() as i32).into();
+
+            if self.space.element_location(window) != Some(location) {
+                remaps.push((id, location));
+            }
         }
 
-        for id in settled_coupled_widths {
-            self.windows.update(id, |record| record.coupled_width = None);
+        for (id, location) in remaps {
+            if let Some(window) = self.windows.window(id) {
+                self.space.map_element(window.clone(), location, false);
+                self.stacking_cache.remapped();
+            }
         }
 
         if !completed_slides.is_empty() {
@@ -320,6 +377,7 @@ impl Ferese {
         active_animation |= self
             .overview
             .advance(delta, self.spring_config, self.animations_enabled);
+        self.refresh_workspace_slide_offsets();
         self.sync_window_stacking();
 
         if active_animation || dim_changed {
@@ -337,48 +395,173 @@ impl Ferese {
     }
 
     pub(crate) fn workspace_slide_offset(&self, window: WindowId) -> (f64, f64) {
-        self.workspace_slide_offset_at(window, Duration::ZERO)
+        self.workspaces
+            .workspace_for_window(window)
+            .and_then(|workspace| self.workspace_slide_offsets.get(&workspace).copied())
+            .unwrap_or_default()
     }
 
-    pub(super) fn workspace_slide_offset_at(&self, window: WindowId, delta: Duration) -> (f64, f64) {
-        let Some(workspace) = self.workspaces.workspace_for_window(window) else {
-            return (0.0, 0.0);
-        };
+    pub(super) fn sample_workspace_slide_offsets(
+        &self,
+        output: Option<OutputId>,
+        delta: Duration,
+    ) -> HashMap<WorkspaceId, (f64, f64)> {
+        let mut offsets = HashMap::new();
+        self.fill_workspace_slide_offsets(output, delta, &mut offsets);
+        offsets
+    }
 
-        let Some(output_id) = self
-            .workspace_slides
-            .iter()
-            .find_map(|(output, slide)| slide.contains(workspace).then_some(*output))
-            .or_else(|| self.output_workspaces.output_for_workspace(workspace))
-        else {
-            return (0.0, 0.0);
-        };
+    pub(super) fn refresh_workspace_slide_offsets(&mut self) {
+        // Reuse the input snapshot's allocation. Predicted render snapshots
+        // remain separate and never change hit-testing or gesture state.
+        let mut offsets = std::mem::take(&mut self.workspace_slide_offsets);
+        offsets.clear();
+        self.fill_workspace_slide_offsets(None, Duration::ZERO, &mut offsets);
+        self.workspace_slide_offsets = offsets;
+    }
 
-        let Some(slide) = self.workspace_slides.get(&output_id) else {
-            return (0.0, 0.0);
-        };
+    fn fill_workspace_slide_offsets(
+        &self,
+        output: Option<OutputId>,
+        delta: Duration,
+        offsets: &mut HashMap<WorkspaceId, (f64, f64)>,
+    ) {
+        for (output_id, slide) in &self.workspace_slides {
+            if output.is_some_and(|output| output != *output_id) {
+                continue;
+            }
 
-        let Some(size) = self
-            .output_ids
-            .iter()
-            .find(|(_, id)| **id == output_id)
-            .and_then(|(output, _)| self.space.output_geometry(output))
-            .map(|geometry| geometry.size)
-        else {
-            return (0.0, 0.0);
-        };
+            let Some(size) = self
+                .outputs_by_id
+                .get(output_id)
+                .and_then(|output| self.space.output_geometry(output))
+                .map(|geometry| geometry.size)
+            else {
+                continue;
+            };
+            let progress = slide.progress_at(delta);
 
-        let mut slide = slide.clone();
-        if slide.held_progress.is_none() && !delta.is_zero() {
-            slide.advance(delta);
+            for item in &slide.items {
+                let position = item.start.between(item.target, progress);
+                offsets.insert(
+                    item.workspace,
+                    (position.x * f64::from(size.w), position.y * f64::from(size.h)),
+                );
+            }
         }
-
-        slide.offset(workspace, f64::from(size.w), f64::from(size.h))
     }
 
     pub(crate) fn cancel_workspace_slides(&mut self) -> bool {
         let active = !self.workspace_slides.is_empty();
         self.workspace_slides.clear();
+        self.workspace_slide_offsets.clear();
         active
+    }
+}
+
+// Inspect current targets, not the previous frame's activity. Target changes
+// and client waits must wake a desktop that was settled on its last tick.
+fn record_needs_tick(
+    record: &super::window_registry::WindowRecord,
+    focus: f64,
+    dim: f64,
+    mapped: impl FnOnce() -> bool,
+) -> bool {
+    if record.resize.is_some()
+        || record.closing.as_ref().is_some_and(|close| !close.close_sent)
+        || record.focus.as_ref().is_none_or(|motion| motion.needs_update(focus))
+    {
+        return true;
+    }
+
+    let moving = |value: &AnimatedValue| value.current != value.target || value.velocity != 0.0;
+    let pending = record.dimming.as_ref().is_none_or(|motion| motion.needs_update(dim))
+        || record.world_x.as_ref().is_some_and(|(_, world)| moving(world))
+        || record.coupled_width.is_some()
+        || record.geometry.is_some_and(|geometry| {
+            geometry.is_zooming()
+                || geometry.presentation_changed
+                || geometry.client.waiting_for_commit()
+                || geometry.visual.current != geometry.visual.target
+                || geometry.visual.velocity != ferese_animation::RectVelocity::default()
+                || (!record.natural_floating_pending
+                    && geometry.client.last_configured_size != Some(ClientSize::from_rect(geometry.logical)))
+        });
+
+    // Hidden geometry and dimming do not advance in the full path.
+    // A stale hidden target must not keep waking the whole desktop.
+    pending && mapped()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::window_registry::WindowRecord;
+    use super::*;
+
+    fn settled() -> WindowRecord {
+        let rect = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let mut geometry = WindowGeometry::new(rect, Some(ClientSize::from_rect(rect)));
+        geometry.presentation_changed = false;
+
+        WindowRecord {
+            geometry: Some(geometry),
+            focus: Some(DimAnimation::new(1.0)),
+            dimming: Some(DimAnimation::new(0.0)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn idle_check_skips_mapping_lookup_but_new_focus_and_dim_targets_wake_it() {
+        let record = settled();
+
+        for _ in 0..100 {
+            assert!(!record_needs_tick(&record, 1.0, 0.0, || panic!(
+                "settled record needs no mapping lookup"
+            )));
+        }
+
+        assert!(record_needs_tick(&record, 0.0, 0.0, || true));
+        assert!(record_needs_tick(&record, 1.0, 0.15, || true));
+        assert!(!record_needs_tick(&record, 1.0, 0.15, || false));
+    }
+
+    #[test]
+    fn geometry_motion_client_waits_and_resize_barriers_cannot_be_skipped() {
+        let mut record = settled();
+        record
+            .geometry
+            .as_mut()
+            .unwrap()
+            .visual
+            .set_target(Rect::new(10.0, 0.0, 400.0, 300.0));
+        assert!(record_needs_tick(&record, 1.0, 0.0, || true));
+        assert!(!record_needs_tick(&record, 1.0, 0.0, || false));
+
+        let mut record = settled();
+        record.geometry.as_mut().unwrap().client.request_size(
+            ClientSize {
+                width: 500,
+                height: 300,
+            },
+            Duration::ZERO,
+        );
+        assert!(record_needs_tick(&record, 1.0, 0.0, || true));
+        record.resize = Some(crate::resize_transaction::ResizeTransaction::new(
+            1.into(),
+            Duration::ZERO,
+        ));
+        assert!(record_needs_tick(&record, 1.0, 0.0, || false));
+    }
+
+    #[test]
+    fn close_requests_and_coupled_width_cleanup_still_get_their_final_tick() {
+        let mut record = settled();
+        record.closing = Some(ClosingAnimation::default());
+        assert!(record_needs_tick(&record, 1.0, 0.0, || false));
+        record.closing.as_mut().unwrap().close_sent = true;
+        assert!(!record_needs_tick(&record, 1.0, 0.0, || true));
+        record.coupled_width = Some((WorkspaceId(1), AnimatedValue::new(400.0)));
+        assert!(record_needs_tick(&record, 1.0, 0.0, || true));
     }
 }
