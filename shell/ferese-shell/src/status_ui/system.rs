@@ -18,16 +18,15 @@ pub(super) fn view<'a>(shell: &'a FereseShell, mut rows: MenuRows<'a>, style: Me
     use ferese_config::theme::{Appearance, Mode};
     let mut modes = row([]).spacing(6);
     for (mode, label) in [(Mode::Light, "☀ Light"), (Mode::Dark, "☾ Dark"), (Mode::Auto, "◐ Auto")] {
-        modes = modes.push(
+        modes = modes.push(motion::button(
             button::custom(text(label).font(shell_font()).size(13))
                 .width(Length::Fill)
                 .padding(9)
-                .class(ferese_theme::controls::button_style(
-                    theme.palette(),
-                    shell.config.theme_mode == mode,
-                ))
                 .on_press(cosmic::Action::App(Message::ThemeMode(mode))),
-        );
+            primary,
+            shell.config.theme_mode == mode,
+            p,
+        ));
     }
     rows = rows.push(modes);
     if shell.config.theme_mode == Mode::Auto {
