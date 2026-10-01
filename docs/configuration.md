@@ -88,8 +88,10 @@ Live config is limited to 60 KiB.
 | `width-presets` | array of widths | `[0.3333333333333333, 0.5, 0.6666666666666666, "full"]` | Super+R cycle; empty uses defaults |
 
 `minimal` leaves fully visible columns in place and scrolls only enough to reveal
-a hidden edge. Columns as wide as the viewport or wider align to its left edge,
-without keeping a sliver of the neighboring window. `center_on_focus` centers
+a hidden edge, ignoring differences of up to 0.5 logical pixels. Full-width
+columns align with the viewport. Wider columns reveal their left edge when
+approached from the left and their right edge when approached from the right;
+an existing view inside a wider column stays in place. `center_on_focus` centers
 the focused column. `paged` packs columns into viewport-sized pages: halves form pairs, thirds
 form triples; mixed widths and client minimum sizes determine actual boundaries.
 Changing default width preserves manually resized columns.

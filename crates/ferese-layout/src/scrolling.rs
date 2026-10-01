@@ -9,6 +9,7 @@ const DEFAULT_WIDTH: f64 = 0.5;
 const MIN_COLUMN_WIDTH: f64 = 0.1;
 const MAX_COLUMN_WIDTH: f64 = 2.0;
 const MIN_ROW_HEIGHT: f64 = 0.05;
+const REVEAL_EPSILON: f64 = 0.5;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ColumnWidth {
@@ -416,6 +417,9 @@ impl ScrollingLayout {
         };
         let viewport_width = (bounds.width - outer * 2.0).max(1.0);
         let viewport_height = (bounds.height - outer * 2.0).max(1.0);
+        // Strip coordinates start at the viewport's inset left edge. Inner
+        // gaps belong to column positions; outer margins inset the viewport
+        // and are added back exactly once when placing windows on the output.
         let mut column_positions = Vec::with_capacity(self.columns.len());
         let mut next_column_x = 0.0;
 
@@ -510,14 +514,24 @@ impl ScrollingLayout {
             return;
         }
 
-        if start >= self.viewport_x && end <= self.viewport_x + viewport_width {
+        if start >= self.viewport_x - REVEAL_EPSILON && end <= self.viewport_x + viewport_width + REVEAL_EPSILON {
             return;
         }
 
-        if width >= viewport_width || start < self.viewport_x {
-            self.viewport_x = start;
+        let target = if width >= viewport_width {
+            // Approaching from the left reveals the left edge; approaching
+            // from the right reveals the right edge. Keep an existing view
+            // inside an oversized column stable on repeated focus.
+            self.viewport_x.clamp(start, end - viewport_width)
+        } else if start < self.viewport_x {
+            start
         } else if end > self.viewport_x + viewport_width {
-            self.viewport_x = end - viewport_width;
+            end - viewport_width
+        } else {
+            self.viewport_x
+        };
+        if (target - self.viewport_x).abs() > REVEAL_EPSILON {
+            self.viewport_x = target;
         }
     }
 
@@ -805,7 +819,8 @@ mod tests {
             (500.0, 1100.0, 500.0, 600.0),
             (500.0, 400.0, 1000.0, 400.0),
             (500.0, 1100.0, 1000.0, 1100.0),
-            (500.0, 400.0, 1500.0, 400.0),
+            (500.0, 400.0, 1500.0, 500.0),
+            (500.0, -1000.0, 1500.0, -500.0),
             (500.0, 1100.0, 1500.0, 1100.0),
         ] {
             let mut layout = ScrollingLayout {
@@ -820,6 +835,52 @@ mod tests {
             );
             layout.reveal_column(&[(start, width)], 1000.0, 0);
             assert_eq!(layout.viewport_x(), expected, "repeated reveal must stay still");
+        }
+    }
+
+    #[test]
+    fn minimal_reveal_ignores_subpixel_edge_drift() {
+        for (start, width, expected) in [
+            (499.5, 500.0, 500.0),
+            (1000.5, 500.0, 500.0),
+            (499.4, 500.0, 499.4),
+            (1000.6, 500.0, 500.6),
+            (499.5, 1000.0, 500.0),
+            (500.5, 1000.0, 500.0),
+            (500.5, 1500.0, 500.0),
+            (-0.5, 1500.0, 500.0),
+        ] {
+            let mut layout = ScrollingLayout {
+                viewport_x: 500.0,
+                ..ScrollingLayout::default()
+            };
+            layout.reveal_column(&[(start, width)], 1000.0, 0);
+            assert!(
+                (layout.viewport_x() - expected).abs() < 1e-9,
+                "start={start}, width={width}"
+            );
+        }
+    }
+
+    #[test]
+    fn minimal_reveal_enters_oversized_columns_from_either_side() {
+        let mut layout = ScrollingLayout::default();
+        for id in 1..=3 {
+            layout.insert(window(id), Some(window(id.saturating_sub(1)))).unwrap();
+        }
+        layout.columns[1].width = ColumnWidth::Fixed(1500.0);
+        let bounds = Rect::new(0.0, 0.0, 1000.0, 800.0);
+        let gaps = GapConfig {
+            inner: 0.0,
+            outer: 0.0,
+            smart: false,
+        };
+        for (focused, expected) in [(1, 0.0), (2, 500.0), (3, 1500.0), (2, 1000.0), (2, 1000.0)] {
+            layout.focus_and_reveal(window(focused)).unwrap();
+            layout
+                .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(focused)))
+                .unwrap();
+            assert_eq!(layout.viewport_x(), expected);
         }
     }
 
@@ -848,6 +909,42 @@ mod tests {
         assert_eq!(layout.viewport_x(), 0.0);
         assert_eq!(result.geometry[&window(1)].x, 0.0);
         assert!(result.geometry[&window(2)].x >= bounds.width);
+    }
+
+    #[test]
+    fn minimal_reveal_accounts_for_fractional_gaps_and_outer_margins() {
+        let bounds = Rect::new(100.25, 30.5, 1000.5, 800.0);
+        let gaps = GapConfig {
+            inner: 9.5,
+            outer: 13.25,
+            smart: false,
+        };
+        for (width, offsets) in [
+            (ColumnWidth::Fixed(400.0), [0.0, 245.0, 245.0, 0.0]),
+            (ColumnWidth::Full, [0.0, 1967.0, 983.5, 0.0]),
+        ] {
+            let mut layout = ScrollingLayout::with_default_width(width);
+            for id in 1..=3 {
+                layout.insert(window(id), Some(window(id.saturating_sub(1)))).unwrap();
+            }
+            for (focused, offset) in [1, 3, 2, 1].into_iter().zip(offsets) {
+                layout.focus_and_reveal(window(focused)).unwrap();
+                let result = layout
+                    .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(focused)))
+                    .unwrap();
+                let rect = result.geometry[&window(focused)];
+                assert_eq!(layout.viewport_x(), offset, "width={width:?}, focused={focused}");
+                if focused == 1 || width == ColumnWidth::Full {
+                    assert_eq!(rect.x, 113.5, "left edge includes the outer margin");
+                }
+                if focused == 3 || width == ColumnWidth::Full {
+                    assert_eq!(rect.x + rect.width, 1087.5, "right edge includes the outer margin");
+                }
+                let next = result.geometry[&window(2)];
+                let first = result.geometry[&window(1)];
+                assert_eq!(next.x - (first.x + first.width), 9.5, "inner gap stays intact");
+            }
+        }
     }
 
     #[test]
