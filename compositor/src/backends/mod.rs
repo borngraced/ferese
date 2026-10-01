@@ -1,4 +1,5 @@
 pub(crate) mod direct;
+mod power;
 
 use std::ffi::OsString;
 

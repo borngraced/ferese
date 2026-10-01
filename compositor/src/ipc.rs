@@ -1045,6 +1045,8 @@ impl Ferese {
                         "connected": true,
                         "enabled": info.enabled && mapped.is_some(),
                         "profile": info.profile,
+                        "auto_refresh": info.auto_refresh,
+                        "low_power": backend.low_power,
                         "focused": id.is_some() && id == focused,
                         "workspace": workspace.map(|workspace| workspace.0),
                         "x": position.map(|position| position[0]),

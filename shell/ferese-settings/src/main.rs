@@ -1,3 +1,4 @@
+mod displays;
 mod fonts;
 mod schema;
 mod store;
@@ -42,6 +43,9 @@ fn main() -> cosmic::iced::Result {
 
 #[derive(Clone, Debug)]
 enum Message {
+    RefreshDisplays,
+    DisplaysLoaded(Result<Vec<displays::Display>, String>),
+    RefreshRate(String, displays::Mode, bool),
     ThemeChanged(ferese_config::theme::Snapshot),
     DragWindow,
     Page(Page),
@@ -82,6 +86,7 @@ enum Message {
 }
 
 struct App {
+    displays: Vec<displays::Display>,
     note_editors: HashMap<String, NoteEditor>,
     core: Core,
     path: PathBuf,
@@ -146,6 +151,7 @@ impl cosmic::Application for App {
         let font = ferese_theme::font(Some(&resolved.presented.tokens.typography.font_family));
         let native_palette = visuals::Palette::from_resolved(&resolved.presented);
         let mut app = Self {
+            displays: vec![],
             note_editors: HashMap::new(),
             core,
             path,
@@ -186,6 +192,14 @@ impl cosmic::Application for App {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
+            Message::RefreshDisplays => return self.load_displays(),
+            Message::DisplaysLoaded(result) => {
+                self.displays = result.unwrap_or_default();
+            }
+            Message::RefreshRate(prefix, mode, automatic) => {
+                self.inputs.remove(&format!("{prefix}.mode"));
+                return self.edit_many(displays::edits(&prefix, mode, automatic));
+            }
             Message::ThemeChanged(snapshot) => {
                 self.resolved = snapshot;
                 self.font = ferese_theme::font(Some(&self.resolved.presented.tokens.typography.font_family));
@@ -300,6 +314,9 @@ impl cosmic::Application for App {
             Message::Page(page) => {
                 self.page = page;
                 self.search.clear();
+                if page == Page::Displays {
+                    return self.load_displays();
+                }
                 if page == Page::Wallpaper {
                     return self.load_thumbnail();
                 }
@@ -575,6 +592,11 @@ impl cosmic::Application for App {
         cosmic::iced::Subscription::batch([
             cosmic::iced::Subscription::run_with(self.path.clone(), watch::changes),
             ferese_theme::service::subscription().map(Message::ThemeChanged),
+            if self.page == Page::Displays {
+                cosmic::iced::time::every(std::time::Duration::from_secs(2)).map(|_| Message::RefreshDisplays)
+            } else {
+                cosmic::iced::Subscription::none()
+            },
         ])
     }
 
@@ -971,6 +993,7 @@ impl cosmic::Application for App {
                             let prefix = format!("{prefix}.outputs.{output}");
                             let group = column([])
                                 .spacing(1)
+                                .push(self.refresh_controls(&prefix))
                                 .push(self.field(schema::text(
                                     format!("{prefix}.match"),
                                     "Display",
@@ -1605,6 +1628,72 @@ impl App {
         .width(Length::Fill)
         .class(visuals::surface(palette.card, 0.))
         .into()
+    }
+
+    fn load_displays(&self) -> Task<Message> {
+        cosmic::task::future(async {
+            Message::DisplaysLoaded(
+                tokio::task::spawn_blocking(displays::load)
+                    .await
+                    .unwrap_or_else(|error| Err(error.to_string())),
+            )
+        })
+    }
+
+    fn refresh_controls(&self, prefix: &str) -> Element<'_, Message> {
+        let matcher = self.draft.string(&format!("{prefix}.match"), "");
+        let configured = self.draft.string(&format!("{prefix}.mode"), "");
+        let automatic = self.draft.boolean(&format!("{prefix}.auto_refresh"), false);
+        let Some(display) = self
+            .displays
+            .iter()
+            .find(|display| display.connector == matcher || display.identity == matcher)
+        else {
+            return self.note("Connect this display to choose a supported refresh rate.");
+        };
+        let modes = displays::choices(display, &configured);
+        let mut controls = row([]).spacing(8).align_y(Alignment::Center);
+        for mode in &modes {
+            let selected = !automatic
+                && configured
+                    .split('@')
+                    .nth(1)
+                    .and_then(|rate| rate.parse::<f64>().ok())
+                    .is_some_and(|rate| (rate * 1000. - f64::from(mode.refresh)).abs() < 1.);
+            controls = controls.push(
+                ferese_theme::controls::text_button(
+                    mode.label(),
+                    self.font,
+                    visuals::Palette::from_resolved(&self.resolved.presented),
+                    selected,
+                )
+                .on_press(Message::RefreshRate(prefix.to_owned(), *mode, false)),
+            );
+        }
+        let supports_auto = modes.iter().any(|mode| (59_000..=61_000).contains(&mode.refresh));
+        if supports_auto && let Some(mode) = modes.last() {
+            controls = controls.push(
+                ferese_theme::controls::text_button(
+                    "Auto",
+                    self.font,
+                    visuals::Palette::from_resolved(&self.resolved.presented),
+                    automatic,
+                )
+                .on_press(Message::RefreshRate(prefix.to_owned(), *mode, true)),
+            );
+        }
+        let current = display.current.map(|mode| mode.label()).unwrap_or_else(|| "Off".into());
+        let profile = display.profile.as_deref().unwrap_or("automatic configuration");
+        column![
+            self.label("Refresh rate", 14.),
+            self.note(&format!("Current: {current} · active profile: {profile}")),
+            controls,
+            self.note(if supports_auto {
+                "Auto uses 60 Hz below 30% on battery. Normal refresh returns on AC or at 35%. Switching may briefly blank the display. Choosing a rate turns Auto off."
+            } else {
+                "This resolution has no supported 60 Hz mode for automatic switching."
+            }),
+        ].spacing(8).into()
     }
 
     fn change(&mut self, edit: Edit) -> Task<Message> {

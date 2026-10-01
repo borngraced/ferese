@@ -74,6 +74,7 @@ pub struct OutputProfile {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutputSettings {
+    pub auto_refresh: bool,
     pub matcher: String,
     pub enabled: bool,
     pub mode: Option<OutputModeRequest>,
@@ -118,6 +119,8 @@ struct OutputProfileConfig {
 
 #[derive(Clone, Debug, Deserialize)]
 struct OutputConfig {
+    #[serde(default)]
+    auto_refresh: bool,
     #[serde(rename = "match")]
     matcher: String,
     #[serde(default = "default_true")]
@@ -1139,6 +1142,7 @@ impl Config {
                         }
 
                         Ok(OutputSettings {
+                            auto_refresh: output.auto_refresh,
                             matcher: matcher.to_owned(),
                             enabled: output.enabled,
                             mode: output
@@ -2448,6 +2452,7 @@ mod tests {
                 name: "docked".to_owned(),
                 outputs: vec![
                     OutputSettings {
+                        auto_refresh: false,
                         matcher: "HDMI-A-1".to_owned(),
                         enabled: true,
                         mode: Some(OutputModeRequest {
@@ -2460,6 +2465,7 @@ mod tests {
                         position: Some([0, 0]),
                     },
                     OutputSettings {
+                        auto_refresh: false,
                         matcher: "eDP-1".to_owned(),
                         enabled: false,
                         mode: None,
@@ -2470,6 +2476,15 @@ mod tests {
                 ],
             }]
         );
+    }
+
+    #[test]
+    fn automatic_refresh_is_opt_in_and_rejects_wrong_types() {
+        let config = parse("output-profile laptop { output eDP-1 mode=\"2880x1800@120\" auto-refresh=#true; }");
+        assert!(config.output_profiles().unwrap()[0].outputs[0].auto_refresh);
+        let manual = parse("output-profile laptop { output eDP-1 mode=\"2880x1800@60\"; }");
+        assert!(!manual.output_profiles().unwrap()[0].outputs[0].auto_refresh);
+        assert!(Config::parse_source("output-profile laptop { output eDP-1 auto-refresh=\"yes\"; }").is_err());
     }
 
     #[test]

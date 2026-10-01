@@ -41,6 +41,7 @@ pub struct DirectBackendState {
     pub session: LibSeatSession,
     pub active: bool,
     lid_closed: bool,
+    pub(crate) low_power: bool,
     devices: HashMap<DrmNode, DirectDevice>,
     input_devices: Vec<LibinputDevice>,
     presentation: HashMap<(DrmNode, crtc::Handle), PresentationClock>,
@@ -119,6 +120,7 @@ pub(crate) struct ConnectedOutputInfo {
     pub identity: String,
     pub enabled: bool,
     pub profile: Option<String>,
+    pub auto_refresh: bool,
     pub physical_size: Option<(u32, u32)>,
     pub current_mode: Option<ConnectedModeInfo>,
     pub available_modes: Vec<ConnectedModeInfo>,
@@ -201,6 +203,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         session,
         active: session_active,
         lid_closed: initial_lid_closed(),
+        low_power: super::power::low_power(false, super::power::battery_percent()),
         devices: HashMap::new(),
         input_devices: Vec::new(),
         presentation: HashMap::new(),
@@ -209,6 +212,12 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         animation_active: false,
     });
     open_primary_device(event_loop, state, &primary_path)?;
+    event_loop
+        .handle()
+        .insert_source(Timer::from_duration(Duration::from_secs(5)), |_, _, state| {
+            update_power_policy(state);
+            TimeoutAction::ToDuration(Duration::from_secs(5))
+        })?;
 
     event_loop
         .handle()
@@ -261,6 +270,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                         }
                     }
                 }
+                update_power_policy(state);
                 state.reset_animation_clock();
                 tracing::info!("direct session activated");
                 state.lock_input_activity();
@@ -328,7 +338,38 @@ pub(crate) fn reload_input_devices(state: &mut Ferese) {
     }
 }
 
+fn update_power_policy(state: &mut Ferese) {
+    if !state
+        .output_profiles
+        .iter()
+        .any(|profile| profile.outputs.iter().any(|output| output.auto_refresh))
+    {
+        return;
+    }
+    let Some(backend) = state.direct_backend.as_mut() else {
+        return;
+    };
+    // Keep low_power as the applied policy while paused. A transition sampled
+    // during inactivity must still be detected and applied on activation.
+    let battery = if backend.active {
+        super::power::battery_percent()
+    } else {
+        None
+    };
+    if let Some(next) = super::power::policy_change(backend.active, backend.low_power, battery) {
+        backend.low_power = next;
+        reload_outputs(state);
+    }
+}
+
 pub(crate) fn reload_outputs(state: &mut Ferese) {
+    if let Some(backend) = state.direct_backend.as_mut() {
+        let enabled = state
+            .output_profiles
+            .iter()
+            .any(|profile| profile.outputs.iter().any(|output| output.auto_refresh));
+        backend.low_power = enabled && super::power::low_power(backend.low_power, super::power::battery_percent());
+    }
     let nodes = state
         .direct_backend
         .as_ref()
@@ -345,7 +386,7 @@ pub(crate) fn validate_live_outputs(state: &Ferese, profiles: &[OutputProfile]) 
     };
     let mut usable = 0;
     for device in backend.devices.values() {
-        let mut scan = select_outputs(&device.drm, profiles).map_err(|e| e.to_string())?;
+        let mut scan = select_outputs(&device.drm, profiles, backend.low_power).map_err(|e| e.to_string())?;
         apply_lid_policy(&mut scan, backend.lid_closed);
         usable += scan.selections.len();
     }
@@ -390,7 +431,11 @@ fn open_primary_device(
     state
         .dmabuf_state
         .create_global_with_default_feedback::<Ferese>(&display_handle, &feedback);
-    let mut scan = select_outputs(&drm, &state.output_profiles)?;
+    let mut scan = select_outputs(
+        &drm,
+        &state.output_profiles,
+        state.direct_backend.as_ref().is_some_and(|backend| backend.low_power),
+    )?;
     apply_lid_policy(
         &mut scan,
         state.direct_backend.as_ref().is_some_and(|backend| backend.lid_closed),
@@ -787,7 +832,11 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
         return;
     };
 
-    let mut scan = match select_outputs(&device.drm, &state.output_profiles) {
+    let mut scan = match select_outputs(
+        &device.drm,
+        &state.output_profiles,
+        state.direct_backend.as_ref().is_some_and(|backend| backend.low_power),
+    ) {
         Ok(scan) => scan,
         Err(error) => {
             tracing::error!(?node, %error, "failed to scan DRM connectors");
@@ -984,6 +1033,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
             {
                 info.enabled = true;
                 info.current_mode = Some(connected_mode_info(output.mode));
+                info.auto_refresh = output.settings.auto_refresh;
                 info.scale = output.settings.scale;
                 info.transform = output.settings.transform;
                 info.configured_position = output.settings.position;
@@ -1188,7 +1238,7 @@ fn send_frame_callbacks(state: &mut Ferese, output: &Output) {
     }
 }
 
-fn select_outputs(drm: &DrmDevice, profiles: &[OutputProfile]) -> io::Result<OutputScan> {
+fn select_outputs(drm: &DrmDevice, profiles: &[OutputProfile], low_power: bool) -> io::Result<OutputScan> {
     let resources = drm.resource_handles()?;
     let connected = resources
         .connectors()
@@ -1230,13 +1280,31 @@ fn select_outputs(drm: &DrmDevice, profiles: &[OutputProfile]) -> io::Result<Out
             .unwrap_or_else(|| default_output_settings(connector.to_string()));
         let selected_mode = settings
             .enabled
-            .then(|| select_mode(&connector, settings.mode))
+            .then(|| {
+                let normal = select_mode(&connector, settings.mode)?;
+                if settings.auto_refresh && low_power {
+                    let modes = connector
+                        .modes()
+                        .iter()
+                        .map(|mode| {
+                            let (width, height) = mode.size();
+                            (width, height, OutputMode::from(*mode).refresh)
+                        })
+                        .collect::<Vec<_>>();
+                    super::power::low_refresh_mode(normal.size(), &modes)
+                        .map(|index| connector.modes()[index])
+                        .or(Some(normal))
+                } else {
+                    Some(normal)
+                }
+            })
             .flatten();
         connected_outputs.push(ConnectedOutputInfo {
             connector: connector.to_string(),
             identity: identity.clone(),
             enabled: settings.enabled,
             profile: active_profile.map(|profile| profile.name.clone()),
+            auto_refresh: settings.auto_refresh,
             physical_size: connector.size(),
             current_mode: selected_mode.map(connected_mode_info),
             available_modes: connector.modes().iter().copied().map(connected_mode_info).collect(),
@@ -1298,6 +1366,7 @@ fn output_matches(settings: &OutputSettings, connector: &connector::Info, identi
 
 fn default_output_settings(matcher: String) -> OutputSettings {
     OutputSettings {
+        auto_refresh: false,
         matcher,
         enabled: true,
         mode: None,

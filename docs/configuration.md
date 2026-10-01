@@ -367,6 +367,7 @@ are connected wins. Find connector names and persistent identities using
 | `match` | nonempty connector or persistent identity string | required; unique within profile |
 | `enabled` | boolean | `true` |
 | `mode` | `"WIDTHxHEIGHT"` or `"WIDTHxHEIGHT@HZ"` | Preferred mode |
+| `auto-refresh` | boolean | `false` |
 | `scale` | number > 0 | `1` |
 | `transform` | enum below | `"normal"` |
 | `position` | `[integer, integer]` | Automatic horizontal placement |
@@ -380,6 +381,30 @@ output-profile name="docked" {
     output match="HDMI-A-1" scale=1.5 {
         position 0 0
     }
+}
+```
+
+Settings → Displays offers the connected display's supported refresh rates at
+its configured resolution. Choosing a rate saves it and disables Auto. Choosing
+Auto saves the highest supported rate as the normal mode and enables automatic
+switching. These choices apply immediately for the active profile and persist
+across restarts.
+
+With `auto-refresh=#true`, a discharging system battery below 30% switches the
+display to a supported mode within 1 Hz of 60 Hz at the same resolution. The
+configured normal mode returns on external power or when the battery reaches
+35%. Power is checked every five seconds; mode changes only run when the policy
+changes. Unavailable battery data restores normal refresh. If no matching 60 Hz
+mode exists, normal refresh is retained. Rejected DRM mode changes retain the
+current output. A refresh-rate change can briefly blank the display (about one
+second on some panels), including automatic changes below 30%, recovery at 35%,
+and restoration on AC. Session activation only re-evaluates the power policy;
+an unchanged policy does not trigger an additional rescan. Connector changes
+continue to use the existing hotplug handling.
+
+```kdl
+output-profile laptop {
+    output eDP-1 mode="2880x1800@120" scale=1.75 auto-refresh=#true
 }
 ```
 
