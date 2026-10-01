@@ -4,6 +4,8 @@ use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+mod scheduling;
+use scheduling::*;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode, GbmBufferedSurface, NodeType};
@@ -163,8 +165,9 @@ struct DirectOutput {
     damage_tracker: OutputDamageTracker,
     render_metrics: RenderMetrics,
     frame_pending: bool,
+    scheduler: crate::frame_scheduler::FrameScheduler,
+    render_timer: Option<RegistrationToken>,
     power_off: bool,
-    callback_clock: crate::presentation::CallbackClock,
     callback_timer: Option<RegistrationToken>,
     lock_frame_pending: bool,
 }
@@ -211,6 +214,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         animation_timer: None,
         animation_active: false,
     });
+
     open_primary_device(event_loop, state, &primary_path)?;
     event_loop
         .handle()
@@ -228,17 +232,20 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     backend.input_devices.push(device);
                 }
             }
+
             InputEvent::DeviceRemoved { device } => {
                 if let Some(backend) = state.direct_backend.as_mut() {
                     backend.input_devices.retain(|candidate| candidate != &device);
                 }
             }
+
             event => state.process_input_event(event),
         })?;
     event_loop
         .handle()
         .insert_source(notifier, move |event, _, state| match event {
             SessionEvent::PauseSession => {
+                let handle = state.loop_handle.clone();
                 if let Some(backend) = state.direct_backend.as_mut() {
                     backend.active = false;
                     backend
@@ -248,6 +255,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     backend.devices.values_mut().for_each(|device| {
                         device.drm.pause();
                         device.outputs.values_mut().for_each(|output| {
+                            cancel_output_timers(&handle, output);
                             output.surface.reset_buffers();
                             output.damage_tracker = OutputDamageTracker::from_output(&output.output);
                             output.frame_pending = false;
@@ -255,13 +263,16 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                         });
                     });
                 }
+
                 libinput_context.suspend();
                 tracing::info!("direct session paused");
             }
+
             SessionEvent::ActivateSession => {
                 if libinput_context.resume().is_err() {
                     tracing::error!("failed to resume libinput");
                 }
+
                 if let Some(backend) = state.direct_backend.as_mut() {
                     backend.active = true;
                     for device in backend.devices.values_mut() {
@@ -270,6 +281,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                         }
                     }
                 }
+
                 update_power_policy(state);
                 state.reset_animation_clock();
                 tracing::info!("direct session activated");
@@ -287,11 +299,13 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     tracing::info!(?device_id, ?path, "additional DRM device discovered");
                 }
             }
+
             UdevEvent::Changed { device_id } => {
                 if let Some(node) = direct_node_for_device(state, device_id) {
                     rescan_device(state, node);
                 }
             }
+
             UdevEvent::Removed { device_id } => {
                 if let Some(node) = direct_node_for_device(state, device_id) {
                     remove_device(state, node);
@@ -447,6 +461,7 @@ fn open_primary_device(
         )
         .into());
     }
+
     state
         .direct_backend
         .as_mut()
@@ -484,11 +499,13 @@ fn open_primary_device(
                                 retired = true;
                                 feedback
                             }
+
                             Err(error) => {
                                 tracing::error!(?node, ?crtc, %error, "failed to retire DRM frame");
                                 None
                             }
                         });
+
                     if let (Some(mut feedback), DrmEventTime::Monotonic(time)) = (feedback, metadata.time) {
                         feedback.presented(
                             Time::<Monotonic>::from(time),
@@ -497,6 +514,7 @@ fn open_primary_device(
                             Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
                         );
                     }
+
                     let lock_output = state
                         .direct_backend
                         .as_mut()
@@ -509,34 +527,59 @@ fn open_primary_device(
                                 None
                             }
                         });
+
                     if let Some(output) = lock_output {
                         state.lock_frame_presented(&output);
                     }
+
                     if let Some(output) = state
                         .direct_backend
                         .as_mut()
                         .and_then(|backend| backend.devices.get_mut(&node))
                         .and_then(|device| device.outputs.get_mut(&crtc))
+                        && retired
                     {
                         output.frame_pending = false;
+                        if let DrmEventTime::Monotonic(timestamp) = metadata.time {
+                            let now = monotonic_now();
+                            if timestamp <= now + refresh_duration_from_mode(output.mode) {
+                                if let Some(plan) = output.scheduler.presented(timestamp)
+                                    && std::env::var_os("FERESE_TRACE_PERFORMANCE").is_some()
+                                {
+                                    tracing::debug!(target: "ferese::render", output = %output.output.name(),
+                                        target_us = plan.present_at.as_micros(), actual_us = timestamp.as_micros(),
+                                        request_to_present_us = timestamp.saturating_sub(plan.requested_at).as_micros(),
+                                        missed_deadlines = output.scheduler.missed_deadlines,
+                                        "DRM presentation schedule");
+                                }
+                            } else {
+                                output.scheduler.retire_unknown();
+                            }
+                        } else {
+                            output.scheduler.retire_unknown();
+                        }
                     }
+
                     state.record_drm_presentation(node, crtc, metadata.time, metadata.sequence);
                     tracing::trace!(?node, ?crtc, sequence = metadata.sequence, "page flip");
                     let active = state.direct_backend.as_ref().is_some_and(|backend| backend.active);
-                    if active {
-                        let was_animating = state
+                    if active && retired {
+                        schedule_frame_callbacks(state, node, crtc, monotonic_now());
+                        let identity = state
                             .direct_backend
                             .as_ref()
-                            .is_some_and(|backend| backend.animation_active);
-                        let animating = state.advance_animations(Instant::now());
-                        if animating || was_animating {
-                            render_outputs(state, animating);
+                            .and_then(|backend| backend.devices.get(&node))
+                            .and_then(|device| device.outputs.get(&crtc))
+                            .map(|output| output.output.clone());
+                        if identity.is_some_and(|output| state.output_has_animations(&output)) {
+                            request_frame(state, node, crtc);
                         } else {
-                            render_output(state, node, crtc);
+                            arm_frame(state, node, crtc);
                         }
                     }
                 }
             }
+
             DrmEvent::Error(error) => {
                 tracing::error!(?node, %error, "DRM event error");
             }
@@ -566,16 +609,23 @@ pub(crate) fn sleep_locked_outputs(state: &mut Ferese) {
     if !state.session_lock.active || !state.session_lock.sleeping {
         return;
     }
+
     let Some(backend) = state.direct_backend.as_mut() else {
         return;
     };
+
     for device in backend.devices.values_mut().filter(|device| device.drm.is_active()) {
         for output in device.outputs.values_mut() {
             if output.power_off || output.frame_pending {
                 continue;
             }
+
             match output.surface.surface().clear() {
-                Ok(()) => output.power_off = true,
+                Ok(()) => {
+                    cancel_output_timers(&state.loop_handle, output);
+                    output.power_off = true;
+                }
+
                 Err(error) => {
                     tracing::warn!(%error, output = %output.output.name(), "could not sleep locked display")
                 }
@@ -609,6 +659,7 @@ fn render_outputs(state: &mut Ferese, animating: bool) {
     if let Some(backend) = state.direct_backend.as_mut() {
         backend.animation_active = animating && !state.session_lock.sleeping;
     }
+
     arm_animation_timer(state);
     let outputs = state
         .direct_backend
@@ -623,7 +674,7 @@ fn render_outputs(state: &mut Ferese, animating: bool) {
         .unwrap_or_default();
 
     for (node, crtc) in outputs {
-        render_output(state, node, crtc);
+        request_frame(state, node, crtc);
     }
 }
 
@@ -697,8 +748,7 @@ fn lid_hides_panel(closed: bool, external_available: bool) -> bool {
     closed && external_available
 }
 
-fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
-    schedule_frame_callbacks(state, node, crtc);
+fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, plan: crate::frame_scheduler::FramePlan) {
     if state.session_lock.active && state.session_lock.sleeping {
         sleep_locked_outputs(state);
         let asleep = state
@@ -711,11 +761,13 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
             return;
         }
     }
+
     let missed_deadlines = state
         .direct_backend
         .as_ref()
-        .and_then(|backend| backend.presentation.get(&(node, crtc)))
-        .map_or(0, |clock| clock.missed_deadlines);
+        .and_then(|backend| backend.devices.get(&node))
+        .and_then(|device| device.outputs.get(&crtc))
+        .map_or(0, |output| output.scheduler.missed_deadlines);
     let Some(mut device) = state
         .direct_backend
         .as_mut()
@@ -723,10 +775,12 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
     else {
         return;
     };
+
     let Some(mut output) = device.outputs.remove(&crtc) else {
         restore_device(state, node, device);
         return;
     };
+
     if !device.drm.is_active() || output.frame_pending {
         device.outputs.insert(crtc, output);
         restore_device(state, node, device);
@@ -734,73 +788,92 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
     }
 
     let render_started = Instant::now();
-    let rendered = (|| -> Result<bool, Box<dyn Error>> {
-        state.process_dmabuf_imports(&mut device.renderer);
-        let (mut buffer, age) = output.surface.next_buffer()?;
-        let elements = animated_window_elements(state, &mut device.renderer, &output.output);
-        let effects = frame_effect_metrics(&elements, output.output.current_scale().fractional_scale());
-        let mut framebuffer = device.renderer.bind(&mut buffer)?;
-        let result = output.damage_tracker.render_output(
-            &mut device.renderer,
-            &mut framebuffer,
-            usize::from(age),
-            &elements,
-            [0.035, 0.04, 0.055, 1.0],
-        )?;
-        let cursorless_capture = state.has_pending_screencopy(&output.output, false);
-        let captured_with_cursor = state.process_screencopies(&mut device.renderer, &framebuffer, &output.output, true);
-
-        if cursorless_capture {
-            let cursorless_elements = cursorless_window_elements(state, &mut device.renderer, &output.output);
-            redraw_output(
+    let now = monotonic_now();
+    let horizon = output
+        .scheduler
+        .forecast_time(now, plan)
+        .map_or(Duration::ZERO, |target| target.saturating_sub(now));
+    let mut forecast = state.forecast_render(&output.output, horizon);
+    let rendered = {
+        let state = &mut *forecast;
+        (|| -> Result<bool, Box<dyn Error>> {
+            state.process_dmabuf_imports(&mut device.renderer);
+            let (mut buffer, age) = output.surface.next_buffer()?;
+            let elements = animated_window_elements(state, &mut device.renderer, &output.output);
+            let effects = frame_effect_metrics(&elements, output.output.current_scale().fractional_scale());
+            let mut framebuffer = device.renderer.bind(&mut buffer)?;
+            let result = output.damage_tracker.render_output(
                 &mut device.renderer,
                 &mut framebuffer,
-                &output.output,
-                &cursorless_elements,
+                usize::from(age),
+                &elements,
+                [0.035, 0.04, 0.055, 1.0],
             )?;
-            state.process_screencopies(&mut device.renderer, &framebuffer, &output.output, false);
-            redraw_output(&mut device.renderer, &mut framebuffer, &output.output, &elements)?;
-        } else if captured_with_cursor {
-            let _ = device
-                .renderer
-                .render(
+            let cursorless_capture = state.has_pending_screencopy(&output.output, false);
+            let captured_with_cursor =
+                state.process_screencopies(&mut device.renderer, &framebuffer, &output.output, true);
+
+            if cursorless_capture {
+                let cursorless_elements = cursorless_window_elements(state, &mut device.renderer, &output.output);
+                redraw_output(
+                    &mut device.renderer,
                     &mut framebuffer,
-                    output.output.current_mode().expect("output has a mode").size,
-                    output.output.current_transform(),
-                )?
-                .finish()?;
-        }
-        let Some(damage) = result.damage.cloned() else {
+                    &output.output,
+                    &cursorless_elements,
+                )?;
+                state.process_screencopies(&mut device.renderer, &framebuffer, &output.output, false);
+                redraw_output(&mut device.renderer, &mut framebuffer, &output.output, &elements)?;
+            } else if captured_with_cursor {
+                let _ = device
+                    .renderer
+                    .render(
+                        &mut framebuffer,
+                        output.output.current_mode().expect("output has a mode").size,
+                        output.output.current_transform(),
+                    )?
+                    .finish()?;
+            }
+
+            let Some(damage) = result.damage.cloned() else {
+                output
+                    .render_metrics
+                    .record_no_damage(render_started.elapsed(), missed_deadlines);
+                return Ok(false);
+            };
+
+            let presentation = crate::presentation::take_output_feedback(
+                state,
+                &output.output,
+                &result.states,
+                Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
+            );
+            output
+                .surface
+                .queue_buffer(Some(result.sync), Some(damage.clone()), presentation)?;
             output
                 .render_metrics
-                .record_no_damage(render_started.elapsed(), missed_deadlines);
-            return Ok(false);
-        };
+                .record_frame(render_started.elapsed(), &damage, missed_deadlines, effects);
+            output.frame_pending = true;
+            output.lock_frame_pending = state.session_lock.active;
+            Ok(true)
+        })()
+    };
 
-        let presentation = crate::presentation::take_output_feedback(
-            state,
-            &output.output,
-            &result.states,
-            Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
-        );
-        output
-            .surface
-            .queue_buffer(Some(result.sync), Some(damage.clone()), presentation)?;
-        output
-            .render_metrics
-            .record_frame(render_started.elapsed(), &damage, missed_deadlines, effects);
-        output.frame_pending = true;
-        output.lock_frame_pending = state.session_lock.active;
-        Ok(true)
-    })();
+    let submitted = rendered.as_ref().is_ok_and(|submitted| *submitted);
+    record_frame_schedule(&mut output, plan, render_started.elapsed(), submitted);
 
     match rendered {
         Ok(true) => tracing::trace!(?node, ?crtc, "queued DRM frame"),
         Ok(false) => (),
         Err(error) => tracing::error!(?node, ?crtc, %error, "failed to render DRM frame"),
     }
+
     device.outputs.insert(crtc, output);
-    restore_device(state, node, device);
+    restore_device(&mut forecast, node, device);
+    drop(forecast);
+    if !submitted {
+        schedule_frame_callbacks(state, node, crtc, plan.present_at);
+    }
 }
 
 fn restore_device(state: &mut Ferese, node: DrmNode, device: DirectDevice) {
@@ -840,11 +913,13 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
             return;
         }
     };
+
     let lid_closed = state.direct_backend.as_ref().is_some_and(|backend| backend.lid_closed);
     apply_lid_policy(&mut scan, lid_closed);
     if let Some(backend) = state.direct_backend.as_mut() {
         backend.connected_outputs = scan.connected_outputs;
     }
+
     let mut selections = scan
         .selections
         .into_iter()
@@ -866,10 +941,12 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
             } else {
                 Ok(())
             };
+
             match result {
                 Ok(()) => {
                     let old_geometry = state.space.output_geometry(&output.output);
                     output.mode = selection.mode;
+                    cancel_output_timers(&state.loop_handle, output);
                     output.settings = selection.settings.clone();
                     let position = selection.settings.position.unwrap_or_else(|| {
                         state
@@ -878,6 +955,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
                             .map(|g| [g.loc.x, g.loc.y])
                             .unwrap_or([0, 0])
                     });
+
                     output.output.change_current_state(
                         Some(OutputMode::from(output.mode)),
                         Some(output_transform(output.settings.transform)),
@@ -910,6 +988,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
                             );
                         }
                     }
+
                     output.damage_tracker = OutputDamageTracker::from_output(&output.output);
                     if let Some(backend) = state.direct_backend.as_mut() {
                         let clock = backend.presentation.entry((node, crtc)).or_default();
@@ -917,13 +996,16 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
                         clock.reset_timing();
                     }
                 }
+
                 Err(error) => {
                     tracing::warn!(?crtc, %error, "display change failed; retaining current output")
                 }
             }
+
             selections.remove(&crtc);
             continue;
         }
+
         let unchanged = device.outputs.get(&crtc).is_some_and(|output| {
             selections.get(&crtc).is_some_and(|selection| {
                 selection.connector.handle() == output.connector
@@ -931,6 +1013,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
                     && selection.settings == output.settings
             })
         });
+
         if unchanged {
             selections.remove(&crtc);
             continue;
@@ -944,12 +1027,14 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
             continue;
         }
 
-        if let Some(output) = device.outputs.remove(&crtc) {
+        if let Some(mut output) = device.outputs.remove(&crtc) {
+            cancel_output_timers(&state.loop_handle, &mut output);
             state.display_handle.disable_global::<Ferese>(output.global);
             state.unregister_output(&output.output);
             if let Some(backend) = state.direct_backend.as_mut() {
                 backend.presentation.remove(&(node, crtc));
             }
+
             tracing::info!(?node, ?crtc, "removed DRM output");
         }
     }
@@ -969,6 +1054,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
                     .set_refresh(OutputMode::from(mode).refresh);
                 device.outputs.insert(crtc, output);
             }
+
             Err(error) => tracing::error!(?node, ?crtc, %error, "failed to add DRM output"),
         }
     }
@@ -997,9 +1083,12 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
                 info.enabled = true;
                 info.current_mode = Some(connected_mode_info(output.mode));
             }
+
             continue;
         }
-        if let Some(output) = device.outputs.remove(&crtc) {
+
+        if let Some(mut output) = device.outputs.remove(&crtc) {
+            cancel_output_timers(&state.loop_handle, &mut output);
             state.display_handle.disable_global::<Ferese>(output.global);
             state.unregister_output(&output.output);
             if let Some(backend) = state.direct_backend.as_mut() {
@@ -1007,6 +1096,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
             }
         }
     }
+
     if let Some(backend) = state.direct_backend.as_mut() {
         for output in device.outputs.values() {
             if let Some(info) = backend
@@ -1023,6 +1113,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
             }
         }
     }
+
     restore_device(state, node, device);
     state.restore_output_focus();
     state.relayout();
@@ -1041,16 +1132,19 @@ fn remove_device(state: &mut Ferese, node: DrmNode) {
     let context = device.renderer.context_id().erased();
     state.wallpaper.forget_context(&context);
     state.resize_snapshots.retain(|_, snapshot| snapshot.context != context);
-    for (crtc, output) in device.outputs {
+    for (crtc, mut output) in device.outputs {
+        cancel_output_timers(&state.loop_handle, &mut output);
         state.display_handle.disable_global::<Ferese>(output.global);
         state.unregister_output(&output.output);
         if let Some(backend) = state.direct_backend.as_mut() {
             backend.presentation.remove(&(node, crtc));
         }
     }
+
     if let Some(backend) = state.direct_backend.as_mut() {
         backend.connected_outputs.clear();
     }
+
     tracing::info!(?node, "removed DRM device");
 }
 
@@ -1064,6 +1158,10 @@ fn refresh_duration(state: &Ferese, node: DrmNode, crtc: crtc::Handle) -> Durati
         .filter(|mode| mode.refresh > 0)
         .map(|mode| Duration::from_nanos(1_000_000_000_000_u64 / mode.refresh as u64))
         .unwrap_or_else(|| Duration::from_millis(16))
+}
+
+fn refresh_duration_from_mode(mode: DrmMode) -> Duration {
+    Duration::from_nanos(1_000_000_000_000 / OutputMode::from(mode).refresh.max(1) as u64)
 }
 
 fn animation_interval(state: &Ferese) -> Duration {
@@ -1088,6 +1186,7 @@ fn arm_animation_timer(state: &mut Ferese) {
     if !needed {
         return;
     }
+
     let deadline = state.animation_fallback_deadline(animation_interval(state));
     match state
         .loop_handle
@@ -1101,7 +1200,30 @@ fn arm_animation_timer(state: &mut Ferese) {
                 if Instant::now() < deadline {
                     return TimeoutAction::ToInstant(deadline);
                 }
-                render_all(state);
+
+                let animating = state.advance_animations(Instant::now());
+                if let Some(backend) = state.direct_backend.as_mut() {
+                    backend.animation_active = animating;
+                }
+
+                let outputs = state
+                    .direct_backend
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|backend| backend.devices.iter())
+                    .flat_map(|(node, device)| {
+                        device
+                            .outputs
+                            .iter()
+                            .map(|(crtc, output)| (*node, *crtc, output.output.clone()))
+                    })
+                    .collect::<Vec<_>>();
+                for (node, crtc, output) in outputs {
+                    if state.output_has_animations(&output) {
+                        request_frame(state, node, crtc);
+                    }
+                }
+
                 if state
                     .direct_backend
                     .as_ref()
@@ -1110,9 +1232,11 @@ fn arm_animation_timer(state: &mut Ferese) {
                     return TimeoutAction::ToInstant(state.animation_fallback_deadline(animation_interval(state)));
                 }
             }
+
             if let Some(backend) = state.direct_backend.as_mut() {
                 backend.animation_timer = None;
             }
+
             TimeoutAction::Drop
         }) {
         Ok(token) => state.direct_backend.as_mut().unwrap().animation_timer = Some(token),
@@ -1120,12 +1244,13 @@ fn arm_animation_timer(state: &mut Ferese) {
     }
 }
 
-fn schedule_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
+fn schedule_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, target: Duration) {
     if state.session_lock.sleeping {
         return;
     }
+
     let now = Instant::now();
-    let interval = refresh_duration(state, node, crtc);
+    let timestamp = monotonic_now();
     let Some(output) = state
         .direct_backend
         .as_ref()
@@ -1136,15 +1261,19 @@ fn schedule_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handl
     else {
         return;
     };
+
     if output.callback_timer.is_some() {
         return;
     }
+
     let identity = output.output.clone();
-    let deadline = output.callback_clock.deadline(now, interval);
-    if deadline <= now {
+    let callback_at = output.scheduler.callback_deadline(timestamp, target);
+    if callback_at <= timestamp {
         deliver_frame_callbacks(state, node, crtc, &identity);
         return;
     }
+
+    let deadline = now + callback_at.saturating_sub(timestamp);
     match state
         .loop_handle
         .insert_source(Timer::from_deadline(deadline), move |_, _, state| {
@@ -1161,6 +1290,7 @@ fn schedule_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handl
                 output.callback_timer = Some(token);
             }
         }
+
         Err(error) => tracing::warn!(%error, "could not schedule DRM frame callbacks"),
     }
 }
@@ -1169,9 +1299,11 @@ fn deliver_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle
     let Some(backend) = state.direct_backend.as_mut() else {
         return;
     };
+
     let Some(device) = backend.devices.get_mut(&node) else {
         return;
     };
+
     let Some(output) = device
         .outputs
         .get_mut(&crtc)
@@ -1179,11 +1311,20 @@ fn deliver_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle
     else {
         return;
     };
+
     output.callback_timer = None;
     if !backend.active || !device.drm.is_active() || state.session_lock.sleeping {
         return;
     }
-    output.callback_clock.sent(Instant::now());
+
+    let timestamp = monotonic_now();
+    let next = output.scheduler.callback_deadline(timestamp, timestamp);
+    if next > timestamp {
+        schedule_frame_callbacks(state, node, crtc, next);
+        return;
+    }
+
+    output.scheduler.callback_sent(timestamp);
     send_frame_callbacks(state, identity);
 }
 
@@ -1438,7 +1579,8 @@ fn create_direct_output(
         render_metrics,
         frame_pending: false,
         power_off: false,
-        callback_clock: Default::default(),
+        scheduler: crate::frame_scheduler::FrameScheduler::new(refresh_duration_from_mode(mode)),
+        render_timer: None,
         callback_timer: None,
         lock_frame_pending: false,
     })
@@ -1540,9 +1682,15 @@ impl DirectBackendState {
         time: DrmEventTime,
         sequence: u32,
     ) -> Option<Duration> {
-        self.presentation
-            .get_mut(&(node, crtc))
-            .and_then(|clock| clock.record(time, sequence))
+        let missed = self
+            .devices
+            .get(&node)
+            .and_then(|device| device.outputs.get(&crtc))
+            .map_or(0, |output| output.scheduler.missed_deadlines);
+        self.presentation.get_mut(&(node, crtc)).and_then(|clock| {
+            clock.missed_deadlines = missed;
+            clock.record(time, sequence)
+        })
     }
 }
 
@@ -1566,21 +1714,6 @@ impl PresentationClock {
 
         self.last_presentation = Some(time);
         self.presented_frames = self.presented_frames.saturating_add(1);
-        if let (Some(delta), Some(refresh)) = (delta, self.refresh_interval)
-            && delta > refresh + refresh / 2
-        {
-            let elapsed_frames = (delta.as_nanos() / refresh.as_nanos()).max(1) as u64;
-            let missed = elapsed_frames.saturating_sub(1);
-            self.missed_deadlines = self.missed_deadlines.saturating_add(missed);
-            tracing::warn!(
-                sequence,
-                ?delta,
-                ?refresh,
-                missed,
-                total = self.missed_deadlines,
-                "missed DRM presentation deadline"
-            );
-        }
         delta
     }
 }
@@ -1639,14 +1772,14 @@ mod tests {
     }
 
     #[test]
-    fn presentation_clock_counts_missed_deadlines() {
+    fn presentation_clock_does_not_count_idle_gaps_as_missed_deadlines() {
         let mut clock = PresentationClock::default();
         clock.set_refresh(60_000);
 
         clock.record(DrmEventTime::Monotonic(Duration::ZERO), 1);
         clock.record(DrmEventTime::Monotonic(Duration::from_millis(50)), 2);
 
-        assert_eq!(clock.missed_deadlines, 2);
+        assert_eq!(clock.missed_deadlines, 0);
     }
 
     #[test]

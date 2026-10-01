@@ -5,6 +5,7 @@ mod hit_testing;
 mod layout;
 mod navigation;
 mod outputs;
+mod prediction;
 mod windows;
 
 use std::collections::hash_map::Entry;
@@ -169,12 +170,14 @@ impl FocusSwipe {
     }
 }
 
+#[derive(Clone)]
 struct WorkspaceSlideItem {
     workspace: WorkspaceId,
     start: SlideOffset,
     target: SlideOffset,
 }
 
+#[derive(Clone)]
 struct WorkspaceSlide {
     items: Vec<WorkspaceSlideItem>,
     elapsed: Duration,

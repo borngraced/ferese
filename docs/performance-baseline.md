@@ -21,6 +21,27 @@ frames. Keep build work and unrelated activity outside the sampling interval.
 CPU percentages below use one core as 100%. Short samples are observations,
 not guarantees or hardware-session benchmarks.
 
+## Direct frame timing
+
+The DRM backend schedules each output against its own predicted presentation
+time. Render cost and a safety margin determine when compositing starts. Idle
+outputs wake on demand; callback-only updates are paced to the output refresh
+cycle without submitting unchanged buffers. Animation forecasts are restored
+before processing input or rendering another output.
+
+For a direct session, enable `FERESE_TRACE_PERFORMANCE=1` and
+`RUST_LOG=ferese::render=debug` before starting Ferese. The timing records include
+the planned render start, actual render start, timer lateness, presentation
+target, DRM presentation timestamp, and request-to-presentation duration.
+Missed deadlines compare submitted frames with their targets; idle gaps do not
+count. Request-to-presentation starts at the compositor's redraw request, so it
+does not include device input latency, client rendering before the request, or
+the display's pixel response. Render cost measures CPU preparation and queueing;
+asynchronous GPU work is covered conservatively by feedback-driven margins.
+
+Check sustained animation, idle wakeup, callback-only clients, and mixed-refresh
+outputs separately. Nested sessions do not exercise the DRM scheduler.
+
 ## Historical results
 
 On 2026-09-27 at `08a5866`, two nested runs used a 1422 × 1696 output at 2× scale,

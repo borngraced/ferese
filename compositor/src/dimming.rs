@@ -18,7 +18,7 @@ pub(crate) fn target(
 }
 
 /// A bounded, interruption-safe opacity transition; it never overshoots.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct DimAnimation {
     pub current: f64,
     start: f64,
@@ -27,6 +27,14 @@ pub(crate) struct DimAnimation {
 }
 
 impl DimAnimation {
+    pub(crate) fn is_animating(&self) -> bool {
+        self.current != self.target
+    }
+
+    pub(crate) fn predict(&mut self, delta: Duration, duration_ms: f64) {
+        self.advance(self.target, delta, duration_ms);
+    }
+
     pub fn new(value: f64) -> Self {
         Self {
             current: value,
@@ -42,16 +50,19 @@ impl DimAnimation {
             self.target = target;
             self.elapsed = 0.0;
         }
+
         if duration_ms == 0.0 {
             self.current = target;
             return false;
         }
+
         self.elapsed += delta.as_secs_f64() * 1000.0;
         let progress = (self.elapsed / duration_ms).min(1.0);
         if progress == 1.0 {
             self.current = target;
             return false;
         }
+
         let eased = progress * progress * (3.0 - 2.0 * progress);
         self.current = self.start + (target - self.start) * eased;
         self.current != target

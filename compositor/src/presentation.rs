@@ -59,21 +59,6 @@ fn rendered_feedback_output(output: &Output, id: Id, rendered: &RenderElementSta
         .then(|| output.clone())
 }
 
-#[derive(Default)]
-pub(crate) struct CallbackClock {
-    last_sent: Option<Instant>,
-}
-
-impl CallbackClock {
-    pub(crate) fn deadline(&self, now: Instant, interval: Duration) -> Instant {
-        self.last_sent.map_or(now, |last| (last + interval).max(now))
-    }
-
-    pub(crate) fn sent(&mut self, now: Instant) {
-        self.last_sent = Some(now);
-    }
-}
-
 pub(crate) fn frame_delta(last: &mut Instant, now: Instant) -> Duration {
     let delta = now.saturating_duration_since(*last);
     *last = (*last).max(now);
@@ -442,37 +427,38 @@ mod tests {
 
     #[test]
     fn no_damage_requests_are_paced_without_buffer_submission() {
-        let start = Instant::now();
+        let start = Duration::ZERO;
         let refresh = Duration::from_millis(16);
-        let mut clock = CallbackClock::default();
-        assert_eq!(clock.deadline(start, refresh), start);
-        clock.sent(start);
+        let mut clock = crate::frame_scheduler::FrameScheduler::new(refresh);
+        assert_eq!(clock.callback_deadline(start, start), start);
+        clock.callback_sent(start);
         for millisecond in 1..16 {
             assert_eq!(
-                clock.deadline(start + Duration::from_millis(millisecond), refresh),
+                clock.callback_deadline(start + Duration::from_millis(millisecond), start),
                 start + refresh
             );
         }
+
         let late = start + Duration::from_millis(50);
-        assert_eq!(clock.deadline(late, refresh), late);
-        clock.sent(late);
-        assert_eq!(clock.deadline(late, refresh), late + refresh);
+        assert_eq!(clock.callback_deadline(late, late), late);
+        clock.callback_sent(late);
+        assert_eq!(clock.callback_deadline(late, late), late + refresh);
     }
 
     #[test]
     fn independent_output_callback_clocks_do_not_sum_their_rates() {
-        let start = Instant::now();
-        let mut slow = CallbackClock::default();
-        let mut fast = CallbackClock::default();
-        slow.sent(start);
-        fast.sent(start);
-        fast.sent(start + Duration::from_millis(8));
+        let start = Duration::ZERO;
+        let mut slow = crate::frame_scheduler::FrameScheduler::new(Duration::from_millis(16));
+        let mut fast = crate::frame_scheduler::FrameScheduler::new(Duration::from_millis(8));
+        slow.callback_sent(start);
+        fast.callback_sent(start);
+        fast.callback_sent(start + Duration::from_millis(8));
         assert_eq!(
-            slow.deadline(start + Duration::from_millis(8), Duration::from_millis(16)),
+            slow.callback_deadline(start + Duration::from_millis(8), start),
             start + Duration::from_millis(16)
         );
         assert_eq!(
-            fast.deadline(start + Duration::from_millis(8), Duration::from_millis(8)),
+            fast.callback_deadline(start + Duration::from_millis(8), start),
             start + Duration::from_millis(16)
         );
     }

@@ -7,6 +7,7 @@ mod daemon;
 mod dimming;
 mod effects;
 mod floating;
+mod frame_scheduler;
 mod gestures;
 mod grabs;
 mod handlers;

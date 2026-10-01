@@ -102,6 +102,12 @@ pub(crate) struct OverviewState {
     labels: OverviewStateLabel,
 }
 
+pub(crate) struct OverviewAnimationSnapshot {
+    presentations: HashMap<WindowId, AnimatedRect>,
+    opacity: AnimatedValue,
+    exit_transition: Option<(f64, f64)>,
+}
+
 impl Default for OverviewState {
     fn default() -> Self {
         Self {
@@ -160,6 +166,30 @@ fn centered_row_start(strip: Rect, count: usize, card_width: f64) -> f64 {
 }
 
 impl OverviewState {
+    pub(crate) fn is_animating(&self, spring: SpringConfig) -> bool {
+        self.exit_transition.is_some()
+            || (self.opacity.current - self.opacity.target).abs() > 0.001
+            || self.opacity.velocity.abs() > 0.005
+            || self.presentations.values().any(|rect| !rect.is_settled(spring))
+    }
+
+    pub(crate) fn predict(&mut self, delta: Duration, spring: SpringConfig) -> OverviewAnimationSnapshot {
+        let snapshot = OverviewAnimationSnapshot {
+            presentations: self.presentations.clone(),
+            opacity: self.opacity,
+            exit_transition: self.exit_transition,
+        };
+
+        self.advance(delta, spring, true);
+        snapshot
+    }
+
+    pub(crate) fn restore_prediction(&mut self, snapshot: OverviewAnimationSnapshot) {
+        self.presentations = snapshot.presentations;
+        self.opacity = snapshot.opacity;
+        self.exit_transition = snapshot.exit_transition;
+    }
+
     pub(crate) fn set_font_family(&mut self, family: String) {
         if self.font_family != family {
             self.font_family = family;
