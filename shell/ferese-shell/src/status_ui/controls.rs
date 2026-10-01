@@ -3,19 +3,23 @@ use cosmic::widget::{button, column, container, row, slider};
 use cosmic::{Element, theme};
 
 use crate::status::Action;
-use crate::{Message, ShellTheme, accented_icon, color, motion, shell_font, text};
+use crate::{Message, ShellTheme, accented_icon, color, color_with_opacity, motion, shell_font, text};
 
 pub(super) fn status_summary<'a>(
     source: &'static [u8],
     title: &'a str,
     subtitle: &'a str,
-    primary: Color,
-    muted: Color,
-    accent: Color,
-    opacity: f32,
+    style: super::MenuStyle,
     enabled: bool,
     toggle: Option<(bool, Action)>,
 ) -> Element<'a, cosmic::Action<Message>> {
+    let super::MenuStyle {
+        theme,
+        primary,
+        muted,
+        opacity,
+    } = style;
+    let accent = color_with_opacity(theme.accent, opacity);
     let badge_color = if enabled { accent } else { primary };
     let badge = container(accented_icon(source, 22, primary, accent))
         .width(32)

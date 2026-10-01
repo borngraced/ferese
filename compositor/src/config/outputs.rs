@@ -9,19 +9,13 @@ impl Config {
             .map(|profile| {
                 let name = profile.name.trim();
                 if name.is_empty() {
-                    return Err(ConfigError::InvalidOutputProfile(
-                        "profile names cannot be empty".to_owned(),
-                    ));
+                    return Err(ConfigError::OutputProfile("profile names cannot be empty".to_owned()));
                 }
                 if !names.insert(name.to_owned()) {
-                    return Err(ConfigError::InvalidOutputProfile(format!(
-                        "duplicate profile name {name:?}"
-                    )));
+                    return Err(ConfigError::OutputProfile(format!("duplicate profile name {name:?}")));
                 }
                 if profile.outputs.is_empty() {
-                    return Err(ConfigError::InvalidOutputProfile(format!(
-                        "profile {name:?} has no outputs"
-                    )));
+                    return Err(ConfigError::OutputProfile(format!("profile {name:?} has no outputs")));
                 }
 
                 let mut matchers = HashSet::new();
@@ -31,17 +25,17 @@ impl Config {
                     .map(|output| {
                         let matcher = output.matcher.trim();
                         if matcher.is_empty() {
-                            return Err(ConfigError::InvalidOutputProfile(format!(
+                            return Err(ConfigError::OutputProfile(format!(
                                 "profile {name:?} contains an empty output matcher"
                             )));
                         }
                         if !matchers.insert(matcher.to_owned()) {
-                            return Err(ConfigError::InvalidOutputProfile(format!(
+                            return Err(ConfigError::OutputProfile(format!(
                                 "profile {name:?} repeats output matcher {matcher:?}"
                             )));
                         }
                         if !output.scale.is_finite() || output.scale <= 0.0 {
-                            return Err(ConfigError::InvalidOutputProfile(format!(
+                            return Err(ConfigError::OutputProfile(format!(
                                 "profile {name:?} output {matcher:?} has invalid scale {}",
                                 output.scale
                             )));
@@ -56,7 +50,7 @@ impl Config {
                                 .as_deref()
                                 .map(parse_output_mode)
                                 .transpose()
-                                .map_err(ConfigError::InvalidOutputProfile)?,
+                                .map_err(ConfigError::OutputProfile)?,
                             scale: output.scale,
                             transform: output.transform,
                             position: output.position,

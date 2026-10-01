@@ -36,7 +36,7 @@ impl Default for IdleSettings {
 impl IdleSettings {
     pub(crate) fn validate(self) -> Result<Self, crate::config::ConfigError> {
         if self.dim_after_seconds > 86400 || self.sleep_after_seconds > 86400 {
-            return Err(crate::config::ConfigError::InvalidInputValue {
+            return Err(crate::config::ConfigError::InputValue {
                 field: "lock_screen.idle_delay",
                 value: "must be between 0 and 86400 seconds".into(),
             });

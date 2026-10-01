@@ -1,5 +1,5 @@
 //! Watch the parent directory so atomic editor saves keep working.
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::Duration;
 
 use cosmic::iced::futures::{SinkExt, Stream};
@@ -8,8 +8,8 @@ use notify::{RecursiveMode, Watcher};
 use crate::Message;
 use crate::store::Snapshot;
 
-pub fn changes(path: &PathBuf) -> impl Stream<Item = Message> + use<> {
-    let path = path.clone();
+pub fn changes(path: &Path) -> impl Stream<Item = Message> + use<> {
+    let path = path.to_path_buf();
 
     cosmic::iced::stream::channel(1, async move |mut output| {
         let (send, mut events) = tokio::sync::mpsc::channel(1);

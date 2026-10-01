@@ -37,7 +37,19 @@ pub(super) fn append_material_surface(
         .iter()
         .enumerate()
         .filter_map(|(index, (rect, radius))| {
-            material_element(state, renderer, output, surface, *rect, *radius, index, geometry, 1.0)
+            material_element(
+                state,
+                renderer,
+                output,
+                surface,
+                MaterialSurface {
+                    geometry: *rect,
+                    radius: *radius,
+                    index,
+                    capture_geometry: geometry,
+                    alpha: 1.0,
+                },
+            )
         })
         .collect();
     if let Some(buffers) = state.material_buffers.get_mut(surface) {
@@ -89,17 +101,28 @@ pub(super) fn append_material_surface(
     }
 }
 
+pub(super) struct MaterialSurface {
+    pub geometry: Rectangle<i32, Logical>,
+    pub radius: f32,
+    pub index: usize,
+    pub capture_geometry: Rectangle<i32, Logical>,
+    pub alpha: f32,
+}
+
 pub(super) fn material_element(
     state: &mut Ferese,
     renderer: &mut GlesRenderer,
     output: &Output,
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
-    geometry: Rectangle<i32, Logical>,
-    radius: f32,
-    index: usize,
-    capture_geometry: Rectangle<i32, Logical>,
-    alpha: f32,
+    surface_geometry: MaterialSurface,
 ) -> Option<(AnimatedWindowRenderElement, AnimatedWindowRenderElement)> {
+    let MaterialSurface {
+        geometry,
+        radius,
+        index,
+        capture_geometry,
+        alpha,
+    } = surface_geometry;
     let (role, generation) = crate::effects::surface_role(surface)?;
     let material = crate::effects::resolve_material(
         role,

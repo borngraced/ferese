@@ -120,8 +120,10 @@ mod tests {
             ferese_config::theme::Appearance::Dark,
         ] {
             for high_contrast in [false, true] {
-                let mut resolved = ferese_config::theme::ResolvedTheme::default();
-                resolved.appearance = appearance;
+                let mut resolved = ferese_config::theme::ResolvedTheme {
+                    appearance,
+                    ..Default::default()
+                };
                 resolved.accessibility.increase_contrast = high_contrast;
                 let palette = Palette::from_resolved(&resolved);
                 assert_eq!(palette.high_contrast, high_contrast);
@@ -133,9 +135,11 @@ mod tests {
     #[test]
     fn every_preset_builds_an_opaque_control_palette_over_translucent_materials() {
         for preset in crate::PRESETS {
-            let mut resolved = ferese_config::theme::ResolvedTheme::default();
-            resolved.appearance = preset.appearance;
-            resolved.tokens = ferese_config::theme::preset(preset.id, preset.appearance).unwrap();
+            let mut resolved = ferese_config::theme::ResolvedTheme {
+                appearance: preset.appearance,
+                tokens: ferese_config::theme::preset(preset.id, preset.appearance).unwrap(),
+                ..Default::default()
+            };
             resolved.tokens.material.style = "translucent".into();
             resolved.tokens.material.opacity = 0.25;
             resolved.tokens.geometry.shell_radius = 0.;

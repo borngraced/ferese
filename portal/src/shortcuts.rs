@@ -310,6 +310,10 @@ impl GlobalShortcuts {
         result
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Signature is defined by the portal D-Bus interface"
+    )]
     async fn bind_shortcuts(
         &self,
         handle: OwnedObjectPath,

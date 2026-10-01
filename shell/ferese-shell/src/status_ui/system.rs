@@ -178,21 +178,6 @@ fn connection_control<'a>(
     container(tile).width(Length::FillPortion(1)).into()
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn connection_captions_fit_one_short_line() {
-        assert_eq!(super::connection_caption("88%"), "88%");
-        assert_eq!(super::connection_caption("Flow84@Lofree"), "Flow84@Lofr…");
-        assert_eq!(super::connection_caption("123456789012"), "123456789012");
-        assert_eq!(super::connection_caption("My very long headphones"), "My very lon…");
-        assert_eq!(super::connection_caption("  Device\n name  "), "Device name");
-        let caption = super::connection_caption("耳機耳機耳機耳機耳機耳機耳機");
-        assert_eq!(caption.chars().count(), 12);
-        assert!(caption.ends_with('…'));
-    }
-}
-
 pub(super) fn heading<'a>(
     shell: &'a FereseShell,
     mut heading: super::MenuHeading<'a>,
@@ -228,4 +213,19 @@ pub(super) fn heading<'a>(
         ));
     }
     heading
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn connection_captions_fit_one_short_line() {
+        assert_eq!(super::connection_caption("88%"), "88%");
+        assert_eq!(super::connection_caption("Flow84@Lofree"), "Flow84@Lofr…");
+        assert_eq!(super::connection_caption("123456789012"), "123456789012");
+        assert_eq!(super::connection_caption("My very long headphones"), "My very lon…");
+        assert_eq!(super::connection_caption("  Device\n name  "), "Device name");
+        let caption = super::connection_caption("耳機耳機耳機耳機耳機耳機耳機");
+        assert_eq!(caption.chars().count(), 12);
+        assert!(caption.ends_with('…'));
+    }
 }

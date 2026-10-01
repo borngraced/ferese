@@ -6,17 +6,29 @@ use ferese_config::families::{Family, Palette};
 use ferese_config::theme::Appearance;
 use iced_accessibility::{A11yTree, accesskit};
 
+pub struct TileOptions {
+    pub variant: Option<Appearance>,
+    pub active: Option<Appearance>,
+    pub selected: bool,
+    pub palette: crate::Palette,
+    pub font: cosmic::font::Font,
+    pub id: Id,
+}
+
 pub fn tile<M: Clone + 'static>(
     family: &Family,
-    variant: Option<Appearance>,
-    active: Option<Appearance>,
-    selected: bool,
-    palette: crate::Palette,
-    font: cosmic::font::Font,
-    id: Id,
+    options: TileOptions,
     on_select: M,
     navigate: impl Fn(&keyboard::key::Named) -> Option<M> + 'static,
 ) -> Element<'static, M> {
+    let TileOptions {
+        variant,
+        active,
+        selected,
+        palette,
+        font,
+        id,
+    } = options;
     use cosmic::widget::{button, column, row};
     let mut caption = row([])
         .spacing(6)
@@ -225,13 +237,15 @@ impl cosmic::iced::advanced::widget::operation::Focusable for Focus {
     }
 }
 
+type Navigation<'a, M> = Box<dyn Fn(&keyboard::key::Named) -> Option<M> + 'a>;
+
 pub struct Radio<'a, M> {
     content: Element<'a, M>,
     id: Id,
     selected: bool,
     group: bool,
     label: String,
-    navigate: Option<Box<dyn Fn(&keyboard::key::Named) -> Option<M> + 'a>>,
+    navigate: Option<Navigation<'a, M>>,
 }
 
 pub fn radio<'a, M: Clone + 'a>(

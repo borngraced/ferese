@@ -306,11 +306,13 @@ pub(crate) fn output_elements(
                     renderer,
                     output,
                     surface,
-                    constrain,
-                    window_radius as f32,
-                    0,
-                    constrain,
-                    close_alpha,
+                    MaterialSurface {
+                        geometry: constrain,
+                        radius: window_radius as f32,
+                        index: 0,
+                        capture_geometry: constrain,
+                        alpha: close_alpha,
+                    },
                 )
             {
                 elements.push(background);

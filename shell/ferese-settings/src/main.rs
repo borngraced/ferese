@@ -52,7 +52,7 @@ enum Message {
     RefreshDisplays,
     DisplaysLoaded(Result<Vec<displays::Display>, String>),
     RefreshRate(String, displays::Mode, bool),
-    ThemeChanged(ferese_config::theme::Snapshot),
+    ThemeChanged(Box<ferese_config::theme::Snapshot>),
     DragWindow,
     Page(Page),
     Search(String),
@@ -207,7 +207,7 @@ impl cosmic::Application for App {
                 return self.edit_many(displays::edits(&prefix, mode, automatic));
             }
             Message::ThemeChanged(snapshot) => {
-                self.resolved = snapshot;
+                self.resolved = *snapshot;
                 self.font = ferese_theme::font(Some(&self.resolved.presented.tokens.typography.font_family));
                 return self.update_theme();
             }
@@ -596,8 +596,8 @@ impl cosmic::Application for App {
 
     fn subscription(&self) -> cosmic::iced::Subscription<Message> {
         cosmic::iced::Subscription::batch([
-            cosmic::iced::Subscription::run_with(self.path.clone(), watch::changes),
-            ferese_theme::service::subscription().map(Message::ThemeChanged),
+            cosmic::iced::Subscription::run_with(self.path.clone(), |path| watch::changes(path)),
+            ferese_theme::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
             if self.page == Page::Displays {
                 cosmic::iced::time::every(std::time::Duration::from_secs(2)).map(|_| Message::RefreshDisplays)
             } else {

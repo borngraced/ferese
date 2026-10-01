@@ -221,7 +221,7 @@ struct OutputSurfaces {
 
 #[derive(Clone, Debug)]
 enum Message {
-    ThemeChanged(ferese_config::theme::Snapshot),
+    ThemeChanged(Box<ferese_config::theme::Snapshot>),
     ThemeMode(ferese_config::theme::Mode),
     ThemeModeSet(Result<(), String>),
     BeginNoteEdit(String),
@@ -340,7 +340,7 @@ impl cosmic::Application for FereseShell {
 
     fn subscription(&self) -> Subscription<Self::Message> {
         Subscription::batch([
-            ferese_theme::service::subscription().map(Message::ThemeChanged),
+            ferese_theme::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
             if self
                 .system_modal
                 .as_ref()
@@ -1208,7 +1208,6 @@ mod tests {
             }],
             workspaces: Vec::new(),
             windows: vec![WindowSnapshot {
-                id: 1,
                 workspace,
                 app_id: "dev.ferese.Test".to_owned(),
                 title: "Test".to_owned(),

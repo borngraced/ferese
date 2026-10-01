@@ -1,3 +1,11 @@
+pub(crate) type Attachment = Result<
+    (
+        Option<std::sync::Arc<Parent>>,
+        Result<ferese_theme::material::ModalMaterial, String>,
+    ),
+    String,
+>;
+
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{wl_registry, wl_surface};
 use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, delegate_noop};

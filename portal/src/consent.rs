@@ -29,9 +29,9 @@ pub(crate) struct ShortcutField {
 
 #[derive(Clone, Debug)]
 enum Message {
-    ThemeChanged(ferese_config::theme::Snapshot),
+    ThemeChanged(Box<ferese_config::theme::Snapshot>),
     Opened(cosmic::iced::window::Id),
-    Attached(Result<(Option<Arc<crate::parent::Parent>>, Result<ModalMaterial, String>), String>),
+    Attached(crate::parent::Attachment),
     Accept,
     Cancel,
     Shortcut(usize, String),
@@ -110,7 +110,7 @@ impl cosmic::Application for Consent {
 
     fn subscription(&self) -> cosmic::iced::Subscription<Message> {
         cosmic::iced::Subscription::batch([
-            ferese_theme::service::subscription().map(Message::ThemeChanged),
+            ferese_theme::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
             cosmic::iced::event::listen_with(|event, _, id| match event {
                 cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => Some(Message::Opened(id)),
                 cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {

@@ -96,22 +96,22 @@ impl Config {
         theme: &ferese_config::theme::ResolvedTheme,
         inactive_dim: InactiveDimSettings,
     ) -> Result<ThemeSettings, ConfigError> {
-        let mut config = Self::default();
-        config.theme = serde_json::from_value(serde_json::to_value(&theme.tokens).unwrap())
-            .expect("resolved theme matches runtime schema");
+        let config = Self {
+            theme: serde_json::from_value(serde_json::to_value(&theme.tokens).unwrap())
+                .expect("resolved theme matches runtime schema"),
+            ..Self::default()
+        };
         let mut settings = config.theme_settings()?;
         settings.inactive_dim = inactive_dim;
         Ok(settings)
     }
 
     pub(crate) fn runtime_config(&self) -> Result<crate::RuntimeConfig, ConfigError> {
-        self.notifications.validate().map_err(ConfigError::InvalidBinding)?;
-        self.desktop_widgets.validate().map_err(ConfigError::InvalidBinding)?;
+        self.notifications.validate().map_err(ConfigError::Binding)?;
+        self.desktop_widgets.validate().map_err(ConfigError::Binding)?;
         for daemon in &self.autostart {
             if daemon.command.first().is_none_or(|program| program.trim().is_empty()) {
-                return Err(ConfigError::InvalidBinding(
-                    "autostart command must contain a program".into(),
-                ));
+                return Err(ConfigError::Binding("autostart command must contain a program".into()));
             }
         }
         let input_settings = self.input_settings()?;
@@ -217,29 +217,29 @@ pub enum ConfigError {
         path: PathBuf,
         source: ferese_config::Error,
     },
-    InvalidColumnWidth {
+    ColumnWidth {
         field: &'static str,
         value: String,
     },
-    InvalidAnimationValue {
+    AnimationValue {
         field: &'static str,
         value: f64,
     },
-    InvalidLayoutValue {
+    LayoutValue {
         field: &'static str,
         value: f64,
     },
-    InvalidInputValue {
+    InputValue {
         field: &'static str,
         value: String,
     },
-    InvalidBinding(String),
-    InvalidWindowRule(String),
-    InvalidThemeValue {
+    Binding(String),
+    WindowRule(String),
+    ThemeValue {
         field: &'static str,
         value: String,
     },
-    InvalidOutputProfile(String),
+    OutputProfile(String),
 }
 
 impl fmt::Display for ConfigError {
@@ -249,25 +249,25 @@ impl fmt::Display for ConfigError {
             Self::Parse { path, source } => {
                 write!(formatter, "failed to parse {}: {source}", path.display())
             }
-            Self::InvalidColumnWidth { field, value } => write!(
+            Self::ColumnWidth { field, value } => write!(
                 formatter,
                 "invalid scrolling.{field} {value}; expected a positive number or \"full\""
             ),
-            Self::InvalidAnimationValue { field, value } => {
+            Self::AnimationValue { field, value } => {
                 write!(formatter, "invalid animations.{field} value {value}")
             }
-            Self::InvalidLayoutValue { field, value } => {
+            Self::LayoutValue { field, value } => {
                 write!(formatter, "invalid layout.{field} value {value}")
             }
-            Self::InvalidInputValue { field, value } => {
+            Self::InputValue { field, value } => {
                 write!(formatter, "invalid input.{field} value {value}")
             }
-            Self::InvalidBinding(message) => write!(formatter, "invalid binding: {message}"),
-            Self::InvalidWindowRule(message) => write!(formatter, "invalid window rule: {message}"),
-            Self::InvalidThemeValue { field, value } => {
+            Self::Binding(message) => write!(formatter, "invalid binding: {message}"),
+            Self::WindowRule(message) => write!(formatter, "invalid window rule: {message}"),
+            Self::ThemeValue { field, value } => {
                 write!(formatter, "invalid theme.{field} value {value}")
             }
-            Self::InvalidOutputProfile(message) => {
+            Self::OutputProfile(message) => {
                 write!(formatter, "invalid output profile: {message}")
             }
         }
@@ -279,21 +279,21 @@ impl Error for ConfigError {
         match self {
             #[cfg(test)]
             Self::Parse { source, .. } => Some(source),
-            Self::InvalidColumnWidth { .. }
-            | Self::InvalidAnimationValue { .. }
-            | Self::InvalidLayoutValue { .. }
-            | Self::InvalidInputValue { .. }
-            | Self::InvalidBinding(_)
-            | Self::InvalidWindowRule(_)
-            | Self::InvalidThemeValue { .. }
-            | Self::InvalidOutputProfile(_) => None,
+            Self::ColumnWidth { .. }
+            | Self::AnimationValue { .. }
+            | Self::LayoutValue { .. }
+            | Self::InputValue { .. }
+            | Self::Binding(_)
+            | Self::WindowRule(_)
+            | Self::ThemeValue { .. }
+            | Self::OutputProfile(_) => None,
         }
     }
 }
 
 impl Config {
     pub fn window_rules(&self) -> Result<Vec<WindowRule>, ConfigError> {
-        window_rules::validate(&self.window_rules).map_err(ConfigError::InvalidWindowRule)
+        window_rules::validate(&self.window_rules).map_err(ConfigError::WindowRule)
     }
 }
 

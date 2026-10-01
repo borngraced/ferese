@@ -82,7 +82,7 @@ fn main() -> iced::Result {
 
 #[derive(Clone)]
 enum Message {
-    ThemeChanged(ferese_config::theme::Snapshot),
+    ThemeChanged(Box<ferese_config::theme::Snapshot>),
     WallpaperLoaded(u64, Result<widget::image::Handle, String>),
     Event(Box<Event>),
     Input(String),
@@ -193,7 +193,7 @@ impl cosmic::Application for Locker {
             if self.preview {
                 Subscription::none()
             } else {
-                ferese_theme::service::subscription().map(Message::ThemeChanged)
+                ferese_theme::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot)))
             },
             event::listen_with(|event, _, _| match event {
                 Event::PlatformSpecific(PlatformSpecific::Wayland(

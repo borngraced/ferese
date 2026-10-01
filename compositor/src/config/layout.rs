@@ -59,7 +59,7 @@ pub(super) fn nonnegative_layout_value(value: f64, field: &'static str) -> Resul
     if value.is_finite() && value >= 0.0 {
         Ok(value)
     } else {
-        Err(ConfigError::InvalidLayoutValue { field, value })
+        Err(ConfigError::LayoutValue { field, value })
     }
 }
 
@@ -67,7 +67,7 @@ pub(super) fn parse_column_width(value: &ColumnWidthValue, field: &'static str) 
     match value {
         ColumnWidthValue::Proportion(value) if value.is_finite() && *value > 0.0 => Ok(ColumnWidth::Proportion(*value)),
         ColumnWidthValue::Named(value) if value.eq_ignore_ascii_case("full") => Ok(ColumnWidth::Full),
-        value => Err(ConfigError::InvalidColumnWidth {
+        value => Err(ConfigError::ColumnWidth {
             field,
             value: match value {
                 ColumnWidthValue::Proportion(value) => value.to_string(),

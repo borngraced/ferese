@@ -294,9 +294,11 @@ mod tests {
     fn presets_are_distinct_and_readable_on_settings_surfaces() {
         for (index, preset) in PRESETS.iter().enumerate() {
             let tokens = ferese_config::theme::preset(preset.id, preset.appearance).unwrap();
-            let mut theme = ferese_config::theme::ResolvedTheme::default();
-            theme.appearance = preset.appearance;
-            theme.tokens = tokens;
+            let theme = ferese_config::theme::ResolvedTheme {
+                appearance: preset.appearance,
+                tokens,
+                ..Default::default()
+            };
             let palette = Palette::from_resolved(&theme);
             for background in [palette.background, palette.sidebar, palette.card] {
                 assert!(contrast(palette.text, background) >= 4.5, "{} text", preset.name);
@@ -313,10 +315,10 @@ mod tests {
 
     #[test]
     fn selection_tracks_all_preset_colors_and_gradient_changes() {
-        for index in 0..PRESETS.len() {
+        for (index, preset) in PRESETS.iter().enumerate() {
             let mut snapshot = configured_preset(index);
             assert!(preset_selected(&snapshot, index));
-            let kind = if PRESETS[index].appearance == ferese_config::theme::Appearance::Light {
+            let kind = if preset.appearance == ferese_config::theme::Appearance::Light {
                 "light"
             } else {
                 "dark"
@@ -343,9 +345,11 @@ mod tests {
 
         for (index, item) in PRESETS.iter().enumerate() {
             let _ = index;
-            let mut resolved = ferese_config::theme::ResolvedTheme::default();
-            resolved.appearance = item.appearance;
-            resolved.tokens = ferese_config::theme::preset(item.id, item.appearance).unwrap();
+            let resolved = ferese_config::theme::ResolvedTheme {
+                appearance: item.appearance,
+                tokens: ferese_config::theme::preset(item.id, item.appearance).unwrap(),
+                ..Default::default()
+            };
             assert_eq!(
                 Palette::from_resolved(&resolved).native_theme().cosmic().is_dark,
                 item.appearance == ferese_config::theme::Appearance::Dark

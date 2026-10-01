@@ -258,6 +258,10 @@ async fn login_inhibitor(what: &str, app: &str, reason: &str) -> Result<Option<O
 
 #[zbus::interface(name = "org.freedesktop.impl.portal.Inhibit")]
 impl Inhibit {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Signature is defined by the portal D-Bus interface"
+    )]
     async fn inhibit(
         &self,
         handle: OwnedObjectPath,

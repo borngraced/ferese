@@ -24,6 +24,10 @@ impl Usb {
         1
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Signature is defined by the portal D-Bus interface"
+    )]
     async fn acquire_devices(
         &self,
         handle: OwnedObjectPath,

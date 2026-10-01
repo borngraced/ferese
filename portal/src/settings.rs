@@ -282,8 +282,10 @@ mod tests {
 
     #[test]
     fn reports_ferese_theme_and_reduced_motion() {
-        let mut resolved = ResolvedTheme::default();
-        resolved.appearance = ThemeAppearance::Light;
+        let mut resolved = ResolvedTheme {
+            appearance: ThemeAppearance::Light,
+            ..Default::default()
+        };
         resolved.tokens.colors.accent = "#ff8000".into();
         resolved.reduced_motion = true;
         resolved.accessibility.increase_contrast = true;

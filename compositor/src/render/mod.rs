@@ -527,7 +527,7 @@ mod tests {
             .unwrap();
         let size = (32, 32).into();
         let mut pixels = vec![128u8; 32 * 32 * 4];
-        for pixel in pixels.chunks_exact_mut(4) {
+        for pixel in pixels.as_chunks_mut::<4>().0 {
             pixel[3] = 255;
         }
         let blurred = renderer.import_memory(&pixels, Fourcc::Abgr8888, size, false).unwrap();

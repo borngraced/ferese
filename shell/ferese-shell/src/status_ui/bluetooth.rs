@@ -6,7 +6,7 @@ use super::bar::status_icon;
 use super::controls::status_summary;
 use super::{Menu, MenuRows, MenuStyle};
 use crate::status::Action;
-use crate::{FereseShell, Message, color_with_opacity, text};
+use crate::{FereseShell, Message, text};
 
 const DEVICE_LIST_HEIGHT: f32 = 180.0;
 
@@ -15,12 +15,7 @@ fn device_list_height(count: usize) -> Option<f32> {
 }
 
 pub(super) fn view<'a>(shell: &'a FereseShell, mut rows: MenuRows<'a>, style: MenuStyle) -> MenuRows<'a> {
-    let MenuStyle {
-        theme,
-        primary,
-        muted,
-        opacity: p,
-    } = style;
+    let MenuStyle { muted, .. } = style;
     if let Some(b) = &shell.status.bluetooth {
         rows = rows.push(status_summary(
             status_icon(Menu::Bluetooth, &shell.status).0,
@@ -36,10 +31,7 @@ pub(super) fn view<'a>(shell: &'a FereseShell, mut rows: MenuRows<'a>, style: Me
             } else {
                 "Your connected devices"
             },
-            primary,
-            muted,
-            color_with_opacity(theme.accent, p),
-            p,
+            style,
             b.enabled,
             Some((b.enabled, Action::Bluetooth(!b.enabled))),
         ));

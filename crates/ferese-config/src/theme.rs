@@ -1248,6 +1248,53 @@ impl ResolvedTheme {
     }
 }
 
+pub type ImportedFamily = (crate::families::Family, (Option<Tokens>, Option<Tokens>), Vec<String>);
+
+pub fn import_family(id: &str, source: &str) -> Result<ImportedFamily, String> {
+    let document = Document::parse(source).map_err(|e| e.to_string())?;
+    let root = document.get("theme").unwrap_or(document.value());
+    let name = root.get("name").and_then(Value::as_str).unwrap_or(id).to_owned();
+    let mut variants = [None, None];
+    let mut warnings = vec![];
+    for (index, (key, appearance)) in [("light", Appearance::Light), ("dark", Appearance::Dark)]
+        .into_iter()
+        .enumerate()
+    {
+        if let Some(layer) = root.get(key) {
+            let base = preset(
+                if appearance == Appearance::Light {
+                    "ferese-blue-light"
+                } else {
+                    "ferese-blue"
+                },
+                appearance,
+            )?;
+            let mut value = serde_json::to_value(base).map_err(|e| e.to_string())?;
+            merge(&mut value, layer, "", &mut warnings, false)?;
+            let tokens: Tokens = serde_json::from_value(value).map_err(|e| e.to_string())?;
+            validate(&tokens)?;
+            warnings.extend(authored_warnings(&tokens));
+            variants[index] = Some(tokens);
+        }
+    }
+    if variants.iter().all(Option::is_none) {
+        return Err("A theme file must declare a light and/or dark section; partial palettes are allowed.".into());
+    }
+    for key in root.as_object().ok_or("Theme file must be a section")?.keys() {
+        if !matches!(key.as_str(), "name" | "light" | "dark") {
+            warnings.push(format!("Unknown theme token: {key}"));
+        }
+    }
+    let [light, dark] = variants;
+    let family = crate::families::Family {
+        id: id.into(),
+        name,
+        light: light.as_ref().map(crate::families::Palette::from),
+        dark: dark.as_ref().map(crate::families::Palette::from),
+    };
+    Ok((family, (light, dark), warnings))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1696,52 +1743,4 @@ mod tests {
         light.reduced_motion = true;
         assert_eq!(ResolvedTheme::default().transition(&light, 0.), light);
     }
-}
-
-pub fn import_family(
-    id: &str,
-    source: &str,
-) -> Result<(crate::families::Family, (Option<Tokens>, Option<Tokens>), Vec<String>), String> {
-    let document = Document::parse(source).map_err(|e| e.to_string())?;
-    let root = document.get("theme").unwrap_or(document.value());
-    let name = root.get("name").and_then(Value::as_str).unwrap_or(id).to_owned();
-    let mut variants = [None, None];
-    let mut warnings = vec![];
-    for (index, (key, appearance)) in [("light", Appearance::Light), ("dark", Appearance::Dark)]
-        .into_iter()
-        .enumerate()
-    {
-        if let Some(layer) = root.get(key) {
-            let base = preset(
-                if appearance == Appearance::Light {
-                    "ferese-blue-light"
-                } else {
-                    "ferese-blue"
-                },
-                appearance,
-            )?;
-            let mut value = serde_json::to_value(base).map_err(|e| e.to_string())?;
-            merge(&mut value, layer, "", &mut warnings, false)?;
-            let tokens: Tokens = serde_json::from_value(value).map_err(|e| e.to_string())?;
-            validate(&tokens)?;
-            warnings.extend(authored_warnings(&tokens));
-            variants[index] = Some(tokens);
-        }
-    }
-    if variants.iter().all(Option::is_none) {
-        return Err("A theme file must declare a light and/or dark section; partial palettes are allowed.".into());
-    }
-    for key in root.as_object().ok_or("Theme file must be a section")?.keys() {
-        if !matches!(key.as_str(), "name" | "light" | "dark") {
-            warnings.push(format!("Unknown theme token: {key}"));
-        }
-    }
-    let [light, dark] = variants;
-    let family = crate::families::Family {
-        id: id.into(),
-        name,
-        light: light.as_ref().map(crate::families::Palette::from),
-        dark: dark.as_ref().map(crate::families::Palette::from),
-    };
-    Ok((family, (light, dark), warnings))
 }

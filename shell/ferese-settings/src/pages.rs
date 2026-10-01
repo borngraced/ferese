@@ -412,12 +412,14 @@ impl App {
                                     format!("{prefix}.scale"),
                                     "Scale",
                                     "Logical size of text and controls.",
-                                    1.,
-                                    0.75,
-                                    3.,
-                                    0.25,
-                                    "×",
-                                    false,
+                                    schema::RangeSpec {
+                                        default: 1.,
+                                        min: 0.75,
+                                        max: 3.,
+                                        step: 0.25,
+                                        suffix: "×",
+                                        integer: false,
+                                    },
                                 )));
                             body = body.push(container(group).padding(8).class(visuals::surface(palette.card, 14.)));
                         }

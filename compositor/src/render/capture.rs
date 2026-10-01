@@ -104,11 +104,10 @@ pub(crate) fn capture_window_frame(
         pixel.swap(0, 2);
         let alpha = pixel[3] as u16;
         for channel in &mut pixel[..3] {
-            *channel = if alpha == 0 {
-                0
-            } else {
-                ((*channel as u16 * 255 + alpha / 2) / alpha).min(255) as u8
-            };
+            *channel = (*channel as u16 * 255 + alpha / 2)
+                .checked_div(alpha)
+                .unwrap_or(0)
+                .min(255) as u8;
         }
     }
     Ok(crate::handlers::screenshot::CaptureBuffer {

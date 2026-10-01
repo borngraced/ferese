@@ -169,6 +169,35 @@ fn account_picture(user: &str) -> Option<image::Handle> {
     })
 }
 
+pub fn load_wallpaper(path: &std::path::Path, blur: f32) -> Result<image::Handle, String> {
+    use ::image::ImageDecoder;
+    let mut reader = ::image::ImageReader::open(path)
+        .map_err(|e| e.to_string())?
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?;
+    let mut limits = ::image::Limits::default();
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    let decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+    let (width, height) = decoder.dimensions();
+    if u64::from(width) * u64::from(height) * 4 > 256 * 1024 * 1024 {
+        return Err("Lock wallpaper exceeds the decode limit".into());
+    }
+    let pixels = ::image::DynamicImage::from_decoder(decoder)
+        .map_err(|e| e.to_string())?
+        .into_rgba8();
+    let pixels = if blur > 0. {
+        ::image::imageops::blur(&::image::imageops::thumbnail(&pixels, 640, 640), blur)
+    } else {
+        pixels
+    };
+    Ok(image::Handle::from_rgba(
+        pixels.width(),
+        pixels.height(),
+        pixels.into_raw(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,39 +244,10 @@ mod tests {
             appearance.accent,
             ferese_theme::parse_color(&theme.tokens.colors.accent).unwrap()
         );
-        assert!(ferese_theme::contrast(appearance.accent.into(), appearance.on_accent.into()) >= 4.5);
+        assert!(ferese_theme::contrast(appearance.accent, appearance.on_accent) >= 4.5);
         assert!(!appearance.show_clock && !appearance.show_date);
         assert_eq!(appearance.clock_format(), "%I:%M %p");
         assert_eq!(appearance.dim, 0.7);
         assert_eq!(appearance.theme().cosmic().corner_radii.radius_m, [0.; 4]);
     }
-}
-
-pub fn load_wallpaper(path: &std::path::Path, blur: f32) -> Result<image::Handle, String> {
-    use ::image::ImageDecoder;
-    let mut reader = ::image::ImageReader::open(path)
-        .map_err(|e| e.to_string())?
-        .with_guessed_format()
-        .map_err(|e| e.to_string())?;
-    let mut limits = ::image::Limits::default();
-    limits.max_alloc = Some(256 * 1024 * 1024);
-    reader.limits(limits);
-    let decoder = reader.into_decoder().map_err(|e| e.to_string())?;
-    let (width, height) = decoder.dimensions();
-    if u64::from(width) * u64::from(height) * 4 > 256 * 1024 * 1024 {
-        return Err("Lock wallpaper exceeds the decode limit".into());
-    }
-    let pixels = ::image::DynamicImage::from_decoder(decoder)
-        .map_err(|e| e.to_string())?
-        .into_rgba8();
-    let pixels = if blur > 0. {
-        ::image::imageops::blur(&::image::imageops::thumbnail(&pixels, 640, 640), blur)
-    } else {
-        pixels
-    };
-    Ok(image::Handle::from_rgba(
-        pixels.width(),
-        pixels.height(),
-        pixels.into_raw(),
-    ))
 }

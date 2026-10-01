@@ -5,14 +5,11 @@ use super::bar::status_icon;
 use super::controls::{level_meter, shell_switch, status_summary};
 use super::{Menu, MenuRows, MenuStyle};
 use crate::status::Action;
-use crate::{FereseShell, color_with_opacity, text};
+use crate::{FereseShell, text};
 
 pub(super) fn view<'a>(shell: &'a FereseShell, mut rows: MenuRows<'a>, style: MenuStyle) -> MenuRows<'a> {
     let MenuStyle {
-        theme,
-        primary,
-        muted,
-        opacity: p,
+        primary, opacity: p, ..
     } = style;
     if let Some(n) = &shell.status.network {
         let connected = n.enabled && n.connection.is_some();
@@ -30,10 +27,7 @@ pub(super) fn view<'a>(shell: &'a FereseShell, mut rows: MenuRows<'a>, style: Me
             } else {
                 "Wireless connections are paused"
             },
-            primary,
-            muted,
-            color_with_opacity(theme.accent, p),
-            p,
+            style,
             n.enabled,
             None,
         ));

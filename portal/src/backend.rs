@@ -393,12 +393,14 @@ impl Backend {
         let sharing = start_streams(
             &app_id,
             &parent_window,
-            multiple,
-            cursor,
-            source_types,
-            persist_mode,
-            restore,
-            bar_controlled,
+            StreamOptions {
+                multiple,
+                cursor,
+                source_types,
+                requested_persistence: persist_mode,
+                restore,
+                bar_controlled,
+            },
         );
         let result = tokio::select! {
             _ = cancel.wait() => Err(StartError::Cancelled),
@@ -534,16 +536,28 @@ async fn picker(prompt: &Prompt) -> Result<Child, String> {
     Ok(child)
 }
 
-async fn start_streams(
-    app: &str,
-    parent: &str,
+struct StreamOptions {
     multiple: bool,
     cursor: bool,
     source_types: u32,
     requested_persistence: u32,
     restore: Option<crate::restore::Restore>,
     bar_controlled: bool,
+}
+
+async fn start_streams(
+    app: &str,
+    parent: &str,
+    options: StreamOptions,
 ) -> Result<(Vec<Child>, Vec<(u32, Options)>, Options), StartError> {
+    let StreamOptions {
+        multiple,
+        cursor,
+        source_types,
+        requested_persistence,
+        restore,
+        bar_controlled,
+    } = options;
     let mut discovery = tokio::task::spawn_blocking(|| Capture::connect(&AtomicBool::new(false)))
         .await
         .map_err(|e| e.to_string())??;

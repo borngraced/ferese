@@ -52,17 +52,9 @@ pub(crate) struct Selection {
 
 #[derive(Clone, Debug)]
 enum Message {
-    ThemeChanged(ferese_config::theme::Snapshot),
+    ThemeChanged(Box<ferese_config::theme::Snapshot>),
     WindowOpened(cosmic::iced::window::Id),
-    Attached(
-        Result<
-            (
-                Option<std::sync::Arc<crate::parent::Parent>>,
-                Result<ferese_theme::material::ModalMaterial, String>,
-            ),
-            String,
-        >,
-    ),
+    Attached(crate::parent::Attachment),
     Select(usize),
     Remember,
     Share,
@@ -161,7 +153,7 @@ impl cosmic::Application for Picker {
 
     fn subscription(&self) -> cosmic::iced::Subscription<Message> {
         cosmic::iced::Subscription::batch([
-            ferese_theme::service::subscription().map(Message::ThemeChanged),
+            ferese_theme::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
             cosmic::iced::event::listen_with(|event, _, id| match event {
                 cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => {
                     Some(Message::WindowOpened(id))

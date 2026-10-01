@@ -199,12 +199,14 @@ impl App {
                 let tile_id = gallery_id(&id, appearance);
                 tiles = tiles.push(gallery::tile(
                     family,
-                    appearance,
-                    active,
-                    selected,
-                    palette,
-                    self.font,
-                    tile_id,
+                    gallery::TileOptions {
+                        variant: appearance,
+                        active,
+                        selected,
+                        palette,
+                        font: self.font,
+                        id: tile_id,
+                    },
                     Message::Family(id, appearance),
                     move |key| {
                         gallery::neighbor(index, ids.len(), key)

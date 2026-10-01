@@ -23,16 +23,13 @@ impl Config {
         for configured in &self.bindings {
             let identity = binding_identity(configured, &keymap)?;
             if !supplied.insert(identity.clone()) {
-                return Err(ConfigError::InvalidBinding(format!(
-                    "duplicate binding {:?}",
-                    configured.keys
-                )));
+                return Err(ConfigError::Binding(format!("duplicate binding {:?}", configured.keys)));
             }
 
             bindings.retain(|binding| binding_identity_for_runtime(binding) != identity);
             if configured.disabled {
                 if configured.action.is_some() || configured.argument.is_some() {
-                    return Err(ConfigError::InvalidBinding(format!(
+                    return Err(ConfigError::Binding(format!(
                         "disabled binding {:?} cannot have an action or argument",
                         configured.keys
                     )));
@@ -49,12 +46,10 @@ impl Config {
 pub(super) fn validate_commands(commands: &HashMap<String, Vec<String>>) -> Result<(), ConfigError> {
     for (name, argv) in commands {
         if name.trim().is_empty() {
-            return Err(ConfigError::InvalidBinding("command names cannot be empty".to_owned()));
+            return Err(ConfigError::Binding("command names cannot be empty".to_owned()));
         }
         if argv.is_empty() || argv[0].is_empty() {
-            return Err(ConfigError::InvalidBinding(format!(
-                "command {name:?} must contain a program"
-            )));
+            return Err(ConfigError::Binding(format!("command {name:?} must contain a program")));
         }
     }
 
@@ -74,7 +69,7 @@ pub(crate) fn physical_keymap(input: &InputSettings) -> Result<xkb::Keymap, Conf
         options,
         xkb::KEYMAP_COMPILE_NO_FLAGS,
     )
-    .ok_or_else(|| ConfigError::InvalidBinding("failed to compile the XKB keymap".to_owned()))
+    .ok_or_else(|| ConfigError::Binding("failed to compile the XKB keymap".to_owned()))
 }
 
 pub(super) fn parse_binding(
@@ -83,7 +78,7 @@ pub(super) fn parse_binding(
     keymap: &xkb::Keymap,
 ) -> Result<Binding, ConfigError> {
     if configured.disabled {
-        return Err(ConfigError::InvalidBinding(format!(
+        return Err(ConfigError::Binding(format!(
             "disabled binding {:?} cannot be executed",
             configured.keys
         )));
@@ -93,7 +88,7 @@ pub(super) fn parse_binding(
     let action = configured
         .action
         .as_deref()
-        .ok_or_else(|| ConfigError::InvalidBinding(format!("binding {:?} has no action", configured.keys)))?;
+        .ok_or_else(|| ConfigError::Binding(format!("binding {:?} has no action", configured.keys)))?;
     let action = parse_action(action, configured.argument.as_deref(), commands)?;
     let trigger = match identity.match_mode {
         BindingMatch::Keysym => BindingTrigger::Keysym(identity.key),
@@ -123,7 +118,7 @@ pub(super) fn binding_identity(
     let (modifiers, key) = parse_chord(&configured.keys)?;
     if let Some((fingers, direction)) = parse_swipe(&key) {
         if configured.match_mode == BindingMatch::Physical || modifiers != BindingModifiers::default() {
-            return Err(ConfigError::InvalidBinding(
+            return Err(ConfigError::Binding(
                 "swipes cannot use keyboard modifiers or physical key matching".into(),
             ));
         }
@@ -139,13 +134,13 @@ pub(super) fn binding_identity(
             .key_by_name(&key.to_ascii_uppercase())
             .map(Keycode::raw)
             .ok_or_else(|| {
-                ConfigError::InvalidBinding(format!(
+                ConfigError::Binding(format!(
                     "unknown XKB physical key name {key:?} in {:?}",
                     configured.keys
                 ))
             })?,
         BindingMatch::Swipe => {
-            return Err(ConfigError::InvalidBinding(
+            return Err(ConfigError::Binding(
                 "gesture keys must use Swipe3Left/Right/Up/Down (3–5 fingers)".into(),
             ));
         }
@@ -178,7 +173,7 @@ pub(super) fn parse_chord(chord: &str) -> Result<(BindingModifiers, String), Con
 
     for component in chord.split('+').map(str::trim) {
         if component.is_empty() {
-            return Err(ConfigError::InvalidBinding(format!("invalid key chord {chord:?}")));
+            return Err(ConfigError::Binding(format!("invalid key chord {chord:?}")));
         }
 
         let slot = match component.to_ascii_lowercase().as_str() {
@@ -190,17 +185,17 @@ pub(super) fn parse_chord(chord: &str) -> Result<(BindingModifiers, String), Con
         };
         if let Some(slot) = slot {
             if *slot {
-                return Err(ConfigError::InvalidBinding(format!("duplicate modifier in {chord:?}")));
+                return Err(ConfigError::Binding(format!("duplicate modifier in {chord:?}")));
             }
             *slot = true;
         } else if key.replace(component.to_owned()).is_some() {
-            return Err(ConfigError::InvalidBinding(format!(
+            return Err(ConfigError::Binding(format!(
                 "key chord {chord:?} contains more than one key"
             )));
         }
     }
 
-    let key = key.ok_or_else(|| ConfigError::InvalidBinding(format!("key chord {chord:?} does not contain a key")))?;
+    let key = key.ok_or_else(|| ConfigError::Binding(format!("key chord {chord:?} does not contain a key")))?;
     Ok((modifiers, key))
 }
 
@@ -236,7 +231,7 @@ pub(super) fn parse_keysym(name: &str) -> Result<u32, ConfigError> {
         symbol = xkb::keysym_from_name(&normalized, xkb::KEYSYM_CASE_INSENSITIVE);
     }
     if symbol.raw() == keysyms::KEY_NoSymbol {
-        Err(ConfigError::InvalidBinding(format!("unknown keysym {name:?}")))
+        Err(ConfigError::Binding(format!("unknown keysym {name:?}")))
     } else {
         Ok(symbol.raw())
     }
@@ -249,7 +244,7 @@ pub(super) fn parse_action(
 ) -> Result<BindingAction, ConfigError> {
     let no_argument = || {
         if argument.is_some() {
-            Err(ConfigError::InvalidBinding(format!(
+            Err(ConfigError::Binding(format!(
                 "action {action:?} does not accept an argument"
             )))
         } else {
@@ -257,7 +252,7 @@ pub(super) fn parse_action(
         }
     };
     let required_argument =
-        || argument.ok_or_else(|| ConfigError::InvalidBinding(format!("action {action:?} requires an argument")));
+        || argument.ok_or_else(|| ConfigError::Binding(format!("action {action:?} requires an argument")));
 
     match action {
         "none" => {
@@ -276,7 +271,7 @@ pub(super) fn parse_action(
             let command = required_argument()?;
             let argv = commands
                 .get(command)
-                .ok_or_else(|| ConfigError::InvalidBinding(format!("unknown command {command:?}")))?;
+                .ok_or_else(|| ConfigError::Binding(format!("unknown command {command:?}")))?;
             Ok(BindingAction::Spawn(argv.clone()))
         }
         "close" => {
@@ -332,7 +327,7 @@ pub(super) fn parse_action(
             no_argument()?;
             Ok(BindingAction::ToggleKeybindingGuide)
         }
-        _ => Err(ConfigError::InvalidBinding(format!("unknown action {action:?}"))),
+        _ => Err(ConfigError::Binding(format!("unknown action {action:?}"))),
     }
 }
 
@@ -342,14 +337,14 @@ pub(super) fn parse_direction(argument: &str) -> Result<Direction, ConfigError> 
         "right" => Ok(Direction::Right),
         "up" => Ok(Direction::Up),
         "down" => Ok(Direction::Down),
-        _ => Err(ConfigError::InvalidBinding(format!("invalid direction {argument:?}"))),
+        _ => Err(ConfigError::Binding(format!("invalid direction {argument:?}"))),
     }
 }
 
 pub(super) fn parse_workspace(argument: &str) -> Result<u8, ConfigError> {
     match argument.parse() {
         Ok(workspace) if workspace > 0 => Ok(workspace),
-        _ => Err(ConfigError::InvalidBinding(format!("invalid workspace {argument:?}"))),
+        _ => Err(ConfigError::Binding(format!("invalid workspace {argument:?}"))),
     }
 }
 
@@ -459,7 +454,7 @@ pub enum BindingAction {
 impl Binding {
     pub(crate) fn portal_trigger(chord: &str) -> Result<Self, ConfigError> {
         if chord.len() > 256 {
-            return Err(ConfigError::InvalidBinding("Shortcut is too long".into()));
+            return Err(ConfigError::Binding("Shortcut is too long".into()));
         }
         let parts = chord.split('+').collect::<Vec<_>>();
         if parts
@@ -468,7 +463,7 @@ impl Binding {
             .count()
             > 1
         {
-            return Err(ConfigError::InvalidBinding("Duplicate NUM modifier".into()));
+            return Err(ConfigError::Binding("Duplicate NUM modifier".into()));
         }
         let chord = parts
             .into_iter()
@@ -482,7 +477,7 @@ impl Binding {
             && matches!(symbol, keysyms::KEY_Escape | keysyms::KEY_F1..=keysyms::KEY_F12))
             || (keysyms::KEY_XF86Switch_VT_1..=keysyms::KEY_XF86Switch_VT_12).contains(&symbol)
         {
-            return Err(ConfigError::InvalidBinding("Reserved system shortcut".into()));
+            return Err(ConfigError::Binding("Reserved system shortcut".into()));
         }
         Ok(Self {
             modifiers,

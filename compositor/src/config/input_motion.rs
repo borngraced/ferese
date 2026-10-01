@@ -3,26 +3,26 @@ use super::*;
 impl Config {
     pub fn input_settings(&self) -> Result<InputSettings, ConfigError> {
         if self.input.xkb_layout.trim().is_empty() {
-            return Err(ConfigError::InvalidInputValue {
+            return Err(ConfigError::InputValue {
                 field: "xkb_layout",
                 value: self.input.xkb_layout.clone(),
             });
         }
         if self.input.repeat_rate <= 0 {
-            return Err(ConfigError::InvalidInputValue {
+            return Err(ConfigError::InputValue {
                 field: "repeat_rate",
                 value: self.input.repeat_rate.to_string(),
             });
         }
         if self.input.repeat_delay_ms < 0 {
-            return Err(ConfigError::InvalidInputValue {
+            return Err(ConfigError::InputValue {
                 field: "repeat_delay_ms",
                 value: self.input.repeat_delay_ms.to_string(),
             });
         }
 
         if !(16..=1000).contains(&self.input.touchpad.swipe_threshold) {
-            return Err(ConfigError::InvalidInputValue {
+            return Err(ConfigError::InputValue {
                 field: "touchpad.swipe_threshold",
                 value: self.input.touchpad.swipe_threshold.to_string(),
             });
@@ -56,7 +56,7 @@ impl Config {
         let stiffness = positive_animation_value(self.animations.spring.stiffness, "spring.stiffness")?;
         let damping = self.animations.spring.damping;
         if !damping.is_finite() || damping < 0.0 {
-            return Err(ConfigError::InvalidAnimationValue {
+            return Err(ConfigError::AnimationValue {
                 field: "spring.damping",
                 value: damping,
             });
@@ -92,7 +92,7 @@ pub(super) fn positive_animation_value(value: f64, field: &'static str) -> Resul
     if value.is_finite() && value > 0.0 {
         Ok(value)
     } else {
-        Err(ConfigError::InvalidAnimationValue { field, value })
+        Err(ConfigError::AnimationValue { field, value })
     }
 }
 

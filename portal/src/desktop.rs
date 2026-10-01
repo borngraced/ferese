@@ -21,8 +21,10 @@ const PATH: &str = "/org/freedesktop/portal/desktop";
 const MAX_IMAGE_BYTES: u64 = 128 * 1024 * 1024;
 type Reply = (u32, Options);
 
+type RequestMap = HashMap<String, (String, Arc<Cancel>)>;
+
 #[derive(Clone)]
-pub(crate) struct Requests(Arc<Mutex<HashMap<String, (String, Arc<Cancel>)>>>, usize);
+pub(crate) struct Requests(Arc<Mutex<RequestMap>>, usize);
 
 impl Default for Requests {
     fn default() -> Self {
@@ -141,6 +143,10 @@ pub(crate) struct Wallpaper(pub(crate) Requests);
 #[zbus::interface(name = "org.freedesktop.impl.portal.Wallpaper")]
 impl Wallpaper {
     #[zbus(name = "SetWallpaperURI")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Signature is defined by the portal D-Bus interface"
+    )]
     async fn set_wallpaper_uri(
         &self,
         handle: OwnedObjectPath,

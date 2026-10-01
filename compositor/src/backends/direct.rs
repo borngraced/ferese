@@ -454,13 +454,9 @@ fn open_primary_device(
         .connected_outputs = scan.connected_outputs;
     let mut outputs = HashMap::new();
     for selection in scan.selections {
-        let OutputSelection {
-            connector,
-            crtc,
-            mode,
-            settings,
-        } = selection;
-        let output = create_direct_output(state, &mut drm, &gbm, &renderer, connector, crtc, mode, &settings)?;
+        let crtc = selection.crtc;
+        let mode = selection.mode;
+        let output = create_direct_output(state, &mut drm, &gbm, &renderer, selection)?;
         state
             .direct_backend
             .as_mut()
@@ -959,22 +955,9 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
     }
 
     for (_, selection) in selections {
-        let OutputSelection {
-            connector,
-            crtc,
-            mode,
-            settings,
-        } = selection;
-        match create_direct_output(
-            state,
-            &mut device.drm,
-            &device.gbm,
-            &device.renderer,
-            connector,
-            crtc,
-            mode,
-            &settings,
-        ) {
+        let crtc = selection.crtc;
+        let mode = selection.mode;
+        match create_direct_output(state, &mut device.drm, &device.gbm, &device.renderer, selection) {
             Ok(output) => {
                 state
                     .direct_backend
@@ -1419,11 +1402,14 @@ fn create_direct_output(
     drm: &mut DrmDevice,
     gbm: &GbmDevice<DrmDeviceFd>,
     renderer: &GlesRenderer,
-    connector: connector::Info,
-    crtc: crtc::Handle,
-    mode: DrmMode,
-    settings: &OutputSettings,
+    selection: OutputSelection,
 ) -> Result<DirectOutput, Box<dyn Error>> {
+    let OutputSelection {
+        connector,
+        crtc,
+        mode,
+        settings,
+    } = selection;
     let identity = connector_identity(drm, &connector);
     let drm_surface = drm.create_surface(crtc, mode, &[connector.handle()])?;
     let allocator = GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
@@ -1435,7 +1421,7 @@ fn create_direct_output(
     )?;
     // Publish only after DRM/GBM creation succeeds; failed activation must not
     // leave a phantom output/workspace that could receive evacuated windows.
-    let (output, global) = create_output(state, &connector, mode, identity, settings);
+    let (output, global) = create_output(state, &connector, mode, identity, &settings);
     let damage_tracker = OutputDamageTracker::from_output(&output);
     let render_metrics = RenderMetrics::from_environment(output.name());
 

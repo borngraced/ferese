@@ -215,10 +215,13 @@ impl InputCapture {
         }
         for barrier in barriers {
             let kind = edge(&barrier, &self.zones);
-            if zone_set != self.zone_set || counts[&barrier.id] != 1 || kind.is_none() {
-                failed.push(barrier.id);
+            if zone_set == self.zone_set
+                && counts[&barrier.id] == 1
+                && let Some(kind) = kind
+            {
+                accepted.push((barrier, kind));
             } else {
-                accepted.push((barrier, kind.unwrap()));
+                failed.push(barrier.id);
             }
         }
         self.sessions.get_mut(&id).unwrap().barriers = accepted;
@@ -418,6 +421,106 @@ impl InputCapture {
     }
 }
 
+impl crate::Ferese {
+    pub(crate) fn refresh_input_capture_zones(&mut self) {
+        if !self.input_capture.has_sessions() {
+            return;
+        }
+        let active = self.input_capture.active();
+        let zones = self
+            .space
+            .outputs()
+            .filter_map(|output| {
+                let rect = self.space.output_geometry(output)?;
+                Some(Zone {
+                    width: u32::try_from(rect.size.w).ok()?,
+                    height: u32::try_from(rect.size.h).ok()?,
+                    x: rect.loc.x,
+                    y: rect.loc.y,
+                })
+            })
+            .collect();
+        self.input_capture.update_zones(zones);
+        if active && !self.input_capture.active() {
+            self.restore_input_capture_focus();
+        }
+    }
+
+    pub(crate) fn restore_input_capture_focus(&mut self) {
+        self.input_capture.restore_focus = false;
+        self.cursor_redraw_pending = true;
+        if !self.session_lock.active {
+            self.restore_keyboard_focus();
+            if let Some(pointer) = self.seat.get_pointer() {
+                let location = pointer.current_location();
+                pointer.motion(
+                    self,
+                    self.surface_under(location),
+                    &smithay::input::pointer::MotionEvent {
+                        location,
+                        serial: smithay::utils::SERIAL_COUNTER.next_serial(),
+                        time: 0,
+                    },
+                );
+                pointer.frame(self);
+            }
+        }
+    }
+
+    pub(crate) fn capture_pointer_motion(
+        &mut self,
+        from: smithay::utils::Point<f64, smithay::utils::Logical>,
+        to: smithay::utils::Point<f64, smithay::utils::Logical>,
+        absolute: bool,
+    ) -> bool {
+        let pointer = self.seat.get_pointer().expect("seat has pointer");
+        let active = self.input_capture.active();
+        let allowed = !self.session_lock.active
+            && !self.overview.is_presenting()
+            && !pointer.is_grabbed()
+            && !self.swipe.active()
+            && self.seat.get_keyboard().is_none_or(|keyboard| !keyboard.is_grabbed())
+            && self.seat.get_touch().is_none_or(|touch| !touch.is_grabbed())
+            && !self.seat.keyboard_shortcuts_inhibited();
+        if !self.input_capture.motion((from.x, from.y), (to.x, to.y), allowed) {
+            return false;
+        }
+        let delta = if absolute {
+            self.input_capture.absolute_delta((to.x, to.y))
+        } else {
+            (to.x - from.x, to.y - from.y)
+        };
+        if !active {
+            self.cursor_redraw_pending = true;
+            pointer.motion(
+                self,
+                None,
+                &smithay::input::pointer::MotionEvent {
+                    location: from,
+                    serial: smithay::utils::SERIAL_COUNTER.next_serial(),
+                    time: 0,
+                },
+            );
+            pointer.frame(self);
+            if self.input_capture.captures(1) {
+                let keyboard = self.seat.get_keyboard().expect("seat has keyboard");
+                let keys = keyboard
+                    .pressed_keys()
+                    .iter()
+                    .filter(|key| !self.intercepted_keys.contains(key))
+                    .map(|key| key.raw().saturating_sub(8))
+                    .collect::<Vec<_>>();
+                keyboard.set_focus(self, None, smithay::utils::SERIAL_COUNTER.next_serial());
+                self.input_capture.push(json!({"type":"keys", "keys":keys}));
+            }
+        } else if self.input_capture.captures(2) {
+            self.input_capture
+                .push(json!({"type":"motion", "x":delta.0, "y":delta.1}));
+        }
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,105 +657,5 @@ mod tests {
         assert!(!capture.active());
         assert!(!capture.sessions[&id].enabled);
         assert!(capture.sessions[&id].barriers.is_empty());
-    }
-}
-
-impl crate::Ferese {
-    pub(crate) fn refresh_input_capture_zones(&mut self) {
-        if !self.input_capture.has_sessions() {
-            return;
-        }
-        let active = self.input_capture.active();
-        let zones = self
-            .space
-            .outputs()
-            .filter_map(|output| {
-                let rect = self.space.output_geometry(output)?;
-                Some(Zone {
-                    width: u32::try_from(rect.size.w).ok()?,
-                    height: u32::try_from(rect.size.h).ok()?,
-                    x: rect.loc.x,
-                    y: rect.loc.y,
-                })
-            })
-            .collect();
-        self.input_capture.update_zones(zones);
-        if active && !self.input_capture.active() {
-            self.restore_input_capture_focus();
-        }
-    }
-
-    pub(crate) fn restore_input_capture_focus(&mut self) {
-        self.input_capture.restore_focus = false;
-        self.cursor_redraw_pending = true;
-        if !self.session_lock.active {
-            self.restore_keyboard_focus();
-            if let Some(pointer) = self.seat.get_pointer() {
-                let location = pointer.current_location();
-                pointer.motion(
-                    self,
-                    self.surface_under(location),
-                    &smithay::input::pointer::MotionEvent {
-                        location,
-                        serial: smithay::utils::SERIAL_COUNTER.next_serial(),
-                        time: 0,
-                    },
-                );
-                pointer.frame(self);
-            }
-        }
-    }
-
-    pub(crate) fn capture_pointer_motion(
-        &mut self,
-        from: smithay::utils::Point<f64, smithay::utils::Logical>,
-        to: smithay::utils::Point<f64, smithay::utils::Logical>,
-        absolute: bool,
-    ) -> bool {
-        let pointer = self.seat.get_pointer().expect("seat has pointer");
-        let active = self.input_capture.active();
-        let allowed = !self.session_lock.active
-            && !self.overview.is_presenting()
-            && !pointer.is_grabbed()
-            && !self.swipe.active()
-            && self.seat.get_keyboard().is_none_or(|keyboard| !keyboard.is_grabbed())
-            && self.seat.get_touch().is_none_or(|touch| !touch.is_grabbed())
-            && !self.seat.keyboard_shortcuts_inhibited();
-        if !self.input_capture.motion((from.x, from.y), (to.x, to.y), allowed) {
-            return false;
-        }
-        let delta = if absolute {
-            self.input_capture.absolute_delta((to.x, to.y))
-        } else {
-            (to.x - from.x, to.y - from.y)
-        };
-        if !active {
-            self.cursor_redraw_pending = true;
-            pointer.motion(
-                self,
-                None,
-                &smithay::input::pointer::MotionEvent {
-                    location: from,
-                    serial: smithay::utils::SERIAL_COUNTER.next_serial(),
-                    time: 0,
-                },
-            );
-            pointer.frame(self);
-            if self.input_capture.captures(1) {
-                let keyboard = self.seat.get_keyboard().expect("seat has keyboard");
-                let keys = keyboard
-                    .pressed_keys()
-                    .iter()
-                    .filter(|key| !self.intercepted_keys.contains(key))
-                    .map(|key| key.raw().saturating_sub(8))
-                    .collect::<Vec<_>>();
-                keyboard.set_focus(self, None, smithay::utils::SERIAL_COUNTER.next_serial());
-                self.input_capture.push(json!({"type":"keys", "keys":keys}));
-            }
-        } else if self.input_capture.captures(2) {
-            self.input_capture
-                .push(json!({"type":"motion", "x":delta.0, "y":delta.1}));
-        }
-        true
     }
 }

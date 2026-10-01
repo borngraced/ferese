@@ -64,7 +64,7 @@ pub(super) fn nonnegative_theme_value(value: f64, field: &'static str) -> Result
     if value.is_finite() && value >= 0.0 {
         Ok(value)
     } else {
-        Err(ConfigError::InvalidThemeValue {
+        Err(ConfigError::ThemeValue {
             field,
             value: value.to_string(),
         })
@@ -75,7 +75,7 @@ pub(super) fn finite_theme_value(value: f64, field: &'static str) -> Result<f64,
     if value.is_finite() {
         Ok(value)
     } else {
-        Err(ConfigError::InvalidThemeValue {
+        Err(ConfigError::ThemeValue {
             field,
             value: value.to_string(),
         })
@@ -86,7 +86,7 @@ pub(super) fn unit_theme_value(value: f64, field: &'static str) -> Result<f64, C
     if value.is_finite() && (0.0..=1.0).contains(&value) {
         Ok(value)
     } else {
-        Err(ConfigError::InvalidThemeValue {
+        Err(ConfigError::ThemeValue {
             field,
             value: value.to_string(),
         })
@@ -96,7 +96,7 @@ pub(super) fn unit_theme_value(value: f64, field: &'static str) -> Result<f64, C
 pub(super) fn parse_color(value: &str, field: &'static str) -> Result<RgbaColor, ConfigError> {
     let digits = value.strip_prefix('#').unwrap_or(value);
     if !digits.is_ascii() || !matches!(digits.len(), 6 | 8) {
-        return Err(ConfigError::InvalidThemeValue {
+        return Err(ConfigError::ThemeValue {
             field,
             value: value.to_owned(),
         });
@@ -108,13 +108,13 @@ pub(super) fn parse_color(value: &str, field: &'static str) -> Result<RgbaColor,
         .zip(parse_channel(4))
         .map(|((red, green), blue)| (red, green, blue))
     else {
-        return Err(ConfigError::InvalidThemeValue {
+        return Err(ConfigError::ThemeValue {
             field,
             value: value.to_owned(),
         });
     };
     let alpha = if digits.len() == 8 {
-        parse_channel(6).ok_or_else(|| ConfigError::InvalidThemeValue {
+        parse_channel(6).ok_or_else(|| ConfigError::ThemeValue {
             field,
             value: value.to_owned(),
         })?
