@@ -53,11 +53,12 @@ and application backgrounds are separate colors. Selected mode,
 accessibility inputs, requested accent, adjusted accent, warnings, schema version,
 and revision accompany it. Consumers do not infer appearance from brightness.
 
-Material tokens differ by appearance. Light glass uses full tint strength and
-0.94 default opacity to stay pale over dark wallpapers; dark glass uses a softer
+Material tokens differ by appearance. Light translucent surfaces use full tint strength and
+0.94 default opacity to stay pale over dark wallpapers; dark surfaces use a softer
 0.5 tint. Shared material overrides apply to both unless the appearance overrides
 them. Reduce Transparency resolves to solid
-material with zero blur. Increase Contrast transforms text and border colors.
+material with zero blur. Increase Contrast adjusts text, borders, and translucent
+surface tint for 7:1 text contrast, and enables native high-contrast controls.
 Accents are adjusted against surfaces independently for each appearance, then
 on-accent text is selected for readability.
 
@@ -73,7 +74,9 @@ replacement, and realtime clock jumps trigger recalculation without polling.
 
 Prepare the incoming wallpaper before starting a 250 ms eased transition. Decode
 or upload failures and a bounded readiness timeout retain the old wallpaper and
-allow the theme change. Reduced motion switches immediately.
+allow the theme change. Reduced motion and accessibility changes apply immediately.
+Transitions preserve their exact resolved endpoints. Changes within one appearance
+keep the resolved material settings instead of adding temporary tint corrections.
 
 Surface, tint, border, shadow, and accent colors can transition. Fonts and geometry
 switch atomically. Foregrounds remain readable across dark and light backdrops. Near the neutral

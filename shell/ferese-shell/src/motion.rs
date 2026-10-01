@@ -76,7 +76,9 @@ impl PopupMotion {
         let now = std::time::Instant::now();
         self.start = self.progress_at(now);
         self.settings = settings;
-        self.started = Some(now);
+        if self.started.is_some() {
+            self.started = Some(now);
+        }
     }
 
     pub(crate) fn new(settings: Settings) -> Self {
@@ -95,13 +97,13 @@ impl PopupMotion {
     }
 
     pub(crate) fn progress_at(&self, now: std::time::Instant) -> f32 {
+        let Some(started) = self.started else {
+            return self.start;
+        };
         let duration = self.settings.duration(if self.target == 1.0 { 200.0 } else { 140.0 });
         if duration.is_zero() {
             return self.target;
         }
-        let Some(started) = self.started else {
-            return self.start;
-        };
         let t = (now.saturating_duration_since(started).as_secs_f32() / duration.as_secs_f32()).min(1.0);
         if t == 1.0 {
             return self.target;
@@ -422,6 +424,11 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Motion<'_, M> {
     ) {
         let v = self.translation();
         let transform = Transformation::translate(v.x, v.y);
+        // Layout/region collection still run before the surface starts opening.
+        // No child may paint an opaque control before the presentation begins.
+        if self.progress <= 0.0 {
+            return;
+        }
         renderer.with_transformation(transform, |renderer| {
             self.content
                 .as_widget()
@@ -556,10 +563,24 @@ mod tests {
             },
         ] {
             let mut motion = PopupMotion::new(settings);
+            assert_eq!(motion.progress_at(now), 0.0);
+            motion.begin(now);
             assert_eq!(motion.progress_at(now), 1.0);
             motion.retarget(0.0, now);
             assert_eq!(motion.progress_at(now), 0.0);
         }
+    }
+
+    #[test]
+    fn updating_motion_policy_preserves_surface_readiness() {
+        let mut motion = PopupMotion::new(Settings::default());
+        motion.update_settings(Settings {
+            reduced_motion: true,
+            ..Settings::default()
+        });
+        assert_eq!(motion.progress(), 0.0);
+        motion.begin(std::time::Instant::now());
+        assert_eq!(motion.progress(), 1.0);
     }
 
     #[test]

@@ -302,6 +302,7 @@ mod tests {
 
         let palette = Palette {
             appearance: ferese_config::theme::Appearance::Dark,
+            high_contrast: false,
             background: Color::from_rgb8(17, 24, 33),
             sidebar: Color::from_rgb8(17, 24, 33),
             card: Color::from_rgb8(17, 24, 33),

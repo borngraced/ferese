@@ -44,9 +44,12 @@ impl IdleSettings {
         Ok(self)
     }
 
-    fn next_poll(self, elapsed: Duration, animate: bool) -> Duration {
+    fn next_poll(self, elapsed: Duration, fade_duration: Duration) -> Duration {
         let dim_at = Duration::from_secs(self.dim_after_seconds);
-        if animate && self.dim_after_seconds != 0 && elapsed >= dim_at && elapsed < dim_at + Duration::from_millis(500)
+        if !fade_duration.is_zero()
+            && self.dim_after_seconds != 0
+            && elapsed >= dim_at
+            && elapsed < dim_at + fade_duration
         {
             return Duration::from_millis(16);
         }
@@ -60,16 +63,15 @@ impl IdleSettings {
             .min(Duration::from_secs(1))
     }
 
-    fn appearance(self, elapsed: Duration) -> (f32, bool) {
+    fn appearance(self, elapsed: Duration, fade_duration: Duration) -> (f32, bool) {
         let sleeping = self.sleep_after_seconds != 0 && elapsed >= Duration::from_secs(self.sleep_after_seconds);
-        let dim = if self.dim_after_seconds == 0 {
+        let dim_at = Duration::from_secs(self.dim_after_seconds);
+        let dim = if self.dim_after_seconds == 0 || elapsed < dim_at {
             0.0
+        } else if fade_duration.is_zero() {
+            0.65
         } else {
-            elapsed
-                .saturating_sub(Duration::from_secs(self.dim_after_seconds))
-                .as_secs_f32()
-                .min(0.5)
-                * 1.3
+            (elapsed.saturating_sub(dim_at).as_secs_f32() / fade_duration.as_secs_f32()).min(1.0) * 0.65
         };
         (if sleeping { 1.0 } else { dim }, sleeping)
     }
@@ -129,11 +131,11 @@ impl Ferese {
         if !self.session_lock.ready_for_idle(self.space.outputs()) {
             return;
         }
+        let fade_duration = self.animation_duration(Duration::from_millis(500));
         let since = self.session_lock.idle_since.get_or_insert(now);
-        let (mut opacity, sleeping) = self.lock_idle.appearance(now.saturating_duration_since(*since));
-        if !self.animations_enabled() && opacity > 0.0 && !sleeping {
-            opacity = 0.65;
-        }
+        let (opacity, sleeping) = self
+            .lock_idle
+            .appearance(now.saturating_duration_since(*since), fade_duration);
         let changed = opacity != self.session_lock.idle_opacity || sleeping != self.session_lock.sleeping;
         let was_sleeping = self.session_lock.sleeping;
         self.session_lock.idle_opacity = opacity;
@@ -245,7 +247,11 @@ impl SessionLockHandler for Ferese {
                     .session_lock
                     .idle_since
                     .map_or(Duration::ZERO, |since| since.elapsed());
-                TimeoutAction::ToDuration(state.lock_idle.next_poll(elapsed, state.animations_enabled()))
+                TimeoutAction::ToDuration(
+                    state
+                        .lock_idle
+                        .next_poll(elapsed, state.animation_duration(Duration::from_millis(500))),
+                )
             }) {
             Ok(token) => self.session_lock.idle_timer = Some(token),
             Err(error) => tracing::warn!(%error, "could not schedule lock screen inactivity"),
@@ -356,23 +362,59 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dim_fade_respects_speed_without_changing_idle_deadlines() {
+        let policy = IdleSettings::default();
+        for (duration, half_at) in [(250, 30_125), (1000, 30_500)] {
+            let fade = Duration::from_millis(duration);
+            assert_eq!(policy.appearance(Duration::from_secs(29), fade), (0.0, false));
+            let halfway = policy.appearance(Duration::from_millis(half_at), fade);
+            assert!((halfway.0 - 0.325).abs() < 0.001 && !halfway.1);
+            assert_eq!(
+                policy.next_poll(Duration::from_millis(half_at), fade),
+                Duration::from_millis(16)
+            );
+            assert_eq!(policy.appearance(Duration::from_secs(120), fade), (1.0, true));
+        }
+        assert_eq!(
+            policy.appearance(Duration::from_secs(30), Duration::ZERO),
+            (0.65, false)
+        );
+        assert_eq!(policy.appearance(Duration::from_secs(120), Duration::ZERO), (1.0, true));
+    }
+
+    #[test]
     fn idle_policy_fades_then_sleeps_and_activity_resets_it() {
         let policy = IdleSettings::default();
-        assert_eq!(policy.appearance(Duration::from_secs(29)), (0.0, false));
-        let halfway = policy.appearance(Duration::from_millis(30_250));
-        assert!((halfway.0 - 0.325).abs() < 0.001 && !halfway.1);
-        assert_eq!(policy.appearance(Duration::from_secs(31)), (0.65, false));
-        assert_eq!(policy.appearance(Duration::from_secs(120)), (1.0, true));
-        assert_eq!(policy.appearance(Duration::ZERO), (0.0, false));
         assert_eq!(
-            policy.next_poll(Duration::from_millis(29_998), true),
+            policy.appearance(Duration::from_secs(29), Duration::from_millis(500)),
+            (0.0, false)
+        );
+        let halfway = policy.appearance(Duration::from_millis(30_250), Duration::from_millis(500));
+        assert!((halfway.0 - 0.325).abs() < 0.001 && !halfway.1);
+        assert_eq!(
+            policy.appearance(Duration::from_secs(31), Duration::from_millis(500)),
+            (0.65, false)
+        );
+        assert_eq!(
+            policy.appearance(Duration::from_secs(120), Duration::from_millis(500)),
+            (1.0, true)
+        );
+        assert_eq!(
+            policy.appearance(Duration::ZERO, Duration::from_millis(500)),
+            (0.0, false)
+        );
+        assert_eq!(
+            policy.next_poll(Duration::from_millis(29_998), Duration::from_millis(500)),
             Duration::from_millis(2)
         );
         assert_eq!(
-            policy.next_poll(Duration::from_secs(30), true),
+            policy.next_poll(Duration::from_secs(30), Duration::from_millis(500)),
             Duration::from_millis(16)
         );
-        assert_eq!(policy.next_poll(Duration::from_secs(30), false), Duration::from_secs(1));
+        assert_eq!(
+            policy.next_poll(Duration::from_secs(30), Duration::ZERO),
+            Duration::from_secs(1)
+        );
     }
 
     #[test]
@@ -427,7 +469,7 @@ mod tests {
                 dim_after_seconds: 0,
                 sleep_after_seconds: 0
             }
-            .appearance(Duration::from_secs(9999)),
+            .appearance(Duration::from_secs(9999), Duration::from_millis(500)),
             (0.0, false)
         );
         assert_eq!(
@@ -435,7 +477,7 @@ mod tests {
                 dim_after_seconds: 0,
                 sleep_after_seconds: 10
             }
-            .appearance(Duration::from_secs(10)),
+            .appearance(Duration::from_secs(10), Duration::from_millis(500)),
             (1.0, true)
         );
         assert_eq!(
@@ -443,7 +485,7 @@ mod tests {
                 dim_after_seconds: 1,
                 sleep_after_seconds: 0
             }
-            .appearance(Duration::from_secs(9999)),
+            .appearance(Duration::from_secs(9999), Duration::from_millis(500)),
             (0.65, false)
         );
         assert!(

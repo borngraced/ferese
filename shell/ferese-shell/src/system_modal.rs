@@ -242,12 +242,14 @@ impl FereseShell {
         let Some(entry) = modal.surfaces.iter_mut().find(|entry| entry.id == id) else {
             return;
         };
-        modal.motion.begin(Instant::now());
         if entry.primary && entry.effects.is_none() {
             match EffectsBinding::attach_role(surface, None, 0.0) {
                 Ok(effects) => entry.effects = Some(effects),
                 Err(error) => eprintln!("ferese-shell: system modal material unavailable: {error}"),
             }
+        }
+        if entry.primary {
+            modal.motion.begin(Instant::now());
         }
     }
 
@@ -422,13 +424,8 @@ impl FereseShell {
         let content: Element<'_, cosmic::Action<Message>> = if surface.primary {
             let theme = self.config.theme;
             let material = surface.effects.is_some();
-            let alpha = if material { 1.0 } else { progress };
-            let mut palette = theme.palette();
-            palette.text = palette.text.scale_alpha(alpha);
-            palette.muted = palette.muted.scale_alpha(alpha);
-            palette.sidebar = palette.sidebar.scale_alpha(alpha);
-            palette.card = palette.card.scale_alpha(alpha);
-            palette.accent = palette.accent.scale_alpha(alpha);
+            // Opacity belongs to the presented surface, never to semantic colors.
+            let palette = theme.palette();
             let rows = match &modal.content {
                 Content::Power(action) => {
                     let mut rows = column![
@@ -526,7 +523,7 @@ impl FereseShell {
                 .padding(24)
                 .class(theme::Container::custom(move |_| container::Style {
                     background: (!material)
-                        .then_some(Background::Color(color_with_opacity(theme.surface_popover, alpha))),
+                        .then_some(Background::Color(color_with_opacity(theme.surface_popover, 1.0))),
                     text_color: Some(palette.text),
                     icon_color: Some(palette.text),
                     border: Border {
@@ -550,6 +547,7 @@ impl FereseShell {
         } else {
             content
         };
+        let scrim_alpha = if surface.effects.is_some() { 1.0 } else { progress };
         let centered = container(content)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -557,7 +555,7 @@ impl FereseShell {
             .align_x(cosmic::iced::Alignment::Center)
             .align_y(cosmic::iced::Alignment::Center)
             .class(theme::Container::custom(move |_| container::Style {
-                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.34 * progress))),
+                background: Some(Background::Color(Color::from_rgba(0.0, 0.0, 0.0, 0.34 * scrim_alpha))),
                 ..Default::default()
             }));
         centered.into()

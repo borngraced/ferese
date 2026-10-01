@@ -24,6 +24,14 @@ use crate::{Ferese, RuntimeConfig};
 const DEBOUNCE: Duration = Duration::from_millis(150);
 const WALLPAPER_TIMEOUT: Duration = Duration::from_secs(2);
 
+fn transition_progress(elapsed: Duration, duration: Duration) -> f64 {
+    if duration.is_zero() {
+        1.0
+    } else {
+        (elapsed.as_secs_f64() / duration.as_secs_f64()).clamp(0.0, 1.0)
+    }
+}
+
 pub(crate) fn read_source(path: &Path) -> Result<String, String> {
     let mut source = String::new();
     std::fs::File::open(path)
@@ -474,8 +482,16 @@ impl Ferese {
             .as_ref()
             .filter(|transition| transition.previous_wallpaper.is_some())
             .map_or(1., |transition| {
-                (transition.started.elapsed().as_secs_f32() / (TRANSITION_MS as f32 / 1000.)).clamp(0., 1.)
+                transition_progress(transition.started.elapsed(), self.theme_transition_duration()) as f32
             })
+    }
+
+    fn theme_transition_duration(&self) -> Duration {
+        if self.theme_engine.snapshot.theme.reduced_motion {
+            Duration::ZERO
+        } else {
+            self.animation_duration(Duration::from_millis(TRANSITION_MS))
+        }
     }
 
     pub(crate) fn poll_theme(&mut self) {
@@ -535,12 +551,12 @@ impl Ferese {
             .theme_engine
             .last_frame
             .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_millis(16));
+        let duration = self.theme_transition_duration();
         if frame_due && let Some(transition) = &self.theme_engine.transition {
             self.theme_engine.last_frame = Some(now);
-            let progress =
-                now.saturating_duration_since(transition.started).as_secs_f64() / (TRANSITION_MS as f64 / 1000.);
+            let progress = transition_progress(now.saturating_duration_since(transition.started), duration);
             let target = &self.theme_engine.snapshot.theme;
-            let complete = progress >= 1. || target.reduced_motion;
+            let complete = progress >= 1.;
             let presented = if complete {
                 target.clone()
             } else {
@@ -615,5 +631,23 @@ impl Ferese {
         result?;
         self.reload_config_source(source)?;
         Ok(self.theme_engine.value())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn theme_and_wallpaper_share_scaled_progress_and_instant_completion() {
+        let elapsed = Duration::from_millis(50);
+        assert_eq!(transition_progress(elapsed, Duration::from_millis(200)), 0.25);
+        assert_eq!(transition_progress(elapsed, Duration::from_millis(100)), 0.5);
+        assert_eq!(transition_progress(elapsed, Duration::from_millis(400)), 0.125);
+        assert_eq!(transition_progress(Duration::ZERO, Duration::ZERO), 1.0);
+        assert_eq!(
+            transition_progress(Duration::from_secs(1), Duration::from_millis(200)),
+            1.0
+        );
     }
 }

@@ -3,6 +3,7 @@ use cosmic::iced::Color;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
     pub appearance: ferese_config::theme::Appearance,
+    pub high_contrast: bool,
     pub background: Color,
     pub sidebar: Color,
     pub card: Color,
@@ -19,6 +20,7 @@ impl Palette {
         let color = |value: &str| parse_color(value).expect("validated resolved theme color");
         Self {
             appearance: theme.appearance,
+            high_contrast: theme.accessibility.increase_contrast,
             background: color(&theme.tokens.colors.application_background),
             sidebar: color(&theme.tokens.colors.surface_base),
             card: color(&theme.tokens.colors.surface_raised),
@@ -43,10 +45,13 @@ impl Palette {
 
     pub fn native_theme(self) -> cosmic::Theme {
         let rgba = |c: Color| cosmic::cosmic_theme::palette::Srgba::new(c.r, c.g, c.b, 1.);
-        let builder = if self.appearance == ferese_config::theme::Appearance::Light {
-            cosmic::cosmic_theme::ThemeBuilder::light()
-        } else {
-            cosmic::cosmic_theme::ThemeBuilder::dark()
+        use cosmic::cosmic_theme::ThemeBuilder;
+        use ferese_config::theme::Appearance;
+        let builder = match (self.appearance, self.high_contrast) {
+            (Appearance::Light, false) => ThemeBuilder::light(),
+            (Appearance::Dark, false) => ThemeBuilder::dark(),
+            (Appearance::Light, true) => ThemeBuilder::light_high_contrast(),
+            (Appearance::Dark, true) => ThemeBuilder::dark_high_contrast(),
         };
         let corners = cosmic::cosmic_theme::CornerRadii {
             radius_xs: [self.radius.min(4.); 4],
@@ -107,6 +112,23 @@ pub fn surface_shade(base: Color) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_theme_preserves_the_resolved_accessibility_mode() {
+        for appearance in [
+            ferese_config::theme::Appearance::Light,
+            ferese_config::theme::Appearance::Dark,
+        ] {
+            for high_contrast in [false, true] {
+                let mut resolved = ferese_config::theme::ResolvedTheme::default();
+                resolved.appearance = appearance;
+                resolved.accessibility.increase_contrast = high_contrast;
+                let palette = Palette::from_resolved(&resolved);
+                assert_eq!(palette.high_contrast, high_contrast);
+                assert_eq!(palette.native_theme().cosmic().is_high_contrast, high_contrast);
+            }
+        }
+    }
 
     #[test]
     fn every_preset_builds_an_opaque_control_palette_over_translucent_materials() {

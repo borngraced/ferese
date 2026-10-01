@@ -14,6 +14,7 @@ use crate::{AuthenticationRequest, Generation, PromptEvent};
 #[derive(Clone)]
 struct Appearance {
     appearance: ferese_config::theme::Appearance,
+    high_contrast: bool,
     surface: Color,
     text: Color,
     muted: Color,
@@ -34,6 +35,7 @@ impl Appearance {
         let family = &theme.tokens.typography.font_family;
         Self {
             appearance: theme.appearance,
+            high_contrast: theme.accessibility.increase_contrast,
             surface: Color {
                 a: ferese_theme::service::opacity(theme),
                 ..palette.sidebar
@@ -50,6 +52,7 @@ impl Appearance {
     fn palette(&self) -> ferese_theme::Palette {
         ferese_theme::Palette {
             appearance: self.appearance,
+            high_contrast: self.high_contrast,
             background: self.surface,
             sidebar: self.surface,
             card: self.surface,

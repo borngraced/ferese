@@ -1027,11 +1027,50 @@ fn transform(t: &mut Tokens, accessibility: &Accessibility, warnings: &mut Vec<S
     }
     if accessibility.increase_contrast {
         t.colors.border = hex(readable(rgba(&t.colors.border).unwrap(), surface, 3.));
+        resolve_material_contrast(t, minimum);
     }
     if accessibility.reduce_transparency {
         t.material.style = "solid".into();
         t.material.opacity = 1.;
         t.material.blur_radius = 0.;
+    }
+}
+
+fn resolve_material_contrast(tokens: &mut Tokens, minimum: f64) {
+    if tokens.material.style == "solid" {
+        return;
+    }
+    let surface = rgba(&tokens.colors.surface_base).unwrap();
+    let bar = rgba(&tokens.surface.bar.background).unwrap();
+    let raised = rgba(&tokens.colors.surface_raised).unwrap();
+    let app = rgba(&tokens.colors.application_background).unwrap();
+    let initial = tokens.material.opacity * tokens.material.tint_strength;
+    let readable = |backgrounds: &[[f64; 4]]| {
+        [[0., 0., 0., 1.], [1.; 4]].into_iter().any(|text| {
+            backgrounds
+                .iter()
+                .all(|background| contrast(text, *background) >= minimum)
+        })
+    };
+    let opacity = (0..=100)
+        .map(|step| initial + (1. - initial) * f64::from(step) / 100.)
+        .find(|opacity| {
+            let bounds = material_bounds(surface, *opacity);
+            readable(&[bounds[0], bounds[1], raised, app]) && readable(&material_bounds(bar, *opacity))
+        })
+        .unwrap_or(1.0);
+    tokens.material.opacity = tokens.material.opacity.max(opacity);
+    tokens.material.tint_strength = opacity / tokens.material.opacity.max(f64::EPSILON);
+    let bounds = material_bounds(surface, opacity);
+    let body = [bounds[0], bounds[1], raised, app];
+    let bar = material_bounds(bar, opacity);
+    for (color, backgrounds) in [
+        (&mut tokens.colors.text_primary, body.as_slice()),
+        (&mut tokens.colors.text_muted, body.as_slice()),
+        (&mut tokens.surface.bar.text_primary, bar.as_slice()),
+        (&mut tokens.surface.bar.text_muted, bar.as_slice()),
+    ] {
+        *color = hex(readable_across(rgba(color).unwrap(), backgrounds, minimum));
     }
 }
 
@@ -1064,8 +1103,11 @@ fn material_foreground(preferred: [f64; 4], backgrounds: [[f64; 4]; 2]) -> [f64;
 impl ResolvedTheme {
     /// Bound contrast across all backdrops instead of interpolating foregrounds.
     pub fn transition(&self, to: &Self, progress: f64) -> Self {
-        if to.reduced_motion {
+        if to.reduced_motion || self.accessibility != to.accessibility || progress >= 1.0 {
             return to.clone();
+        }
+        if progress <= 0.0 || self == to {
+            return self.clone();
         }
         let p = progress.clamp(0., 1.);
         let p = p * p * (3. - 2. * p);
@@ -1089,6 +1131,42 @@ impl ResolvedTheme {
         frame.tokens.shadow.soft.opacity =
             self.tokens.shadow.soft.opacity + (to.tokens.shadow.soft.opacity - self.tokens.shadow.soft.opacity) * p;
         let preferred = if p < 0.5 { self } else { to };
+        frame.appearance = preferred.appearance;
+        if self.appearance == to.appearance {
+            let body = [
+                rgba(&frame.tokens.colors.surface_base).unwrap(),
+                rgba(&frame.tokens.colors.surface_raised).unwrap(),
+                rgba(&frame.tokens.colors.application_background).unwrap(),
+            ];
+            let minimum = if to.accessibility.increase_contrast { 7.0 } else { 4.5 };
+            frame.tokens.colors.text_primary = hex(readable_across(
+                rgba(&preferred.tokens.colors.text_primary).unwrap(),
+                &body,
+                minimum,
+            ));
+            frame.tokens.colors.text_muted = hex(readable_across(
+                rgba(&preferred.tokens.colors.text_muted).unwrap(),
+                &body,
+                minimum,
+            ));
+            let bar = rgba(&frame.tokens.surface.bar.background).unwrap();
+            frame.tokens.surface.bar.text_primary = hex(readable(
+                rgba(&preferred.tokens.surface.bar.text_primary).unwrap(),
+                bar,
+                minimum,
+            ));
+            frame.tokens.surface.bar.text_muted = hex(readable(
+                rgba(&preferred.tokens.surface.bar.text_muted).unwrap(),
+                bar,
+                minimum,
+            ));
+            frame.tokens.colors.on_accent = hex(readable(
+                rgba(&preferred.tokens.colors.on_accent).unwrap(),
+                rgba(&frame.tokens.colors.accent).unwrap(),
+                4.5,
+            ));
+            return frame;
+        }
         let base = rgba(&frame.tokens.colors.surface_base).unwrap();
         let raised = rgba(&frame.tokens.colors.surface_raised).unwrap();
         let app = rgba(&frame.tokens.colors.application_background).unwrap();
@@ -1108,7 +1186,6 @@ impl ResolvedTheme {
         } else {
             frame.tokens.material.opacity * frame.tokens.material.tint_strength
         };
-        // Glass spanning the neutral midpoint needs more tint to keep text readable.
         for step in 0..=100 {
             let candidate = opacity + (1. - opacity) * f64::from(step) / 100.;
             let backgrounds = material_bounds(surface, candidate);
@@ -1502,7 +1579,7 @@ mod tests {
             .theme;
             for (from, to) in [(&dark, &light), (&light, &dark)] {
                 for backdrop in [[0., 0., 0., 1.], [1., 1., 1., 1.], [0.2, 0.4, 0.7, 1.]] {
-                    for step in 0..=20 {
+                    for step in 1..20 {
                         let frame = from.transition(to, f64::from(step) / 20.);
                         let mut surface = rgba(&frame.tokens.colors.surface_base).unwrap();
                         surface[3] = frame.tokens.material.opacity * frame.tokens.material.tint_strength;
@@ -1543,6 +1620,70 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn high_contrast_covers_translucent_surfaces() {
+        for mode in ["light", "dark"] {
+            let resolved = candidate(&format!(r#"theme {{ family "tokyo-night"; mode "{mode}"; material {{ style "translucent"; opacity 0.52; }}; accessibility {{ increase-contrast #true; }}; }}"#)).unwrap().theme;
+            let opacity = resolved.tokens.material.opacity * resolved.tokens.material.tint_strength;
+            for (background, primary, muted) in [
+                (
+                    &resolved.tokens.colors.surface_base,
+                    &resolved.tokens.colors.text_primary,
+                    &resolved.tokens.colors.text_muted,
+                ),
+                (
+                    &resolved.tokens.surface.bar.background,
+                    &resolved.tokens.surface.bar.text_primary,
+                    &resolved.tokens.surface.bar.text_muted,
+                ),
+            ] {
+                for backdrop in material_bounds(rgba(background).unwrap(), opacity) {
+                    for text in [primary, muted] {
+                        assert!(contrast(rgba(text).unwrap(), backdrop) >= 7.0);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn transitions_preserve_endpoints_and_never_restyle_an_unchanged_theme() {
+        let from = candidate(
+            r#"theme { family "tokyo-night"; mode "dark"; material { style "translucent"; opacity 0.52; }; }"#,
+        )
+        .unwrap()
+        .theme;
+        let to =
+            candidate(r#"theme { family "gruvbox"; mode "dark"; material { style "translucent"; opacity 0.52; }; }"#)
+                .unwrap()
+                .theme;
+        assert_eq!(from.transition(&to, 0.0), from);
+        assert_eq!(from.transition(&to, 1.0), to);
+        for step in 0..=20 {
+            let p = f64::from(step) / 20.0;
+            assert_eq!(from.transition(&from, p), from);
+            let frame = from.transition(&to, p);
+            assert_eq!(frame.tokens.material.opacity, from.tokens.material.opacity);
+            let low = from.tokens.material.tint_strength.min(to.tokens.material.tint_strength);
+            let high = from.tokens.material.tint_strength.max(to.tokens.material.tint_strength);
+            assert!((low..=high).contains(&frame.tokens.material.tint_strength));
+        }
+    }
+
+    #[test]
+    fn accessibility_changes_publish_the_resolved_theme_without_a_transient_palette() {
+        let from = candidate(r#"theme { family "tokyo-night"; mode "dark"; }"#)
+            .unwrap()
+            .theme;
+        let to =
+            candidate(r#"theme { family "tokyo-night"; mode "dark"; accessibility { increase-contrast #true; }; }"#)
+                .unwrap()
+                .theme;
+        for step in 0..=20 {
+            assert_eq!(from.transition(&to, f64::from(step) / 20.0), to);
         }
     }
 

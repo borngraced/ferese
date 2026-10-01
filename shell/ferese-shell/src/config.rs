@@ -42,6 +42,7 @@ impl Default for StatusConfig {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ShellTheme {
     pub(crate) appearance: ferese_config::theme::Appearance,
+    pub(crate) high_contrast: bool,
     pub(crate) bar_background: [u8; 4],
     pub(crate) bar_text_primary: [u8; 4],
     pub(crate) bar_text_muted: [u8; 4],
@@ -70,6 +71,7 @@ impl Default for ShellTheme {
     fn default() -> Self {
         Self {
             appearance: Default::default(),
+            high_contrast: false,
             bar_background: [28, 32, 46, 255],
             bar_text_primary: [240, 243, 250, 255],
             bar_text_muted: [170, 180, 199, 255],
@@ -102,6 +104,7 @@ impl ShellTheme {
         let surface = color(self.surface_base);
         ferese_theme::Palette {
             appearance: self.appearance,
+            high_contrast: self.high_contrast,
             background: surface,
             sidebar: surface,
             card: surface,
@@ -339,11 +342,13 @@ pub(crate) fn load() -> ShellConfig {
 pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, ferese_config::Error> {
     let document = ferese_config::Document::parse(source)?;
     let snapshot = ferese_theme::service::current();
-    parse_document(
+    let mut config = parse_document(
         &document.with_theme(&snapshot.presented),
         snapshot.presented.appearance,
         snapshot.mode,
-    )
+    )?;
+    config.apply_theme(&snapshot.presented);
+    Ok(config)
 }
 
 fn parse_document(
@@ -394,6 +399,7 @@ impl ShellConfig {
         let config: ThemeConfig = serde_json::from_value(serde_json::to_value(&theme.tokens).unwrap()).unwrap();
         self.theme = shell_theme(&config);
         self.theme.appearance = theme.appearance;
+        self.theme.high_contrast = theme.accessibility.increase_contrast;
         self.theme.material_radius = theme.tokens.geometry.shell_radius as f32;
         self.theme.bar_radius = self.theme.material_radius;
         self.font_family = Some(theme.tokens.typography.font_family.clone());
@@ -422,6 +428,7 @@ fn shell_theme(theme: &ThemeConfig) -> ShellTheme {
 
     ShellTheme {
         appearance: defaults.appearance,
+        high_contrast: defaults.high_contrast,
         material_radius: defaults.material_radius,
         bar_background: {
             let mut background = parse_color(&theme.surface.bar.background).unwrap_or(defaults.bar_background);

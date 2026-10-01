@@ -874,10 +874,13 @@ impl FereseShell {
         }
         motion::configure(config.animations, config.theme.material_radius);
 
-        if self.config.animations != config.animations
-            && let Some(menu) = &mut self.menu
-        {
-            menu.motion.update_settings(config.animations);
+        if self.config.animations != config.animations {
+            if let Some(menu) = &mut self.menu {
+                menu.motion.update_settings(config.animations);
+            }
+            if let Some(modal) = &mut self.system_modal {
+                modal.motion.update_settings(config.animations);
+            }
         }
         self.status_service
             .update_settings(config.status.settings_command.clone());

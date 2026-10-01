@@ -5,6 +5,7 @@ use ferese_config::Document;
 #[derive(Clone)]
 pub struct Appearance {
     pub appearance: ferese_config::theme::Appearance,
+    pub high_contrast: bool,
     pub dim: f32,
     pub show_clock: bool,
     pub show_date: bool,
@@ -86,6 +87,7 @@ impl Appearance {
         };
         Self {
             appearance: theme.appearance,
+            high_contrast: theme.accessibility.increase_contrast,
             dim: doc
                 .as_ref()
                 .and_then(|d| d.get("lock_screen.background_dim"))
@@ -117,6 +119,7 @@ impl Appearance {
     pub fn theme(&self) -> cosmic::Theme {
         ferese_theme::Palette {
             appearance: self.appearance,
+            high_contrast: self.high_contrast,
             background: self.panel,
             sidebar: self.panel,
             card: self.panel,

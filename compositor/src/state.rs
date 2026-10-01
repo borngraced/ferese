@@ -269,18 +269,30 @@ struct ClosingAnimation {
 }
 
 impl ClosingAnimation {
-    fn advance(&mut self, delta: Duration) -> bool {
+    fn advance(&mut self, delta: Duration, animations_enabled: bool) -> bool {
         if self.close_sent {
             return false;
         }
 
-        self.progress = (self.progress + delta.as_secs_f64() / CLOSE_ANIMATION_DURATION.as_secs_f64()).min(1.0);
+        self.progress = if animations_enabled {
+            (self.progress + delta.as_secs_f64() / CLOSE_ANIMATION_DURATION.as_secs_f64()).min(1.0)
+        } else {
+            1.0
+        };
         if self.progress < 1.0 {
             return false;
         }
 
         self.close_sent = true;
         true
+    }
+}
+
+fn scaled_animation_duration(duration: Duration, enabled: bool, speed: f64) -> Duration {
+    if enabled {
+        duration.div_f64(speed)
+    } else {
+        Duration::ZERO
     }
 }
 
@@ -2125,7 +2137,7 @@ impl Ferese {
 
         let mut ready_to_close = Vec::new();
         for (id, animation) in &mut self.closing_windows {
-            if animation.advance(delta) {
+            if animation.advance(delta, self.animations_enabled) {
                 ready_to_close.push(*id);
             } else if !animation.close_sent {
                 active_animation = true;
@@ -2319,6 +2331,10 @@ impl Ferese {
 
     pub(crate) fn animations_enabled(&self) -> bool {
         self.animations_enabled
+    }
+
+    pub(crate) fn animation_duration(&self, duration: Duration) -> Duration {
+        scaled_animation_duration(duration, self.animations_enabled, self.animation_speed)
     }
 
     pub(crate) fn capture_resize_before_commit(&mut self, surface: &WlSurface) {
@@ -3776,6 +3792,35 @@ impl ClientData for ClientState {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn configured_motion_policy_scales_durations_and_reduced_motion_wins() {
+        for (source, milliseconds) in [
+            ("animations { speed 2; }", 100),
+            ("animations { speed 0.5; }", 400),
+            ("animations { speed 2; reduced-motion #true; }", 0),
+            ("animations { speed 0.5; enabled #false; }", 0),
+        ] {
+            let config = crate::config::Config::parse_source(source).unwrap();
+            assert_eq!(
+                scaled_animation_duration(
+                    Duration::from_millis(200),
+                    config.animations_enabled(),
+                    config.animation_speed().unwrap()
+                ),
+                Duration::from_millis(milliseconds),
+            );
+        }
+    }
+
+    #[test]
+    fn disabling_motion_finishes_an_in_progress_close_once() {
+        let mut animation = ClosingAnimation::default();
+        assert!(!animation.advance(Duration::from_millis(35), true));
+        assert!(animation.advance(Duration::ZERO, false));
+        assert_eq!(animation.progress, 1.0);
+        assert!(!animation.advance(Duration::ZERO, false));
+    }
+
+    #[test]
     fn workspace_drag_cancels_when_focus_or_target_ownership_changes() {
         let mut outputs = OutputWorkspaceMap::default();
         let left = OutputId(1);
@@ -4101,11 +4146,11 @@ mod tests {
     fn close_animation_delays_the_protocol_close_until_it_finishes() {
         let mut animation = ClosingAnimation::default();
 
-        assert!(!animation.advance(Duration::from_millis(70)));
+        assert!(!animation.advance(Duration::from_millis(70), true));
         assert_eq!(animation.progress, 0.5);
-        assert!(animation.advance(Duration::from_millis(70)));
+        assert!(animation.advance(Duration::from_millis(70), true));
         assert!(animation.close_sent);
-        assert!(!animation.advance(Duration::from_secs(1)));
+        assert!(!animation.advance(Duration::from_secs(1), true));
     }
 
     #[test]
