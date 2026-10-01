@@ -1855,12 +1855,15 @@ impl Ferese {
 
     fn advance_animations_by(&mut self, delta: std::time::Duration) -> bool {
         let delta = delta.mul_f64(self.animation_speed);
-        let visible_workspaces = self
-            .space
-            .outputs()
-            .filter_map(|output| self.output_ids.get(output))
-            .filter_map(|output| self.output_workspaces.active_workspace(*output))
-            .collect::<HashSet<_>>();
+        let visible_workspaces = if self.viewport_animations.is_empty() {
+            HashSet::new()
+        } else {
+            self.space
+                .outputs()
+                .filter_map(|output| self.output_ids.get(output))
+                .filter_map(|output| self.output_workspaces.active_workspace(*output))
+                .collect::<HashSet<_>>()
+        };
         let windows = self
             .space
             .elements()
@@ -1897,12 +1900,15 @@ impl Ferese {
         };
         let mut dim_changed = false;
         // Include hidden workspace windows: overview can present them too.
-        for id in self.window_ids.values().copied().collect::<Vec<_>>() {
-            let selected = if self.overview.is_active() {
-                self.overview_selected(id)
-            } else {
-                self.focused_window == Some(id)
-            };
+        // Read selection once so these immutable fields can be borrowed alongside
+        // window_focus without allocating a temporary window-ID vector.
+        let selected_window = if self.overview.is_active() {
+            self.overview.selected()
+        } else {
+            self.focused_window
+        };
+        for id in self.window_ids.values().copied() {
+            let selected = selected_window == Some(id);
             let target = if selected { 1.0 } else { 0.0 };
             let focus = self
                 .window_focus
