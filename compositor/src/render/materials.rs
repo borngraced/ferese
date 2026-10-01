@@ -1,0 +1,391 @@
+use super::*;
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn append_material_surface(
+    state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    geometry: Rectangle<i32, Logical>,
+    content_origin: Point<i32, Logical>,
+    scale: f64,
+    output_crop: Rectangle<i32, Physical>,
+    elements: &mut Vec<AnimatedWindowRenderElement>,
+) {
+    let radius =
+        if crate::effects::surface_role(surface).is_some_and(|(role, _)| role == crate::effects::SemanticRole::Panel) {
+            state.theme_settings.panel_radius
+        } else {
+            state.theme_settings.material_radius
+        };
+    let regions = crate::effects::surface_regions(surface);
+    let targets: Vec<_> = match &regions {
+        None => vec![(geometry, radius as f32)],
+        Some(regions) => regions
+            .iter()
+            .filter_map(|r| {
+                Rectangle::new(
+                    (content_origin.x + r[0], content_origin.y + r[1]).into(),
+                    (r[2], r[3]).into(),
+                )
+                .intersection(geometry)
+                .map(|rect| (rect, r[4] as f32))
+            })
+            .collect(),
+    };
+    let materials: Vec<_> = targets
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (rect, radius))| {
+            material_element(state, renderer, output, surface, *rect, *radius, index, geometry, 1.0)
+        })
+        .collect();
+    if let Some(buffers) = state.material_buffers.get_mut(surface) {
+        buffers.contexts.retain(|(_, index), _| *index < targets.len());
+    }
+    let material = (!materials.is_empty() && regions.is_none()).then_some(());
+    let clip = material.as_ref().and_then(|_| {
+        let mode = output.current_mode()?;
+        let program = rounded_clip_program(state, renderer)?;
+        Some((
+            program.texture,
+            framebuffer_clip_rect(
+                geometry.to_physical_precise_round(scale),
+                mode.size,
+                output.current_transform().invert(),
+            ),
+            scaled_effect_value(radius, geometry, scale),
+        ))
+    });
+    // Smithay element lists are front to back: content, material, shadow.
+    let content = render_elements_from_surface_tree::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
+        renderer,
+        surface,
+        content_origin.to_physical_precise_round(scale),
+        scale,
+        crate::effects::surface_opacity(surface),
+        RenderElementKind::Unspecified,
+    );
+    elements.extend(content.into_iter().filter_map(|element| {
+        let origin = Point::<i32, Physical>::default();
+        let element = if let Some((program, clip_rect, radius)) = &clip {
+            WindowContentRenderElement::Rounded(RoundedSurfaceRenderElement {
+                inner: element,
+                program: program.clone(),
+                clip_rect: *clip_rect,
+                radius: *radius,
+                clip_changed: false,
+            })
+        } else {
+            WindowContentRenderElement::Popup(element)
+        };
+        let element = RescaleRenderElement::from_element(element, origin, 1.0);
+        let element = RelocateRenderElement::from_element(element, origin, Relocate::Relative);
+        CropRenderElement::from_element(element, scale, output_crop).map(Into::into)
+    }));
+    for (background, shadow) in materials {
+        elements.push(background);
+        elements.push(shadow);
+    }
+}
+
+pub(super) fn material_element(
+    state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    geometry: Rectangle<i32, Logical>,
+    radius: f32,
+    index: usize,
+    capture_geometry: Rectangle<i32, Logical>,
+    alpha: f32,
+) -> Option<(AnimatedWindowRenderElement, AnimatedWindowRenderElement)> {
+    let (role, generation) = crate::effects::surface_role(surface)?;
+    let material = crate::effects::resolve_material(
+        role,
+        state.theme_settings.material_style,
+        state.theme_settings.shell_opacity as f32,
+    );
+    let presentation_alpha = crate::effects::surface_opacity(surface) * alpha;
+    let mode = output.current_mode()?;
+    let scale = output.current_scale().fractional_scale();
+    let transform = output.current_transform().invert();
+    let background = if role == crate::effects::SemanticRole::Panel {
+        state.theme_settings.bar_background_color
+    } else {
+        state.theme_settings.surface_base_color
+    };
+    let [red, green, blue, _] = background.0;
+    let radius = radius.min(geometry.size.w.min(geometry.size.h) as f32 * 0.5);
+    let [offset_y, shadow_blur, shadow_opacity] = material.shadow;
+    let edge_bar = role == crate::effects::SemanticRole::Panel && radius == 0.0 && geometry.loc.y == 0;
+    let shadow_opacity = if edge_bar {
+        0.0
+    } else {
+        shadow_opacity * (state.theme_settings.shadow_opacity / 0.2) * f64::from(presentation_alpha)
+    };
+    let shadow_geometry = Rectangle::new(
+        (geometry.loc.x, geometry.loc.y + offset_y.round() as i32).into(),
+        geometry.size,
+    );
+    let background_opacity = material.opacity;
+    let blur = material_blur_radius(material.style, material.opacity, state.theme_settings.backdrop_blur);
+    let output_size = output
+        .current_transform()
+        .transform_size(mode.size)
+        .to_f64()
+        .to_logical(scale)
+        .to_i32_ceil();
+    let sample_geometry = expanded_blur_region(capture_geometry, blur.ceil() as i32, output_size);
+    let sample_physical = sample_geometry.to_physical_precise_round(scale);
+    let mut parameters = MaterialParameters {
+        presentation_alpha,
+        background_opacity,
+        blur: (blur * scale) as f32,
+        scene_generation: if blur > 0.0 { state.backdrop_generation } else { 0 },
+        sample_geometry,
+        sample_physical,
+        sample_framebuffer: framebuffer_clip_rect(sample_physical, mode.size, transform),
+        radius: radius * scale as f32,
+        shadow_rect: framebuffer_clip_rect(shadow_geometry.to_physical_precise_round(scale), mode.size, transform),
+        shadow_values: [(shadow_blur * scale) as f32, shadow_opacity as f32],
+        shadow_bounds: shadow_bounds(geometry, offset_y, shadow_blur),
+        geometry,
+        tint: [red, green, blue, material.opacity * presentation_alpha],
+        generation,
+        opaque: material.opacity == 1.0 && presentation_alpha == 1.0 && radius == 0.0,
+        visible_framebuffer: framebuffer_clip_rect(geometry.to_physical_precise_round(scale), mode.size, transform),
+    };
+    let context = renderer.context_id().erased();
+    let program = material_program(state, renderer)?;
+    let blur_program = (blur > 0.0).then(|| blur_program(state, renderer)).flatten();
+    let capture_rect = framebuffer_capture_rect(parameters.sample_framebuffer);
+    let capture_size = Size::from((capture_rect[2], capture_rect[3]));
+    let buffers = state.material_buffers.entry(surface.clone()).or_default();
+    let capture = if let Some(blur_program) = blur_program {
+        if buffers
+            .captures
+            .get(&context)
+            .is_none_or(|c| c.geometry != sample_geometry || c.texture.size() != capture_size)
+        {
+            let texture = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, capture_size)
+                .map_err(|error| {
+                    tracing::warn!(%error, ?sample_physical, "backdrop capture allocation failed");
+                    error
+                })
+                .ok();
+            if let Some(texture) = texture {
+                buffers.captures.insert(
+                    context.clone(),
+                    BlurCapture {
+                        texture,
+                        dirty: Arc::new(AtomicBool::new(true)),
+                        geometry: sample_geometry,
+                    },
+                );
+            } else {
+                buffers.captures.remove(&context);
+            }
+        }
+        buffers
+            .captures
+            .get(&context)
+            .cloned()
+            .map(|capture| (capture, blur_program))
+    } else {
+        buffers.captures.remove(&context);
+        None
+    };
+    if capture.is_some() {
+        parameters.tint[3] = state.theme_settings.material_tint_strength as f32;
+    }
+    let make_element = || {
+        if let Some((capture, program)) = &capture {
+            MaterialElement::Blur(BlurRenderElement::new(
+                capture.texture.clone(),
+                program.0.clone(),
+                &parameters,
+                capture.dirty.clone(),
+            ))
+        } else {
+            MaterialElement::Fill(PixelShaderElement::new(
+                program.0.clone(),
+                geometry,
+                parameters.opaque.then(|| vec![Rectangle::from_size(geometry.size)]),
+                1.0,
+                material_uniforms(&parameters),
+                RenderElementKind::Unspecified,
+            ))
+        }
+    };
+    let cached = buffers
+        .contexts
+        .entry((context, index))
+        .or_insert_with(|| CachedMaterial {
+            element: make_element(),
+            parameters: parameters.clone(),
+            shadow: PixelShaderElement::new(
+                program.0.clone(),
+                parameters.shadow_bounds,
+                None,
+                1.0,
+                decoration_uniforms(&parameters, 2.0),
+                RenderElementKind::Unspecified,
+            ),
+        });
+    let replace = match &cached.element {
+        MaterialElement::Fill(_) => capture.is_some(),
+        MaterialElement::Blur(element) => capture
+            .as_ref()
+            .is_none_or(|(capture, _)| capture.texture.tex_id() != element.texture.tex_id()),
+    };
+    if replace {
+        cached.element = make_element();
+    }
+    if cached.parameters != parameters {
+        cached.shadow.resize(parameters.shadow_bounds, None);
+        cached.shadow.update_uniforms(decoration_uniforms(&parameters, 2.0));
+        match &mut cached.element {
+            MaterialElement::Fill(element) => {
+                element.resize(
+                    geometry,
+                    parameters.opaque.then(|| vec![Rectangle::from_size(geometry.size)]),
+                );
+                element.update_uniforms(material_uniforms(&parameters));
+            }
+            MaterialElement::Blur(element) => element.update(&parameters),
+        }
+        cached.parameters = parameters;
+    }
+    let background = match &cached.element {
+        MaterialElement::Fill(element) => element.clone().into(),
+        MaterialElement::Blur(element) => element.clone().into(),
+    };
+    Some((background, cached.shadow.clone().into()))
+}
+
+pub(super) fn material_blur_radius(style: crate::config::MaterialStyle, opacity: f32, radius: f64) -> f64 {
+    if style == crate::config::MaterialStyle::Translucent && opacity > 0.0 {
+        radius
+    } else {
+        0.0
+    }
+}
+
+pub(super) fn blur_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<BlurProgram> {
+    let context = renderer.context_id().erased();
+    if let Some(program) = state.blur_programs.get(&context) {
+        return Some(program.clone());
+    }
+    match renderer.compile_custom_texture_shader(BLUR_SHADER, &blur_uniform_names()) {
+        Ok(program) => {
+            let program = BlurProgram(program);
+            state.blur_programs.insert(context, program.clone());
+            Some(program)
+        }
+        Err(error) => {
+            tracing::warn!(%error,"backdrop blur unavailable; using plain translucent fill");
+            None
+        }
+    }
+}
+
+pub(super) fn blur_uniform_names() -> [UniformName<'static>; 8] {
+    [
+        UniformName::new("visible_rect", UniformType::_4f),
+        UniformName::new("material_radius", UniformType::_1f),
+        UniformName::new("texture_size", UniformType::_2f),
+        UniformName::new("capture_origin", UniformType::_2f),
+        UniformName::new("blur_radius", UniformType::_1f),
+        UniformName::new("presentation_alpha", UniformType::_1f),
+        UniformName::new("background_opacity", UniformType::_1f),
+        UniformName::new("tint", UniformType::_4f),
+    ]
+}
+
+pub(super) fn blur_uniforms(p: &MaterialParameters) -> Vec<Uniform<'static>> {
+    vec![
+        Uniform::new("visible_rect", p.visible_framebuffer).into_owned(),
+        Uniform::new("material_radius", p.radius).into_owned(),
+        Uniform::new("texture_size", [p.sample_framebuffer[2], p.sample_framebuffer[3]]).into_owned(),
+        Uniform::new("capture_origin", [p.sample_framebuffer[0], p.sample_framebuffer[1]]).into_owned(),
+        Uniform::new("blur_radius", p.blur).into_owned(),
+        Uniform::new("presentation_alpha", p.presentation_alpha).into_owned(),
+        Uniform::new("background_opacity", p.background_opacity).into_owned(),
+        Uniform::new("tint", p.tint).into_owned(),
+    ]
+}
+
+pub(super) fn framebuffer_capture_rect(rect: [f32; 4]) -> [i32; 4] {
+    rect.map(|v| v.round() as i32)
+}
+
+pub(super) fn expanded_blur_region(
+    visible: Rectangle<i32, Logical>,
+    radius: i32,
+    output_size: Size<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let left = (visible.loc.x - radius).max(0);
+    let top = (visible.loc.y - radius).max(0);
+    let right = (visible.loc.x + visible.size.w + radius).min(output_size.w);
+    let bottom = (visible.loc.y + visible.size.h + radius).min(output_size.h);
+    Rectangle::new(
+        (left, top).into(),
+        ((right - left).max(1), (bottom - top).max(1)).into(),
+    )
+}
+
+pub(super) fn material_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<MaterialProgram> {
+    let context = renderer.context_id().erased();
+    if let Some(program) = state.material_programs.get(&context) {
+        return Some(program.clone());
+    }
+
+    let uniforms = [
+        UniformName::new("visible_rect", UniformType::_4f),
+        UniformName::new("material_radius", UniformType::_1f),
+        UniformName::new("tint", UniformType::_4f),
+        UniformName::new("paint_mode", UniformType::_1f),
+        UniformName::new("shadow_rect", UniformType::_4f),
+        UniformName::new("shadow_values", UniformType::_2f),
+    ];
+    match renderer.compile_custom_pixel_shader(MATERIAL_SHADER, &uniforms) {
+        Ok(program) => {
+            let program = MaterialProgram(program);
+            state.material_programs.insert(context, program.clone());
+            Some(program)
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to compile semantic material shader");
+            None
+        }
+    }
+}
+
+pub(super) fn material_uniforms(parameters: &MaterialParameters) -> Vec<Uniform<'static>> {
+    decoration_uniforms(parameters, 0.0)
+}
+
+pub(super) fn decoration_uniforms(parameters: &MaterialParameters, paint_mode: f32) -> Vec<Uniform<'static>> {
+    vec![
+        Uniform::new("paint_mode", paint_mode).into_owned(),
+        Uniform::new("shadow_rect", parameters.shadow_rect).into_owned(),
+        Uniform::new("shadow_values", parameters.shadow_values).into_owned(),
+        Uniform::new("visible_rect", parameters.visible_framebuffer).into_owned(),
+        Uniform::new("material_radius", parameters.radius).into_owned(),
+        Uniform::new("tint", parameters.tint).into_owned(),
+    ]
+}
+
+pub(super) fn blur_damage(
+    size: Size<i32, Physical>,
+    current: CommitCounter,
+    previous: Option<CommitCounter>,
+) -> DamageSet<i32, Physical> {
+    if previous == Some(current) {
+        DamageSet::default()
+    } else {
+        // A new scene needs its entire sampling halo repainted before capture.
+        DamageSet::from_slice(&[Rectangle::from_size((size.w, size.h).into())])
+    }
+}

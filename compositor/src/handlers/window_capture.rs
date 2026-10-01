@@ -235,7 +235,7 @@ impl Ferese {
         };
         let result = if let Some(backend) = self.nested_backend.clone() {
             let mut backend = backend.try_borrow_mut().ok()?;
-            crate::winit::capture_window_frame(
+            crate::render::capture_window_frame(
                 backend.renderer(),
                 &window,
                 geometry,

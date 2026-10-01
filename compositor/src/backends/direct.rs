@@ -35,7 +35,7 @@ use smithay::wayland::presentation::Refresh;
 use crate::Ferese;
 use crate::config::{OutputModeRequest, OutputProfile, OutputSettings, OutputTransform};
 use crate::metrics::RenderMetrics;
-use crate::winit::{animated_window_elements, cursorless_window_elements, frame_effect_metrics, redraw_output};
+use crate::render::{animated_window_elements, cursorless_window_elements, frame_effect_metrics, redraw_output};
 
 pub struct DirectBackendState {
     pub session: LibSeatSession,
@@ -57,7 +57,7 @@ impl DirectBackendState {
         geometry: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
         output: &Output,
         remaining: usize,
-    ) -> Result<Option<crate::winit::ResizeSnapshot>, smithay::backend::renderer::gles::GlesError> {
+    ) -> Result<Option<crate::render::ResizeSnapshot>, smithay::backend::renderer::gles::GlesError> {
         let Some(device) = self
             .devices
             .values_mut()
@@ -65,7 +65,7 @@ impl DirectBackendState {
         else {
             return Ok(None);
         };
-        crate::winit::capture_resize_snapshot(
+        crate::render::capture_resize_snapshot(
             &mut device.renderer,
             window,
             geometry,
@@ -85,7 +85,7 @@ impl DirectBackendState {
             .values_mut()
             .find(|device| device.outputs.values().any(|candidate| &candidate.output == output))
             .ok_or("Window output is unavailable")?;
-        crate::winit::capture_window_buffer(
+        crate::render::capture_window_buffer(
             &mut device.renderer,
             window,
             geometry,
@@ -104,7 +104,7 @@ impl DirectBackendState {
             .values_mut()
             .find(|device| device.outputs.values().any(|candidate| &candidate.output == output))
             .ok_or("Window output is unavailable")?;
-        crate::winit::capture_window_frame(
+        crate::render::capture_window_frame(
             &mut device.renderer,
             window,
             window.geometry(),

@@ -1,0 +1,502 @@
+use super::*;
+
+pub(super) fn rounded_clip_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> Option<RoundedClipPrograms> {
+    let context = renderer.context_id().erased();
+    if let Some(program) = state.rounded_clip_programs.get(&context) {
+        return Some(program.clone());
+    }
+
+    let texture_uniforms = [
+        UniformName::new("clip_rect", UniformType::_4f),
+        UniformName::new("radius", UniformType::_1f),
+    ];
+    let border_uniforms = [
+        UniformName::new("clip_rect", UniformType::_4f),
+        UniformName::new("radius", UniformType::_1f),
+        UniformName::new("border_width", UniformType::_1f),
+        UniformName::new("border_color", UniformType::_4f),
+        UniformName::new("border_color_to", UniformType::_4f),
+        UniformName::new("gradient_line", UniformType::_4f),
+        UniformName::new("focus_color", UniformType::_4f),
+        UniformName::new("focus_color_to", UniformType::_4f),
+        UniformName::new("focus_gradient_line", UniformType::_4f),
+        UniformName::new("focus_mix", UniformType::_1f),
+    ];
+    let shadow_uniforms = [
+        UniformName::new("shadow_rect", UniformType::_4f),
+        UniformName::new("radius", UniformType::_1f),
+        UniformName::new("blur", UniformType::_1f),
+        UniformName::new("opacity", UniformType::_1f),
+        UniformName::new("shadow_color", UniformType::_4f),
+    ];
+    let texture = renderer.compile_custom_texture_shader(ROUNDED_TEXTURE_SHADER, &texture_uniforms);
+    let border = renderer.compile_custom_pixel_shader(ROUNDED_BORDER_SHADER, &border_uniforms);
+    let shadow = renderer.compile_custom_pixel_shader(WINDOW_SHADOW_SHADER, &shadow_uniforms);
+    let compiled = texture.and_then(|texture| border.and_then(|border| shadow.map(|shadow| (texture, border, shadow))));
+    match compiled {
+        Ok((texture, border, shadow)) => {
+            let programs = RoundedClipPrograms {
+                texture,
+                border,
+                shadow,
+            };
+            state.rounded_clip_programs.insert(context, programs.clone());
+            Some(programs)
+        }
+        Err(error) => {
+            tracing::error!(%error, "failed to compile rounded-window shader");
+            None
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn window_border_element(
+    state: &mut Ferese,
+    renderer: &GlesRenderer,
+    id: ferese_layout::WindowId,
+    geometry: Rectangle<i32, Logical>,
+    physical: Rectangle<i32, Physical>,
+    scale: f64,
+    requested_radius: f64,
+    requested_width: f64,
+    color: [f32; 4],
+    gradient: Option<crate::config::BorderGradient>,
+    focus_mix: f32,
+    opacity: f32,
+    output: &Output,
+    programs: &RoundedClipPrograms,
+) -> Option<PhysicalShaderElement> {
+    let mode = output.current_mode()?;
+    let width = scaled_effect_value(requested_width, geometry, scale);
+    if width == 0.0 {
+        return None;
+    }
+
+    let (from, to, gradient_line) = match gradient {
+        Some(gradient) => (
+            gradient.from.0,
+            gradient.to.0,
+            border_gradient_line(physical, mode.size, output.current_transform().invert(), gradient.angle),
+        ),
+        None => (color, color, [0.0; 4]),
+    };
+    let (focus_from, focus_to, focus_gradient_line) = match state.theme_settings.focus_ring_gradient {
+        Some(g) => (
+            g.from.0,
+            g.to.0,
+            border_gradient_line(physical, mode.size, output.current_transform().invert(), g.angle),
+        ),
+        None => (
+            state.theme_settings.accent_color.0,
+            state.theme_settings.accent_color.0,
+            [0.0; 4],
+        ),
+    };
+    let parameters = BorderParameters {
+        geometry,
+        clip_rect: framebuffer_clip_rect(physical, mode.size, output.current_transform().invert()),
+        radius: scaled_effect_value(requested_radius, geometry, scale),
+        width,
+        color: color_with_alpha(from, opacity),
+        color_to: color_with_alpha(to, opacity),
+        gradient_line,
+        focus_color: color_with_alpha(focus_from, opacity),
+        focus_color_to: color_with_alpha(focus_to, opacity),
+        focus_gradient_line,
+        focus_mix,
+    };
+    let context = renderer.context_id().erased();
+    let buffers = state.window_borders.entry(id).or_default();
+    if !buffers.contexts.contains_key(&context) {
+        let element = PixelShaderElement::new(
+            programs.border.clone(),
+            geometry,
+            None,
+            1.0,
+            border_uniforms(&parameters),
+            RenderElementKind::Unspecified,
+        );
+        buffers.contexts.insert(
+            context.clone(),
+            CachedBorder {
+                element,
+                parameters: parameters.clone(),
+            },
+        );
+    }
+
+    let cached = buffers.contexts.get_mut(&context)?;
+    if cached.parameters != parameters {
+        if cached.parameters.geometry != parameters.geometry {
+            cached.element.resize(parameters.geometry, None);
+        }
+        cached.element.update_uniforms(border_uniforms(&parameters));
+        cached.parameters = parameters;
+    }
+
+    Some(PhysicalShaderElement {
+        inner: cached.element.clone(),
+        geometry: physical,
+    })
+}
+
+pub(super) fn border_uniforms(parameters: &BorderParameters) -> Vec<Uniform<'static>> {
+    vec![
+        Uniform::new("clip_rect", parameters.clip_rect).into_owned(),
+        Uniform::new("radius", parameters.radius).into_owned(),
+        Uniform::new("border_width", parameters.width).into_owned(),
+        Uniform::new("border_color", parameters.color).into_owned(),
+        Uniform::new("border_color_to", parameters.color_to).into_owned(),
+        Uniform::new("gradient_line", parameters.gradient_line).into_owned(),
+        Uniform::new("focus_color", parameters.focus_color).into_owned(),
+        Uniform::new("focus_color_to", parameters.focus_color_to).into_owned(),
+        Uniform::new("focus_gradient_line", parameters.focus_gradient_line).into_owned(),
+        Uniform::new("focus_mix", parameters.focus_mix).into_owned(),
+    ]
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn window_tint_element(
+    state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+    id: ferese_layout::WindowId,
+    geometry: Rectangle<i32, Logical>,
+    physical: Rectangle<i32, Physical>,
+    scale: f64,
+    radius: f64,
+    color: [f32; 4],
+    resize_fill: bool,
+    output: &Output,
+) -> Option<PhysicalShaderElement> {
+    if color[3] <= 0.0 {
+        if resize_fill {
+            state.window_resize_fills.remove(&id);
+        } else {
+            state.window_dims.remove(&id);
+        }
+        return None;
+    }
+    let mode = output.current_mode()?;
+    let program = material_program(state, renderer)?;
+    let parameters = BorderParameters {
+        geometry,
+        clip_rect: framebuffer_clip_rect(physical, mode.size, output.current_transform().invert()),
+        radius: scaled_effect_value(radius, geometry, scale),
+        width: 0.0,
+        color,
+        color_to: color,
+        gradient_line: [0.0; 4],
+        focus_color: color,
+        focus_color_to: color,
+        focus_gradient_line: [0.0; 4],
+        focus_mix: 0.0,
+    };
+    let uniforms = |p: &BorderParameters| {
+        vec![
+            Uniform::new("visible_rect", p.clip_rect).into_owned(),
+            Uniform::new("material_radius", p.radius).into_owned(),
+            Uniform::new("tint", p.color).into_owned(),
+            Uniform::new("paint_mode", 0.0_f32).into_owned(),
+            Uniform::new("shadow_rect", p.clip_rect).into_owned(),
+            Uniform::new("shadow_values", [0.0_f32; 2]).into_owned(),
+        ]
+    };
+    let context = renderer.context_id().erased();
+    let buffers = if resize_fill {
+        state.window_resize_fills.entry(id).or_default()
+    } else {
+        state.window_dims.entry(id).or_default()
+    };
+    let cached = buffers.contexts.entry(context).or_insert_with(|| CachedBorder {
+        element: PixelShaderElement::new(
+            program.0,
+            geometry,
+            None,
+            1.0,
+            uniforms(&parameters),
+            RenderElementKind::Unspecified,
+        ),
+        parameters: parameters.clone(),
+    });
+    if cached.parameters != parameters {
+        if cached.parameters.geometry != geometry {
+            cached.element.resize(geometry, None);
+        }
+        // Updating uniforms advances the element's commit so unchanged client
+        // buffers still repaint while focus dimming animates.
+        cached.element.update_uniforms(uniforms(&parameters));
+        cached.parameters = parameters;
+    }
+    Some(PhysicalShaderElement {
+        inner: cached.element.clone(),
+        geometry: physical,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn window_shadow_element(
+    state: &mut Ferese,
+    renderer: &GlesRenderer,
+    id: ferese_layout::WindowId,
+    geometry: Rectangle<i32, Logical>,
+    physical: Rectangle<i32, Physical>,
+    scale: f64,
+    requested_radius: f64,
+    offset_y: f64,
+    blur: f64,
+    opacity: f64,
+    color: [f32; 4],
+    output: &Output,
+    programs: &RoundedClipPrograms,
+) -> Option<PhysicalShaderElement> {
+    let mode = output.current_mode()?;
+    if opacity == 0.0 || color[3] == 0.0 {
+        return None;
+    }
+
+    let shadow_geometry = Rectangle::new(
+        (physical.loc.x, physical.loc.y + (offset_y * scale).round() as i32).into(),
+        physical.size,
+    );
+    let bounds = shadow_bounds(geometry, offset_y, blur);
+    let parameters = ShadowParameters {
+        blur: (blur * scale) as f32,
+        bounds,
+        shadow_rect: framebuffer_clip_rect(shadow_geometry, mode.size, output.current_transform().invert()),
+        radius: scaled_effect_value(requested_radius, geometry, scale),
+        opacity: opacity as f32,
+        color,
+    };
+    let context = renderer.context_id().erased();
+    let buffers = state.window_shadows.entry(id).or_default();
+    if !buffers.contexts.contains_key(&context) {
+        let element = PixelShaderElement::new(
+            programs.shadow.clone(),
+            bounds,
+            None,
+            1.0,
+            shadow_uniforms(&parameters),
+            RenderElementKind::Unspecified,
+        );
+        buffers.contexts.insert(
+            context.clone(),
+            CachedShadow {
+                element,
+                parameters: parameters.clone(),
+            },
+        );
+    }
+
+    let cached = buffers.contexts.get_mut(&context)?;
+    if cached.parameters != parameters {
+        if cached.parameters.bounds != parameters.bounds {
+            cached.element.resize(parameters.bounds, None);
+        }
+        cached.element.update_uniforms(shadow_uniforms(&parameters));
+        cached.parameters = parameters;
+    }
+
+    let extent = (blur * scale * 2.0).ceil() as i32;
+    Some(PhysicalShaderElement {
+        inner: cached.element.clone(),
+        geometry: Rectangle::new(
+            (shadow_geometry.loc.x - extent, shadow_geometry.loc.y - extent).into(),
+            (shadow_geometry.size.w + 2 * extent, shadow_geometry.size.h + 2 * extent).into(),
+        ),
+    })
+}
+
+pub(super) fn shadow_uniforms(parameters: &ShadowParameters) -> Vec<Uniform<'static>> {
+    vec![
+        Uniform::new("shadow_rect", parameters.shadow_rect).into_owned(),
+        Uniform::new("radius", parameters.radius).into_owned(),
+        Uniform::new("blur", parameters.blur).into_owned(),
+        Uniform::new("opacity", parameters.opacity).into_owned(),
+        Uniform::new("shadow_color", parameters.color).into_owned(),
+    ]
+}
+
+pub(super) fn shadow_bounds(geometry: Rectangle<i32, Logical>, offset_y: f64, blur: f64) -> Rectangle<i32, Logical> {
+    let extent = (blur * 2.0).ceil() as i32;
+    let offset_y = offset_y.round() as i32;
+
+    Rectangle::new(
+        (geometry.loc.x - extent, geometry.loc.y + offset_y - extent).into(),
+        (geometry.size.w + extent * 2, geometry.size.h + extent * 2).into(),
+    )
+}
+
+pub(super) fn scaled_effect_value(requested: f64, geometry: Rectangle<i32, Logical>, scale: f64) -> f32 {
+    requested
+        .min(f64::from(geometry.size.w.min(geometry.size.h)) / 2.0)
+        .max(0.0) as f32
+        * scale as f32
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn rounded_window_elements(
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    constrain: Rectangle<i32, Logical>,
+    physical_constrain: Rectangle<i32, Physical>,
+    scale: f64,
+    requested_radius: f64,
+    alpha: f32,
+    clip_changed: bool,
+    output: &Output,
+    program: GlesTexProgram,
+    behavior: ConstrainScaleBehavior,
+) -> Vec<AnimatedWindowRenderElement> {
+    let Some(toplevel) = window.toplevel() else {
+        return Vec::new();
+    };
+    let Some(mode) = output.current_mode() else {
+        return Vec::new();
+    };
+
+    let geometry = window.geometry();
+    let reference = geometry.to_physical_precise_round(scale);
+    let location = physical_constrain.loc - geometry.loc.to_physical_precise_round(scale);
+    let clip = framebuffer_clip_rect(physical_constrain, mode.size, output.current_transform().invert());
+    let radius = scaled_effect_value(requested_radius, constrain, scale);
+    let surface = toplevel.wl_surface();
+
+    let mut content = PopupManager::popups_for_surface(surface)
+        .flat_map(|(popup, popup_offset)| {
+            let offset = (geometry.loc + popup_offset - popup.geometry().loc).to_physical_precise_round(scale);
+
+            render_elements_from_surface_tree::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
+                renderer,
+                popup.wl_surface(),
+                location + offset,
+                scale,
+                alpha,
+                RenderElementKind::Unspecified,
+            )
+            .into_iter()
+            .map(WindowContentRenderElement::from)
+        })
+        .collect::<Vec<_>>();
+    content.extend(
+        render_elements_from_surface_tree::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
+            renderer,
+            surface,
+            location,
+            scale,
+            alpha,
+            RenderElementKind::Unspecified,
+        )
+        .into_iter()
+        .map(|inner| {
+            RoundedSurfaceRenderElement {
+                inner,
+                program: program.clone(),
+                clip_rect: clip,
+                radius,
+                clip_changed,
+            }
+            .into()
+        }),
+    );
+
+    constrain_render_elements(
+        content,
+        location,
+        physical_constrain,
+        reference,
+        behavior,
+        ConstrainAlign::TOP | ConstrainAlign::LEFT,
+        scale,
+    )
+    .map(Into::into)
+    .collect()
+}
+
+pub(super) fn resize_content_behavior(intentional_scale: bool) -> ConstrainScaleBehavior {
+    if intentional_scale {
+        ConstrainScaleBehavior::Stretch
+    } else {
+        ConstrainScaleBehavior::CutOff
+    }
+}
+
+pub(super) fn scaled_visual_rect(rect: ferese_layout::Rect, scale: f64) -> ferese_layout::Rect {
+    let scale = scale.clamp(0.0, 1.0);
+    let width = rect.width * scale;
+    let height = rect.height * scale;
+
+    ferese_layout::Rect::new(
+        rect.x + (rect.width - width) / 2.0,
+        rect.y + (rect.height - height) / 2.0,
+        width,
+        height,
+    )
+}
+
+pub(super) fn color_with_alpha(mut color: [f32; 4], alpha: f32) -> [f32; 4] {
+    color[3] *= alpha;
+    color
+}
+
+pub(super) fn rounded_visual_rect(
+    rect: ferese_layout::Rect,
+    output_location: Point<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let left = (rect.x - f64::from(output_location.x)).round() as i32;
+    let top = (rect.y - f64::from(output_location.y)).round() as i32;
+    let right = (rect.x + rect.width - f64::from(output_location.x)).round() as i32;
+    let bottom = (rect.y + rect.height - f64::from(output_location.y)).round() as i32;
+
+    Rectangle::new(
+        (left, top).into(),
+        ((right - left).max(1), (bottom - top).max(1)).into(),
+    )
+}
+
+pub(super) fn framebuffer_clip_rect(
+    geometry: Rectangle<i32, Physical>,
+    output_size: smithay::utils::Size<i32, Physical>,
+    transform: Transform,
+) -> [f32; 4] {
+    // Match GlesFrame's projection: Smithay already accounts for GL's Y axis.
+    // An extra bottom-left conversion here mirrors shader clips independently
+    // of the surface geometry (notably with the nested Flipped180 output).
+    let element_size = transform.transform_size(output_size);
+    let transformed = transform.transform_rect_in(geometry, &element_size);
+
+    [
+        transformed.loc.x as f32,
+        transformed.loc.y as f32,
+        transformed.size.w as f32,
+        transformed.size.h as f32,
+    ]
+}
+
+pub(super) fn border_gradient_line(
+    geometry: Rectangle<i32, Physical>,
+    output_size: Size<i32, Physical>,
+    transform: Transform,
+    angle: f64,
+) -> [f32; 4] {
+    let angle = angle.to_radians();
+    let direction = (angle.cos(), angle.sin());
+    let width = f64::from(geometry.size.w);
+    let height = f64::from(geometry.size.h);
+    let extent = (width * direction.0.abs() + height * direction.1.abs()) * 0.5;
+    let center = geometry.loc.to_f64() + Point::from((width * 0.5, height * 0.5));
+    let offset: Point<f64, Physical> = (direction.0 * extent, direction.1 * extent).into();
+    // Apply the same output-to-framebuffer transform as the rounded clip.
+    // This keeps angles in window coordinates on rotated/flipped monitors.
+    let area = transform.transform_size(output_size).to_f64();
+    let start = transform.transform_point_in(center - offset, &area);
+    let end = transform.transform_point_in(center + offset, &area);
+    let delta = end - start;
+    let length_squared = (delta.x * delta.x + delta.y * delta.y).max(0.000001);
+    [
+        start.x as f32,
+        start.y as f32,
+        (delta.x / length_squared) as f32,
+        (delta.y / length_squared) as f32,
+    ]
+}

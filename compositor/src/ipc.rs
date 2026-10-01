@@ -864,7 +864,7 @@ impl Ferese {
         };
         let result = if let Some(backend) = &self.nested_backend {
             match backend.try_borrow_mut() {
-                Ok(mut backend) => crate::winit::capture_window_buffer(backend.renderer(), &window, geometry, scale),
+                Ok(mut backend) => crate::render::capture_window_buffer(backend.renderer(), &window, geometry, scale),
                 Err(_) => Err("Window renderer is busy".into()),
             }
         } else if let Some(backend) = &mut self.direct_backend {

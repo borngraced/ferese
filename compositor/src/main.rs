@@ -20,6 +20,7 @@ mod portal_shortcuts;
 mod presentation;
 mod private_client;
 mod reload;
+mod render;
 mod resize_transaction;
 mod session_lock;
 mod shell_control;
