@@ -1,9 +1,11 @@
 # Ferese handbook
 
-Ferese is a Linux Wayland desktop with scrolling columns, tree tiling, floating
-windows, and a shared theme for its desktop tools.
+Ferese is a window manager and desktop shell built together and configured in one place,
+for people who want their desktop to be their own. This handbook helps you get settled,
+shape the desktop around the way you work and understand what you can change.
 
-[Browse screenshots](screenshots.md) of the desktop, themes and shell controls.
+[Browse screenshots](screenshots.md) to see the themes, layouts and desktop controls in
+use
 
 ## Get started
 
@@ -13,7 +15,8 @@ windows, and a shared theme for its desktop tools.
 
 ## Default shortcuts
 
-`Super` is usually the Windows key. All these shortcuts can be changed in Settings.
+Use `Super`, usually the Windows key, for the shortcuts below, and make them your own in
+**Settings → Shortcuts**.
 
 | Control | Action |
 | --- | --- |
@@ -32,8 +35,8 @@ windows, and a shared theme for its desktop tools.
 | Three-finger swipe left / right | Focus the window to the right / left |
 | Login shortcut guide | Appears at login; disable in Settings → Shortcuts |
 
-See [all shortcuts and mouse actions](shortcuts.md), including Super-drag to move
-and Super-right-drag to resize floating windows.
+The [shortcuts and mouse actions guide](shortcuts.md) covers the rest, including how to
+group windows, resize them and move between workspaces.
 
 ## Desktop guides
 
@@ -43,14 +46,16 @@ and Super-right-drag to resize floating windows.
 - [Screen sharing and recording](screen-sharing.md): share an app or display, or save a video.
 - [Desktop portals](portals.md): integration with applications.
 
-Use Settings or edit `~/.config/ferese/config.kdl`. Changes reload automatically;
-invalid edits keep the last working configuration.
+Personalize the desktop in Settings or edit `~/.config/ferese/config.kdl` directly, with
+changes applying live and the last working configuration staying in place if an edit is
+invalid.
 
 ## Troubleshooting
 
-See [logs and recovery](installation.md#logout-and-recovery). `feresectl exit`
-ends the session immediately; `feresectl request-logout` asks for confirmation.
+If you need to end a session, `feresectl request-logout` asks for confirmation and
+`feresectl exit` exits immediately, so save your work first. The [logs and recovery
+guide](installation.md#logout-and-recovery) helps when something stops responding.
 
-Report problems in the [issue tracker](https://github.com/ferese-wm/ferese/issues).
-Include reproduction steps, whether Ferese ran as a nested preview or a direct
-session, and relevant logs. Contributors can start with [Development](development.md).
+You can [report a problem](https://github.com/ferese-wm/ferese/issues) with the steps to
+reproduce it, relevant logs and whether you were using a nested preview or a direct
+session, or start with [Development](development.md) if you’d like to contribute.

@@ -1,17 +1,17 @@
 # Installation
 
-Ferese runs on Linux and installs as a standalone Wayland session. Use any login
-manager that can launch Wayland sessions, a command-based greeter, or a local
-TTY. You do not need to replace your existing login manager or desktop.
+Ferese runs on Linux as its own Wayland session, alongside your existing desktop, and
+you can launch it from a login manager, a command-based greeter or a local TTY.
 
 ## Requirements
 
-Use a Wayland-capable graphics driver and a local user session with seat access
-through logind or seatd. A nested preview runs inside an existing Wayland desktop.
+For a full session, you’ll need a Wayland-capable graphics driver and a local user
+session with seat access through logind or seatd, while a nested preview runs inside the
+Wayland desktop you already use.
 
-Building requires **Rust 1.95 or newer**, a C/C++ toolchain, CMake, pkg-config,
-and the libraries below. The installer builds all Ferese components; install
-system packages separately.
+To build Ferese, install **Rust 1.95 or newer**, a C/C++ toolchain, CMake, pkg-config
+and the libraries below. The installer builds the Ferese components once those system
+packages are in place.
 
 ### Fedora
 
@@ -49,9 +49,10 @@ sudo apt install build-essential git curl cmake pkg-config libwayland-dev \
   gstreamer1.0-plugins-good
 ```
 
-Fedora is the tested installation path. Package names and versions may differ
-on other distributions. See [Smithay dependencies](https://github.com/Smithay/smithay#system-dependencies)
-for equivalent libraries.
+Fedora is the tested installation path, and package names or versions may differ on
+other distributions, where the [Smithay
+dependencies](https://github.com/Smithay/smithay#system-dependencies) can help you find
+equivalent libraries.
 
 ### Rust toolchain
 
@@ -62,9 +63,9 @@ rustc --version
 cargo --version
 ```
 
-If Rust is missing, install it using the instructions at
-[rustup.rs](https://rustup.rs/), then reopen your terminal. With rustup installed,
-you can select the required version for this checkout after cloning:
+If you don’t have Rust yet, follow the instructions at [rustup.rs](https://rustup.rs/)
+and reopen your terminal, then select the required toolchain for this checkout after
+cloning:
 
 ```sh
 rustup toolchain install 1.95.0
@@ -81,21 +82,22 @@ cd ferese
 ./scripts/install.sh
 ```
 
-The script builds locked release binaries, then requests administrator access
-through `sudo` or `pkexec` for installation. Do not run the whole build as root.
-The first build needs network access to fetch Rust dependencies.
+The script builds locked release binaries as your normal user and then asks for
+administrator access through `sudo` or `pkexec` to install them, so leave the build
+itself unprivileged. The first build needs network access to fetch Rust dependencies.
 
-The installer adds the session launcher, desktop tools, portal backend, login
-entry, icons, default wallpaper, and example config. Releases live under
-`/usr/local/lib/ferese/releases/`; commands live under `/usr/local/bin/`.
-The `current` and `previous` links support updates and rollback.
+Installation brings together the session launcher, desktop tools, portal backend, login
+entry, icons, default wallpaper and example config. Releases live under
+`/usr/local/lib/ferese/releases/` and commands under `/usr/local/bin/`, with `current`
+and `previous` links for switching between releases during updates and rollback.
 
-Your configuration, other desktop sessions, and existing PAM policy are preserved.
-Ferese starts its authentication agent and portal services with the session.
+Your configuration, other desktop sessions and existing PAM policy stay in place, while
+Ferese starts its authentication agent and portal services together with the session.
 
 ### Initial configuration
 
-Ferese has built-in defaults. To start from the example without replacing your config:
+You can start with Ferese’s built-in defaults, or copy the example config if you’d like
+a file to customize:
 
 ```sh
 mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/ferese"
@@ -105,18 +107,18 @@ if [ ! -e "${XDG_CONFIG_HOME:-$HOME/.config}/ferese/config.kdl" ]; then
 fi
 ```
 
-Open **Control Center → Settings** after login, or run `ferese-settings`.
-See [Configuration](configuration.md) for themes, displays, shortcuts, and startup
-applications. The default terminal shortcut uses `foot`; change the terminal
-command in Settings if you prefer another terminal.
+After login, open **Control Center → Settings** or run `ferese-settings` to shape your
+desktop, using [Configuration](configuration.md) for themes, displays, shortcuts and
+startup apps. The default terminal is `foot`, which you can replace with your preferred
+terminal command in Settings.
 
 ## Start a session
 
 ### Graphical login managers
 
-Save your work and log out. Open your login screen's session selector, choose
-**Ferese**, and sign in. Any manager that supports Wayland sessions and reads
-`/usr/share/wayland-sessions/` can discover the installed entry.
+Save your work and log out, then open your login screen’s session selector, choose
+**Ferese** and sign in. Login managers that support Wayland sessions can discover the
+installed entry in `/usr/share/wayland-sessions/`.
 
 If Ferese is missing, confirm that the session entry exists and its launcher is
 executable:
@@ -127,9 +129,9 @@ test -x /usr/local/bin/ferese-session && echo "Session launcher is ready"
 desktop-file-validate /usr/share/wayland-sessions/ferese.desktop
 ```
 
-Check your manager's documentation for enabling Wayland session discovery. A
-manager that only launches X11 sessions cannot start Ferese through that path;
-use a Wayland-capable greeter or the TTY method below.
+If the entry still doesn’t appear, check your login manager’s documentation for Wayland
+session discovery, or use a Wayland-capable greeter or the TTY method below if your
+manager only launches X11 sessions.
 
 ### Command-based greeters
 
@@ -139,26 +141,24 @@ If your greeter asks for a session command instead of reading desktop files, use
 /usr/local/bin/ferese-session
 ```
 
-For greetd, use this as the session command after authentication; see the
-[greetd documentation](https://sr.ht/~kennylevinsen/greetd/).
-The launcher starts the compositor, shell, and session services together.
+For greetd, set this as the session command after authentication using the [greetd
+documentation](https://sr.ht/~kennylevinsen/greetd/), and the launcher will start the
+compositor, shell and session services together.
 
 ### From a TTY
 
-Log out of the graphical session, switch to a local console with
-**Ctrl+Alt+F2** (or another available function key), and sign in as your normal
-user. Then run:
+Log out of your graphical session and switch to a local console with **Ctrl+Alt+F2**, or
+another available function key, then sign in as your normal user and run:
 
 ```sh
 /usr/local/bin/ferese-session
 ```
 
-Your login must provide `XDG_RUNTIME_DIR` and access to the active seat through
-logind or seatd. If either is missing, fix the distribution's login/session setup;
-do not work around it by running Ferese as root or making device nodes writable.
-For non-systemd systems, follow your distribution's seatd and user-session setup.
-Do not start the DRM backend inside an existing graphical session; use a nested
-preview there.
+Your login needs to provide `XDG_RUNTIME_DIR` and access to the active seat through
+logind or seatd; if either is missing, fix your distribution’s login and session setup
+rather than running Ferese as root or making device nodes writable. On non-systemd
+systems, follow the distribution’s seatd and user-session instructions, and use a nested
+preview whenever you’re already inside a graphical session.
 
 ## Optional desktop tools
 
@@ -173,18 +173,18 @@ Install these through your distribution when you want the corresponding features
 | Audio controls | PipeWire, WirePlumber, and `wpctl` |
 | Bluetooth controls | BlueZ, `bluetoothctl`, and its running service |
 
-Package names and availability vary by distribution. In particular, install
-Satty using its [upstream instructions](https://github.com/Satty-org/Satty#install)
-if your repositories do not provide it. Ferese does not enable these services
-or replace your existing service configuration during installation.
+Package names and availability vary by distribution, so use Satty’s [upstream
+instructions](https://github.com/Satty-org/Satty#install) if it isn’t in your
+repositories. Ferese leaves service setup to you and preserves your existing service
+configuration during installation.
 
-Print Screen captures the active monitor; **Super+Shift+S** selects an area.
-Use `ferese-screenshot --all` to capture all monitors in one image.
+Use **Print Screen** to capture the active monitor, **Super+Shift+S** to select an area,
+or `ferese-screenshot --all` to capture all monitors in one image.
 
-The native locker follows your shell theme. Open **Settings → Lock Screen** to
-customize it, or run `ferese-lock --preview` to see an ordinary preview window.
-Test real unlocking before enabling automatic locking; see
-[Native locker](locking.md) for authentication, idle locking, and limitations.
+The native locker follows your shell theme and can be personalized in **Settings → Lock
+Screen**, with `ferese-lock --preview` opening an ordinary preview window. Before
+enabling automatic locking, test real unlocking and read [Native locker](locking.md) for
+authentication, idle locking and limits.
 
 ## Preview and logs
 
@@ -204,21 +204,19 @@ After installation, the equivalent launcher is:
 ferese-session --nested
 ```
 
-The session launcher stores logs in `${XDG_STATE_HOME:-$HOME/.local/state}/ferese/`.
-A directly launched source build writes to its terminal. Keep another desktop
-available while testing scaling, monitor hotplug, suspend, and locking.
+The session launcher saves logs in `${XDG_STATE_HOME:-$HOME/.local/state}/ferese/`,
+while a source build launched directly writes to its terminal. Keep another desktop
+available when testing scaling, monitor hotplug, suspend or locking so you have a way
+back if something goes wrong.
 
-The launcher enables the screencopy protocol for screenshot tools. Set
-`FERESE_ENABLE_SCREENCOPY=0` in the session environment to disable it. This
-turns off every path that can read the screen, including the built-in
-screenshot command, not only the Wayland protocol. When enabled, Wayland clients
-can capture the unlocked desktop, and `feresectl screenshot` is available.
-Capture remains blocked while the session is locked. Launcher changes take
-effect at next login.
+The launcher enables screencopy for screenshot tools, allowing Wayland clients to
+capture the unlocked desktop and making `feresectl screenshot` available. Set
+`FERESE_ENABLE_SCREENCOPY=0` in the session environment to disable every screen-reading
+path, including the built-in screenshot command, at your next login; capture is always
+blocked while the session is locked.
 
-Starting the compositor directly instead of through `ferese-session` leaves
-`FERESE_ENABLE_SCREENCOPY` unset, which disables screenshots. Export
-`FERESE_ENABLE_SCREENCOPY=1` to use them.
+When you launch the compositor directly, set `FERESE_ENABLE_SCREENCOPY=1` to enable
+screenshots, since that variable is otherwise unset and screen capture stays disabled.
 
 ## Updating
 
@@ -229,14 +227,14 @@ git pull --ff-only
 ./scripts/install.sh
 ```
 
-Log out and back in to use the new release. Running sessions keep their existing
-processes and release paths until restarted.
+Log out and back in to start using the new release, as a running session keeps its
+existing processes and release paths until it restarts.
 
-The installer records shipped portal configuration with each release for future
-upgrades. Modified or untracked administrator files stop installation. To replace
-Ferese portal configuration from an earlier development install, use
-`./scripts/install.sh --skip-build --replace-portal-config` after building. Existing
-files are backed up under the new release's `portal-config.previous/` directory.
+Each release records the portal configuration it ships so later upgrades can identify
+it, and installation stops if it encounters modified or untracked administrator files.
+To replace Ferese portal configuration from an earlier development install, build first
+and run `./scripts/install.sh --skip-build --replace-portal-config`, which backs up the
+existing files in the new release’s `portal-config.previous/` directory.
 
 Installer options:
 
@@ -246,25 +244,25 @@ Installer options:
 ./scripts/install.sh --skip-build
 ```
 
-`--dry-run` prints the planned commands. `--offline` requires dependencies to be
-cached already. `--skip-build` installs the binaries already in `target/release/`;
-use it only after building all components from the intended revision.
-Run `./scripts/install.sh --help` for all options.
+Use `--dry-run` to see the planned commands, `--offline` when dependencies are already
+cached, or `--skip-build` after building every component from the revision you want to
+install. The latter uses binaries already in `target/release/`, and
+`./scripts/install.sh --help` lists all available options.
 
 ## Logout and recovery
 
-Use **Super+Shift+E** or `feresectl request-logout` to ask for logout confirmation.
-`feresectl exit` ends the session immediately; save your work first.
-If Ferese freezes, switch to another TTY with **Ctrl+Alt+F1–F12**, sign in, and
-identify the affected compositor process:
+Save your work before leaving: **Super+Shift+E** and `feresectl request-logout` ask for
+confirmation, while `feresectl exit` ends the session immediately. If Ferese freezes,
+switch to another TTY with **Ctrl+Alt+F1–F12**, sign in and find the affected compositor
+process:
 
 ```sh
 pgrep -a -u "$USER" -x ferese
 ```
 
-Terminate only that session's process with `kill PID`, replacing `PID` with the
-correct process ID. This ends its applications and can lose unsaved work. You
-can then select your other desktop at the next login.
+Replace `PID` with the affected session’s process ID and use `kill PID` to end it,
+bearing in mind that its applications will close and unsaved work may be lost. You can
+then choose another desktop at the next login.
 
 ### Roll back a release
 
@@ -288,9 +286,9 @@ sudo sh -eu -c '
 '
 ```
 
-Then log in again. This changes the selected binaries; it does not restore your
-config or replace the PAM policy. Settings keeps a backup when saving config
-changes; see [Saving and validation](configuration.md#saving-and-validation).
+Log in again to use the selected binaries, with your config and PAM policy still in
+place. If you also need to recover a configuration edit, Settings keeps a backup when
+saving, as described in [Saving and validation](configuration.md#saving-and-validation).
 
 ### Remove the login option
 
@@ -301,14 +299,13 @@ sudo mv /usr/share/wayland-sessions/ferese.desktop \
   /usr/local/lib/ferese/ferese.desktop.disabled
 ```
 
-For a command-based greeter, remove Ferese from its session choices using that
-greeter's configuration. Reinstalling restores the desktop session entry.
+For a command-based greeter, remove Ferese from its session choices in the greeter’s
+configuration; reinstalling Ferese restores the desktop session entry.
 
 ## Screen sharing and recording
 
-The installer includes Ferese’s native ScreenCast portal. It backs up the old
-user service override that points to `~/.local/libexec/ferese`, so new sessions
-use the installed release. Custom overrides are preserved and reported before
-building. See
-[Screen sharing](screen-sharing.md) for consent, PipeWire setup, supported sources,
-and current recording limitations.
+Ferese’s native ScreenCast portal is included in the installation, which backs up the
+old user service override pointing to `~/.local/libexec/ferese` so new sessions use the
+installed release. Custom overrides are preserved and reported before building, and
+[Screen sharing](screen-sharing.md) covers consent, PipeWire setup, supported sources
+and recording limits.

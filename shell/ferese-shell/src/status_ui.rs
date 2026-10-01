@@ -435,6 +435,22 @@ impl FereseShell {
                 p,
             ));
         }
+        if kind == Menu::Network
+            && let Some(network) = &self.status.network
+        {
+            heading = heading.push(shell_switch(
+                "Wi-Fi",
+                network.enabled,
+                Action::Wifi(!network.enabled),
+                theme,
+                p,
+            ));
+        }
+        if kind == Menu::Audio
+            && let Some(audio) = &self.status.audio
+        {
+            heading = heading.push(shell_switch("Mute", audio.muted, Action::Mute(!audio.muted), theme, p));
+        }
         let mut rows = column::with_capacity(12).spacing(12).width(Length::Fill);
         if kind != Menu::Calendar {
             rows = rows.push(heading);
@@ -546,7 +562,8 @@ impl FereseShell {
                     muted,
                     color_with_opacity(theme.accent, p),
                     p,
-                    Some((n.enabled, Action::Wifi(!n.enabled))),
+                    n.enabled,
+                    None,
                 ));
                 if connected {
                     let strength = match n.signal {
@@ -589,6 +606,7 @@ impl FereseShell {
                     muted,
                     color_with_opacity(theme.accent, p),
                     p,
+                    b.enabled,
                     Some((b.enabled, Action::Bluetooth(!b.enabled))),
                 ));
 
@@ -620,17 +638,13 @@ impl FereseShell {
             if (combined || menu.kind == Menu::Audio)
                 && let Some(a) = &self.status.audio
             {
+                let mut volume_heading = row![text("Volume").size(13).width(Length::Fill)].align_y(Alignment::Center);
+                if combined {
+                    volume_heading =
+                        volume_heading.push(shell_switch("Mute", a.muted, Action::Mute(!a.muted), theme, p));
+                }
                 let audio = column![
-                    row![
-                        text("Volume").size(13).width(Length::Fill),
-                        menu_button(
-                            if a.muted { "Unmute" } else { "Mute" },
-                            Message::Control(Action::Mute(!a.muted)),
-                            primary,
-                            p
-                        )
-                    ]
-                    .align_y(Alignment::Center),
+                    volume_heading,
                     text(&a.output).size(12).class(theme::Text::Color(muted)),
                     slider_row(
                         audio_icon(a.volume, a.muted),
@@ -856,9 +870,9 @@ fn status_summary<'a>(
     muted: Color,
     accent: Color,
     opacity: f32,
+    enabled: bool,
     toggle: Option<(bool, Action)>,
 ) -> Element<'a, cosmic::Action<Message>> {
-    let enabled = toggle.as_ref().is_some_and(|(enabled, _)| *enabled);
     let badge_color = if enabled { accent } else { primary };
     let badge = container(accented_icon(source, 22, primary, accent))
         .width(32)

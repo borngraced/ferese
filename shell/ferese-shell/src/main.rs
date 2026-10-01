@@ -1794,6 +1794,16 @@ impl FereseShell {
                 _ => {}
             }
         }
+        if let Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+            key: cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::Tab),
+            modifiers,
+            ..
+        }) = &event
+            && !modifiers.control()
+            && self.system_modal.as_ref().is_some_and(|modal| modal.contains(id))
+        {
+            return self.navigate_system_modal(modifiers.shift());
+        }
         if matches!(
             &event,
             Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
@@ -1841,8 +1851,11 @@ impl FereseShell {
                     }
                 }
 
-                window::run(id, native_wayland_surface)
-                    .map(move |surface| cosmic::Action::App(Message::NativeSurface(id, surface)))
+                Task::batch([
+                    self.focus_system_modal(id),
+                    window::run(id, native_wayland_surface)
+                        .map(move |surface| cosmic::Action::App(Message::NativeSurface(id, surface))),
+                ])
             }
             Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
                 key: cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::Escape),

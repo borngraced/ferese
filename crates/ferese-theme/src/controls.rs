@@ -92,7 +92,7 @@ pub fn settings_input(p: Palette) -> theme::TextInput {
 }
 
 fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button {
-    let style = move |hover: bool| {
+    let style = move |hover: bool, focused: bool| {
         let background = if selected {
             mix(p.sidebar, p.accent, if hover { 0.24 } else { 0.17 })
         } else if hover {
@@ -115,18 +115,18 @@ fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button 
             border_radius: p.radius.min(9.).into(),
             border_width: if selected { 1. } else { 0. },
             border_color: if selected { p.accent } else { Color::TRANSPARENT },
-            outline_width: 0.,
-            outline_color: Color::TRANSPARENT,
+            outline_width: if focused { 2. } else { 0. },
+            outline_color: p.accent,
             overlay: None,
             shadow_offset: Vector::ZERO,
         }
     };
 
     theme::Button::Custom {
-        active: Box::new(move |_, _| style(false)),
-        hovered: Box::new(move |_, _| style(true)),
-        pressed: Box::new(move |_, _| style(true)),
-        disabled: Box::new(move |_| style(false)),
+        active: Box::new(move |focused, _| style(false, focused)),
+        hovered: Box::new(move |focused, _| style(true, focused)),
+        pressed: Box::new(move |focused, _| style(true, focused)),
+        disabled: Box::new(move |_| style(false, false)),
     }
 }
 

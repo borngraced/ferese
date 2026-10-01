@@ -4,21 +4,22 @@ Most Wayland desktops are assembled from separate programs such as a compositor,
 
 ## Choose how windows fit
 
-Scrolling columns let you keep windows at useful widths and move through them
-horizontally. Tree tiling divides the screen into nested splits. Floating windows
-work alongside either layout, and overview shows windows across workspaces.
+Keep windows at useful widths and move through them horizontally with scrolling columns,
+divide the screen into nested splits with tree tiling, or let individual windows float
+alongside either layout. When you want to see how everything fits together, overview
+brings your windows and workspaces into view.
 
 ![Ferese Overview showing windows and workspaces](images/screenshots/ferese-blue-overview.png)
 
 ## Change the desktop together
 
-Choose a theme in Settings, then adjust the wallpaper, colors, font, corners,
-and motion. Changes apply live. Window corners and shell corners can be set
-independently.
+Choose a theme in Settings and build on it with your own wallpaper, colors, font,
+corners and motion, with changes applying across the desktop as you make them. Window
+and shell corners have separate controls, so you can shape each to your liking.
 
 ![Ferese Settings and Control Center in Rosé Pine](images/screenshots/rose-pine-desktop.png)
 
-For example, this changes shell corners:
+To give your shell corners a different radius, add:
 
 ```kdl
 theme {
@@ -28,5 +29,6 @@ theme {
 }
 ```
 
-See [Configuration](configuration.md) for all options, or
-[Installation](installation.md) to try Ferese in a nested preview.
+Explore [Configuration](configuration.md) for everything you can change, or follow
+[Installation](installation.md) to try Ferese inside your current desktop with a nested
+preview.

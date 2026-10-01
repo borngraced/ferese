@@ -15,22 +15,21 @@ Ferese is a window manager and desktop shell built together and configured in on
 
 ![Ferese Blue desktop with Settings and Control Center](docs/images/screenshots/ferese-main-hero.png)
 
-[View more screenshots](docs/screenshots.md).
+[View more screenshots](docs/screenshots.md)
 
 ## Features
 
-- Scrolling and tree layouts, floating windows, and a workspace overview.
-- Configurable keyboard shortcuts and touchpad gestures.
-- Multiple monitors with fractional scaling.
-- Six theme families, Light/Dark/Auto modes, custom KDL themes, wallpapers, blur, and adjustable corners.
-- Clock and sticky-note widgets.
-- Screenshots with Satty editing, screen sharing, and top-bar recording.
-
+- Arrange your windows in scrolling columns or tree layouts, keep some floating, and bring your workspaces together in overview
+- Move around with keyboard shortcuts and touchpad gestures you can change to suit you
+- Set up multiple monitors with fractional scaling
+- Make the whole desktop your own with six theme families, Light/Dark/Auto modes, custom KDL themes, wallpapers, blur and adjustable corners
+- Keep a clock and sticky notes on your desktop
+- Capture and edit screenshots with Satty, share a window or display, and record from the top bar
 
 ## Install
 
-Install the [dependencies](docs/installation.md#requirements), then build as your
-normal user:
+Start with the [dependencies](docs/installation.md#requirements), then clone Ferese and
+build it as your normal user:
 
 ```sh
 git clone https://github.com/ferese-wm/ferese.git
@@ -38,22 +37,24 @@ cd ferese
 ./scripts/install.sh
 ```
 
-Log out, select **Ferese** at your login screen, and sign in. For a TTY or a
-greeter that accepts a command, run `ferese-session`.
-See [Installation](docs/installation.md) for previews, updates, and recovery.
+Once it’s installed, log out and choose **Ferese** at your login screen, or run
+`ferese-session` from a TTY or a greeter that accepts a command. The [installation
+guide](docs/installation.md) also walks you through previews, updates and recovery.
 
 ## Configure
 
-Open **Control Center → Settings**, or edit `~/.config/ferese/config.kdl`.
-Changes reload automatically; invalid edits keep the last working configuration.
+Make it yours through **Control Center → Settings** or `~/.config/ferese/config.kdl`,
+with changes applying as you make them and the last working configuration staying in
+place if an edit is invalid.
 
-See the [configuration reference](docs/configuration.md) and
-[example config](packaging/config.kdl).
+The [configuration reference](docs/configuration.md) and [example
+config](packaging/config.kdl) cover everything from appearance and window layouts to
+displays and startup apps.
 
 ## Default shortcuts
 
-`Super` is usually the Windows key. Change shortcuts and gestures in
-**Settings → Shortcuts**.
+Use `Super`, usually the Windows key, to move around your desktop, and open **Settings →
+Shortcuts** whenever you want to change a shortcut or gesture.
 
 | Control | Action |
 | --- | --- |
@@ -72,13 +73,16 @@ See the [configuration reference](docs/configuration.md) and
 | Three-finger swipe up / down | Next / previous workspace |
 | Three-finger swipe left / right | Focus the window to the right / left |
 
-See [all shortcuts and mouse actions](docs/shortcuts.md), including Super-drag
-to move and Super-right-drag to resize floating windows.
+Explore [all shortcuts and mouse actions](docs/shortcuts.md) for more ways to arrange
+your windows and move between workspaces.
 
 ## Documentation
 
-Start with the [documentation index](docs/README.md) for user guides and
-[development instructions](docs/development.md) for builds and testing.
+The [documentation index](docs/README.md) brings the desktop guides together, while
+[development instructions](docs/development.md) cover building, testing and
+contributing.
 
-Ferese is written in Rust using Smithay. Report bugs on
-[GitHub](https://github.com/ferese-wm/ferese/issues) with reproduction steps and logs.
+Ferese is written in Rust using Smithay, with development happening [on
+GitHub](https://github.com/ferese-wm/ferese). If something goes wrong, [open an
+issue](https://github.com/ferese-wm/ferese/issues) with the steps to reproduce it and
+any relevant logs.

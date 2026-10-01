@@ -1,7 +1,8 @@
 # Ferese website and handbook
 
-The public site is static HTML and CSS. The handbook is generated from the
-project's Markdown guides, so website and repository documentation stay in sync.
+The website introduces Ferese as one desktop you can make your own, with a handbook
+built from the project’s Markdown guides so the website and repository share the same
+documentation.
 
 ## Local preview
 
@@ -12,8 +13,9 @@ python3 -m venv .site-venv
 python3 -m http.server 8080 --bind 127.0.0.1 --directory build/site
 ```
 
-Open http://localhost:8080 or http://localhost:8080/docs/. Rebuild after editing
-site sources or Markdown guides, then refresh the browser.
+Open http://localhost:8080 for the homepage or http://localhost:8080/docs/ for the
+handbook, then rebuild and refresh the browser whenever you change the site sources or
+guides.
 
 - `site/index.html` and `site/styles.css`: homepage and shared visual design.
 - `site/content/index.md`: handbook introduction.
@@ -25,13 +27,13 @@ site sources or Markdown guides, then refresh the browser.
 
 ## GitHub Pages
 
-Select **Settings → Pages → Source → GitHub Actions**. The Pages workflow
-publishes site and documentation changes pushed to `main`, or can run manually.
-Expected URL: https://ferese-wm.github.io/ferese/.
+Choose **Settings → Pages → Source → GitHub Actions** to publish through the Pages
+workflow, which runs when site or documentation changes reach `main` and can also be
+started manually. The expected address is https://ferese-wm.github.io/ferese/.
 
-Local links are relative, including documentation search, so publishing under
-the `/ferese/` project path works. Screenshots are copied from `docs/images`
-during the build; the generated `build/site` directory is ignored by Git.
+The site uses relative links, including for handbook search, so it also works under the
+`/ferese/` project path. Each build copies screenshots from `docs/images` into
+`build/site`, which is ignored by Git.
 
-See [GitHub's custom workflow documentation](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages)
-for deployment setup.
+For deployment setup, follow [GitHub’s custom workflow
+documentation](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages).

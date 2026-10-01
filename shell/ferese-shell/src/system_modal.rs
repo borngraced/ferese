@@ -67,6 +67,7 @@ pub(super) struct SystemModal {
     pub(super) motion: motion::PopupMotion,
     error: Option<String>,
     inhibitors: Option<compositor_ipc::Approval>,
+    keyboard_nav: bool,
 }
 
 impl SystemModal {
@@ -190,12 +191,15 @@ impl FereseShell {
                 move |result| cosmic::Action::App(Message::SystemInhibitors(id, result)),
             ));
         }
+        let keyboard_nav = self.core.keyboard_nav();
+        self.core.set_keyboard_nav(false);
         self.system_modal = Some(SystemModal {
             content,
             surfaces,
             motion: motion::PopupMotion::new(self.config.animations),
             error: None,
             inhibitors: mode.is_none().then(compositor_ipc::Approval::default),
+            keyboard_nav,
         });
         Task::batch(tasks)
     }
@@ -293,6 +297,7 @@ impl FereseShell {
         let Some(modal) = self.system_modal.take() else {
             return Task::none();
         };
+        self.core.set_keyboard_nav(modal.keyboard_nav);
         if cancel
             && let Content::Power(PowerAction::Logout(serial)) = modal.content
             && let Some(control) = &self.control
@@ -320,6 +325,23 @@ impl FereseShell {
         } else {
             Task::none()
         }
+    }
+
+    pub(super) fn focus_system_modal(&self, id: window::Id) -> Task<Message> {
+        if self.system_modal.as_ref().is_some_and(|modal| {
+            !modal.motion.closing() && modal.surfaces.iter().any(|surface| surface.id == id && surface.primary)
+        }) {
+            button::focus("ferese-modal-cancel".into())
+        } else {
+            Task::none()
+        }
+    }
+
+    pub(super) fn navigate_system_modal(&self, backwards: bool) -> Task<Message> {
+        if self.system_modal.as_ref().is_none_or(|modal| modal.motion.closing()) {
+            return Task::none();
+        }
+        cosmic::iced::advanced::widget::operate(modal_focus_operation(backwards))
     }
 
     pub(super) fn execute_system_modal(&mut self) -> Task<Message> {
@@ -440,18 +462,22 @@ impl FereseShell {
                         rows = rows.push(text(error).size(13));
                     }
                     rows.push(
-                        row![
-                            Space::new().width(Length::Fill),
-                            ferese_theme::controls::text_button("Cancel", shell_font(), palette, false)
-                                .on_press(cosmic::Action::App(Message::CancelPower)),
-                            ferese_theme::controls::text_button(label, shell_font(), palette, true).on_press_maybe(
-                                modal
-                                    .inhibitors
-                                    .is_some()
-                                    .then_some(cosmic::Action::App(Message::ExecutePower))
-                            ),
-                        ]
-                        .spacing(10),
+                        container(
+                            row![
+                                Space::new().width(Length::Fill),
+                                ferese_theme::controls::text_button("Cancel", shell_font(), palette, false)
+                                    .id("ferese-modal-cancel".into())
+                                    .on_press(cosmic::Action::App(Message::CancelPower)),
+                                ferese_theme::controls::text_button(label, shell_font(), palette, true).on_press_maybe(
+                                    modal
+                                        .inhibitors
+                                        .is_some()
+                                        .then_some(cosmic::Action::App(Message::ExecutePower))
+                                ),
+                            ]
+                            .spacing(10),
+                        )
+                        .id("ferese-system-modal-controls"),
                     )
                 }
                 Content::Guide(entries) => {
@@ -482,11 +508,13 @@ impl FereseShell {
                         text("Disable this guide in Settings → Shortcuts. It appears at each login until disabled.")
                             .size(12)
                             .class(theme::Text::Color(palette.muted)),
-                        row![
+                        container(row![
                             Space::new().width(Length::Fill),
                             ferese_theme::controls::text_button("Got it", shell_font(), palette, true,)
+                                .id("ferese-modal-cancel".into())
                                 .on_press(cosmic::Action::App(Message::CancelPower)),
-                        ],
+                        ])
+                        .id("ferese-system-modal-controls"),
                     ]
                     .spacing(14)
                 }
@@ -537,9 +565,64 @@ impl FereseShell {
     }
 }
 
+// Restrict Tab traversal to the modal actions, excluding the bar and desktop widgets.
+fn modal_focus_operation<T: Send + 'static>(backwards: bool) -> Box<dyn cosmic::iced::advanced::widget::Operation<T>> {
+    use cosmic::iced::advanced::widget::{Id, operation};
+    let target = Id::new("ferese-system-modal-controls");
+    if backwards {
+        Box::new(operation::scoped(target, operation::focusable::focus_previous()))
+    } else {
+        Box::new(operation::scoped(target, operation::focusable::focus_next()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tab_stays_within_modal_actions_in_both_directions() {
+        use cosmic::iced::Rectangle;
+        use cosmic::iced::advanced::widget::{Id, Operation, operation};
+
+        #[derive(Default)]
+        struct Focus(bool);
+        impl operation::Focusable for Focus {
+            fn is_focused(&self) -> bool {
+                self.0
+            }
+            fn focus(&mut self) {
+                self.0 = true;
+            }
+            fn unfocus(&mut self) {
+                self.0 = false;
+            }
+        }
+
+        let mut outside = Focus(true);
+        let mut cancel = Focus(true);
+        let mut confirm = Focus(false);
+        for (backwards, expected_cancel) in [(false, false), (false, true), (true, false), (true, true)] {
+            let mut current: Box<dyn Operation<()>> = modal_focus_operation(backwards);
+            loop {
+                current.focusable(Some(&Id::new("bar")), Rectangle::default(), &mut outside);
+                current.container(Some(&Id::new("ferese-system-modal-controls")), Rectangle::default());
+                current.traverse(&mut |operation| {
+                    operation.focusable(Some(&Id::new("cancel")), Rectangle::default(), &mut cancel);
+                    operation.focusable(Some(&Id::new("confirm")), Rectangle::default(), &mut confirm);
+                });
+                match current.finish() {
+                    operation::Outcome::Chain(next) => current = next,
+                    _ => break,
+                }
+            }
+            assert!(outside.0, "modal navigation changed focus outside the modal");
+            assert_ne!(cancel.0, confirm.0);
+            assert_eq!(cancel.0, expected_cancel);
+        }
+        assert!(cancel.0);
+        assert!(!confirm.0);
+    }
 
     #[test]
     fn only_power_actions_require_confirmation() {
