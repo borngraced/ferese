@@ -6,8 +6,7 @@ which includes app and media shortcuts, appearance, widgets, and optional startu
 and display settings. Its browser/editor shortcuts need Firefox/Zed; brightness
 keys need `brightnessctl` and audio keys need `wpctl`.
 This reference covers layouts, appearance, input, and desktop behavior.
-See [Desktop widgets](desktop-widgets.md), [Notifications](notifications.md),
-and [Desktop portals](portals.md) for their additional options.
+See [Desktop portals](portals.md) for application integration options.
 
 ## KDL syntax
 
@@ -135,8 +134,7 @@ Choose Light, Dark, or Auto in Settings or Control Center. Auto follows local
 07:00 and 19:00 boundaries unless you change its schedule.
 
 Selections store preset names. Partial KDL files can override shared colors or
-one appearance. See [Themes](theme-engine.md) for files, accessibility options,
-and live previews.
+one appearance.
 
 | Section / key | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -145,7 +143,7 @@ and live previews.
 | `theme.split` | boolean | `false` | Use separate light/dark families; retains both selections when disabled |
 | `theme.light.family`, `theme.dark.family` | family id | `"ferese-blue"` | Stored selections used when split is enabled |
 | `theme.custom-themes.<id>.file` | path | unset | Imported KDL family with explicit light and/or dark sections |
-| `theme.light.preset` | preset name | `"ferese-blue-light"` | Light palette; see the [preset pairs](theme-engine.md#preset-pairs) |
+| `theme.light.preset` | preset name | `"ferese-blue-light"` | Light palette |
 | `theme.dark.preset` | preset name | `"ferese-blue"` | Dark palette |
 | `theme.file` | path | unset | Shared partial KDL theme |
 | `theme.light.file`, `theme.dark.file` | path | unset | Partial KDL theme for one appearance |
@@ -567,7 +565,3 @@ override shell rounding.
 Power actions use a centered confirmation. **Super+Shift+E** and
 `feresectl request-logout` ask to log out. `feresectl exit` ends the session
 immediately.
-
-## Notifications
-
-See [Notifications](notifications.md) for popups, Do Not Disturb, and timeout options.

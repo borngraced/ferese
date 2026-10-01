@@ -10,7 +10,7 @@ use
 ## Get started
 
 1. [Install Ferese](installation.md), or try a [nested preview](installation.md#preview-and-logs).
-2. Choose Light, Dark, or Auto in **Control Center**. Open **Settings** for [theme files and presets](theme-engine.md).
+2. Choose Light, Dark, or Auto in **Control Center**. Open **Settings** for theme files and presets.
 3. Use the [configuration reference](configuration.md) for shortcuts, gestures, window rules, and displays.
 
 ## Default shortcuts
@@ -40,8 +40,6 @@ group windows, resize them and move between workspaces.
 
 ## Desktop guides
 
-- [Desktop widgets](desktop-widgets.md): clocks and sticky notes.
-- [Notifications](notifications.md): history and Do Not Disturb.
 - [Lock screen](locking.md): appearance, automatic locking, and display sleep.
 - [Screen sharing and recording](screen-sharing.md): share an app or display, or save a video.
 - [Desktop portals](portals.md): integration with applications.

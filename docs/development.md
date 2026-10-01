@@ -14,13 +14,9 @@ Keep another desktop available for direct-session recovery.
 
 ## Test guides
 
-- [Animation checks](animation-validation.md): transitions, interruption, and hit testing.
 - [Nested resize checks](nested-resize-testing.md): wallpaper and bar responsiveness.
 - [Client soak testing](native-soak-testing.md): repeated client lifecycle and resource growth.
 - [Performance measurements](performance-baseline.md): sampling and historical results.
-
-The [compositor](ferese-window-manager-spec.md), [shell](ferese-shell-design.md),
-and [theme](ferese-theme-ui-spec.md) references describe the main code boundaries.
 
 ## Portal checks
 
