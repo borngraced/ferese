@@ -125,7 +125,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     let rendered = (|| -> DamageRenderResult {
                         {
                             let (renderer, mut framebuffer) = backend.bind()?;
-                            state.process_dmabuf_imports(renderer);
+                            state.process_dmabuf_imports(renderer, None);
                             let elements = animated_window_elements(state, renderer, &output);
                             let effects = frame_effect_metrics(&elements, output.current_scale().fractional_scale());
                             let result = damage_tracker.render_output(

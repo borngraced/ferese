@@ -35,10 +35,19 @@ class WindowCapture(unittest.TestCase):
             config = root / "config/ferese/config.kdl"
             config.parent.mkdir(parents=True)
             config.write_text('window-rule app-id="ferese.test.window-capture" floating=#true\n')
+            # Remembered geometry deliberately places both clients together;
+            # ordinary placement now avoids overlap. Keep host state isolated.
+            state = root / "state/ferese"
+            state.mkdir(parents=True)
+            (state / "floating.json").write_text(json.dumps({
+                "ferese.test.window-capture": {
+                    "output": "ferese-winit", "fractions": [.1, .1, .4, .4],
+                },
+            }))
             display = Path(os.environ["WAYLAND_DISPLAY"])
             if not display.is_absolute():
                 display = Path(os.environ["XDG_RUNTIME_DIR"]) / display
-            env = dict(os.environ, XDG_RUNTIME_DIR=str(runtime), XDG_CONFIG_HOME=str(root / "config"), WAYLAND_DISPLAY=str(display), FERESE_ENABLE_SCREENCOPY="1")
+            env = dict(os.environ, XDG_RUNTIME_DIR=str(runtime), XDG_CONFIG_HOME=str(root / "config"), XDG_STATE_HOME=str(root / "state"), WAYLAND_DISPLAY=str(display), FERESE_ENABLE_SCREENCOPY="1")
             env.pop("WAYLAND_SOCKET", None)
             env.pop("FERESE_SHELL_CONTROL_SOCKET", None)
             log = (root / "compositor.log").open("w")

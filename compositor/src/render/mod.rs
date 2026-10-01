@@ -485,8 +485,9 @@ impl RenderElement<GlesRenderer> for RoundedSurfaceRenderElement {
         }
     }
 
-    fn underlying_storage(&self, renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
-        self.inner.underlying_storage(renderer)
+    fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
+        // Storage is deliberately hidden: plane scanout would bypass clipping.
+        None
     }
 }
 

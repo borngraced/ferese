@@ -403,14 +403,20 @@ pub(super) fn rounded_window_elements(
         )
         .into_iter()
         .map(|inner| {
-            RoundedSurfaceRenderElement {
-                inner,
-                programs: programs.clone(),
-                clip_rect: clip,
-                radius,
-                clip_changed,
+            if radius == 0.0 {
+                // Rectangular clipping is already enforced by the outer crop
+                // element. Keep the raw surface available for fullscreen scanout.
+                WindowContentRenderElement::from(inner)
+            } else {
+                RoundedSurfaceRenderElement {
+                    inner,
+                    programs: programs.clone(),
+                    clip_rect: clip,
+                    radius,
+                    clip_changed,
+                }
+                .into()
             }
-            .into()
         }),
     );
 

@@ -749,12 +749,16 @@ impl Ferese {
         self.pending_dmabuf_imports.push((dmabuf, notifier));
     }
 
-    pub(crate) fn process_dmabuf_imports<R>(&mut self, renderer: &mut R)
+    pub(crate) fn process_dmabuf_imports<R>(&mut self, renderer: &mut R, node: Option<DrmNode>)
     where
         R: ImportDma,
     {
         for (dmabuf, notifier) in self.pending_dmabuf_imports.drain(..) {
             if renderer.import_dmabuf(&dmabuf, None).is_ok() {
+                if let Some(node) = node {
+                    dmabuf.set_node(node);
+                }
+
                 if let Err(error) = notifier.successful::<Self>() {
                     tracing::debug!(?error, "dma-buf client disappeared before import completed");
                 }

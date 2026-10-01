@@ -1,26 +1,31 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::io;
+use std::os::fd::AsFd;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+mod capture;
+mod planes;
 mod scheduling;
 use scheduling::*;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
-use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode, GbmBufferedSurface, NodeType};
+use smithay::backend::drm::compositor::{DrmCompositor, PrimaryPlaneElement};
+use smithay::backend::drm::exporter::gbm::GbmFramebufferExporter;
+use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode, NodeType};
 use smithay::backend::egl::{EGLContext, EGLDisplay};
 use smithay::backend::input::InputEvent;
 use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
-use smithay::backend::renderer::damage::OutputDamageTracker;
-use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::renderer::{Bind, Frame, ImportDma, ImportMemWl, Renderer};
+use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+use smithay::backend::renderer::utils::CommitCounter;
+use smithay::backend::renderer::{ImportDma, ImportMemWl, Renderer};
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
 use smithay::backend::udev::{UdevBackend, UdevEvent, primary_gpu};
 use smithay::desktop::layer_map_for_output;
 use smithay::desktop::utils::OutputPresentationFeedback;
-use smithay::output::{Mode as OutputMode, Output, PhysicalProperties, Scale, Subpixel};
+use smithay::output::{Mode as OutputMode, Output, OutputModeSource, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::{EventLoop, RegistrationToken};
 use smithay::reexports::drm::control::{
@@ -37,7 +42,7 @@ use smithay::wayland::presentation::Refresh;
 use crate::Ferese;
 use crate::config::{OutputModeRequest, OutputProfile, OutputSettings, OutputTransform};
 use crate::metrics::RenderMetrics;
-use crate::render::{frame_effect_metrics, redraw_output, sampled_output_elements};
+use crate::render::{frame_effect_metrics, sampled_output_elements};
 
 pub struct DirectBackendState {
     pub session: LibSeatSession,
@@ -147,10 +152,18 @@ struct PresentationClock {
     missed_deadlines: u64,
 }
 
+type OutputCompositor = DrmCompositor<
+    GbmAllocator<DrmDeviceFd>,
+    GbmFramebufferExporter<DrmDeviceFd>,
+    OutputPresentationFeedback,
+    DrmDeviceFd,
+>;
+
 struct DirectDevice {
     drm: DrmDevice,
     gbm: GbmDevice<DrmDeviceFd>,
     renderer: GlesRenderer,
+    render_node: DrmNode,
     outputs: HashMap<crtc::Handle, DirectOutput>,
 }
 
@@ -161,8 +174,9 @@ struct DirectOutput {
     settings: OutputSettings,
     output: Output,
     global: GlobalId,
-    surface: GbmBufferedSurface<GbmAllocator<DrmDeviceFd>, OutputPresentationFeedback>,
-    damage_tracker: OutputDamageTracker,
+    surface: OutputCompositor,
+    primary_commit: Option<CommitCounter>,
+    capture_texture: Option<GlesTexture>,
     render_metrics: RenderMetrics,
     frame_pending: bool,
     scheduler: crate::frame_scheduler::FrameScheduler,
@@ -257,7 +271,8 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                         device.outputs.values_mut().for_each(|output| {
                             cancel_output_timers(&handle, output);
                             output.surface.reset_buffers();
-                            output.damage_tracker = OutputDamageTracker::from_output(&output.output);
+                            output.primary_commit = None;
+                            output.capture_texture = None;
                             output.frame_pending = false;
                             output.power_off = false;
                         });
@@ -278,6 +293,15 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     for device in backend.devices.values_mut() {
                         if let Err(error) = device.drm.activate(true) {
                             tracing::error!(%error, "failed to reactivate DRM device");
+                            continue;
+                        }
+
+                        for output in device.outputs.values_mut() {
+                            // A suspended page flip may never arrive. Clear the old
+                            // pending frame before accepting a fresh submission.
+                            if let Err(error) = output.surface.clear().and_then(|()| output.surface.reset_state()) {
+                                tracing::error!(%error, "failed to reset DRM output after activation");
+                            }
                         }
                     }
                 }
@@ -496,7 +520,7 @@ fn open_primary_device(
                         .and_then(|device| device.outputs.get_mut(&crtc))
                         .and_then(|output| match output.surface.frame_submitted() {
                             Ok(feedback) => {
-                                retired = true;
+                                retired = feedback.is_some();
                                 feedback
                             }
 
@@ -596,6 +620,7 @@ fn open_primary_device(
                 drm,
                 gbm,
                 renderer,
+                render_node,
                 outputs,
             },
         );
@@ -620,7 +645,7 @@ pub(crate) fn sleep_locked_outputs(state: &mut Ferese) {
                 continue;
             }
 
-            match output.surface.surface().clear() {
+            match output.surface.clear() {
                 Ok(()) => {
                     cancel_output_timers(&state.loop_handle, output);
                     output.power_off = true;
@@ -796,60 +821,77 @@ fn render_output(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, plan: cr
     let frame = state.sample_frame(&output.output, horizon);
     let rendered = {
         (|| -> Result<bool, Box<dyn Error>> {
-            state.process_dmabuf_imports(&mut device.renderer);
-            let (mut buffer, age) = output.surface.next_buffer()?;
+            state.process_dmabuf_imports(&mut device.renderer, Some(device.render_node));
             let elements = sampled_output_elements(state, &mut device.renderer, &output.output, true, &frame);
             let effects = frame_effect_metrics(&elements, output.output.current_scale().fractional_scale());
-            let mut framebuffer = device.renderer.bind(&mut buffer)?;
-            let result = output.damage_tracker.render_output(
-                &mut device.renderer,
-                &mut framebuffer,
-                usize::from(age),
-                &elements,
-                [0.035, 0.04, 0.055, 1.0],
-            )?;
-            let cursorless_capture = state.has_pending_screencopy(&output.output, false);
-            let captured_with_cursor =
-                state.process_screencopies(&mut device.renderer, &framebuffer, &output.output, true);
+            let flags = planes::frame_flags(
+                state.output_has_fullscreen_for_frame(&output.output, frame.overview.is_presenting()),
+                state.output_has_animations(&output.output),
+                state.session_lock.active,
+            );
+            let result =
+                output
+                    .surface
+                    .render_frame(&mut device.renderer, &elements, [0.035, 0.04, 0.055, 1.0], flags)?;
 
-            if cursorless_capture {
-                let cursorless_elements =
-                    sampled_output_elements(state, &mut device.renderer, &output.output, false, &frame);
-                redraw_output(
-                    &mut device.renderer,
-                    &mut framebuffer,
-                    &output.output,
-                    &cursorless_elements,
-                )?;
-                state.process_screencopies(&mut device.renderer, &framebuffer, &output.output, false);
-                redraw_output(&mut device.renderer, &mut framebuffer, &output.output, &elements)?;
-            } else if captured_with_cursor {
-                let _ = device
-                    .renderer
-                    .render(
-                        &mut framebuffer,
-                        output.output.current_mode().expect("output has a mode").size,
-                        output.output.current_transform(),
-                    )?
-                    .finish()?;
+            if result.needs_sync()
+                && let PrimaryPlaneElement::Swapchain(primary) = &result.primary_element
+            {
+                primary.sync.wait()?;
             }
 
-            let Some(damage) = result.damage.cloned() else {
+            capture::capture_output(
+                state,
+                &mut device.renderer,
+                &mut output.capture_texture,
+                &output.output,
+                &frame,
+            )?;
+
+            if result.is_empty {
                 output
                     .render_metrics
                     .record_no_damage(render_started.elapsed(), missed_deadlines);
                 return Ok(false);
-            };
+            }
 
+            // Count GPU composition damage; direct scanout and cursor-only
+            // updates do not redraw the primary swapchain.
+            let (damage, primary_commit) = match &result.primary_element {
+                PrimaryPlaneElement::Swapchain(primary) => {
+                    let damage = primary.damage.damage_since(output.primary_commit);
+                    let damage = damage.map_or_else(
+                        || {
+                            vec![smithay::utils::Rectangle::from_size(
+                                output.output.current_mode().unwrap().size,
+                            )]
+                        },
+                        |damage| {
+                            damage
+                                .iter()
+                                .map(|rect| {
+                                    smithay::utils::Rectangle::new(
+                                        (rect.loc.x, rect.loc.y).into(),
+                                        (rect.size.w, rect.size.h).into(),
+                                    )
+                                })
+                                .collect()
+                        },
+                    );
+                    (damage, Some(primary.damage.current_commit()))
+                }
+
+                PrimaryPlaneElement::Element(_) => (Vec::new(), None),
+            };
             let presentation = crate::presentation::take_output_feedback(
                 state,
                 &output.output,
                 &result.states,
                 Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
             );
-            output
-                .surface
-                .queue_buffer(Some(result.sync), Some(damage.clone()), presentation)?;
+            drop(result);
+            output.surface.queue_frame(presentation)?;
+            output.primary_commit = primary_commit;
             output
                 .render_metrics
                 .record_frame(render_started.elapsed(), &damage, missed_deadlines, effects);
@@ -992,7 +1034,9 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
                         }
                     }
 
-                    output.damage_tracker = OutputDamageTracker::from_output(&output.output);
+                    output.surface.reset_buffer_ages();
+                    output.primary_commit = None;
+                    output.capture_texture = None;
                     if let Some(backend) = state.direct_backend.as_mut() {
                         let clock = backend.presentation.entry((node, crtc)).or_default();
                         clock.set_refresh(OutputMode::from(output.mode).refresh);
@@ -1564,16 +1608,30 @@ fn create_direct_output(
     let identity = connector_identity(drm, &connector);
     let drm_surface = drm.create_surface(crtc, mode, &[connector.handle()])?;
     let allocator = GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
-    let surface = GbmBufferedSurface::new(
+    let node = DrmNode::from_file(gbm.as_fd())?;
+    let render_node = node
+        .node_with_type(NodeType::Render)
+        .and_then(Result::ok)
+        .unwrap_or(node);
+    let mut surface = DrmCompositor::new(
+        OutputModeSource::Static {
+            size: OutputMode::from(mode).size,
+            scale: settings.scale.into(),
+            transform: output_transform(settings.transform),
+        },
         drm_surface,
+        None,
         allocator,
-        &[Fourcc::Argb8888, Fourcc::Abgr8888],
+        GbmFramebufferExporter::new(gbm.clone(), Some(render_node)),
+        [Fourcc::Argb8888, Fourcc::Abgr8888],
         renderer.dmabuf_formats(),
+        drm.cursor_size(),
+        Some(gbm.clone()),
     )?;
     // Publish only after DRM/GBM creation succeeds; failed activation must not
     // leave a phantom output/workspace that could receive evacuated windows.
     let (output, global) = create_output(state, &connector, mode, identity, &settings);
-    let damage_tracker = OutputDamageTracker::from_output(&output);
+    surface.set_output_mode_source((&output).into());
     let render_metrics = RenderMetrics::from_environment(output.name());
 
     tracing::info!(?crtc, connector = %connector, "initialized DRM output");
@@ -1585,7 +1643,8 @@ fn create_direct_output(
         output,
         global,
         surface,
-        damage_tracker,
+        primary_commit: None,
+        capture_texture: None,
         render_metrics,
         frame_pending: false,
         power_off: false,
