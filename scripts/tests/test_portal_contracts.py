@@ -10,6 +10,8 @@ import time
 import unittest
 import xml.etree.ElementTree as ET
 
+from fixtures.theme_owner import ThemeOwner
+
 REPO = Path(__file__).resolve().parents[2]
 BINARY = REPO / os.environ.get("FERESE_TEST_PORTAL_BINARY", "target/debug/xdg-desktop-portal-ferese")
 NAME = "org.freedesktop.impl.portal.desktop.ferese"
@@ -39,10 +41,16 @@ def private_bus_checks():
         root = Path(directory)
         config = root / "ferese/config.kdl"
         config.parent.mkdir()
-        config.write_text('theme { colors { surface-base "#ffffff"; accent "#ff8000"; }; }; animations { reduced-motion #true; }\n')
+        # Lockdown still uses this document; appearance comes exclusively from theme IPC.
+        config.write_text('theme { mode "dark"; }; animations { reduced-motion #false; }\n')
+        runtime = root / "runtime"
+        runtime.mkdir(mode=0o700)
+        theme_owner = ThemeOwner(runtime)
         log = (root / "backend.log").open("w")
-        process = subprocess.Popen([str(BINARY)], env=dict(os.environ, XDG_CONFIG_HOME=directory),
-                                   stdout=log, stderr=log, start_new_session=True)
+        env = dict(os.environ, XDG_CONFIG_HOME=directory, XDG_RUNTIME_DIR=str(runtime),
+                   WAYLAND_DISPLAY="wayland-unavailable")
+        env.pop("WAYLAND_SOCKET", None)
+        process = subprocess.Popen([str(BINARY)], env=env, stdout=log, stderr=log, start_new_session=True)
         try:
             deadline = time.monotonic() + 15
             while True:
@@ -221,15 +229,18 @@ def private_bus_checks():
             signals = []
             subscription = bus.signal_subscribe(NAME, "org.freedesktop.impl.portal.Settings", "SettingChanged", PATH,
                                                 None, Gio.DBusSignalFlags.NONE, lambda *args: signals.append(args[-1].unpack()))
-            temporary = config.with_suffix(".tmp")
-            temporary.write_text('theme { colors { surface-base "#111111"; accent "#0080ff"; }; }; animations { enabled #false; }\n')
-            temporary.replace(config)
+            theme_owner.publish("dark", "#0080ff", False, True)
             deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and not any(signal[1] == "color-scheme" for signal in signals):
+            while time.monotonic() < deadline and not {"color-scheme", "accent-color", "reduced-motion", "contrast"}.issubset({signal[1] for signal in signals}):
                 GLib.MainContext.default().iteration(False)
                 time.sleep(0.02)
             assert any(signal[1] == "color-scheme" and signal[2] == 1 for signal in signals), signals
-            assert any(signal[1] == "accent-color" for signal in signals), signals
+            changed = {event[1]: event[2] for event in signals}
+            assert changed["accent-color"] == (0., 128 / 255, 1.), changed
+            assert changed["reduced-motion"] == 0 and changed["contrast"] == 1, changed
+            current, = call("org.freedesktop.impl.portal.Settings", "ReadAll", GLib.Variant("(as)", (["org.freedesktop.*"],)), "(a{sa{sv}})")
+            assert current["org.freedesktop.appearance"] == changed, current
+            # Portal appearance stays with the owner even when the local document is invalid.
             config.write_text('theme { broken')
             time.sleep(1.2)
             scheme, = call("org.freedesktop.impl.portal.Settings", "Read", GLib.Variant("(ss)", ("org.freedesktop.appearance", "color-scheme")))
@@ -239,6 +250,7 @@ def private_bus_checks():
             os.killpg(process.pid, signal.SIGTERM)
             process.wait(timeout=5)
             log.close()
+            theme_owner.close()
 
 
 if __name__ == "__main__":
