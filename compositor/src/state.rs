@@ -284,6 +284,12 @@ pub struct Ferese {
     window_stack: WindowStack,
     floating_above_fullscreen: HashMap<WindowId, WindowId>,
     natural_floating_pending: HashSet<WindowId>,
+    floating_memory: crate::floating::Memory,
+    floating_save_worker: crate::floating::SaveWorker,
+    floating_window_memory: HashMap<WindowId, crate::floating::Remembered>,
+    floating_placement_anchors: HashMap<WindowId, Rect>,
+    floating_cascade: crate::floating::Cascade,
+    pub(crate) floating_resize_anchors: HashMap<WindowId, (bool, bool, Rect)>,
     pub(crate) window_borders: HashMap<WindowId, WindowBorderBuffers>,
     pub(crate) window_dims: HashMap<WindowId, WindowBorderBuffers>,
     pub(crate) window_resize_fills: HashMap<WindowId, WindowBorderBuffers>,
@@ -505,6 +511,14 @@ impl Ferese {
             window_stack: WindowStack::default(),
             floating_above_fullscreen: HashMap::new(),
             natural_floating_pending: HashSet::new(),
+            floating_memory: crate::floating::Memory::path()
+                .map(|p| crate::floating::Memory::load(&p))
+                .unwrap_or_default(),
+            floating_save_worker: Default::default(),
+            floating_window_memory: HashMap::new(),
+            floating_placement_anchors: HashMap::new(),
+            floating_cascade: Default::default(),
+            floating_resize_anchors: HashMap::new(),
             window_borders: HashMap::new(),
             window_dims: HashMap::new(),
             window_resize_fills: HashMap::new(),
@@ -1234,15 +1248,32 @@ impl Ferese {
         if let Some(pointer) = self.seat.get_pointer() {
             self.focus_output_at(pointer.current_location());
         }
+        let remembered_work = app_id.and_then(|app| self.floating_memory.get(app)).and_then(|entry| {
+            let outputs = self.floating_outputs();
+            entry.restore(&outputs)?;
+            outputs
+                .into_iter()
+                .find(|(name, _)| *name == entry.output)
+                .map(|(_, work)| work)
+        });
+        if let Some(work) = remembered_work {
+            self.focus_output_at((work.x + work.width / 2.0, work.y + work.height / 2.0).into());
+        }
         let Some(bounds) = self.output_bounds() else {
             self.add_tiled_window(window);
             return;
         };
         let id = WindowId(self.next_window_id);
         self.next_window_id += 1;
-        let rect = client_size(&window)
+        let size_rect = client_size(&window)
             .map(|size| natural_floating_rect(bounds, size))
             .unwrap_or_else(|| centered_floating_rect(bounds));
+        let rect = self.place_floating(&window, None, bounds, (size_rect.width, size_rect.height), None);
+        let anchor = self
+            .focused_window
+            .and_then(|focused| self.presented_window_rect(focused))
+            .unwrap_or(bounds);
+        self.floating_placement_anchors.insert(id, anchor);
         let fullscreen = self.workspaces.active().fullscreen;
         let focus = true;
         if let Err(error) = self
@@ -1252,7 +1283,8 @@ impl Ferese {
             tracing::error!(%error, ?id, "failed to insert rule-placed floating window");
             return;
         }
-        if rule.width.is_none() && rule.height.is_none() && client_size(&window).is_none() {
+        if rule.width.is_none() && rule.height.is_none() && client_size(&window).is_none() && remembered_work.is_none()
+        {
             self.natural_floating_pending.insert(id);
         }
         self.window_ids.insert(window.clone(), id);
@@ -1306,12 +1338,16 @@ impl Ferese {
             self.add_tiled_window(window);
             return;
         };
-        let Some(bounds) = self.output_bounds() else {
+        let Some(bounds) = self.floating_bounds_for_window(parent) else {
             self.add_tiled_window(window);
             return;
         };
-        let parent_rect = self.logical_window_rect(parent, bounds).unwrap_or(bounds);
-        let rect = centered_transient_rect(parent_rect);
+        let parent_rect = self.presented_window_rect(parent).unwrap_or(bounds);
+        let visible_parent = crate::floating::intersection(parent_rect, bounds).unwrap_or(bounds);
+        let size_rect = client_size(&window)
+            .map(|s| natural_floating_rect(bounds, s))
+            .unwrap_or_else(|| centered_transient_rect(visible_parent));
+        let rect = self.place_floating(&window, None, bounds, (size_rect.width, size_rect.height), None);
         let id = WindowId(self.next_window_id);
         self.next_window_id += 1;
 
@@ -1324,6 +1360,9 @@ impl Ferese {
 
         self.window_ids.insert(window.clone(), id);
         self.window_stack.insert(id);
+        if client_size(&window).is_none() {
+            self.natural_floating_pending.insert(id);
+        }
         if self
             .workspaces
             .workspace(workspace)
@@ -1414,14 +1453,27 @@ impl Ferese {
             if should_float && rule.width.is_none() && rule.height.is_none() {
                 if let Some(size) = client_size(window) {
                     rect = natural_floating_rect(bounds, size);
-                } else {
+                } else if Self::floating_metadata(window)
+                    .0
+                    .as_deref()
+                    .and_then(|app| self.floating_memory.get(app))
+                    .and_then(|entry| entry.restore(&self.floating_outputs()))
+                    .is_none()
+                {
                     self.natural_floating_pending.insert(id);
                 }
             }
             rect.width = rule.width.unwrap_or(rect.width).min(bounds.width);
             rect.height = rule.height.unwrap_or(rect.height).min(bounds.height);
-            rect.x = bounds.x + (bounds.width - rect.width) / 2.0;
-            rect.y = bounds.y + (bounds.height - rect.height) / 2.0;
+            if should_float {
+                rect = self.place_floating(
+                    window,
+                    Some(id),
+                    bounds,
+                    (rect.width, rect.height),
+                    Some((rule.width, rule.height)),
+                );
+            }
 
             let result = if should_float != is_floating {
                 self.workspaces.toggle_floating(id, rect, axis, 0.5).map(|_| ())
@@ -1459,11 +1511,15 @@ impl Ferese {
             tracing::warn!(?id, ?parent, "ignored transient parent on another workspace");
             return;
         }
-        let Some(bounds) = self.output_bounds() else {
+        let Some(bounds) = self.floating_bounds_for_window(parent) else {
             return;
         };
-        let parent_rect = self.logical_window_rect(parent, bounds).unwrap_or(bounds);
-        let rect = centered_transient_rect(parent_rect);
+        let parent_rect = self.presented_window_rect(parent).unwrap_or(bounds);
+        let visible_parent = crate::floating::intersection(parent_rect, bounds).unwrap_or(bounds);
+        let size_rect = client_size(window)
+            .map(|s| natural_floating_rect(bounds, s))
+            .unwrap_or_else(|| centered_transient_rect(visible_parent));
+        let rect = self.place_floating(window, Some(id), bounds, (size_rect.width, size_rect.height), None);
         let result = match self.workspaces.placement(id) {
             Some(WindowPlacement::Tiled) => self
                 .workspaces
@@ -1514,6 +1570,9 @@ impl Ferese {
         self.window_stack.remove(id);
         self.floating_above_fullscreen.remove(&id);
         self.natural_floating_pending.remove(&id);
+        self.floating_window_memory.remove(&id);
+        self.floating_placement_anchors.remove(&id);
+        self.floating_resize_anchors.remove(&id);
         self.window_borders.remove(&id);
         self.window_dims.remove(&id);
         self.window_dimming.remove(&id);
@@ -2275,11 +2334,32 @@ impl Ferese {
         let Some(size) = client_size(window) else {
             return;
         };
-        if self.natural_floating_pending.remove(&id)
+        let fullscreen = self
+            .workspaces
+            .workspace_for_window(id)
+            .and_then(|workspace| self.workspaces.workspace(workspace))
+            .is_some_and(|workspace| workspace.fullscreen == Some(id));
+        let normal_geometry = !fullscreen
+            && !self.maximized_windows.contains(&id)
+            && self
+                .window_geometry
+                .get(&id)
+                .is_none_or(|geometry| !geometry.is_zooming());
+        let initial_floating =
+            self.natural_floating_pending.remove(&id) || self.floating_placement_anchors.contains_key(&id);
+        if initial_floating
+            && normal_geometry
             && matches!(self.workspaces.placement(id), Some(WindowPlacement::Floating { .. }))
             && let Some(bounds) = self.floating_bounds_for_window(id)
         {
-            let rect = natural_floating_rect(bounds, size);
+            let rect = self.place_floating(
+                window,
+                Some(id),
+                bounds,
+                (f64::from(size.width), f64::from(size.height)),
+                Some((Some(f64::from(size.width)), Some(f64::from(size.height)))),
+            );
+            self.floating_placement_anchors.remove(&id);
             if self.workspaces.set_floating_rect(id, rect).is_ok() {
                 // This is the first mapped client buffer, not a user resize.
                 // Do not animate from the temporary placement box.
@@ -2292,6 +2372,7 @@ impl Ferese {
         // terminal cell grids, or a dialog changing its contents). Its committed
         // window geometry is authoritative once the latest configure is committed.
         // Never let an old buffer undo a newer resize or a fullscreen transition.
+        self.floating_placement_anchors.remove(&id);
         let settled_configure = window.toplevel().is_some_and(|toplevel| {
             with_states(toplevel.wl_surface(), |states| {
                 states.data_map.get::<XdgToplevelSurfaceData>().is_some_and(|data| {
@@ -2305,28 +2386,26 @@ impl Ferese {
                 })
             })
         });
-        let fullscreen = self
-            .workspaces
-            .workspace_for_window(id)
-            .and_then(|workspace| self.workspaces.workspace(workspace))
-            .is_some_and(|workspace| workspace.fullscreen == Some(id));
         if settled_configure
-            && !fullscreen
-            && !self.maximized_windows.contains(&id)
-            && self
-                .window_geometry
-                .get(&id)
-                .is_some_and(|geometry| !geometry.is_zooming())
+            && normal_geometry
             && let Some(WindowPlacement::Floating { rect }) = self.workspaces.placement(id)
             && ClientSize::from_rect(rect) != size
         {
-            let rect = Rect::new(rect.x, rect.y, f64::from(size.width), f64::from(size.height));
+            let mut rect = Rect::new(rect.x, rect.y, f64::from(size.width), f64::from(size.height));
+            if let Some((left, top, anchor)) = self.floating_resize_anchors.get(&id) {
+                rect = crate::floating::anchored_size(*anchor, (rect.width, rect.height), *left, *top);
+            } else if initial_floating && let Some(work) = self.floating_bounds_for_window(id) {
+                rect = crate::floating::clamp_to_work(rect, work);
+            }
             if self.workspaces.set_floating_rect(id, rect).is_ok() {
                 self.window_geometry.insert(id, WindowGeometry::new(rect, Some(size)));
                 self.resize_transactions.remove(&id);
                 self.resize_snapshots.remove(&id);
                 self.relayout();
             }
+        }
+        if settled_configure && self.floating_resize_anchors.remove(&id).is_some() {
+            self.remember_floating(window);
         }
         let Some(geometry) = self.window_geometry.get_mut(&id) else {
             return;
@@ -2549,7 +2628,7 @@ impl Ferese {
         let Some(bounds) = self.output_bounds() else {
             return;
         };
-        let floating_rect = match self.workspaces.placement(window) {
+        let mut floating_rect = match self.workspaces.placement(window) {
             Some(WindowPlacement::Tiled) => self
                 .tiled_layout(bounds)
                 .ok()
@@ -2558,6 +2637,26 @@ impl Ferese {
             Some(WindowPlacement::Floating { rect }) => rect,
             None => return,
         };
+        if let Some(handle) = self
+            .window_ids
+            .iter()
+            .find_map(|(handle, id)| (*id == window).then_some(handle.clone()))
+        {
+            if matches!(
+                self.workspaces.placement(window),
+                Some(WindowPlacement::Floating { .. })
+            ) {
+                self.remember_floating(&handle);
+            } else {
+                floating_rect = self.place_floating(
+                    &handle,
+                    Some(window),
+                    bounds,
+                    (floating_rect.width, floating_rect.height),
+                    None,
+                );
+            }
+        }
         let axis = self
             .workspaces
             .active()
@@ -2778,6 +2877,7 @@ impl Ferese {
         let Some(id) = self.window_ids.get(window).copied() else {
             return;
         };
+        self.floating_resize_anchors.remove(&id);
         let rect = Rect::new(
             location.x as f64,
             location.y as f64,
@@ -3027,6 +3127,217 @@ impl Ferese {
         self.output_bounds_for(output)
     }
 
+    fn floating_outputs(&self) -> Vec<(String, Rect)> {
+        self.space
+            .outputs()
+            .filter_map(|output| self.output_bounds_for(output).map(|work| (output.name(), work)))
+            .collect()
+    }
+
+    fn floating_metadata(window: &Window) -> (Option<String>, Option<WlSurface>) {
+        window
+            .toplevel()
+            .map(|top| {
+                let app = with_states(top.wl_surface(), |states| {
+                    states
+                        .data_map
+                        .get::<XdgToplevelSurfaceData>()
+                        .and_then(|data| data.lock().ok().and_then(|data| data.app_id.clone()))
+                });
+                (app, top.parent())
+            })
+            .unwrap_or_default()
+    }
+
+    fn floating_obstacles(&self, exclude: Option<WindowId>, work: Rect) -> Vec<(u64, Rect)> {
+        self.space
+            .elements()
+            .filter_map(|window| {
+                let id = *self.window_ids.get(window)?;
+                if Some(id) == exclude {
+                    return None;
+                }
+                let workspace = self.workspaces.workspace_for_window(id)?;
+                let owner = self.output_workspaces.output_for_workspace(workspace)?;
+                if self.output_workspaces.active_workspace(owner) != Some(workspace) {
+                    return None;
+                }
+                if self
+                    .workspaces
+                    .workspace(workspace)?
+                    .fullscreen
+                    .is_some_and(|full| full != id)
+                    && !matches!(self.workspaces.placement(id), Some(WindowPlacement::Floating { .. }))
+                {
+                    return None;
+                }
+                let rect = self.presented_window_rect(id)?;
+                crate::floating::intersection(rect, work).map(|visible| (id.0, visible))
+            })
+            .collect()
+    }
+
+    fn place_floating(
+        &mut self,
+        window: &Window,
+        id: Option<WindowId>,
+        work: Rect,
+        size: (f64, f64),
+        overrides: Option<(Option<f64>, Option<f64>)>,
+    ) -> Rect {
+        use crate::floating::{centered, clamp_to_work, intersection, min_overlap};
+        let outputs = self.floating_outputs();
+        let output = outputs
+            .iter()
+            .find(|(_, area)| *area == work)
+            .map(|(name, _)| name.as_str())
+            .unwrap_or("unknown");
+        let (app, parent) = Self::floating_metadata(window);
+        let parent_rect = parent
+            .as_ref()
+            .and_then(|surface| {
+                self.window_ids.iter().find_map(|(window, id)| {
+                    window
+                        .toplevel()
+                        .is_some_and(|top| top.wl_surface() == surface)
+                        .then_some(*id)
+                })
+            })
+            .and_then(|parent| self.presented_window_rect(parent))
+            .and_then(|rect| intersection(rect, work));
+        let remembered = id
+            .and_then(|id| self.floating_window_memory.get(&id))
+            .or_else(|| {
+                if parent.is_none() {
+                    app.as_deref().and_then(|app| self.floating_memory.get(app))
+                } else {
+                    None
+                }
+            })
+            .filter(|entry| entry.output == output)
+            .and_then(|entry| entry.restore(&outputs));
+        let (width, height) = overrides.unwrap_or_default();
+        let constraints = window
+            .toplevel()
+            .map(|top| {
+                with_states(top.wl_surface(), |states| {
+                    let mut cache = states.cached_state.get::<SurfaceCachedState>();
+                    let state = cache.current();
+                    SizeConstraints {
+                        min_width: state.min_size.w.max(1) as f64,
+                        min_height: state.min_size.h.max(1) as f64,
+                        max_width: (state.max_size.w > 0).then_some(state.max_size.w as f64),
+                        max_height: (state.max_size.h > 0).then_some(state.max_size.h as f64),
+                    }
+                })
+            })
+            .unwrap_or_default();
+        let stored_size = if parent_rect.is_none() {
+            remembered.map(|r| (r.width, r.height)).unwrap_or(size)
+        } else {
+            size
+        };
+        let sized = constrained_floating_rect(
+            Rect::new(0., 0., width.unwrap_or(stored_size.0), height.unwrap_or(stored_size.1)),
+            constraints,
+        );
+        let dimensions = (sized.width, sized.height);
+        let rect = if let Some(parent) = parent_rect {
+            centered(dimensions, parent)
+        } else if let Some(mut rect) = remembered {
+            rect.width = dimensions.0;
+            rect.height = dimensions.1;
+            rect
+        } else {
+            let others = self
+                .floating_obstacles(id, work)
+                .into_iter()
+                .map(|(_, r)| r)
+                .collect::<Vec<_>>();
+            let anchor = id
+                .and_then(|id| self.floating_placement_anchors.get(&id).copied())
+                .or_else(|| {
+                    self.focused_window
+                        .filter(|focused| Some(*focused) != id)
+                        .and_then(|focused| self.presented_window_rect(focused))
+                })
+                .and_then(|rect| intersection(rect, work))
+                .unwrap_or(work);
+            min_overlap(
+                dimensions,
+                work,
+                &others,
+                (anchor.x + anchor.width / 2., anchor.y + anchor.height / 2.),
+            )
+            .unwrap_or_else(|| self.floating_cascade.place(output, work, dimensions))
+        };
+        clamp_to_work(rect, work)
+    }
+
+    pub(crate) fn remember_floating(&mut self, window: &Window) {
+        let Some(id) = self.window_ids.get(window).copied() else {
+            return;
+        };
+        let Some(WindowPlacement::Floating { rect }) = self.workspaces.placement(id) else {
+            return;
+        };
+        let (app, parent) = Self::floating_metadata(window);
+        if parent.is_some() {
+            return;
+        }
+        // A drag can finish on another output without changing workspace ownership.
+        let Some((output, work)) = self
+            .floating_outputs()
+            .into_iter()
+            .max_by(|(_, a), (_, b)| {
+                let area = |work| crate::floating::intersection(rect, work).map_or(0., |r| r.width * r.height);
+                area(*a).total_cmp(&area(*b))
+            })
+            .filter(|(_, work)| crate::floating::intersection(rect, *work).is_some())
+        else {
+            return;
+        };
+        let entry = crate::floating::Remembered::new(output, rect, work);
+        self.floating_window_memory.insert(id, entry.clone());
+        if let Some(app) = app {
+            self.floating_memory.save(app, entry);
+        }
+        if self.nested_backend.is_none()
+            && let Some(path) = crate::floating::Memory::path()
+            && let Err(error) = self.floating_save_worker.queue(path, &self.floating_memory)
+        {
+            tracing::warn!(%error,"could not queue floating window placement save");
+        }
+    }
+
+    pub(crate) fn floating_snap_lines(
+        &self,
+        window: &Window,
+        raw: Rect,
+    ) -> (Vec<crate::floating::SnapLine>, Vec<crate::floating::SnapLine>) {
+        let id = self.window_ids.get(window).copied();
+        let work = self
+            .floating_outputs()
+            .into_iter()
+            .max_by(|(_, a), (_, b)| {
+                let area = |work| crate::floating::intersection(raw, work).map_or(0., |r| r.width * r.height);
+                area(*a).total_cmp(&area(*b))
+            })
+            .filter(|(_, work)| crate::floating::intersection(raw, *work).is_some())
+            .map(|(_, work)| work)
+            .or_else(|| id.and_then(|id| self.floating_bounds_for_window(id)));
+        let Some(work) = work else {
+            return Default::default();
+        };
+        crate::floating::snap_lines(raw, work, &self.floating_obstacles(id, work))
+    }
+
+    pub(crate) fn floating_snap_bypassed(&self) -> bool {
+        self.seat
+            .get_keyboard()
+            .is_some_and(|keyboard| keyboard.modifier_state().shift)
+    }
+
     fn floating_bounds_for_window(&self, window: WindowId) -> Option<Rect> {
         let output_id = self
             .workspaces
@@ -3067,30 +3378,6 @@ impl Ferese {
 
         for output in outputs {
             layer_map_for_output(&output).arrange();
-        }
-    }
-
-    fn logical_window_rect(&mut self, window: WindowId, bounds: Rect) -> Option<Rect> {
-        let workspace = self.workspaces.workspace_for_window(window)?;
-        let fullscreen = self.workspaces.workspace(workspace)?.fullscreen;
-
-        if fullscreen == Some(window) {
-            return Some(bounds);
-        }
-
-        let constraints = self.window_constraints();
-        let focused = self.focused_window;
-        match self.workspaces.placement(window)? {
-            WindowPlacement::Tiled => self
-                .workspaces
-                .workspace_mut(workspace)?
-                .layout
-                .geometry_with_constraints(bounds, self.gap_config, &constraints, focused)
-                .ok()?
-                .geometry
-                .get(&window)
-                .copied(),
-            WindowPlacement::Floating { rect } => Some(rect),
         }
     }
 

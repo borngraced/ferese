@@ -8,6 +8,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Size};
 
 use crate::Ferese;
+use crate::floating::AxisSnap;
 
 pub struct MoveSurfaceGrab {
     pub start_data: GrabStartData<Ferese>,
@@ -15,6 +16,8 @@ pub struct MoveSurfaceGrab {
     pub initial_location: Point<i32, Logical>,
     pub initial_size: Size<i32, Logical>,
     pub finished: bool,
+    pub snap_x: AxisSnap,
+    pub snap_y: AxisSnap,
 }
 
 impl PointerGrab<Ferese> for MoveSurfaceGrab {
@@ -27,7 +30,24 @@ impl PointerGrab<Ferese> for MoveSurfaceGrab {
     ) {
         handle.motion(data, None, event);
         let location = self.initial_location.to_f64() + (event.location - self.start_data.location);
-        let location = location.to_i32_round();
+        let raw = ferese_layout::Rect::new(
+            location.x,
+            location.y,
+            self.initial_size.w as f64,
+            self.initial_size.h as f64,
+        );
+        let (xs, ys) = data.floating_snap_lines(&self.window, raw);
+        let location = if data.floating_snap_bypassed() {
+            self.snap_x.clear();
+            self.snap_y.clear();
+            location
+        } else {
+            Point::from((
+                self.snap_x.apply(raw.x, raw.width, &xs),
+                self.snap_y.apply(raw.y, raw.height, &ys),
+            ))
+        }
+        .to_i32_round();
         data.set_floating_window_geometry(&self.window, location, self.initial_size);
     }
 
@@ -45,6 +65,7 @@ impl PointerGrab<Ferese> for MoveSurfaceGrab {
         handle.button(data, event);
         if handle.current_pressed().is_empty() {
             self.finished = true;
+            data.remember_floating(&self.window);
             handle.unset_grab(self, data, event.serial, event.time, true);
         }
     }

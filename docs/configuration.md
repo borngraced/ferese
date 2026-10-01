@@ -334,8 +334,15 @@ Super+Shift+S area screenshot; Print Screen whole-screen screenshot;
 Super+Shift+E logout confirmation.
 
 Hold Super and drag a floating window with the left mouse button to move it.
-Hold Super and drag with the right mouse button to resize it from the nearest
-corner. These work even when an app has no title bar or resize border.
+Hold Super and drag with the right mouse button to resize. The starting position
+selects an edge or corner using a 3×3 grid; the center selects the nearest corner.
+The selected edges stay fixed for the whole drag. These work even when an app has
+no title bar or resize border.
+
+Moving and resizing snap to work-area edges and nearby visible window edges at
+10 logical pixels, then resist movement until 20 pixels from the attached edge.
+Window edges are eligible only when the windows overlap along the other axis,
+with a 10-pixel allowance. Hold Shift during a drag to bypass snapping.
 
 The screenshot shortcut runs `ferese-screenshot`: drag to select an area, or
 press Escape to cancel. Captures open in Satty for annotation. Press Enter to
@@ -374,8 +381,24 @@ window rules can override that behavior.
 At least one matcher is required; supplied matchers must all match. Rules apply
 in order, with later fields overriding earlier ones. Dimensions imply floating
 when `floating` is omitted. Floating apps without dimensions choose their own
-size and open centered on the output. Title changes do not trigger new rules;
-config rule changes apply to existing windows.
+size. Placement first centers transients on the visible part of their parent,
+then tries remembered geometry, then the position with least summed overlap.
+Equal-overlap candidates favor the focused window's center. If the size cannot
+fit, a per-output cascade advances by 32 logical pixels and wraps to the work-area
+origin. Placement respects layer-shell exclusive zones and client minimum sizes;
+an oversized window keeps its size with its top-left corner reachable.
+
+Successful move/resize completion saves ordinary floating geometry by app ID in
+`$XDG_STATE_HOME/ferese/floating.json` (normally `~/.local/state/ferese/floating.json`).
+The output name and work-area fractions preserve placement across resolution
+changes. Missing outputs and restores with less than 25% visibility are skipped.
+Saves run on a worker and pending updates coalesce to the latest snapshot;
+drag completion updates memory immediately without waiting for storage.
+Transient dialogs and cancelled drags do not update this memory. Floating → tiled
+→ floating also restores the window's last floating geometry. Nested previews
+keep drag memory in process and do not write the user's saved placements.
+
+Title changes do not trigger new rules; config rule changes apply to existing windows.
 
 ```kdl
 window-rule app-id="dev.ferese.Settings" floating=#true

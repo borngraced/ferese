@@ -6,6 +6,7 @@ mod cursor;
 mod daemon;
 mod dimming;
 mod effects;
+mod floating;
 mod gestures;
 mod grabs;
 mod handlers;

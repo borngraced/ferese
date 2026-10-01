@@ -90,9 +90,11 @@ class FloatingSizeTest(unittest.TestCase):
                         bounds = mask.getbbox()
                     self.assertIsNotNone(bounds, "client content was not rendered")
                     # The shader antialiases the outermost pixel even at radius zero.
-                    for actual, expected in zip((bounds[2] - bounds[0], bounds[3] - bounds[1]), (640, 480)):
+                    scale = first["scale"]
+                    expected_size = (round(640 * scale), round(480 * scale))
+                    for actual, expected in zip((bounds[2] - bounds[0], bounds[3] - bounds[1]), expected_size):
                         self.assertTrue(expected - 2 <= actual <= expected,
-                                        f"floating content cropped: {bounds}, expected 640x480")
+                                        f"floating content cropped: {bounds}, expected {expected_size}")
                 finally:
                     process.terminate()
                     try:

@@ -12,7 +12,6 @@ use smithay::input::pointer::{
     GrabStartData, MotionEvent, PointerHandle, RelativeMotionEvent,
 };
 use smithay::input::touch::{DownEvent, MotionEvent as TouchMotionEvent, UpEvent};
-use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge as XdgResizeEdge;
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, SERIAL_COUNTER, Serial};
@@ -693,22 +692,17 @@ impl Ferese {
                     initial_location: rect.loc,
                     initial_size: rect.size,
                     finished: false,
+                    snap_x: Default::default(),
+                    snap_y: Default::default(),
                 },
                 serial,
                 Focus::Clear,
             );
         } else {
-            let horizontal_right = location.x >= f64::from(rect.loc.x) + f64::from(rect.size.w) / 2.0;
-            let vertical_bottom = location.y >= f64::from(rect.loc.y) + f64::from(rect.size.h) / 2.0;
-            let edge = match (horizontal_right, vertical_bottom) {
-                (false, false) => XdgResizeEdge::TopLeft,
-                (true, false) => XdgResizeEdge::TopRight,
-                (false, true) => XdgResizeEdge::BottomLeft,
-                (true, true) => XdgResizeEdge::BottomRight,
-            };
+            let edge = ResizeEdge::at(location, rect);
             pointer.set_grab(
                 self,
-                ResizeSurfaceGrab::new(start_data, window, ResizeEdge::from(edge), rect),
+                ResizeSurfaceGrab::new(start_data, window, edge, rect),
                 serial,
                 Focus::Clear,
             );

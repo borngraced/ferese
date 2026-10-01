@@ -129,6 +129,8 @@ impl XdgShellHandler for Ferese {
                 initial_location: initial_rect.loc,
                 initial_size: initial_rect.size,
                 finished: false,
+                snap_x: Default::default(),
+                snap_y: Default::default(),
             },
             serial,
             Focus::Clear,

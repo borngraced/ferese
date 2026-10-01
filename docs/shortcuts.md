@@ -9,11 +9,14 @@ guide. Your saved bindings can override these defaults.
 | Action | Result |
 | --- | --- |
 | Super + left-button drag on a floating window | Move the window |
-| Super + right-button drag on a floating window | Resize from the nearest corner |
+| Super + right-button drag on a floating window | Resize the edge or corner selected by the starting 3×3 region |
+| Hold Shift during a move or resize | Bypass edge snapping |
 | Super + Shift + Space | Switch the focused window between tiled and floating |
 
 You can drag from inside the window; a title bar or resize border is not required.
 To place an app freely, toggle it to floating, then Super-drag it.
+The central resize region selects the nearest corner. Moving and resizing snap
+to nearby edges; continuing to drag beyond 20 logical pixels releases the snap.
 
 ## Focus, move, and resize
 

@@ -24,6 +24,29 @@ impl From<xdg_toplevel::ResizeEdge> for ResizeEdge {
 }
 
 impl ResizeEdge {
+    pub fn at(point: Point<f64, Logical>, rect: Rectangle<i32, Logical>) -> Self {
+        use xdg_toplevel::ResizeEdge::*;
+        let x = (point.x - rect.loc.x as f64) / rect.size.w.max(1) as f64;
+        let y = (point.y - rect.loc.y as f64) / rect.size.h.max(1) as f64;
+        let (mut left, mut right) = (x < 1. / 3., x > 2. / 3.);
+        let (mut top, mut bottom) = (y < 1. / 3., y > 2. / 3.);
+        if !(left || right || top || bottom) {
+            left = x < 0.5;
+            right = !left;
+            top = y < 0.5;
+            bottom = !top;
+        }
+        Self(match (left, right, top, bottom) {
+            (true, _, true, _) => TopLeft,
+            (_, true, true, _) => TopRight,
+            (true, _, _, true) => BottomLeft,
+            (_, true, _, true) => BottomRight,
+            (true, _, _, _) => Left,
+            (_, true, _, _) => Right,
+            (_, _, true, _) => Top,
+            _ => Bottom,
+        })
+    }
     fn left(self) -> bool {
         matches!(
             self.0,
@@ -64,6 +87,8 @@ pub struct ResizeSurfaceGrab {
     initial_rect: Rectangle<i32, Logical>,
     last_size: Size<i32, Logical>,
     finished: bool,
+    snap_x: crate::floating::AxisSnap,
+    snap_y: crate::floating::AxisSnap,
 }
 
 impl ResizeSurfaceGrab {
@@ -84,6 +109,8 @@ impl ResizeSurfaceGrab {
             initial_rect,
             last_size: initial_rect.size,
             finished: false,
+            snap_x: Default::default(),
+            snap_y: Default::default(),
         }
     }
 }
@@ -97,7 +124,32 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
         event: &MotionEvent,
     ) {
         handle.motion(data, None, event);
-        let delta = event.location - self.start_data.location;
+        let mut delta = event.location - self.start_data.location;
+        let initial = self.initial_rect;
+        let raw_left = initial.loc.x as f64 + if self.edges.left() { delta.x } else { 0. };
+        let raw_top = initial.loc.y as f64 + if self.edges.top() { delta.y } else { 0. };
+        let raw_right = (initial.loc.x + initial.size.w) as f64 + if self.edges.right() { delta.x } else { 0. };
+        let raw_bottom = (initial.loc.y + initial.size.h) as f64 + if self.edges.bottom() { delta.y } else { 0. };
+        let raw = ferese_layout::Rect::new(
+            raw_left,
+            raw_top,
+            (raw_right - raw_left).max(1.),
+            (raw_bottom - raw_top).max(1.),
+        );
+        let (xs, ys) = data.floating_snap_lines(&self.window, raw);
+        if data.floating_snap_bypassed() {
+            self.snap_x.clear();
+            self.snap_y.clear();
+        } else {
+            if self.edges.left() || self.edges.right() {
+                let moving = if self.edges.left() { raw_left } else { raw_right };
+                delta.x += self.snap_x.apply(moving, 0., &xs) - moving;
+            }
+            if self.edges.top() || self.edges.bottom() {
+                let moving = if self.edges.top() { raw_top } else { raw_bottom };
+                delta.y += self.snap_y.apply(moving, 0., &ys) - moving;
+            }
+        }
         let surface = self.window.toplevel().expect("managed window has a toplevel");
         let (minimum, maximum) = with_states(surface.wl_surface(), |states| {
             let mut cached = states.cached_state.get::<SurfaceCachedState>();
@@ -107,6 +159,21 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
         self.last_size = constrained_size(self.initial_rect.size, delta, self.edges, minimum, maximum);
         let rect = resized_rect(self.initial_rect, self.last_size, self.edges);
         data.set_floating_window_geometry(&self.window, rect.loc, rect.size);
+        if let Some(id) = data.window_ids.get(&self.window).copied() {
+            data.floating_resize_anchors.insert(
+                id,
+                (
+                    self.edges.left(),
+                    self.edges.top(),
+                    ferese_layout::Rect::new(
+                        initial.loc.x as f64,
+                        initial.loc.y as f64,
+                        initial.size.w as f64,
+                        initial.size.h as f64,
+                    ),
+                ),
+            );
+        }
 
         surface.with_pending_state(|state| {
             state.states.set(xdg_toplevel::State::Resizing);
@@ -129,6 +196,7 @@ impl PointerGrab<Ferese> for ResizeSurfaceGrab {
         handle.button(data, event);
         if handle.current_pressed().is_empty() {
             self.finished = true;
+            data.remember_floating(&self.window);
             handle.unset_grab(self, data, event.serial, event.time, true);
             let surface = self.window.toplevel().expect("managed window has a toplevel");
             surface.with_pending_state(|state| {
@@ -340,6 +408,31 @@ fn resized_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_grid_selects_edges_corners_and_center_fallback_once() {
+        use xdg_toplevel::ResizeEdge::*;
+        let rect = Rectangle::new((100, 50).into(), (300, 300).into());
+        for (x, y, edge) in [
+            (0.1, 0.1, TopLeft),
+            (0.5, 0.1, Top),
+            (0.9, 0.1, TopRight),
+            (0.1, 0.5, Left),
+            (0.5, 0.5, BottomRight),
+            (0.9, 0.5, Right),
+            (0.1, 0.9, BottomLeft),
+            (0.5, 0.9, Bottom),
+            (0.9, 0.9, BottomRight),
+            (0.4, 0.4, TopLeft),
+            (0.6, 0.4, TopRight),
+            (0.4, 0.6, BottomLeft),
+        ] {
+            assert_eq!(
+                ResizeEdge::at((100. + 300. * x, 50. + 300. * y).into(), rect),
+                ResizeEdge(edge)
+            );
+        }
+    }
 
     #[test]
     fn left_and_top_edges_invert_pointer_delta() {
