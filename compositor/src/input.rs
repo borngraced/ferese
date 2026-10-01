@@ -160,6 +160,7 @@ impl Ferese {
         match event {
             InputEvent::GestureSwipeBegin { event } => {
                 let pointer = seat.get_pointer().expect("seat has a pointer");
+                self.finish_workspace_swipe(None);
                 self.swipe.begin(
                     event.fingers(),
                     self.swipe_navigation_blocked()
@@ -185,6 +186,17 @@ impl Ferese {
             InputEvent::GestureSwipeUpdate { event } => {
                 if self.swipe.active() {
                     self.swipe.update(event.delta_x(), event.delta_y());
+                    if self.swipe_navigation_blocked() {
+                        self.finish_workspace_swipe(None);
+                    } else if let Some((direction, progress)) = self.swipe.preview()
+                        && let Some(BindingAction::SwitchRelativeWorkspace(next)) = self
+                            .bindings
+                            .iter()
+                            .find(|binding| binding.matches_swipe(self.swipe.fingers(), direction))
+                            .map(|binding| binding.action.clone())
+                    {
+                        self.preview_workspace_swipe(next, direction, progress);
+                    }
                 } else {
                     seat.get_pointer().expect("seat has a pointer").gesture_swipe_update(
                         self,
@@ -199,7 +211,10 @@ impl Ferese {
                 if self.swipe.active() {
                     let fingers = self.swipe.fingers();
                     let cancelled = event.cancelled() || self.swipe_navigation_blocked();
-                    if let Some(direction) = self.swipe.finish(cancelled)
+                    let direction = self.swipe.finish(cancelled);
+                    let handled = self.finish_workspace_swipe(direction) || self.swipe.preview_started();
+                    if !handled
+                        && let Some(direction) = direction
                         && let Some(action) = self
                             .bindings
                             .iter()
@@ -721,55 +736,48 @@ impl Ferese {
     }
 
     fn switch_relative_workspace(&mut self, next: bool, slide: Option<SwipeDirection>) {
-        let Some(output) = self.output_workspaces.focused_output() else {
-            return;
-        };
-        let Some(current) = self.output_workspaces.active_workspace(output) else {
-            return;
-        };
+        if let Some(workspace) = self.relative_workspace_target(next) {
+            if let Some(direction) = slide {
+                self.activate_managed_workspace_from_swipe(workspace, direction);
+            } else {
+                self.activate_managed_workspace(workspace);
+            }
+        }
+    }
+
+    pub(crate) fn relative_workspace_target(&mut self, next: bool) -> Option<ferese_core::WorkspaceId> {
+        let output = self.output_workspaces.focused_output()?;
+        let current = self.output_workspaces.active_workspace(output)?;
         let mut candidates = self.workspaces.ordered();
         candidates.retain(|workspace| {
             self.output_workspaces
                 .output_for_workspace(workspace.id)
                 .is_none_or(|owner| owner == output)
         });
-        let Some(index) = candidates.iter().position(|workspace| workspace.id == current) else {
-            return;
-        };
-        let index = if next {
+        let index = candidates.iter().position(|workspace| workspace.id == current)?;
+        let neighbor = if next {
             index.checked_add(1)
         } else {
             index.checked_sub(1)
         };
-        if let Some(workspace) = index
-            .and_then(|index| candidates.get(index))
-            .map(|workspace| workspace.id)
-        {
-            if let Some(direction) = slide {
-                self.activate_managed_workspace_from_swipe(workspace, direction);
-            } else {
-                self.activate_managed_workspace(workspace);
-            }
-        } else if next
+        if let Some(workspace) = neighbor.and_then(|index| candidates.get(index)) {
+            return Some(workspace.id);
+        }
+        if next
             && self.workspaces.workspace(current).is_some_and(|workspace| {
                 workspace.layout.window_ids().next().is_some() || !workspace.floating.is_empty()
             })
         {
-            let next_number = self
+            let number = self
                 .workspaces
                 .iter()
                 .filter_map(|workspace| workspace.name.parse::<u32>().ok())
                 .max()
                 .unwrap_or(1)
-                .checked_add(1);
-            if let Some(number) = next_number {
-                if let Some(direction) = slide {
-                    self.switch_workspace_from_swipe(number, direction);
-                } else {
-                    self.switch_workspace(number);
-                }
-            }
+                .checked_add(1)?;
+            return self.workspaces.ensure_numeric(number).ok();
         }
+        None
     }
 
     fn focus_window_at(&mut self, position: Point<f64, Logical>, serial: Serial, raise: bool) {

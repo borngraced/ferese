@@ -92,6 +92,17 @@ const CLOSE_ANIMATION_DURATION: Duration = Duration::from_millis(140);
 const WORKSPACE_SLIDE_DURATION: Duration = Duration::from_millis(220);
 const WORKSPACE_SLIDE_FIRST_FRAME: Duration = Duration::from_millis(8);
 
+fn workspace_swipe_is_current(
+    outputs: &OutputWorkspaceMap,
+    output: OutputId,
+    from: WorkspaceId,
+    to: WorkspaceId,
+) -> bool {
+    outputs.focused_output() == Some(output)
+        && outputs.active_workspace(output) == Some(from)
+        && outputs.output_for_workspace(to).is_none_or(|owner| owner == output)
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct SlideOffset {
     x: f64,
@@ -129,6 +140,8 @@ struct WorkspaceSlideItem {
 struct WorkspaceSlide {
     items: Vec<WorkspaceSlideItem>,
     elapsed: Duration,
+    held_progress: Option<f64>,
+    gesture: Option<(WorkspaceId, WorkspaceId, SwipeDirection)>,
 }
 
 impl WorkspaceSlide {
@@ -170,11 +183,33 @@ impl WorkspaceSlide {
         Self {
             items,
             elapsed: WORKSPACE_SLIDE_FIRST_FRAME,
+            held_progress: None,
+            gesture: None,
         }
     }
 
     fn progress(&self) -> f64 {
-        smoothstep((self.elapsed.as_secs_f64() / WORKSPACE_SLIDE_DURATION.as_secs_f64()).min(1.0))
+        self.held_progress.unwrap_or_else(|| {
+            smoothstep((self.elapsed.as_secs_f64() / WORKSPACE_SLIDE_DURATION.as_secs_f64()).min(1.0))
+        })
+    }
+
+    fn release(&mut self, committed: bool) {
+        let progress = self.progress();
+        for item in &mut self.items {
+            let position = item.start.between(item.target, progress);
+            if !committed && let Some((from, to, direction)) = self.gesture {
+                if item.workspace == from {
+                    item.target = SlideOffset::default();
+                } else if item.workspace == to {
+                    item.target = SlideOffset::for_swipe(direction).opposite();
+                }
+            }
+            item.start = position;
+        }
+        self.held_progress = None;
+        self.gesture = None;
+        self.elapsed = Duration::ZERO;
     }
 
     fn advance(&mut self, delta: Duration) -> bool {
@@ -1071,7 +1106,12 @@ impl Ferese {
         let Some(workspace) = self.workspaces.workspace_for_window(window) else {
             return (0.0, 0.0);
         };
-        let Some(output_id) = self.output_workspaces.output_for_workspace(workspace) else {
+        let Some(output_id) = self
+            .workspace_slides
+            .iter()
+            .find_map(|(output, slide)| slide.contains(workspace).then_some(*output))
+            .or_else(|| self.output_workspaces.output_for_workspace(workspace))
+        else {
             return (0.0, 0.0);
         };
         let Some(slide) = self.workspace_slides.get(&output_id) else {
@@ -1878,6 +1918,9 @@ impl Ferese {
         let mut active_animation = false;
         let mut completed_slides = Vec::new();
         for (output, slide) in &mut self.workspace_slides {
+            if slide.held_progress.is_some() {
+                continue;
+            }
             if slide.advance(delta) {
                 active_animation = true;
             } else {
@@ -2790,10 +2833,6 @@ impl Ferese {
         }
     }
 
-    pub(crate) fn switch_workspace_from_swipe(&mut self, index: u32, direction: SwipeDirection) {
-        self.switch_workspace_internal(index, Some(direction), false);
-    }
-
     fn switch_workspace_internal(
         &mut self,
         index: u32,
@@ -2833,6 +2872,70 @@ impl Ferese {
         self.restore_keyboard_focus();
     }
 
+    pub(crate) fn preview_workspace_swipe(&mut self, next: bool, direction: SwipeDirection, progress: f64) {
+        if !self.animations_enabled || self.overview.is_presenting() {
+            return;
+        }
+        if let Some((output, (from, to, _))) = self
+            .workspace_slides
+            .iter()
+            .find_map(|(output, slide)| slide.gesture.map(|gesture| (*output, gesture)))
+        {
+            if !workspace_swipe_is_current(&self.output_workspaces, output, from, to) {
+                self.finish_workspace_swipe(None);
+                return;
+            }
+            self.workspace_slides
+                .get_mut(&output)
+                .expect("gesture output exists")
+                .held_progress = Some(progress);
+            self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
+            self.cursor_redraw_pending = true;
+            return;
+        }
+        if self.swipe.preview_started() {
+            return;
+        }
+        let Some(output) = self.output_workspaces.focused_output() else {
+            return;
+        };
+        let Some(from) = self.output_workspaces.active_workspace(output) else {
+            return;
+        };
+        let Some(to) = self.relative_workspace_target(next) else {
+            return;
+        };
+        let previous = self.workspace_slides.remove(&output);
+        let mut slide = WorkspaceSlide::new(previous, from, to, direction);
+        slide.held_progress = Some(progress);
+        slide.gesture = Some((from, to, direction));
+        self.workspace_slides.insert(output, slide);
+        self.swipe.mark_preview_started();
+        self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
+        self.relayout();
+    }
+
+    pub(crate) fn finish_workspace_swipe(&mut self, direction: Option<SwipeDirection>) -> bool {
+        let Some((output, (from, to, expected))) = self
+            .workspace_slides
+            .iter()
+            .find_map(|(output, slide)| slide.gesture.map(|gesture| (*output, gesture)))
+        else {
+            return false;
+        };
+        let committed = direction == Some(expected)
+            && workspace_swipe_is_current(&self.output_workspaces, output, from, to)
+            && self.activate_managed_workspace_from_swipe(to, expected);
+        if !committed {
+            if let Some(slide) = self.workspace_slides.get_mut(&output) {
+                slide.release(false);
+            }
+            self.last_animation_tick = Instant::now();
+            self.relayout();
+        }
+        true
+    }
+
     fn update_workspace_slide(
         &mut self,
         requested_output: OutputId,
@@ -2841,7 +2944,18 @@ impl Ferese {
         workspace: WorkspaceId,
         slide_direction: Option<SwipeDirection>,
     ) {
-        let previous_slide = self.workspace_slides.remove(&owner);
+        let mut previous_slide = self.workspace_slides.remove(&owner);
+        if owner == requested_output
+            && let Some(slide) = previous_slide.as_mut()
+            && slide
+                .gesture
+                .is_some_and(|(_, to, direction)| to == workspace && Some(direction) == slide_direction)
+        {
+            slide.release(true);
+            self.last_animation_tick = Instant::now();
+            self.workspace_slides.insert(owner, previous_slide.unwrap());
+            return;
+        }
         if owner == requested_output
             && let (Some(from), Some(direction)) = (previous, slide_direction)
             && from != workspace
@@ -3189,6 +3303,31 @@ impl ClientData for ClientState {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn workspace_drag_cancels_when_focus_or_target_ownership_changes() {
+        let mut outputs = OutputWorkspaceMap::default();
+        let left = OutputId(1);
+        let right = OutputId(2);
+        let from = WorkspaceId(1);
+        let to = WorkspaceId(3);
+        outputs
+            .connect(left, OutputGeometry::new(0, 0, 1000, 1000), from)
+            .unwrap();
+        outputs
+            .connect(right, OutputGeometry::new(1000, 0, 1000, 1000), WorkspaceId(2))
+            .unwrap();
+        assert!(workspace_swipe_is_current(&outputs, left, from, to));
+        outputs.focus_output(right).unwrap();
+        assert!(!workspace_swipe_is_current(&outputs, left, from, to));
+        outputs.focus_output(left).unwrap();
+        outputs.assign_workspace(right, to).unwrap();
+        assert!(!workspace_swipe_is_current(&outputs, left, from, to));
+        assert_eq!(outputs.active_workspace(left), Some(from));
+        assert_eq!(outputs.output_for_workspace(to), Some(right));
+        outputs.switch_workspace(left, WorkspaceId(4)).unwrap();
+        assert!(!workspace_swipe_is_current(&outputs, left, from, WorkspaceId(5)));
+    }
+
+    #[test]
     fn selecting_a_window_activates_its_workspace_on_its_owner() {
         for assignment in [None, Some(OutputId(1)), Some(OutputId(2))] {
             let mut workspaces = WorkspaceSet::default();
@@ -3249,6 +3388,43 @@ mod tests {
         assert!(activate_window_workspace(&mut workspaces, &mut outputs, WindowId(2)));
         assert_eq!(workspaces.active().fullscreen, None);
         assert_eq!(workspaces.active().last_focused, Some(WindowId(2)));
+    }
+
+    #[test]
+    fn workspace_drag_tracks_progress_and_releases_without_a_jump() {
+        for committed in [false, true] {
+            let from = WorkspaceId(1);
+            let to = WorkspaceId(2);
+            let mut slide = WorkspaceSlide::new(None, from, to, SwipeDirection::Up);
+            slide.gesture = Some((from, to, SwipeDirection::Up));
+            slide.held_progress = Some(0.4);
+            slide.advance(Duration::from_secs(10));
+            assert_eq!(slide.offset(from, 1000.0, 1000.0), (0.0, -400.0));
+            assert_eq!(slide.offset(to, 1000.0, 1000.0), (0.0, 600.0));
+            slide.release(committed);
+            assert_eq!(slide.offset(from, 1000.0, 1000.0), (0.0, -400.0));
+            assert_eq!(slide.offset(to, 1000.0, 1000.0), (0.0, 600.0));
+            assert!(!slide.advance(WORKSPACE_SLIDE_DURATION));
+            let active = if committed { to } else { from };
+            assert_eq!(slide.offset(active, 1000.0, 1000.0), (0.0, 0.0));
+        }
+    }
+
+    #[test]
+    fn cancelling_a_chained_drag_returns_to_the_active_workspace() {
+        let first = WorkspaceId(1);
+        let second = WorkspaceId(2);
+        let third = WorkspaceId(3);
+        let mut previous = WorkspaceSlide::new(None, first, second, SwipeDirection::Up);
+        previous.advance(WORKSPACE_SLIDE_DURATION / 3);
+        let mut slide = WorkspaceSlide::new(Some(previous), second, third, SwipeDirection::Up);
+        slide.gesture = Some((second, third, SwipeDirection::Up));
+        slide.held_progress = Some(0.25);
+        let position = slide.offset(second, 1000.0, 1000.0);
+        slide.release(false);
+        assert_eq!(slide.offset(second, 1000.0, 1000.0), position);
+        slide.advance(WORKSPACE_SLIDE_DURATION);
+        assert_eq!(slide.offset(second, 1000.0, 1000.0), (0.0, 0.0));
     }
 
     #[test]

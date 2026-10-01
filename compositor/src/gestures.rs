@@ -1,4 +1,4 @@
-//! A swipe commits once on release; cancelled and ambiguous gestures do nothing.
+//! Navigation previews follow finger motion; actions commit once on release.
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(u32)]
@@ -14,6 +14,8 @@ pub(crate) struct Swipe {
     delta: Option<(f64, f64)>,
     threshold: f64,
     fingers: u32,
+    direction: Option<SwipeDirection>,
+    preview_started: bool,
 }
 
 impl Swipe {
@@ -21,6 +23,8 @@ impl Swipe {
         self.delta = ((3..=5).contains(&fingers) && !blocked).then_some((0.0, 0.0));
         self.threshold = f64::from(threshold);
         self.fingers = fingers;
+        self.direction = None;
+        self.preview_started = false;
     }
 
     pub fn fingers(&self) -> u32 {
@@ -35,36 +39,116 @@ impl Swipe {
         if let Some((x, y)) = &mut self.delta {
             *x += dx;
             *y += dy;
+            if self.direction.is_none() {
+                self.direction = dominant_direction(*x, *y, 6.0);
+            }
         }
+    }
+
+    pub fn mark_preview_started(&mut self) {
+        self.preview_started = true;
+    }
+
+    pub fn preview_started(&self) -> bool {
+        self.preview_started
+    }
+
+    pub fn preview(&self) -> Option<(SwipeDirection, f64)> {
+        let (x, y) = self.delta?;
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let direction = self.direction?;
+        let distance = match direction {
+            SwipeDirection::Left => -x,
+            SwipeDirection::Right => x,
+            SwipeDirection::Up => -y,
+            SwipeDirection::Down => y,
+        };
+        Some((direction, (distance / (self.threshold.max(1.0) * 2.0)).clamp(0.0, 1.0)))
     }
 
     pub fn finish(&mut self, cancelled: bool) -> Option<SwipeDirection> {
         let (x, y) = self.delta.take()?;
-        if cancelled || !x.is_finite() || !y.is_finite() {
+        if cancelled {
             return None;
         }
-        const DOMINANCE: f64 = 1.25;
-        if x.abs() >= self.threshold && x.abs() > y.abs() * DOMINANCE {
-            Some(if x < 0.0 {
-                SwipeDirection::Left
-            } else {
-                SwipeDirection::Right
-            })
-        } else if y.abs() >= self.threshold && y.abs() > x.abs() * DOMINANCE {
-            Some(if y < 0.0 {
-                SwipeDirection::Up
-            } else {
-                SwipeDirection::Down
-            })
+        dominant_direction(x, y, self.threshold).filter(|direction| Some(*direction) == self.direction)
+    }
+}
+
+fn dominant_direction(x: f64, y: f64, threshold: f64) -> Option<SwipeDirection> {
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    const DOMINANCE: f64 = 1.25;
+    if x.abs() >= threshold && x.abs() > y.abs() * DOMINANCE {
+        Some(if x < 0.0 {
+            SwipeDirection::Left
         } else {
-            None
-        }
+            SwipeDirection::Right
+        })
+    } else if y.abs() >= threshold && y.abs() > x.abs() * DOMINANCE {
+        Some(if y < 0.0 {
+            SwipeDirection::Up
+        } else {
+            SwipeDirection::Down
+        })
+    } else {
+        None
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_and_new_gestures_reset_preview_state() {
+        let mut swipe = Swipe::default();
+        swipe.begin(3, false, 80);
+        swipe.update(0.0, -200.0);
+        swipe.mark_preview_started();
+        assert_eq!(swipe.preview(), Some((SwipeDirection::Up, 1.0)));
+        assert_eq!(swipe.finish(true), None);
+        assert!(
+            swipe.preview_started(),
+            "release must suppress a second action after a preview"
+        );
+        assert_eq!(swipe.preview(), None);
+        swipe.begin(4, false, 80);
+        assert!(!swipe.preview_started());
+        swipe.update(-100.0, 0.0);
+        assert_eq!(swipe.finish(false), Some(SwipeDirection::Left));
+        swipe.begin(3, true, 80);
+        swipe.update(0.0, -200.0);
+        assert!(!swipe.active());
+        assert_eq!(swipe.finish(false), None);
+    }
+
+    #[test]
+    fn preview_tracks_motion_and_reversal_before_release() {
+        let mut swipe = Swipe::default();
+        swipe.begin(3, false, 80);
+        swipe.update(0.0, -40.0);
+        assert_eq!(swipe.preview(), Some((SwipeDirection::Up, 0.25)));
+        swipe.update(0.0, -40.0);
+        assert_eq!(swipe.preview(), Some((SwipeDirection::Up, 0.5)));
+        swipe.update(0.0, 60.0);
+        assert_eq!(swipe.preview(), Some((SwipeDirection::Up, 0.125)));
+        assert_eq!(swipe.finish(false), None);
+        assert_eq!(swipe.preview(), None);
+    }
+
+    #[test]
+    fn reversal_across_the_origin_cancels_instead_of_committing_another_axis() {
+        let mut swipe = Swipe::default();
+        swipe.begin(3, false, 80);
+        swipe.update(0.0, -40.0);
+        swipe.update(0.0, 160.0);
+        assert_eq!(swipe.preview(), Some((SwipeDirection::Up, 0.0)));
+        assert_eq!(swipe.finish(false), None);
+    }
 
     #[test]
     fn a_swipe_accumulates_motion_and_commits_only_once_on_release() {

@@ -83,10 +83,11 @@ for dependencies and custom screenshot commands.
 
 | Three-finger swipe | Action on release |
 | --- | --- |
-| Up / down | Next / previous workspace on this monitor |
+| Up / down | Drag to the next / previous workspace on this monitor; release to settle |
 | Left / right | Focus the window to the right / left |
 
-Short, diagonal, or cancelled swipes do nothing. Gestures can use the same actions
+Short or cancelled workspace swipes slide back. Diagonal swipes do not navigate.
+Gestures can use the same actions
 as keyboard bindings, including overview or moving a window. Four- and five-finger
 bindings are supported too.
 
