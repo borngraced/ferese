@@ -65,6 +65,11 @@ impl FereseShell {
         } else {
             anchor
         };
+        let height_limit = if kind == Menu::Notifications {
+            self.notification_history_height_limit()
+        } else {
+            kind.height_limit()
+        };
         let action = cosmic::surface::action::app_popup::<Self>(
             |_| Default::default(),
             move |_| SctkPopupSettings {
@@ -83,7 +88,7 @@ impl FereseShell {
                     size_limits: Limits::NONE
                         .min_width(kind.width())
                         .max_width(kind.width())
-                        .max_height(kind.height_limit()),
+                        .max_height(height_limit),
                     constraint_adjustment: 3, // slide X/Y, never flip above the bar
                     ..Default::default()
                 },

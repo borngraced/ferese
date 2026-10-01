@@ -4,6 +4,7 @@ use cosmic::widget::{column, scrollable};
 use super::*;
 
 const POPUP_WIDTH: u32 = 368;
+const HISTORY_MAX_HEIGHT: f32 = 620.0;
 
 fn popup_height(notice: &notifications::Notice, count: usize) -> u32 {
     let body = if notice.body.is_empty() && count == 1 { 0 } else { 22 };
@@ -13,39 +14,6 @@ fn popup_height(notice: &notifications::Notice, count: usize) -> u32 {
         0
     };
     76 + body + actions + if count > 1 { 4 } else { 0 }
-}
-
-fn history_height(center: &notifications::Center) -> u32 {
-    if center.entries.is_empty() {
-        return 280;
-    }
-    let groups = center.history_groups();
-    let card_height = |notice: &notifications::Notice, count| {
-        let wrapped_lines = if count == 1 {
-            notice
-                .body
-                .lines()
-                .map(|line| line.chars().count().div_ceil(40).max(1))
-                .sum::<usize>()
-        } else {
-            1
-        };
-        popup_height(notice, count) + wrapped_lines.saturating_sub(1) as u32 * 17 + if count > 1 { 12 } else { 0 }
-    };
-    let cards: u32 = groups
-        .iter()
-        .map(|group| {
-            if group.len() > 1 && center.expanded_apps.contains(&group[0].app) {
-                32 + group.iter().map(|notice| card_height(notice, 1)).sum::<u32>()
-                    + group.len().saturating_sub(1) as u32 * 8
-            } else {
-                card_height(group[0], group.len())
-            }
-        })
-        .sum();
-    // Header, DND row and section tools share the same compact rhythm as the
-    // cards. Long histories scroll; short histories do not reserve blank space.
-    (170 + cards + groups.len().saturating_sub(1) as u32 * 8).min(620)
 }
 
 fn blend(base: Color, foreground: Color, amount: f32) -> Color {
@@ -132,6 +100,18 @@ pub(super) struct NotificationSurface {
 }
 
 impl FereseShell {
+    pub(super) fn notification_history_height_limit(&self) -> f32 {
+        self.outputs
+            .iter()
+            .find(|output| output.bar == self.bar_surface_id)
+            .and_then(|output| output.size)
+            .map_or(HISTORY_MAX_HEIGHT, |(_, height)| {
+                let theme = self.config.theme;
+                (height as f32 - theme.bar_margin_top as f32 - theme.bar_height - 8.0 - 12.0).max(1.0)
+            })
+            .min(HISTORY_MAX_HEIGHT)
+    }
+
     pub(super) fn toggle_notification_history(&mut self) -> Task<Message> {
         if self.notifications.history_open {
             return self.close_menu();
@@ -738,13 +718,18 @@ impl FereseShell {
                 content = content.push(
                     scrollable(entries)
                         .direction(Direction::Vertical(Scrollbar::hidden()))
-                        .height(Length::Fill),
+                        .height(Length::Shrink),
                 );
             }
             let panel = container(content)
                 .id("ferese-blur-card")
                 .padding(16)
-                .height(history_height(&self.notifications) as f32)
+                .height(if count == 0 {
+                    Length::Fixed(280.0_f32.min(self.notification_history_height_limit()))
+                } else {
+                    Length::Shrink
+                })
+                .max_height(self.notification_history_height_limit())
                 .width(Length::Fill)
                 .class(theme::Container::custom(move |_| container::Style {
                     background: (!compositor_material).then_some(Background::Color(color(palette.surface_popover))),
