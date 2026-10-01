@@ -1,0 +1,186 @@
+use cosmic::iced::{Alignment, Color, Length};
+use cosmic::widget::{button, column, container, row};
+use cosmic::{Element, theme};
+
+use super::bar::status_icon;
+use super::controls::{control_card, level_meter, slider_row};
+use super::{Menu, MenuRows, MenuStyle};
+use crate::status::Action;
+use crate::{FereseShell, Message, ShellTheme, accented_icon, bar_icon, color_with_opacity, motion, shell_font, text};
+
+pub(super) fn view<'a>(shell: &'a FereseShell, mut rows: MenuRows<'a>, style: MenuStyle) -> MenuRows<'a> {
+    let MenuStyle {
+        theme,
+        primary,
+        muted,
+        opacity: p,
+    } = style;
+    if let Some(b) = &shell.status.battery {
+        let battery_color = if b.percent < shell.config.status.low_battery_threshold && b.status != "Charging" {
+            Color {
+                a: p,
+                ..Color::from_rgb8(230, 172, 90)
+            }
+        } else {
+            primary
+        };
+        rows = rows.push(
+            container(
+                row![
+                    text(format!("{}%", b.percent)).size(24).width(Length::Fill),
+                    accented_icon(
+                        status_icon(Menu::Battery, &shell.status).0,
+                        24,
+                        battery_color,
+                        color_with_opacity(theme.accent, p),
+                    ),
+                ]
+                .align_y(Alignment::Center),
+            )
+            .padding([2, 0])
+            .class(theme::Container::custom(move |_| container::Style {
+                text_color: Some(battery_color),
+                icon_color: Some(battery_color),
+                ..Default::default()
+            })),
+        );
+        rows = rows.push(level_meter(b.percent, battery_color, p));
+        rows = rows.push(
+            text(match b.status.as_str() {
+                "Charging" => "Connected to power",
+                "Discharging" => "Running on battery power",
+                "Full" => "Battery fully charged",
+                _ => "Battery status reported by the system",
+            })
+            .size(12)
+            .class(theme::Text::Color(muted)),
+        );
+    }
+    rows = rows.push(ferese_theme::menus::section_label("Power mode", shell_font(), muted));
+    if let Some(profiles) = &shell.status.power_profiles {
+        let mut modes = row::with_capacity(3).spacing(6).width(Length::Fill);
+        for (index, (label, icon, profile)) in [
+            ("Power saver", ferese_theme::icons::POWER_SAVER, "power-saver"),
+            ("Balanced", ferese_theme::icons::POWER_BALANCED, "balanced"),
+            ("Performance", ferese_theme::icons::POWER_PERFORMANCE, "performance"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if profiles.available[index] {
+                modes = modes.push(power_tile(label, icon, profile, profiles.active == profile, theme, p));
+            }
+        }
+        rows = rows.push(modes);
+    } else {
+        rows = rows.push(
+            text("Power Profiles service unavailable")
+                .size(12)
+                .class(theme::Text::Color(muted)),
+        );
+    }
+
+    let mut power = row::with_capacity(3).spacing(6).width(Length::Fill);
+    for (enabled, label, icon, action) in [
+        (
+            shell.status.reboot,
+            "Restart",
+            ferese_theme::icons::RESTART,
+            Action::Reboot,
+        ),
+        (
+            shell.status.poweroff,
+            "Power off",
+            ferese_theme::icons::POWER_OFF,
+            Action::Poweroff,
+        ),
+        (
+            shell.status.suspend,
+            "Suspend",
+            ferese_theme::icons::SUSPEND,
+            Action::Suspend,
+        ),
+    ] {
+        if enabled {
+            power = power.push(power_tile_action(label, icon, action, theme, p));
+        }
+    }
+
+    if shell.status.reboot || shell.status.poweroff || shell.status.suspend {
+        rows = rows.push(ferese_theme::menus::section_label("Power", shell_font(), muted));
+        rows = rows.push(power);
+    }
+    rows
+}
+
+pub(super) fn brightness<'a>(shell: &'a FereseShell, mut rows: MenuRows<'a>, style: MenuStyle) -> MenuRows<'a> {
+    let MenuStyle {
+        theme,
+        primary,
+        muted: _,
+        opacity: p,
+    } = style;
+    if let Some(value) = shell.status.brightness {
+        let brightness = column![
+            text("Brightness").size(13),
+            slider_row(
+                ferese_theme::icons::BRIGHTNESS,
+                value,
+                true,
+                primary,
+                color_with_opacity(theme.accent, p),
+                p,
+            )
+        ]
+        .spacing(6);
+        rows = rows.push(control_card(brightness.into(), primary, p));
+    }
+    rows
+}
+
+fn power_tile<'a>(
+    label: &'static str,
+    icon: &'static [u8],
+    profile: &'static str,
+    selected: bool,
+    theme: ShellTheme,
+    opacity: f32,
+) -> Element<'a, cosmic::Action<Message>> {
+    let foreground = color_with_opacity(if selected { theme.accent } else { theme.text_primary }, opacity);
+    let tile = container(
+        column![bar_icon(icon, 19, foreground), text(label).size(11)]
+            .spacing(3)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .center_x(Length::Fill);
+    let btn = button::custom(tile)
+        .width(Length::FillPortion(1))
+        .padding([8, 2])
+        .on_press(cosmic::Action::App(Message::Control(Action::PowerProfile(profile))));
+
+    motion::button(btn, foreground, selected, opacity)
+}
+
+fn power_tile_action<'a>(
+    label: &'static str,
+    icon: &'static [u8],
+    action: Action,
+    theme: ShellTheme,
+    opacity: f32,
+) -> Element<'a, cosmic::Action<Message>> {
+    let foreground = color_with_opacity(theme.text_primary, opacity);
+    let tile = container(
+        column![bar_icon(icon, 19, foreground), text(label).size(11)]
+            .spacing(3)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .center_x(Length::Fill);
+    let btn = button::custom(tile)
+        .width(Length::FillPortion(1))
+        .padding([8, 2])
+        .on_press(cosmic::Action::App(Message::ConfirmPower(action)));
+
+    motion::button(btn, foreground, false, opacity)
+}

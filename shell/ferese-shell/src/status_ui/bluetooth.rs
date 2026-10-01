@@ -1,0 +1,85 @@
+use cosmic::iced::Length;
+use cosmic::widget::column;
+use cosmic::{Element, theme};
+
+use super::bar::status_icon;
+use super::controls::status_summary;
+use super::{Menu, MenuRows, MenuStyle};
+use crate::status::Action;
+use crate::{FereseShell, Message, color_with_opacity, text};
+
+const DEVICE_LIST_HEIGHT: f32 = 180.0;
+
+fn device_list_height(count: usize) -> Option<f32> {
+    (count > 4).then_some(DEVICE_LIST_HEIGHT)
+}
+
+pub(super) fn view<'a>(shell: &'a FereseShell, mut rows: MenuRows<'a>, style: MenuStyle) -> MenuRows<'a> {
+    let MenuStyle {
+        theme,
+        primary,
+        muted,
+        opacity: p,
+    } = style;
+    if let Some(b) = &shell.status.bluetooth {
+        rows = rows.push(status_summary(
+            status_icon(Menu::Bluetooth, &shell.status).0,
+            if b.enabled {
+                "Bluetooth is on"
+            } else {
+                "Bluetooth is off"
+            },
+            if !b.enabled {
+                "Device connections are paused"
+            } else if b.devices.is_empty() {
+                "No devices connected"
+            } else {
+                "Your connected devices"
+            },
+            primary,
+            muted,
+            color_with_opacity(theme.accent, p),
+            p,
+            b.enabled,
+            Some((b.enabled, Action::Bluetooth(!b.enabled))),
+        ));
+
+        if b.enabled && !b.devices.is_empty() {
+            let mut devices = column::with_capacity(b.devices.len()).spacing(8);
+            for device in &b.devices {
+                devices = devices.push(
+                    column![
+                        text(device).size(14),
+                        text("Connected").size(12).class(theme::Text::Color(muted)),
+                    ]
+                    .spacing(3),
+                );
+            }
+
+            let list: Element<'_, cosmic::Action<Message>> = if let Some(height) = device_list_height(b.devices.len()) {
+                cosmic::iced::widget::scrollable(devices)
+                    .height(height)
+                    .width(Length::Fill)
+                    .into()
+            } else {
+                devices.into()
+            };
+            rows = rows.push(list);
+        }
+    }
+    rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn short_device_lists_shrink_and_long_lists_are_bounded() {
+        for count in 0..=4 {
+            assert_eq!(device_list_height(count), None);
+        }
+        for count in [5, 20, 1000] {
+            assert_eq!(device_list_height(count), Some(180.0));
+        }
+    }
+}
