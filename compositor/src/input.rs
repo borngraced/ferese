@@ -160,6 +160,7 @@ impl Ferese {
             InputEvent::GestureSwipeBegin { event } => {
                 let pointer = seat.get_pointer().expect("seat has a pointer");
                 self.finish_workspace_swipe(None);
+                self.finish_focus_swipe(None);
                 self.swipe.begin(
                     event.fingers(),
                     self.swipe_navigation_blocked()
@@ -187,14 +188,23 @@ impl Ferese {
                     self.swipe.update(event.delta_x(), event.delta_y());
                     if self.swipe_navigation_blocked() {
                         self.finish_workspace_swipe(None);
+                        self.finish_focus_swipe(None);
                     } else if let Some((direction, progress)) = self.swipe.preview()
-                        && let Some(BindingAction::SwitchRelativeWorkspace(next)) = self
+                        && let Some(action) = self
                             .bindings
                             .iter()
                             .find(|binding| binding.matches_swipe(self.swipe.fingers(), direction))
                             .map(|binding| binding.action.clone())
                     {
-                        self.preview_workspace_swipe(next, direction, progress);
+                        match action {
+                            BindingAction::SwitchRelativeWorkspace(next) => {
+                                self.preview_workspace_swipe(next, direction, progress);
+                            }
+                            BindingAction::Focus(focus @ (Direction::Left | Direction::Right)) => {
+                                self.preview_focus_swipe(focus, direction, progress);
+                            }
+                            _ => {}
+                        }
                     }
                 } else {
                     seat.get_pointer().expect("seat has a pointer").gesture_swipe_update(
@@ -211,7 +221,9 @@ impl Ferese {
                     let fingers = self.swipe.fingers();
                     let cancelled = event.cancelled() || self.swipe_navigation_blocked();
                     let direction = self.swipe.finish(cancelled);
-                    let handled = self.finish_workspace_swipe(direction) || self.swipe.preview_started();
+                    let workspace_handled = self.finish_workspace_swipe(direction);
+                    let focus_handled = self.finish_focus_swipe(direction);
+                    let handled = workspace_handled || focus_handled || self.swipe.preview_started();
                     if !handled
                         && let Some(direction) = direction
                         && let Some(action) = self

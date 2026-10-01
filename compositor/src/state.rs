@@ -131,6 +131,35 @@ impl SlideOffset {
     }
 }
 
+struct FocusSwipe {
+    workspace: WorkspaceId,
+    from: WindowId,
+    to: WindowId,
+    direction: Direction,
+    gesture_direction: SwipeDirection,
+    start: f64,
+    destination: f64,
+    progress: f64,
+}
+
+impl FocusSwipe {
+    fn position(&self) -> f64 {
+        let distance = self.destination - self.start;
+        // When both columns already fit, give bounded drag feedback and settle
+        // back to the unchanged viewport after selecting the next window.
+        let distance = if distance.abs() < 0.001 {
+            if self.direction == Direction::Right {
+                64.0
+            } else {
+                -64.0
+            }
+        } else {
+            distance
+        };
+        self.start + distance * self.progress
+    }
+}
+
 struct WorkspaceSlideItem {
     workspace: WorkspaceId,
     start: SlideOffset,
@@ -308,6 +337,7 @@ pub struct Ferese {
     pub(crate) backdrop_generation: u64,
     closing_windows: HashMap<WindowId, ClosingAnimation>,
     viewport_animations: HashMap<WorkspaceId, AnimatedValue>,
+    focus_swipe: Option<FocusSwipe>,
     workspace_slides: HashMap<OutputId, WorkspaceSlide>,
     scrolling_world_x: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
     viewport_coupled_widths: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
@@ -537,6 +567,7 @@ impl Ferese {
             backdrop_generation: 0,
             closing_windows: HashMap::new(),
             viewport_animations: HashMap::new(),
+            focus_swipe: None,
             workspace_slides: HashMap::new(),
             scrolling_world_x: HashMap::new(),
             viewport_coupled_widths: HashMap::new(),
@@ -1960,6 +1991,13 @@ impl Ferese {
 
     fn advance_animations_by(&mut self, delta: std::time::Duration) -> bool {
         let delta = delta.mul_f64(self.animation_speed);
+        if self
+            .focus_swipe
+            .as_ref()
+            .is_some_and(|swipe| !self.focus_swipe_is_current(swipe))
+        {
+            self.focus_swipe = None;
+        }
         let visible_workspaces = if self.viewport_animations.is_empty() {
             HashSet::new()
         } else {
@@ -2112,7 +2150,10 @@ impl Ferese {
             if blocked_workspaces.contains(workspace) {
                 continue;
             }
-            if self.animations_enabled {
+            if let Some(swipe) = self.focus_swipe.as_ref().filter(|swipe| swipe.workspace == *workspace) {
+                viewport.current = swipe.position();
+                viewport.velocity = 0.0;
+            } else if self.animations_enabled {
                 active_animation |= viewport.advance(delta, self.viewport_spring_config);
             } else {
                 viewport.snap();
@@ -2417,6 +2458,103 @@ impl Ferese {
 
     pub fn focus_direction(&mut self, direction: Direction) {
         self.focus_direction_with_slide(direction, false);
+    }
+
+    fn focus_swipe_is_current(&self, swipe: &FocusSwipe) -> bool {
+        self.animations_enabled
+            && !self.session_lock.active
+            && !self.overview.is_presenting()
+            && self.workspaces.active_id() == swipe.workspace
+            && self.focused_window == Some(swipe.from)
+            && self.workspaces.workspace(swipe.workspace).is_some_and(|workspace| {
+                workspace.fullscreen.is_none()
+                    && workspace.layout.contains(swipe.from)
+                    && workspace.layout.contains(swipe.to)
+            })
+    }
+
+    pub(crate) fn preview_focus_swipe(
+        &mut self,
+        direction: Direction,
+        gesture_direction: SwipeDirection,
+        progress: f64,
+    ) {
+        if self.focus_swipe.is_none() {
+            if self.swipe.preview_started() || !self.animations_enabled || self.overview.is_presenting() {
+                return;
+            }
+            let Some(from) = self.focused_window else { return };
+            let Some(bounds) = self.output_bounds() else { return };
+            let workspace = self.workspaces.active();
+            if workspace.fullscreen.is_some() || !matches!(workspace.layout, WorkspaceLayout::Scrolling(_)) {
+                return;
+            }
+            let Ok(Some(to)) = workspace.layout.directional_neighbor(from, direction, bounds) else {
+                return;
+            };
+            let workspace_id = workspace.id;
+            let start = self
+                .viewport_animations
+                .get(&workspace_id)
+                .map(|viewport| viewport.current)
+                .or_else(|| workspace.layout.viewport_x())
+                .unwrap_or(0.0);
+            let mut candidate = workspace.layout.clone();
+            if let WorkspaceLayout::Scrolling(layout) = &mut candidate
+                && layout.slide_focus_from(from, to).is_err()
+            {
+                return;
+            }
+            if candidate
+                .geometry_with_constraints(bounds, self.gap_config, &self.window_constraints(), Some(to))
+                .is_err()
+            {
+                return;
+            }
+            self.focus_swipe = Some(FocusSwipe {
+                workspace: workspace_id,
+                from,
+                to,
+                direction,
+                gesture_direction,
+                start,
+                destination: candidate.viewport_x().unwrap_or(start),
+                progress,
+            });
+            self.swipe.mark_preview_started();
+        }
+        if let Some(swipe) = &mut self.focus_swipe {
+            swipe.progress = progress;
+        }
+        self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
+        self.cursor_redraw_pending = true;
+    }
+
+    pub(crate) fn finish_focus_swipe(&mut self, direction: Option<SwipeDirection>) -> bool {
+        let Some(swipe) = self.focus_swipe.take() else {
+            return false;
+        };
+        let current = self.focus_swipe_is_current(&swipe);
+        // Release from the last input position even if no frame rendered that update.
+        if current && let Some(viewport) = self.viewport_animations.get_mut(&swipe.workspace) {
+            viewport.current = swipe.position();
+            viewport.velocity = 0.0;
+        }
+        let neighbor = self.output_bounds().and_then(|bounds| {
+            self.workspaces
+                .active()
+                .layout
+                .directional_neighbor(swipe.from, swipe.direction, bounds)
+                .ok()
+                .flatten()
+        });
+        self.last_animation_tick = Instant::now();
+        if current && direction == Some(swipe.gesture_direction) && neighbor == Some(swipe.to) {
+            self.focus_direction_from_swipe(swipe.direction);
+        } else {
+            self.relayout();
+        }
+        true
     }
 
     pub(crate) fn focus_direction_from_swipe(&mut self, direction: Direction) {
@@ -3675,6 +3813,56 @@ mod tests {
         assert!(activate_window_workspace(&mut workspaces, &mut outputs, WindowId(2)));
         assert_eq!(workspaces.active().fullscreen, None);
         assert_eq!(workspaces.active().last_focused, Some(WindowId(2)));
+    }
+
+    #[test]
+    fn focus_drag_reverses_and_settles_from_the_release_position() {
+        for (direction, gesture_direction, destination) in [
+            (Direction::Right, SwipeDirection::Left, 900.0),
+            (Direction::Left, SwipeDirection::Right, 100.0),
+        ] {
+            for committed in [false, true] {
+                let mut swipe = FocusSwipe {
+                    workspace: WorkspaceId(1),
+                    from: WindowId(1),
+                    to: WindowId(2),
+                    direction,
+                    gesture_direction,
+                    start: 500.0,
+                    destination,
+                    progress: 0.75,
+                };
+                let far = swipe.position();
+                swipe.progress = 0.25;
+                let near = swipe.position();
+                assert!((near - swipe.start).abs() < (far - swipe.start).abs());
+                let mut viewport = AnimatedValue::new(near);
+                viewport.set_target(if committed { destination } else { swipe.start });
+                assert_eq!(viewport.current, near);
+                for _ in 0..300 {
+                    viewport.advance(Duration::from_millis(16), SpringConfig::default());
+                }
+                assert_eq!(viewport.current, viewport.target);
+            }
+        }
+    }
+
+    #[test]
+    fn fully_visible_columns_still_give_bounded_horizontal_drag_feedback() {
+        for (direction, sign) in [(Direction::Right, 1.0), (Direction::Left, -1.0)] {
+            let swipe = FocusSwipe {
+                workspace: WorkspaceId(1),
+                from: WindowId(1),
+                to: WindowId(2),
+                direction,
+                gesture_direction: SwipeDirection::Left,
+                start: 0.0,
+                destination: 0.0,
+                progress: 0.5,
+            };
+            assert_eq!(swipe.position(), sign * 32.0);
+            assert_eq!(swipe.destination, 0.0);
+        }
     }
 
     #[test]

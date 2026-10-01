@@ -259,10 +259,11 @@ The touchpad device keys are booleans, all defaulting to `true`: `tap`,
 `natural-scroll` and `disable-while-typing`. These apply to DRM devices; nested
 previews use the host's physical input settings.
 
-Workspace swipes follow your fingers and settle when released. Up goes to the next workspace on the
+Workspace swipes and left/right window-focus swipes follow your fingers and settle
+when released. Up goes to the next workspace on the
 current monitor, down to the previous; left focuses the window to the right,
 and right focuses the window to the left. Workspace swipes skip workspaces owned
-by other monitors and stop at the first/last workspace. Short or cancelled workspace
+by other monitors and stop at the first/last workspace. Short or cancelled navigation
 swipes slide back; diagonal swipes do not navigate. Navigation pauses while locked, during
 window grabs, or when an application inhibits shortcuts.
 
