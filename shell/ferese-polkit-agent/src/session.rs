@@ -88,7 +88,7 @@ fn prompt_process(
         .arg("--prompt")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| e.to_string())?;
     let stdin = child.stdin.take().ok_or("Prompt has no input")?;

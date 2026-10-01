@@ -96,7 +96,7 @@ fn choose_identity(identities: &[Identity]) -> Option<u32> {
         .or_else(|| available.first().copied())
 }
 
-fn session_subject() -> Result<(String, HashMap<String, Value<'static>>), String> {
+fn process_subject() -> Result<(String, HashMap<String, Value<'static>>), String> {
     let stat = std::fs::read_to_string("/proc/self/stat").map_err(|error| error.to_string())?;
     let suffix = stat
         .rsplit_once(") ")
@@ -115,12 +115,53 @@ fn session_subject() -> Result<(String, HashMap<String, Value<'static>>), String
     Ok(("unix-process".into(), details))
 }
 
+async fn session_subject(
+    connection: &zbus::Connection,
+) -> Result<(String, HashMap<String, Value<'static>>), Box<dyn std::error::Error>> {
+    // Nested previews must not take over authentication for the host desktop.
+    if std::env::var("FERESE_SESSION_IMPORT_ENV").as_deref() == Ok("0") {
+        return process_subject().map_err(Into::into);
+    }
+    let manager = zbus::Proxy::new(
+        connection,
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+    )
+    .await?;
+    let path: zbus::zvariant::OwnedObjectPath = match manager.call("GetSessionByPID", &(std::process::id(),)).await {
+        Ok(path) => path,
+        Err(error) => {
+            // A launcher in the user manager can be outside the session cgroup
+            // while retaining the login session's environment.
+            let id = std::env::var("XDG_SESSION_ID").map_err(|_| error)?;
+            manager.call("GetSession", &(id,)).await?
+        }
+    };
+    let session = zbus::Proxy::new(
+        connection,
+        "org.freedesktop.login1",
+        path,
+        "org.freedesktop.login1.Session",
+    )
+    .await?;
+    let id: String = session.get_property("Id").await?;
+    Ok(login_session_subject(id))
+}
+
+fn login_session_subject(id: String) -> (String, HashMap<String, Value<'static>>) {
+    (
+        "unix-session".into(),
+        HashMap::from([("session-id".into(), Value::from(id))]),
+    )
+}
+
 async fn run_agent() -> Result<(), Box<dyn std::error::Error>> {
-    let subject = session_subject()?;
     let connection = zbus::connection::Builder::system()?
         .serve_at(AGENT_PATH, Agent::default())?
         .build()
         .await?;
+    let subject = session_subject(&connection).await?;
     let authority = zbus::Proxy::new(&connection, AUTHORITY, AUTHORITY_PATH, AUTHORITY_INTERFACE).await?;
     let locale = std::env::var("LANG").unwrap_or_default();
 
@@ -151,6 +192,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_agent_registers_for_the_login_session() {
+        let (kind, details) = login_session_subject("test-session".into());
+        assert_eq!(kind, "unix-session");
+        assert_eq!(details.len(), 1);
+        assert_eq!(details["session-id"], Value::from("test-session"));
+    }
+
+    #[test]
+    fn process_subject_has_required_identity_fields() {
+        let (kind, details) = process_subject().unwrap();
+        assert_eq!(kind, "unix-process");
+        assert_eq!(details["pid"], Value::from(std::process::id()));
+        assert_eq!(details["uid"], Value::from(unsafe { libc::geteuid() } as i32));
+        assert!(u64::try_from(details["start-time"].clone()).unwrap() > 0);
+    }
 
     #[test]
     fn chooses_current_identity_when_available() {

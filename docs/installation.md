@@ -93,6 +93,9 @@ and `previous` links for switching between releases during updates and rollback.
 
 Your configuration, other desktop sessions and existing PAM policy stay in place, while
 Ferese starts its authentication agent and portal services together with the session.
+The authentication agent registers for the login session, so requests from desktop
+apps use the Ferese dialog. Remove other polkit agents from your Ferese autostart
+configuration to avoid competing session registrations.
 
 ### Initial configuration
 
