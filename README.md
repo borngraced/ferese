@@ -19,12 +19,14 @@ Ferese is a window manager and desktop shell built together and configured in on
 
 ## Features
 
-- Arrange your windows in scrolling columns or tree layouts, keep some floating, and bring your workspaces together in overview
-- Move around with keyboard shortcuts and touchpad gestures you can change to suit you
-- Set up multiple monitors with fractional scaling
-- Make the whole desktop your own with six theme families, Light/Dark/Auto modes, custom KDL themes, wallpapers, blur and adjustable corners
-- Keep a clock and sticky notes on your desktop
-- Capture and edit screenshots with Satty, share a window or display, and record from the top bar
+- Scrolling columns, tree tiling and floating windows, with an overview of all your workspaces
+- Keyboard shortcuts and touchpad gestures you can remap
+- Multiple monitors with fractional scaling
+- Themes, wallpapers, blur and corners that update live, with Light/Dark/Auto modes and custom KDL themes
+- Desktop widgets, including a clock and sticky notes
+- Screenshots with annotation, plus screen sharing and built-in recording
+- A built-in lock screen
+- Integrated Settings and Control Center for configuring your desktop
 
 ## Install
 
