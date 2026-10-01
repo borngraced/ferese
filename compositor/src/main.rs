@@ -116,6 +116,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             state.backdrop_generation = state.backdrop_generation.wrapping_add(1);
         }
         // All input/Wayland callbacks have returned, releasing seat locks.
+        if state.focus_cycle.is_some() && (state.session_lock.active || state.input_capture.captures(1)) {
+            state.cancel_focus_cycle();
+        }
         // Coalesce cursor changes and redraw here, never inside cursor_image.
         if state.input_capture.restore_focus {
             state.restore_input_capture_focus();

@@ -250,6 +250,22 @@ commands and overview selection still select the requested workspace directly.
 Use `feresectl workspace-back-and-forth` for an explicit toggle, or bind
 `workspace-back-and-forth` to another key or gesture. The action takes no argument.
 
+`Super+BackSpace` focuses the last focused window, including windows on other
+workspaces or monitors. Repeating it toggles between the two most recently
+focused windows. Layer surfaces such as launchers do not replace this history.
+
+`Alt+Tab` previews windows in focus order using overview. Keep Alt held and press
+Tab to advance, or Shift+Tab to go backward. Release Alt to focus the selection;
+Escape cancels without changing focus. The order stays fixed until selection is
+committed. Closed windows are skipped and newly opened windows join the next
+cycle. Preview transitions follow the configured animation speed and reduced
+motion settings.
+
+Bind `focus-last-window`, `focus-mru-next`, or `focus-mru-previous` to customize
+these shortcuts. MRU bindings with Alt held preview until Alt is released;
+bindings without Alt, gestures, and the corresponding `feresectl` commands
+switch immediately. All three actions take no arguments.
+
 ## Input
 
 | `input` key | Type | Default | Meaning |
@@ -331,6 +347,8 @@ invalid. A disabled binding must omit `action` and `argument`.
 | `workspace`, `move-to-workspace` | Workspace number string, 1–255 |
 | `workspace-next`, `workspace-previous` | None; next/previous workspace on this monitor |
 | `workspace-back-and-forth` | None; return to the previous workspace on this monitor |
+| `focus-last-window` | None; return to the last focused window |
+| `focus-mru-next`, `focus-mru-previous` | None; cycle windows in focus order |
 | `none` | None; ignore this trigger |
 | `close`, `exit`, `toggle-maximized`, `toggle-fullscreen`, `toggle-layout`, `cycle-column-width`, `center-column`, `consume`, `expel`, `toggle-floating`, `toggle-overview` | None |
 
@@ -347,6 +365,7 @@ Super+Shift+1–9 move to workspace; Super+R width cycle; Super+C center;
 Super+[/] consume/expel; Super+F maximize; Super+Shift+F fullscreen;
 Super+M layout; Super+Shift+Space floating; Super+Tab overview;
 Super+Escape previous visited workspace;
+Super+BackSpace last focused window; Alt+Tab/Alt+Shift+Tab MRU switching;
 Super+Shift+S area screenshot; Print Screen whole-screen screenshot;
 Super+Shift+E logout confirmation.
 

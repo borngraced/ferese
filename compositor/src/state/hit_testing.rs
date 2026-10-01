@@ -184,6 +184,9 @@ impl Ferese {
         let Some(output_id) = self.output_id(output) else {
             return false;
         };
+        if self.focus_cycle.is_some() && self.overview.is_active() {
+            return self.overview.has_window_preview(window) && self.focus_preview_output(window) == Some(output_id);
+        }
         let workspace = self.workspaces.workspace_for_window(window);
         workspace == self.output_workspaces.active_workspace(output_id)
             || self

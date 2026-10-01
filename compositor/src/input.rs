@@ -275,6 +275,13 @@ impl Ferese {
                     SERIAL_COUNTER.next_serial(),
                     event.time_msec(),
                     |data, modifiers, keysym| {
+                        if data.focus_cycle.is_some() {
+                            if data.session_lock.active || data.input_capture.captures(1) {
+                                data.cancel_focus_cycle();
+                            } else if !modifiers.alt {
+                                data.finish_focus_cycle();
+                            }
+                        }
                         if state == KeyState::Released {
                             data.portal_shortcuts.release(keycode, Event::time(&event));
                             if data.intercepted_keys.remove(&keycode) {
@@ -285,6 +292,13 @@ impl Ferese {
                             return FilterResult::Forward;
                         }
                         let symbol = keysym.modified_sym().raw();
+                        if data.focus_cycle.is_some() && symbol == keysyms::KEY_Escape {
+                            if state == KeyState::Pressed {
+                                data.intercepted_keys.insert(keycode);
+                                data.cancel_focus_cycle();
+                            }
+                            return FilterResult::Intercept(());
+                        }
                         if data.input_capture.active() && emergency_shortcut_escape(symbol, modifiers.ctrl, modifiers.alt) {
                             if state == KeyState::Pressed {
                                 data.input_capture.disable_all();
@@ -362,6 +376,18 @@ impl Ferese {
                                 )
                                 .then(|| binding.action.clone())
                         });
+                        if data.focus_cycle.is_some()
+                            && state == KeyState::Pressed
+                            && !matches!(action, Some(BindingAction::FocusMru(_)))
+                            && !matches!(symbol,
+                                keysyms::KEY_Alt_L | keysyms::KEY_Alt_R
+                                | keysyms::KEY_Shift_L | keysyms::KEY_Shift_R
+                                | keysyms::KEY_Control_L | keysyms::KEY_Control_R
+                                | keysyms::KEY_Super_L | keysyms::KEY_Super_R)
+                        {
+                            data.intercepted_keys.insert(keycode);
+                            return FilterResult::Intercept(());
+                        }
                         let Some(action) = action else {
                             if state == KeyState::Pressed
                                 && data.portal_shortcuts.press(
@@ -379,7 +405,11 @@ impl Ferese {
 
                         if state == KeyState::Pressed {
                             data.intercepted_keys.insert(keycode);
-                            data.execute_binding(action);
+                            if let BindingAction::FocusMru(reverse) = action {
+                                data.cycle_focus(reverse, modifiers.alt);
+                            } else {
+                                data.execute_binding(action);
+                            }
                         }
 
                         FilterResult::Intercept(())
@@ -998,6 +1028,8 @@ impl Ferese {
             BindingAction::Close => self.close_focused_window(),
             BindingAction::Exit => self.request_logout_confirmation(),
             BindingAction::Focus(direction) => self.focus_direction(direction),
+            BindingAction::FocusLastWindow => self.focus_last_window(),
+            BindingAction::FocusMru(reverse) => self.cycle_focus(reverse, false),
             BindingAction::Move(direction) => self.move_direction(direction),
             BindingAction::Resize(direction) => self.resize_direction(direction),
             BindingAction::SwitchRelativeWorkspace(next) => self.switch_relative_workspace(next, None),

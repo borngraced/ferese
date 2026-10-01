@@ -647,6 +647,9 @@ impl Ferese {
                 .reload_config()
                 .map_err(|e| CommandError::new("invalid_config", e))?,
             "focus" => self.focus_direction(direction_arg(args)?),
+            "focus-last-window" => self.focus_last_window(),
+            "focus-mru-next" => self.cycle_focus(false, false),
+            "focus-mru-previous" => self.cycle_focus(true, false),
             "move" => self.move_direction(direction_arg(args)?),
             "resize" => self.resize_direction(direction_arg(args)?),
             "workspace" => self.switch_workspace(workspace_arg(args)?),

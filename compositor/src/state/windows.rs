@@ -388,6 +388,7 @@ impl Ferese {
         let Some(id) = self.window_ids.remove(window) else {
             return;
         };
+        self.focus_history.remove(id);
         self.window_geometry.remove(&id);
         self.resize_transactions.remove(&id);
         self.resize_snapshots.remove(&id);

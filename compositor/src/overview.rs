@@ -265,6 +265,19 @@ impl OverviewState {
         self.selected
     }
 
+    pub(crate) fn has_window_preview(&self, id: WindowId) -> bool {
+        self.presentations.contains_key(&id)
+    }
+
+    pub(crate) fn select_window(&mut self, id: WindowId) -> bool {
+        if !self.presentations.contains_key(&id) {
+            return false;
+        }
+        self.selection_workspace = None;
+        self.selected = Some(id);
+        true
+    }
+
     pub(crate) fn select_direction(&mut self, direction: Direction) -> bool {
         let Some(current) = self
             .selected
@@ -489,6 +502,9 @@ impl Ferese {
     }
 
     pub(crate) fn set_overview_active(&mut self, active: bool) {
+        if !active {
+            self.focus_cycle = None;
+        }
         if self.overview.is_active() == active {
             return;
         }
@@ -547,6 +563,13 @@ impl Ferese {
 
         let targets = self.overview_targets();
         self.overview.retarget(targets, self.animations_enabled());
+        if let Some(cycle) = self.focus_cycle.as_mut() {
+            let available = self.overview.presentations.keys().copied().collect::<Vec<_>>();
+            if let Some(id) = cycle.reconcile(&available) {
+                self.overview.select_window(id);
+            }
+            return;
+        }
         if self.overview.selection_workspace.is_some() {
             let id = self.workspaces.active_id();
             self.overview.selection_workspace = Some(id);
@@ -752,6 +775,22 @@ impl Ferese {
             let Some(bounds) = self.output_bounds_for(output) else {
                 continue;
             };
+            if let Some(cycle) = &self.focus_cycle {
+                let windows = cycle
+                    .windows()
+                    .iter()
+                    .filter_map(|id| {
+                        if self.focus_preview_output(*id) != Some(output_id) {
+                            return None;
+                        }
+                        Some((*id, self.window_geometry.get(id)?.visual.current))
+                    })
+                    .collect::<Vec<_>>();
+                for (id, target) in overview_layout(window_area(bounds), &windows) {
+                    targets.insert(id, (self.window_geometry[&id].visual.current, target));
+                }
+                continue;
+            }
             let Some(workspace) = self.workspaces.workspace(workspace) else {
                 continue;
             };
@@ -1051,6 +1090,25 @@ mod tests {
         let preview = layout[&WindowId(1)];
 
         assert!((preview.width / preview.height - source.width / source.height).abs() < 0.001);
+    }
+
+    #[test]
+    fn mru_selection_can_cross_workspace_selection_and_rejects_missing_previews() {
+        let first = WindowId(1);
+        let second = WindowId(2);
+        let normal = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let mut overview = OverviewState::default();
+        overview.enter(
+            HashMap::from([(first, (normal, normal)), (second, (normal, normal))]),
+            Some(first),
+            false,
+        );
+        overview.selection_workspace = Some(WorkspaceId(1));
+        assert!(overview.select_window(second));
+        assert_eq!(overview.selected(), Some(second));
+        assert_eq!(overview.selection_workspace, None);
+        assert!(!overview.select_window(WindowId(99)));
+        assert_eq!(overview.selected(), Some(second));
     }
 
     #[test]

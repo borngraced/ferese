@@ -62,6 +62,9 @@ Shortcuts** whenever you want to change a shortcut or gesture.
 | --- | --- |
 | Super + Enter | Open a terminal |
 | Super + H / J / K / L | Focus left / down / up / right |
+| Super + Backspace | Return to the last focused window |
+| Super + Escape | Toggle between the last two visited workspaces on this monitor |
+| Alt + Tab / Alt + Shift + Tab | Preview recent windows forward / backward; release Alt to select, Escape to cancel |
 | Super + F | Maximize the window |
 | Super + Shift + F | Toggle fullscreen |
 | Super + R | Cycle column width |

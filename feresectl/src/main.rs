@@ -159,7 +159,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(String, Value),
         | "reload-config"
         | "exit"
         | "request-logout"
-        | "workspace-back-and-forth" => {
+        | "workspace-back-and-forth"
+        | "focus-last-window"
+        | "focus-mru-next"
+        | "focus-mru-previous" => {
             if !positional.is_empty() {
                 return Err(format!("{command} does not accept arguments"));
             }
@@ -188,7 +191,7 @@ fn socket_path() -> Result<PathBuf, io::Error> {
 }
 
 fn usage() -> String {
-    "usage: feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl screenshot-window <window-id>\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl workspace-back-and-forth\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview|toggle-keybinding-guide>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
+    "usage: feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl screenshot-window <window-id>\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl workspace-back-and-forth\n       feresectl <focus-last-window|focus-mru-next|focus-mru-previous>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview|toggle-keybinding-guide>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
 }
 
 #[cfg(test)]
@@ -231,6 +234,10 @@ mod tests {
             ("workspace-back-and-forth".into(), json!({}))
         );
         assert!(parse_args(["workspace-back-and-forth".into(), "2".into()]).is_err());
+        for command in ["focus-last-window", "focus-mru-next", "focus-mru-previous"] {
+            assert_eq!(parse_args([command.into()]).unwrap(), (command.into(), json!({})));
+            assert!(parse_args([command.into(), "2".into()]).is_err());
+        }
     }
 
     #[test]

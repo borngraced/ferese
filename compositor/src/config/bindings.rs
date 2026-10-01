@@ -267,6 +267,14 @@ pub(super) fn parse_action(
             no_argument()?;
             Ok(BindingAction::WorkspaceBackAndForth)
         }
+        "focus-last-window" => {
+            no_argument()?;
+            Ok(BindingAction::FocusLastWindow)
+        }
+        "focus-mru-next" | "focus-mru-previous" => {
+            no_argument()?;
+            Ok(BindingAction::FocusMru(action == "focus-mru-previous"))
+        }
         "spawn" => {
             let command = required_argument()?;
             let argv = commands
@@ -369,6 +377,9 @@ pub(super) fn default_bindings() -> Vec<BindingConfig> {
         binding("Super+Tab", "toggle-overview", None),
         binding("Super+F1", "toggle-keybinding-guide", None),
         binding("Super+Escape", "workspace-back-and-forth", None),
+        binding("Super+BackSpace", "focus-last-window", None),
+        binding("Alt+Tab", "focus-mru-next", None),
+        binding("Alt+Shift+Tab", "focus-mru-previous", None),
         binding("Super+Shift+E", "exit", None),
     ];
 
@@ -433,6 +444,8 @@ pub enum BindingAction {
     Close,
     Exit,
     Focus(ferese_layout::Direction),
+    FocusLastWindow,
+    FocusMru(bool),
     Move(ferese_layout::Direction),
     Resize(ferese_layout::Direction),
     SwitchWorkspace(u8),
@@ -534,6 +547,13 @@ impl Binding {
             BindingAction::Close => "Close window".into(),
             BindingAction::Exit => "Log out (with confirmation)".into(),
             BindingAction::Focus(direction) => format!("Focus window {direction:?}"),
+            BindingAction::FocusLastWindow => "Return to last focused window".into(),
+            BindingAction::FocusMru(reverse) => if *reverse {
+                "Previous window in focus history"
+            } else {
+                "Next window in focus history"
+            }
+            .into(),
             BindingAction::Move(direction) => format!("Move window {direction:?}"),
             BindingAction::Resize(direction) => format!("Resize window {direction:?}"),
             BindingAction::SwitchWorkspace(index) => format!("Go to workspace {index}"),

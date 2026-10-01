@@ -58,9 +58,11 @@ impl XdgShellHandler for Ferese {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        // Hidden workspace windows are managed but unmapped from Space.
         let Some(window) = self
-            .space
-            .elements()
+            .window_ids
+            .keys()
+            .chain(self.space.elements())
             .find(|window| {
                 window
                     .toplevel()

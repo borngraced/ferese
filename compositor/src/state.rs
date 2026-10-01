@@ -1,5 +1,6 @@
 mod animation;
 mod floating;
+mod focus;
 mod hit_testing;
 mod layout;
 mod navigation;
@@ -363,6 +364,8 @@ pub struct Ferese {
     viewport_coupled_widths: HashMap<WindowId, (WorkspaceId, AnimatedValue)>,
     pending_column_width_cycles: HashSet<WindowId>,
     pub focused_window: Option<WindowId>,
+    pub(crate) focus_history: ferese_core::FocusHistory,
+    pub(crate) focus_cycle: Option<ferese_core::FocusCycle>,
     column_width_presets: Vec<ColumnWidth>,
     gap_config: GapConfig,
     pub(crate) input_settings: InputSettings,
@@ -595,6 +598,8 @@ impl Ferese {
             viewport_coupled_widths: HashMap::new(),
             pending_column_width_cycles: HashSet::new(),
             focused_window: None,
+            focus_history: Default::default(),
+            focus_cycle: None,
             column_width_presets: config.column_width_presets,
             gap_config: config.gap_config,
             input_settings: config.input_settings,
