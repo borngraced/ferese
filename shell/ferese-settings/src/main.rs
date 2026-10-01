@@ -1,3 +1,4 @@
+mod connections;
 mod form_controls;
 mod pages;
 mod theme_controls;
@@ -5,6 +6,7 @@ mod theme_controls;
 use theme_controls::*;
 
 mod displays;
+mod displays_ui;
 mod fonts;
 mod schema;
 mod store;
@@ -24,14 +26,33 @@ use store::{Edit, Snapshot, set};
 
 fn main() -> cosmic::iced::Result {
     let mut args = std::env::args_os().skip(1);
-    let path = match args.next() {
-        Some(arg) if arg == "--config" => PathBuf::from(args.next().expect("--config requires a path")),
-        Some(_) => {
-            eprintln!("Usage: ferese-settings [--config PATH]");
-            return Ok(());
+    let mut path = store::config_path();
+    let mut connection_tab = None;
+    while let Some(arg) = args.next() {
+        match arg.to_str() {
+            Some("--config") => {
+                let Some(value) = args.next() else {
+                    eprintln!("--config requires a path");
+                    return Ok(());
+                };
+                path = PathBuf::from(value);
+            }
+            Some("--page") => {
+                connection_tab = match args.next().as_deref().and_then(|s| s.to_str()) {
+                    Some("connections" | "wifi") => Some(connections::Tab::Wifi),
+                    Some("bluetooth") => Some(connections::Tab::Bluetooth),
+                    _ => {
+                        eprintln!("--page accepts connections, wifi, or bluetooth");
+                        return Ok(());
+                    }
+                };
+            }
+            _ => {
+                eprintln!("Usage: ferese-settings [--config PATH] [--page connections|wifi|bluetooth]");
+                return Ok(());
+            }
         }
-        None => store::config_path(),
-    };
+    }
     let path = path.canonicalize().unwrap_or(path);
     fonts::families();
     let initial = Snapshot::read(&path);
@@ -43,12 +64,19 @@ fn main() -> cosmic::iced::Result {
             .is_daemon(false)
             .antialiasing(true)
             .default_text_size(14.),
-        (path, initial),
+        (path, initial, connection_tab),
     )
 }
 
 #[derive(Clone, Debug)]
 enum Message {
+    Connections(connections::Input),
+    ConnectionsReady(Result<std::sync::Arc<connections::Client>, String>),
+    ConnectionsRefreshed(Box<connections::Snapshot>),
+    ConnectionFinished(Result<(), String>),
+    ConnectionsLeft,
+    SelectDisplay(String),
+    DisplayResolution(String, displays::Resolution),
     RefreshDisplays,
     DisplaysLoaded(Result<Vec<displays::Display>, String>),
     RefreshRate(String, displays::Mode, bool),
@@ -92,7 +120,10 @@ enum Message {
 }
 
 struct App {
+    connections: connections::State,
     displays: Vec<displays::Display>,
+    display_selection: Option<String>,
+    display_error: Option<String>,
     note_editors: HashMap<String, NoteEditor>,
     core: Core,
     path: PathBuf,
@@ -122,6 +153,14 @@ struct App {
     thumbnail_error: Option<String>,
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        if let Some(client) = &self.connections.client {
+            client.shutdown();
+        }
+    }
+}
+
 struct NoteEditor {
     content: widget::text_editor::Content<cosmic::Renderer>,
     revision: u64,
@@ -130,7 +169,7 @@ struct NoteEditor {
 
 impl cosmic::Application for App {
     type Executor = cosmic::executor::Default;
-    type Flags = (PathBuf, Result<Snapshot, String>);
+    type Flags = (PathBuf, Result<Snapshot, String>, Option<connections::Tab>);
     type Message = Message;
     const APP_ID: &'static str = "dev.ferese.Settings";
 
@@ -142,7 +181,7 @@ impl cosmic::Application for App {
         &mut self.core
     }
 
-    fn init(mut core: Core, (path, initial): Self::Flags) -> (Self, Task<Message>) {
+    fn init(mut core: Core, (path, initial, connection_tab): Self::Flags) -> (Self, Task<Message>) {
         core.window.show_headerbar = false;
 
         let status = if path == store::config_path() {
@@ -157,7 +196,13 @@ impl cosmic::Application for App {
         let font = ferese_theme::font(Some(&resolved.presented.tokens.typography.font_family));
         let native_palette = visuals::Palette::from_resolved(&resolved.presented);
         let mut app = Self {
+            connections: connections::State {
+                tab: connection_tab.unwrap_or_default(),
+                ..connections::State::default()
+            },
             displays: vec![],
+            display_selection: None,
+            display_error: None,
             note_editors: HashMap::new(),
             core,
             path,
@@ -169,7 +214,11 @@ impl cosmic::Application for App {
             saving_previous: String::new(),
             error,
             status,
-            page: Page::Appearance,
+            page: if connection_tab.is_some() {
+                Page::Connections
+            } else {
+                Page::Appearance
+            },
             search: String::new(),
             inputs: HashMap::new(),
             ranges: HashMap::new(),
@@ -193,15 +242,44 @@ impl cosmic::Application for App {
             .unwrap_or_else(Task::none);
 
         app.sync_notes();
-        (app, task)
+        let connections = if app.page == Page::Connections {
+            app.refresh_connections()
+        } else {
+            Task::none()
+        };
+        (app, Task::batch([task, connections]))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::RefreshDisplays => return self.load_displays(),
-            Message::DisplaysLoaded(result) => {
-                self.displays = result.unwrap_or_default();
+            Message::Connections(input) => return self.connections_input(input),
+            Message::ConnectionsReady(result) => return self.connections_ready(result),
+            Message::ConnectionsRefreshed(snapshot) => self.connections_refreshed(*snapshot),
+            Message::ConnectionFinished(result) => return self.connection_finished(result),
+            Message::ConnectionsLeft => {}
+            Message::SelectDisplay(key) => self.display_selection = Some(key),
+            Message::DisplayResolution(prefix, size) => {
+                let matcher = self.draft.string(&format!("{prefix}.match"), "");
+                let configured = self.draft.string(&format!("{prefix}.mode"), "");
+                let automatic = self.draft.boolean(&format!("{prefix}.auto_refresh"), false);
+                if let Some(display) = self
+                    .displays
+                    .iter()
+                    .find(|d| d.connector == matcher || d.identity == matcher)
+                    && let Some((mode, automatic)) = displays::change_resolution(display, &configured, size, automatic)
+                {
+                    self.inputs.remove(&format!("{prefix}.mode"));
+                    return self.edit_many(displays::edits(&prefix, mode, automatic));
+                }
             }
+            Message::RefreshDisplays => return self.load_displays(),
+            Message::DisplaysLoaded(result) => match result {
+                Ok(displays) => {
+                    self.displays = displays;
+                    self.display_error = None;
+                }
+                Err(error) => self.display_error = Some(error),
+            },
             Message::RefreshRate(prefix, mode, automatic) => {
                 self.inputs.remove(&format!("{prefix}.mode"));
                 return self.edit_many(displays::edits(&prefix, mode, automatic));
@@ -318,8 +396,21 @@ impl cosmic::Application for App {
                 self.error = Some(error);
             }
             Message::Page(page) => {
+                let leaving = self.page == Page::Connections && page != Page::Connections;
                 self.page = page;
                 self.search.clear();
+                if leaving {
+                    let cleanup = self.leave_connections();
+                    let load = match page {
+                        Page::Displays => self.load_displays(),
+                        Page::Wallpaper => self.load_thumbnail(),
+                        _ => Task::none(),
+                    };
+                    return Task::batch([cleanup, load]);
+                }
+                if page == Page::Connections {
+                    return self.refresh_connections();
+                }
                 if page == Page::Displays {
                     return self.load_displays();
                 }
@@ -603,6 +694,18 @@ impl cosmic::Application for App {
             } else {
                 cosmic::iced::Subscription::none()
             },
+            if self.page == Page::Connections {
+                cosmic::iced::time::every(std::time::Duration::from_secs(3))
+                    .map(|_| Message::Connections(connections::Input::Refresh))
+            } else {
+                cosmic::iced::Subscription::none()
+            },
+            if self.connections.busy == Some("Pairing…") {
+                cosmic::iced::time::every(std::time::Duration::from_millis(250))
+                    .map(|_| Message::Connections(connections::Input::PollPrompt))
+            } else {
+                cosmic::iced::Subscription::none()
+            },
         ])
     }
 
@@ -792,6 +895,7 @@ mod tests {
             (
                 PathBuf::from("/unused/settings-test.kdl"),
                 Snapshot::parse(String::new()),
+                None,
             ),
         )
         .0
@@ -904,7 +1008,7 @@ mod tests {
         assert!(app.status.contains("externally"));
         let _ = app.update(Message::ExternalConfig(Err("invalid KDL".into())));
         assert_eq!(app.current.source, external.source);
-        assert!(app.error.unwrap().contains("invalid KDL"));
+        assert!(app.error.as_ref().unwrap().contains("invalid KDL"));
     }
 
     #[test]

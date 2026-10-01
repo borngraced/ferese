@@ -65,7 +65,23 @@ bindings, rules, layouts, displays, widgets and login items update live.
 feresectl reload-config          # reload with error feedback
 ferese --check-config PATH       # validate without applying
 ferese-settings --config PATH   # edit a separate preview config
+ferese-settings --page wifi     # open Wi-Fi controls
+ferese-settings --page bluetooth # open Bluetooth controls
 ```
+
+**Settings → Connections** manages Wi-Fi through NetworkManager and Bluetooth
+through BlueZ. Wi-Fi supports scanning, joining open/WPA/WPA2/WPA3 networks,
+hidden networks, changing saved passwords, disconnecting, and forgetting saved
+networks. Enterprise and legacy Wi-Fi connections use an existing NetworkManager
+profile; their certificate and authentication setup is not edited here.
+
+Bluetooth supports adapter selection, power, discovery, pairing with PIN/passkey
+or confirmation prompts, connecting, disconnecting, trust, and forgetting devices.
+Discovery runs only when requested and stops after 30 seconds, when leaving
+Connections, or when Settings closes. Leaving the page or closing Settings also
+cancels pending pairing. Passwords are sent to NetworkManager, not saved in KDL;
+pairing keys are managed by BlueZ. These controls affect the system even when
+Settings is opened with a separate preview config.
 
 Defaults below are built-in defaults, not your personal or packaged overrides.
 Dimensions are logical pixels unless noted; numbers must be finite. Optional

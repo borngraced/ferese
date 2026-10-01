@@ -1,8 +1,8 @@
 use cosmic::widget::column;
 
 use super::{
-    Alignment, App, Element, Field, Kind, Length, Message, button, container, displays, fonts, row, set, slider,
-    text_input, visuals, widget,
+    Alignment, App, Element, Field, Kind, Length, Message, button, container, fonts, row, set, slider, text_input,
+    visuals, widget,
 };
 
 impl App {
@@ -16,9 +16,50 @@ impl App {
 
     pub(super) fn note(&self, text: &str) -> Element<'static, Message> {
         let palette = visuals::Palette::from_resolved(&self.resolved.presented);
-        self.label(text.to_owned(), 12.)
+        self.label(text.to_owned(), 11.)
             .class(cosmic::theme::Text::Color(palette.muted))
             .into()
+    }
+
+    pub(super) fn settings_button(
+        &self,
+        label: &str,
+        icon: &str,
+        message: Option<Message>,
+        selected: bool,
+    ) -> Element<'static, Message> {
+        let palette = visuals::Palette::from_resolved(&self.resolved.presented);
+        button::custom(
+            row([])
+                .spacing(5)
+                .align_y(Alignment::Center)
+                .push(visuals::action_icon(icon, palette.text))
+                .push(self.label(label.to_owned(), 12.)),
+        )
+        .name(label.to_owned())
+        .padding([4, 8])
+        .class(visuals::button_style(palette, selected))
+        .on_press_maybe(message)
+        .into()
+    }
+
+    pub(super) fn settings_icon_button(
+        &self,
+        label: &str,
+        icon: &str,
+        message: Option<Message>,
+    ) -> Element<'static, Message> {
+        let palette = visuals::Palette::from_resolved(&self.resolved.presented);
+        widget::tooltip(
+            button::custom(visuals::action_icon(icon, palette.text))
+                .name(label.to_owned())
+                .padding(4)
+                .class(visuals::button_style(palette, false))
+                .on_press_maybe(message),
+            self.label(label.to_owned(), 11.),
+            widget::tooltip::Position::Top,
+        )
+        .into()
     }
 
     pub(super) fn field(&self, mut field: Field) -> Element<'static, Message> {
@@ -35,7 +76,7 @@ impl App {
             }
         }
         let palette = visuals::Palette::from_resolved(&self.resolved.presented);
-        let mut labels = column([]).spacing(3).push(self.label(field.label.clone(), 13.));
+        let mut labels = column([]).spacing(2).push(self.label(field.label.clone(), 13.));
         if !field.description.is_empty() {
             labels = labels.push(
                 self.label(field.description.clone(), 11.)
@@ -60,27 +101,32 @@ impl App {
                 let selection_path = path.clone();
                 let commit = field.clone();
                 column([])
-                    .spacing(6)
+                    .spacing(4)
                     .push(
-                        cosmic::iced::widget::pick_list(
-                            families,
-                            selected.map(|index| families[index].clone()),
-                            move |family: String| {
-                                let value = if family == "Default font" {
-                                    String::new()
-                                } else {
-                                    family
-                                };
-                                Message::SelectFont(selection_path.clone(), value)
-                            },
+                        ferese_theme::controls::select(
+                            cosmic::iced::widget::pick_list(
+                                families,
+                                selected.map(|index| families[index].clone()),
+                                move |family: String| {
+                                    let value = if family == "Default font" {
+                                        String::new()
+                                    } else {
+                                        family
+                                    };
+                                    Message::SelectFont(selection_path.clone(), value)
+                                },
+                            )
+                            .font(self.font)
+                            .text_size(12)
+                            .width(225),
+                            palette,
                         )
-                        .font(self.font)
-                        .text_size(12)
                         .width(225),
                     )
                     .push(
                         text_input("Default font", value)
                             .font(self.font)
+                            .padding([4, 8])
                             .style(visuals::input_style(palette))
                             .on_input(move |value| Message::Draft(path.clone(), value))
                             .on_submit(move |_| Message::Commit(field.clone()))
@@ -118,7 +164,7 @@ impl App {
                 let release = field.clone();
                 row([])
                     .align_y(Alignment::Center)
-                    .spacing(14)
+                    .spacing(8)
                     .push(
                         slider(min..=max, value, move |value| Message::Range(field.clone(), value))
                             .step(step)
@@ -135,7 +181,7 @@ impl App {
                 for (key, label) in choices {
                     options = options.push(
                         button::custom(self.label(*label, 12.))
-                            .padding([6, 9])
+                            .padding([4, 8])
                             .class(visuals::button_style(palette, value == *key))
                             .on_press(Message::Change(set(&path, *key))),
                     );
@@ -158,6 +204,7 @@ impl App {
                 let swatch = visuals::color(&value, palette.accent);
                 let input = text_input(default, value)
                     .font(self.font)
+                    .padding([4, 8])
                     .style(visuals::input_style(palette))
                     .on_input(move |value| Message::Draft(path.clone(), value))
                     .on_submit(move |_| Message::Commit(field.clone()))
@@ -178,70 +225,14 @@ impl App {
         };
         container(
             row([])
-                .spacing(16)
+                .spacing(10)
                 .align_y(Alignment::Center)
                 .push(labels)
                 .push(control),
         )
-        .padding([12, 12])
+        .padding([7, 10])
         .width(Length::Fill)
         .class(visuals::surface(palette.card, 0.))
         .into()
-    }
-
-    pub(super) fn refresh_controls(&self, prefix: &str) -> Element<'_, Message> {
-        let matcher = self.draft.string(&format!("{prefix}.match"), "");
-        let configured = self.draft.string(&format!("{prefix}.mode"), "");
-        let automatic = self.draft.boolean(&format!("{prefix}.auto_refresh"), false);
-        let Some(display) = self
-            .displays
-            .iter()
-            .find(|display| display.connector == matcher || display.identity == matcher)
-        else {
-            return self.note("Connect this display to choose a supported refresh rate.");
-        };
-        let modes = displays::choices(display, &configured);
-        let mut controls = row([]).spacing(8).align_y(Alignment::Center);
-        for mode in &modes {
-            let selected = !automatic
-                && configured
-                    .split('@')
-                    .nth(1)
-                    .and_then(|rate| rate.parse::<f64>().ok())
-                    .is_some_and(|rate| (rate * 1000. - f64::from(mode.refresh)).abs() < 1.);
-            controls = controls.push(
-                ferese_theme::controls::text_button(
-                    mode.label(),
-                    self.font,
-                    visuals::Palette::from_resolved(&self.resolved.presented),
-                    selected,
-                )
-                .on_press(Message::RefreshRate(prefix.to_owned(), *mode, false)),
-            );
-        }
-        let supports_auto = modes.iter().any(|mode| (59_000..=61_000).contains(&mode.refresh));
-        if supports_auto && let Some(mode) = modes.last() {
-            controls = controls.push(
-                ferese_theme::controls::text_button(
-                    "Auto",
-                    self.font,
-                    visuals::Palette::from_resolved(&self.resolved.presented),
-                    automatic,
-                )
-                .on_press(Message::RefreshRate(prefix.to_owned(), *mode, true)),
-            );
-        }
-        let current = display.current.map(|mode| mode.label()).unwrap_or_else(|| "Off".into());
-        let profile = display.profile.as_deref().unwrap_or("automatic configuration");
-        column![
-            self.label("Refresh rate", 14.),
-            self.note(&format!("Current: {current} · active profile: {profile}")),
-            controls,
-            self.note(if supports_auto {
-                "Auto uses 60 Hz below 30% on battery. Normal refresh returns on AC or at 35%. Switching may briefly blank the display. Choosing a rate turns Auto off."
-            } else {
-                "This resolution has no supported 60 Hz mode for automatic switching."
-            }),
-        ].spacing(8).into()
     }
 }

@@ -13,10 +13,11 @@ pub enum Page {
     Shortcuts,
     Startup,
     Displays,
+    Connections,
 }
 
 impl Page {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::Appearance,
         Self::Accessibility,
         Self::Wallpaper,
@@ -30,6 +31,7 @@ impl Page {
         Self::Shortcuts,
         Self::Startup,
         Self::Displays,
+        Self::Connections,
     ];
 
     pub fn title(self) -> &'static str {
@@ -47,6 +49,7 @@ impl Page {
             Self::Shortcuts => "Shortcuts",
             Self::Startup => "Login items",
             Self::Displays => "Displays",
+            Self::Connections => "Connections",
         }
     }
 
@@ -65,6 +68,7 @@ impl Page {
             Self::Shortcuts => "Your most-used actions, a keystroke away.",
             Self::Startup => "Ready when you sign in.",
             Self::Displays => "A place for every screen.",
+            Self::Connections => "Wi-Fi networks and Bluetooth devices.",
         }
     }
 
@@ -89,12 +93,14 @@ impl Page {
             }
             Self::Startup => "M12 3v9 M7 5a9 9 0 1 0 10 0",
             Self::Displays => "M3 4h18v13H3z M12 17v4 M8 21h8",
+            Self::Connections => "M2 8a16 16 0 0 1 20 0 M5 12a11 11 0 0 1 14 0 M8 16a6 6 0 0 1 8 0 M12 20h.01",
         }
     }
 
     pub fn matches(self, query: &str) -> bool {
         let query = query.to_lowercase();
         self.title().to_lowercase().contains(&query)
+            || self.subtitle().to_lowercase().contains(&query)
             || fields(self).iter().any(|f| {
                 format!("{} {} {}", f.label, f.description, f.path)
                     .to_lowercase()
@@ -1112,6 +1118,6 @@ pub fn fields(page: Page) -> Vec<Field> {
             "Keep the shortcut guide until you are comfortable with Ferese.",
             true,
         )],
-        Page::Startup | Page::Displays => vec![],
+        Page::Startup | Page::Displays | Page::Connections => vec![],
     }
 }

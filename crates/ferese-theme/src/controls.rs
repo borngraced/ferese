@@ -70,11 +70,15 @@ pub fn navigation_style(p: Palette, selected: bool) -> theme::Button {
 
 pub fn settings_input(p: Palette) -> theme::TextInput {
     let appearance = move |focused: bool, hovered: bool| cosmic::widget::text_input::Appearance {
-        background: mix(p.sidebar, p.card, if hovered { 0.65 } else { 0.4 }).into(),
+        background: mix(p.card, p.text, if hovered { 0.06 } else { 0.035 }).into(),
         border_radius: p.radius.min(7.).into(),
-        border_width: if focused { 1. } else { 0. },
+        border_width: 1.,
         border_offset: None,
-        border_color: p.accent,
+        border_color: if focused {
+            p.accent
+        } else {
+            mix(p.card, p.text, if hovered { 0.26 } else { 0.18 })
+        },
         icon_color: Some(p.muted),
         text_color: Some(p.text),
         placeholder_color: p.muted,
@@ -91,16 +95,36 @@ pub fn settings_input(p: Palette) -> theme::TextInput {
     }
 }
 
+/// Give transparent native selectors the same resting surface as other controls.
+pub fn select<'a, M: 'a>(
+    content: impl Into<cosmic::Element<'a, M>>,
+    p: Palette,
+) -> container::Container<'a, M, cosmic::Theme> {
+    widget::container(content).class(theme::Container::custom(move |_| container::Style {
+        background: Some(mix(p.card, p.text, 0.035).into()),
+        border: Border {
+            width: 1.,
+            color: mix(p.card, p.text, 0.18),
+            radius: p.radius.min(7.).into(),
+        },
+        ..Default::default()
+    }))
+}
+
 fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button {
     let style = move |hover: bool, focused: bool| {
         let background = if selected {
             mix(p.sidebar, p.accent, if hover { 0.24 } else { 0.17 })
         } else if hover {
-            mix(p.card, crate::surface_shade(p.sidebar), 0.06)
+            if navigation {
+                mix(p.card, crate::surface_shade(p.sidebar), 0.06)
+            } else {
+                mix(p.card, p.text, 0.08)
+            }
         } else if navigation {
             p.sidebar
         } else {
-            p.card
+            mix(p.card, p.text, 0.035)
         };
         let (background, on) = if selected {
             crate::accent_pair(background, p.text)
@@ -113,8 +137,14 @@ fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button 
             text_color: Some(on),
             icon_color: Some(on),
             border_radius: p.radius.min(9.).into(),
-            border_width: if selected { 1. } else { 0. },
-            border_color: if selected { p.accent } else { Color::TRANSPARENT },
+            border_width: if selected || !navigation { 1. } else { 0. },
+            border_color: if selected {
+                p.accent
+            } else if !navigation {
+                mix(p.card, p.text, 0.18)
+            } else {
+                Color::TRANSPARENT
+            },
             outline_width: if focused { 2. } else { 0. },
             outline_color: p.accent,
             overlay: None,

@@ -6,12 +6,12 @@ use super::{
 impl App {
     pub(super) fn page_view(&self) -> Element<'_, Message> {
         let palette = visuals::Palette::from_resolved(&self.resolved.presented);
-        let mut sidebar = column([])
+        let sidebar = column([])
             .spacing(3)
             .push(
                 widget::mouse_area(
                     row([])
-                        .spacing(10)
+                        .spacing(8)
                         .align_y(Alignment::Center)
                         .push(visuals::brand_icon())
                         .push(self.label("Ferese", 16.))
@@ -29,11 +29,12 @@ impl App {
                     .size(12),
             )
             .push(widget::Space::new().height(8));
+        let mut navigation = column([]).spacing(3);
         for page in Page::ALL {
-            sidebar = sidebar.push(
+            navigation = navigation.push(
                 button::custom(
                     row([])
-                        .spacing(10)
+                        .spacing(8)
                         .align_y(Alignment::Center)
                         .push(visuals::icon(
                             page,
@@ -51,21 +52,21 @@ impl App {
                 .on_press(Message::Page(page)),
             );
         }
-        let sidebar = container(sidebar.push(widget::Space::new().height(Length::Fill)))
+        let sidebar = container(sidebar.push(scrollable(navigation).height(Length::Fill)))
             .width(204)
             .height(Length::Fill)
             .padding([20, 10])
             .class(visuals::surface(palette.sidebar, 0.));
-        let mut heading = row([]).align_y(Alignment::Center).spacing(20).push(
+        let mut heading = row([]).align_y(Alignment::Center).spacing(12).push(
             column([])
-                .spacing(5)
+                .spacing(3)
                 .push(self.label(
                     if self.search.is_empty() {
                         self.page.title()
                     } else {
                         "Search"
                     },
-                    24.,
+                    20.,
                 ))
                 .push(
                     self.label(
@@ -122,15 +123,18 @@ impl App {
                 "Auto follows the GTK/GNOME appearance preference".to_owned()
             };
             heading = heading.push(widget::tooltip(
-                ferese_theme::controls::text_button(label, self.font, palette, self.auto_details)
-                    .name("Automatic appearance settings")
-                    .on_press(Message::AutoDetails(!self.auto_details)),
+                self.settings_button(
+                    &label,
+                    "M12 3a9 9 0 1 0 0 18a9 9 0 0 0 0-18 M12 7v5l3 2",
+                    Some(Message::AutoDetails(!self.auto_details)),
+                    self.auto_details,
+                ),
                 self.label(explanation, 12.),
                 widget::tooltip::Position::Bottom,
             ));
         }
 
-        let mut body = column([]).spacing(12);
+        let mut body = column([]).spacing(6);
 
         if !self.search.is_empty() {
             if !Page::ALL.into_iter().any(|p| p.matches(&self.search)) {
@@ -140,12 +144,12 @@ impl App {
                 body = body.push(
                     button::custom(
                         column([])
-                            .spacing(5)
+                            .spacing(3)
                             .push(self.label(page.title(), 16.))
                             .push(self.label(page.subtitle(), 12.)),
                     )
                     .width(Length::Fill)
-                    .padding(20)
+                    .padding(10)
                     .class(visuals::button_style(palette, false))
                     .on_press(Message::Page(page)),
                 );
@@ -179,7 +183,7 @@ impl App {
                     body = body.push(
                         widget::image(handle.clone())
                             .width(Length::Fill)
-                            .height(190)
+                            .height(160)
                             .content_fit(cosmic::iced::ContentFit::Contain),
                     );
                 } else {
@@ -191,7 +195,12 @@ impl App {
                             .unwrap_or("Choose an image to preview your wallpaper.")
                     }));
                 }
-                body = body.push(button::standard("Choose image…").on_press(Message::PickWallpaper));
+                body = body.push(self.settings_button(
+                    "Choose image…",
+                    "M3 4h18v16H3z M3 15l5-5 5 5 3-3 5 5 M15 8h.01",
+                    Some(Message::PickWallpaper),
+                    false,
+                ));
             }
             let fields = schema::fields(self.page);
 
@@ -231,7 +240,7 @@ impl App {
                         } else {
                             "Expand advanced customization"
                         })
-                        .padding(12)
+                        .padding([7, 10])
                         .width(Length::Fill)
                         .class(visuals::button_style(palette, false))
                         .on_press(Message::AdvancedTheme(!self.advanced_theme)),
@@ -240,18 +249,24 @@ impl App {
                         group = group.push(self.theme_file_picker());
                     }
                 }
-                body = body.push(container(group).padding(8).class(visuals::surface(palette.card, 14.)));
+                body = body.push(container(group).padding(4).class(visuals::surface(palette.card, 14.)));
             }
 
             match self.page {
+                Page::Connections => body = body.push(self.connections_view()),
                 Page::LockScreen => {
                     body = body.push(self.note("Uses your wallpaper, shell colors, font and corner radius from Appearance. Changes apply when the locker or preview opens."));
-                    body = body.push(button::standard("Preview lock screen").on_press(Message::PreviewLock));
+                    body = body.push(self.settings_button(
+                        "Preview lock screen",
+                        "M7 10V7a5 5 0 0 1 10 0v3 M5 10h14v11H5z M12 14v3",
+                        Some(Message::PreviewLock),
+                        false,
+                    ));
                     body = body.push(self.note("The preview is an ordinary window and does not lock your session. Automatic locking is configured separately in Login items."));
                 }
                 Page::Desktop => {
                     let can_change_list = !self.saving && !self.note_editors.values().any(|e| e.dirty);
-                    body = body.push(self.label("Sticky notes", 16.));
+                    body = body.push(self.label("Sticky notes", 14.));
                     body = body.push(self.note("Edit here; notes save after you pause typing. Desktop cards stay behind windows and are click-through."));
                     for index in 0..self.draft.records("desktop_widgets.notes") {
                         let id = self.draft.string(&format!("desktop_widgets.notes.{index}.id"), "note");
@@ -267,19 +282,28 @@ impl App {
                                 widget::TextEditor::new(&editor.content)
                                     .height(160)
                                     .font(self.font)
-                                    .size(14.)
+                                    .size(13.)
                                     .on_action(move |action| Message::NoteAction(id.clone(), action)),
                             );
                         }
-                        group = group.push(button::destructive("Remove note").on_press_maybe(
+                        group = group.push(self.settings_icon_button(
+                            "Remove note",
+                            "M4 6h16 M9 6V3h6v3 M6 6l1 15h10l1-15 M10 10v7 M14 10v7",
                             can_change_list.then_some(Message::Remove("desktop_widgets.notes".into(), index)),
                         ));
-                        body = body.push(container(group).padding(12).class(visuals::surface(palette.card, 14.)));
+                        body = body.push(
+                            container(group)
+                                .padding([7, 10])
+                                .class(visuals::surface(palette.card, 14.)),
+                        );
                     }
                     body = body.push(
-                        button::standard("Add note").on_press_maybe(
+                        self.settings_button(
+                            "Add note",
+                            "M12 5v14 M5 12h14",
                             (can_change_list && self.draft.records("desktop_widgets.notes") < 32)
                                 .then_some(Message::AddNote),
+                            false,
                         ),
                     );
                 }
@@ -312,22 +336,31 @@ impl App {
                                 Kind::Toggle(true),
                             )))
                             .push(
-                                container(button::destructive("Remove item").on_press_maybe(
+                                container(self.settings_icon_button(
+                                    "Remove login item",
+                                    "M4 6h16 M9 6V3h6v3 M6 6l1 15h10l1-15 M10 10v7 M14 10v7",
                                     (!self.saving).then_some(Message::Remove("autostart".into(), index)),
                                 ))
-                                .padding(12),
+                                .padding([7, 10]),
                             );
-                        body = body.push(container(group).padding(8).class(visuals::surface(palette.card, 14.)));
+                        body = body.push(container(group).padding(4).class(visuals::surface(palette.card, 14.)));
                     }
                     body = body.push(
                         row([])
-                            .spacing(10)
+                            .spacing(8)
                             .push(
                                 text_input("Program and arguments", self.new_command.clone())
+                                    .font(self.font)
+                                    .size(12)
+                                    .padding([4, 8])
+                                    .style(visuals::input_style(palette))
                                     .on_input(Message::NewCommand),
                             )
-                            .push(button::standard("Add login item").on_press_maybe(
+                            .push(self.settings_button(
+                                "Add login item",
+                                "M12 5v14 M5 12h14",
                                 (!self.saving && !self.new_command.trim().is_empty()).then_some(Message::AddCommand),
+                                false,
                             )),
                     );
                 }
@@ -347,10 +380,16 @@ impl App {
                         });
 
                         if !exists {
-                            gestures = gestures.push(
-                                button::standard(label)
-                                    .on_press_maybe((!self.saving).then_some(Message::AddSwipe(keys))),
-                            );
+                            gestures = gestures.push(self.settings_icon_button(
+                                label,
+                                match keys {
+                                    "Swipe3Up" => "M12 20V4 M5 11l7-7 7 7",
+                                    "Swipe3Down" => "M12 4v16 M5 13l7 7 7-7",
+                                    "Swipe3Left" => "M20 12H4 M11 5l-7 7 7 7",
+                                    _ => "M4 12h16 M13 5l7 7-7 7",
+                                },
+                                (!self.saving).then_some(Message::AddSwipe(keys)),
+                            ));
                         }
                     }
 
@@ -378,64 +417,18 @@ impl App {
                                 "Command name, direction, or action argument.",
                                 "",
                             )));
-                        body = body.push(container(group).padding(8).class(visuals::surface(palette.card, 14.)));
+                        body = body.push(container(group).padding(4).class(visuals::surface(palette.card, 14.)));
                     }
                     if self.draft.records("bindings") == 0 {
                         body = body.push(self.note("You are using the built-in shortcuts. Add custom bindings in config.kdl; they will appear here after Reload."));
                     }
                 }
-                Page::Displays => {
-                    body = body.push(self.note("Display profiles update connected outputs live. Keep your config open for adding profiles or changing display positions."));
-                    for profile in 0..self.draft.records("output_profiles") {
-                        let prefix = format!("output_profiles.{profile}");
-                        body =
-                            body.push(self.label(self.draft.string(&format!("{prefix}.name"), "Display profile"), 17.));
-
-                        for output in 0..self.draft.records(&format!("{prefix}.outputs")) {
-                            let prefix = format!("{prefix}.outputs.{output}");
-                            let group = column([])
-                                .spacing(1)
-                                .push(self.refresh_controls(&prefix))
-                                .push(self.field(schema::text(
-                                    format!("{prefix}.match"),
-                                    "Display",
-                                    "Output name or matching pattern.",
-                                    "",
-                                )))
-                                .push(self.field(schema::text(
-                                    format!("{prefix}.mode"),
-                                    "Resolution",
-                                    "For example: 2560x1440@60. Leave unchanged to retain automatic selection.",
-                                    "",
-                                )))
-                                .push(self.field(schema::range(
-                                    format!("{prefix}.scale"),
-                                    "Scale",
-                                    "Logical size of text and controls.",
-                                    schema::RangeSpec {
-                                        default: 1.,
-                                        min: 0.75,
-                                        max: 3.,
-                                        step: 0.25,
-                                        suffix: "×",
-                                        integer: false,
-                                    },
-                                )));
-                            body = body.push(container(group).padding(8).class(visuals::surface(palette.card, 14.)));
-                        }
-                    }
-                    if self.draft.records("output_profiles") == 0 {
-                        body =
-                            body.push(self.note(
-                                "No saved profiles. Ferese currently configures connected displays automatically.",
-                            ));
-                    }
-                }
+                Page::Displays => body = body.push(self.displays_view()),
                 _ => {}
             }
         }
 
-        let mut content = column([]).spacing(16).push(
+        let mut content = column([]).spacing(8).push(
             widget::mouse_area(heading.width(Length::Fill))
                 .on_press(Message::DragWindow)
                 .interaction(cosmic::iced::mouse::Interaction::Grab),
@@ -444,7 +437,7 @@ impl App {
         if let Some(error) = &self.error {
             content = content.push(
                 container(self.label(error.clone(), 12.))
-                    .padding(12)
+                    .padding([7, 10])
                     .width(Length::Fill)
                     .class(visuals::surface(palette.error, 10.)),
             );
@@ -461,6 +454,7 @@ impl App {
                     })
                     .width(Length::Fill),
             )
+            .id(widget::Id::new("settings-content"))
             .direction(cosmic::iced::widget::scrollable::Direction::Vertical(
                 cosmic::iced::widget::scrollable::Scrollbar::new()
                     .width(10)
@@ -508,6 +502,11 @@ impl App {
                 self.label("Reload configuration", 11.),
                 widget::tooltip::Position::Top,
             ));
+        let footer: Element<'_, Message> = if self.page == Page::Connections {
+            self.note("Connections are managed by the system. Passwords are not saved in your Ferese config.")
+        } else {
+            footer.into()
+        };
         row([])
             .push(sidebar)
             .push(
