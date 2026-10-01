@@ -33,10 +33,14 @@ pub(super) fn append_material_surface(
             })
             .collect(),
     };
+    let targets: Vec<_> = targets
+        .into_iter()
+        .map(|(rect, radius)| (rect, RoundedRect::from_logical(rect, scale, f64::from(radius))))
+        .collect();
     let materials: Vec<_> = targets
         .iter()
         .enumerate()
-        .filter_map(|(index, (rect, radius))| {
+        .filter_map(|(index, (rect, corners))| {
             material_element(
                 state,
                 renderer,
@@ -44,7 +48,7 @@ pub(super) fn append_material_surface(
                 surface,
                 MaterialSurface {
                     geometry: *rect,
-                    radius: *radius,
+                    corners: *corners,
                     index,
                     capture_geometry: geometry,
                     alpha: 1.0,
@@ -57,16 +61,13 @@ pub(super) fn append_material_surface(
     }
     let material = (!materials.is_empty() && regions.is_none()).then_some(());
     let clip = material.as_ref().and_then(|_| {
+        let corners = targets.first()?.1;
         let mode = output.current_mode()?;
         let program = rounded_clip_program(state, renderer)?;
         Some((
             program.texture,
-            framebuffer_clip_rect(
-                geometry.to_physical_precise_round(scale),
-                mode.size,
-                output.current_transform().invert(),
-            ),
-            scaled_effect_value(radius, geometry, scale),
+            framebuffer_clip_rect(corners.rect, mode.size, output.current_transform().invert()),
+            corners.radius,
         ))
     });
     // Smithay element lists are front to back: content, material, shadow.
@@ -103,7 +104,7 @@ pub(super) fn append_material_surface(
 
 pub(super) struct MaterialSurface {
     pub geometry: Rectangle<i32, Logical>,
-    pub radius: f32,
+    pub corners: RoundedRect,
     pub index: usize,
     pub capture_geometry: Rectangle<i32, Logical>,
     pub alpha: f32,
@@ -118,7 +119,7 @@ pub(super) fn material_element(
 ) -> Option<(AnimatedWindowRenderElement, AnimatedWindowRenderElement)> {
     let MaterialSurface {
         geometry,
-        radius,
+        corners,
         index,
         capture_geometry,
         alpha,
@@ -139,7 +140,7 @@ pub(super) fn material_element(
         state.theme_settings.surface_base_color
     };
     let [red, green, blue, _] = background.0;
-    let radius = radius.min(geometry.size.w.min(geometry.size.h) as f32 * 0.5);
+    let radius = corners.radius;
     let [offset_y, shadow_blur, shadow_opacity] = material.shadow;
     let edge_bar = role == crate::effects::SemanticRole::Panel && radius == 0.0 && geometry.loc.y == 0;
     let shadow_opacity = if edge_bar {
@@ -148,8 +149,12 @@ pub(super) fn material_element(
         shadow_opacity * (state.theme_settings.shadow_opacity / 0.2) * f64::from(presentation_alpha)
     };
     let shadow_geometry = Rectangle::new(
-        (geometry.loc.x, geometry.loc.y + offset_y.round() as i32).into(),
-        geometry.size,
+        (
+            corners.rect.loc.x,
+            corners.rect.loc.y + (offset_y * scale).round() as i32,
+        )
+            .into(),
+        corners.rect.size,
     );
     let background_opacity = material.opacity;
     let blur = material_blur_radius(material.style, material.opacity, state.theme_settings.backdrop_blur);
@@ -169,15 +174,15 @@ pub(super) fn material_element(
         sample_geometry,
         sample_physical,
         sample_framebuffer: framebuffer_clip_rect(sample_physical, mode.size, transform),
-        radius: radius * scale as f32,
-        shadow_rect: framebuffer_clip_rect(shadow_geometry.to_physical_precise_round(scale), mode.size, transform),
+        radius,
+        shadow_rect: framebuffer_clip_rect(shadow_geometry, mode.size, transform),
         shadow_values: [(shadow_blur * scale) as f32, shadow_opacity as f32],
         shadow_bounds: shadow_bounds(geometry, offset_y, shadow_blur),
         geometry,
         tint: [red, green, blue, material.opacity * presentation_alpha],
         generation,
         opaque: material.opacity == 1.0 && presentation_alpha == 1.0 && radius == 0.0,
-        visible_framebuffer: framebuffer_clip_rect(geometry.to_physical_precise_round(scale), mode.size, transform),
+        visible_framebuffer: framebuffer_clip_rect(corners.rect, mode.size, transform),
     };
     let context = renderer.context_id().erased();
     let program = material_program(state, renderer)?;
@@ -281,7 +286,14 @@ pub(super) fn material_element(
         cached.parameters = parameters;
     }
     let background = match &cached.element {
-        MaterialElement::Fill(element) => element.clone().into(),
+        // Keep the shader's opaque regions when its canvas already has the
+        // shared edges. Animated modal geometry may need a physical override.
+        MaterialElement::Fill(element) if element.geometry(scale.into()) == corners.rect => element.clone().into(),
+        MaterialElement::Fill(element) => PhysicalShaderElement {
+            inner: element.clone(),
+            geometry: corners.rect,
+        }
+        .into(),
         MaterialElement::Blur(element) => element.clone().into(),
     };
     Some((background, cached.shadow.clone().into()))
@@ -300,7 +312,7 @@ pub(super) fn blur_program(state: &mut Ferese, renderer: &mut GlesRenderer) -> O
     if let Some(program) = state.blur_programs.get(&context) {
         return Some(program.clone());
     }
-    match renderer.compile_custom_texture_shader(BLUR_SHADER, &blur_uniform_names()) {
+    match renderer.compile_custom_texture_shader(&corner_shader(BLUR_SHADER), &blur_uniform_names()) {
         Ok(program) => {
             let program = BlurProgram(program);
             state.blur_programs.insert(context, program.clone());
@@ -372,7 +384,7 @@ pub(super) fn material_program(state: &mut Ferese, renderer: &mut GlesRenderer) 
         UniformName::new("shadow_rect", UniformType::_4f),
         UniformName::new("shadow_values", UniformType::_2f),
     ];
-    match renderer.compile_custom_pixel_shader(MATERIAL_SHADER, &uniforms) {
+    match renderer.compile_custom_pixel_shader(&corner_shader(MATERIAL_SHADER), &uniforms) {
         Ok(program) => {
             let program = MaterialProgram(program);
             state.material_programs.insert(context, program.clone());

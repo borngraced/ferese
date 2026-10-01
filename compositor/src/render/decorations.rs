@@ -29,9 +29,9 @@ pub(super) fn rounded_clip_program(state: &mut Ferese, renderer: &mut GlesRender
         UniformName::new("opacity", UniformType::_1f),
         UniformName::new("shadow_color", UniformType::_4f),
     ];
-    let texture = renderer.compile_custom_texture_shader(ROUNDED_TEXTURE_SHADER, &texture_uniforms);
-    let border = renderer.compile_custom_pixel_shader(ROUNDED_BORDER_SHADER, &border_uniforms);
-    let shadow = renderer.compile_custom_pixel_shader(WINDOW_SHADOW_SHADER, &shadow_uniforms);
+    let texture = renderer.compile_custom_texture_shader(&corner_shader(ROUNDED_TEXTURE_SHADER), &texture_uniforms);
+    let border = renderer.compile_custom_pixel_shader(&corner_shader(ROUNDED_BORDER_SHADER), &border_uniforms);
+    let shadow = renderer.compile_custom_pixel_shader(&corner_shader(WINDOW_SHADOW_SHADER), &shadow_uniforms);
     let compiled = texture.and_then(|texture| border.and_then(|border| shadow.map(|shadow| (texture, border, shadow))));
     match compiled {
         Ok((texture, border, shadow)) => {
@@ -44,7 +44,9 @@ pub(super) fn rounded_clip_program(state: &mut Ferese, renderer: &mut GlesRender
             Some(programs)
         }
         Err(error) => {
-            tracing::error!(%error, "failed to compile rounded-window shader");
+            if state.rounded_clip_warnings.insert(context) {
+                tracing::warn!(%error, "rounded-window shader unavailable; falling back to unrounded rendering");
+            }
             None
         }
     }
@@ -56,9 +58,8 @@ pub(super) fn window_border_element(
     renderer: &GlesRenderer,
     id: ferese_layout::WindowId,
     geometry: Rectangle<i32, Logical>,
-    physical: Rectangle<i32, Physical>,
+    corners: RoundedRect,
     scale: f64,
-    requested_radius: f64,
     requested_width: f64,
     color: [f32; 4],
     gradient: Option<crate::config::BorderGradient>,
@@ -68,7 +69,7 @@ pub(super) fn window_border_element(
     programs: &RoundedClipPrograms,
 ) -> Option<PhysicalShaderElement> {
     let mode = output.current_mode()?;
-    let width = scaled_effect_value(requested_width, geometry, scale);
+    let width = clamp_radius(requested_width * scale, corners.rect.size);
     if width == 0.0 {
         return None;
     }
@@ -77,7 +78,12 @@ pub(super) fn window_border_element(
         Some(gradient) => (
             gradient.from.0,
             gradient.to.0,
-            border_gradient_line(physical, mode.size, output.current_transform().invert(), gradient.angle),
+            border_gradient_line(
+                corners.rect,
+                mode.size,
+                output.current_transform().invert(),
+                gradient.angle,
+            ),
         ),
         None => (color, color, [0.0; 4]),
     };
@@ -85,7 +91,7 @@ pub(super) fn window_border_element(
         Some(g) => (
             g.from.0,
             g.to.0,
-            border_gradient_line(physical, mode.size, output.current_transform().invert(), g.angle),
+            border_gradient_line(corners.rect, mode.size, output.current_transform().invert(), g.angle),
         ),
         None => (
             state.theme_settings.accent_color.0,
@@ -95,8 +101,8 @@ pub(super) fn window_border_element(
     };
     let parameters = BorderParameters {
         geometry,
-        clip_rect: framebuffer_clip_rect(physical, mode.size, output.current_transform().invert()),
-        radius: scaled_effect_value(requested_radius, geometry, scale),
+        clip_rect: framebuffer_clip_rect(corners.rect, mode.size, output.current_transform().invert()),
+        radius: corners.radius,
         width,
         color: color_with_alpha(from, opacity),
         color_to: color_with_alpha(to, opacity),
@@ -137,7 +143,7 @@ pub(super) fn window_border_element(
 
     Some(PhysicalShaderElement {
         inner: cached.element.clone(),
-        geometry: physical,
+        geometry: corners.rect,
     })
 }
 
@@ -162,9 +168,7 @@ pub(super) fn window_tint_element(
     renderer: &mut GlesRenderer,
     id: ferese_layout::WindowId,
     geometry: Rectangle<i32, Logical>,
-    physical: Rectangle<i32, Physical>,
-    scale: f64,
-    radius: f64,
+    corners: RoundedRect,
     color: [f32; 4],
     resize_fill: bool,
     output: &Output,
@@ -181,8 +185,8 @@ pub(super) fn window_tint_element(
     let program = material_program(state, renderer)?;
     let parameters = BorderParameters {
         geometry,
-        clip_rect: framebuffer_clip_rect(physical, mode.size, output.current_transform().invert()),
-        radius: scaled_effect_value(radius, geometry, scale),
+        clip_rect: framebuffer_clip_rect(corners.rect, mode.size, output.current_transform().invert()),
+        radius: corners.radius,
         width: 0.0,
         color,
         color_to: color,
@@ -230,7 +234,7 @@ pub(super) fn window_tint_element(
     }
     Some(PhysicalShaderElement {
         inner: cached.element.clone(),
-        geometry: physical,
+        geometry: corners.rect,
     })
 }
 
@@ -240,9 +244,8 @@ pub(super) fn window_shadow_element(
     renderer: &GlesRenderer,
     id: ferese_layout::WindowId,
     geometry: Rectangle<i32, Logical>,
-    physical: Rectangle<i32, Physical>,
+    corners: RoundedRect,
     scale: f64,
-    requested_radius: f64,
     offset_y: f64,
     blur: f64,
     opacity: f64,
@@ -256,15 +259,19 @@ pub(super) fn window_shadow_element(
     }
 
     let shadow_geometry = Rectangle::new(
-        (physical.loc.x, physical.loc.y + (offset_y * scale).round() as i32).into(),
-        physical.size,
+        (
+            corners.rect.loc.x,
+            corners.rect.loc.y + (offset_y * scale).round() as i32,
+        )
+            .into(),
+        corners.rect.size,
     );
     let bounds = shadow_bounds(geometry, offset_y, blur);
     let parameters = ShadowParameters {
         blur: (blur * scale) as f32,
         bounds,
         shadow_rect: framebuffer_clip_rect(shadow_geometry, mode.size, output.current_transform().invert()),
-        radius: scaled_effect_value(requested_radius, geometry, scale),
+        radius: corners.radius,
         opacity: opacity as f32,
         color,
     };
@@ -327,21 +334,12 @@ pub(super) fn shadow_bounds(geometry: Rectangle<i32, Logical>, offset_y: f64, bl
     )
 }
 
-pub(super) fn scaled_effect_value(requested: f64, geometry: Rectangle<i32, Logical>, scale: f64) -> f32 {
-    requested
-        .min(f64::from(geometry.size.w.min(geometry.size.h)) / 2.0)
-        .max(0.0) as f32
-        * scale as f32
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn rounded_window_elements(
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
-    constrain: Rectangle<i32, Logical>,
-    physical_constrain: Rectangle<i32, Physical>,
+    corners: RoundedRect,
     scale: f64,
-    requested_radius: f64,
     alpha: f32,
     clip_changed: bool,
     output: &Output,
@@ -355,11 +353,12 @@ pub(super) fn rounded_window_elements(
         return Vec::new();
     };
 
+    let physical_constrain = corners.rect;
     let geometry = window.geometry();
     let reference = geometry.to_physical_precise_round(scale);
     let location = physical_constrain.loc - geometry.loc.to_physical_precise_round(scale);
     let clip = framebuffer_clip_rect(physical_constrain, mode.size, output.current_transform().invert());
-    let radius = scaled_effect_value(requested_radius, constrain, scale);
+    let radius = corners.radius;
     let surface = toplevel.wl_surface();
 
     let mut content = PopupManager::popups_for_surface(surface)

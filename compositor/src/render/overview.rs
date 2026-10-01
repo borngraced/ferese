@@ -15,12 +15,12 @@ pub(super) fn overview_chrome_element(
 ) -> Option<PhysicalShaderElement> {
     let output_id = state.output_id(output)?;
     let geometry = rounded_visual_rect(rect, output_geometry.loc);
-    let physical = physical_rect(rect, output_geometry.loc, scale);
+    let corners = RoundedRect::new(rect, output_geometry.loc, scale, radius);
     let mode = output.current_mode()?;
     let parameters = BorderParameters {
         geometry,
-        clip_rect: framebuffer_clip_rect(physical, mode.size, output.current_transform().invert()),
-        radius: (radius * scale) as f32,
+        clip_rect: framebuffer_clip_rect(corners.rect, mode.size, output.current_transform().invert()),
+        radius: corners.radius,
         width: (width * scale) as f32,
         color,
         color_to: color,
@@ -79,7 +79,7 @@ pub(super) fn overview_chrome_element(
     }
     Some(PhysicalShaderElement {
         inner: cached.element.clone(),
-        geometry: physical,
+        geometry: corners.rect,
     })
 }
 
@@ -223,10 +223,8 @@ pub(super) fn overview_strip_elements(
                     elements.extend(rounded_window_elements(
                         renderer,
                         window,
-                        rounded_visual_rect(*rect, output_geometry.loc),
-                        physical_rect(*rect, output_geometry.loc, scale),
+                        RoundedRect::new(*rect, output_geometry.loc, scale, 4.0),
                         scale,
-                        4.0,
                         alpha,
                         true,
                         output,

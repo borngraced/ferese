@@ -22,6 +22,8 @@ varying vec2 v_coords;
 uniform float tint;
 #endif
 
+//_CORNERS_
+
 void main() {
     vec4 color = texture2D(tex, v_coords);
 
@@ -31,13 +33,8 @@ void main() {
     color = color * alpha;
 #endif
 
-    vec2 point = gl_FragCoord.xy - clip_rect.xy;
-    vec2 half_size = clip_rect.zw * 0.5;
-    vec2 distance = abs(point - half_size) - (half_size - vec2(radius));
-    float signed_distance = length(max(distance, 0.0))
-        + min(max(distance.x, distance.y), 0.0)
-        - radius;
-    float coverage = 1.0 - smoothstep(-0.5, 0.5, signed_distance);
+    float signed_distance = rounded_rect_distance(gl_FragCoord.xy, clip_rect, radius);
+    float coverage = edge_coverage(signed_distance);
     color *= coverage;
 
 #if defined(DEBUG_FLAGS)

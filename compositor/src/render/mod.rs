@@ -48,7 +48,7 @@ use smithay::wayland::shell::wlr_layer::Layer;
 
 use crate::Ferese;
 use crate::metrics::FrameEffectMetrics;
-use crate::presentation::{NativeTextureElement, PhysicalShaderElement, physical_rect};
+use crate::presentation::{NativeTextureElement, PhysicalShaderElement, RoundedRect, clamp_radius, physical_rect};
 
 type SurfaceRenderElement =
     CropRenderElement<RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>;
@@ -105,6 +105,10 @@ const WINDOW_SHADOW_SHADER: &str = include_str!("shaders/window_shadow_shader.fr
 const MATERIAL_SHADER: &str = include_str!("shaders/material_shader.frag");
 
 const BLUR_SHADER: &str = include_str!("shaders/blur_shader.frag");
+
+fn corner_shader(source: &str) -> String {
+    source.replace("//_CORNERS_", include_str!("shaders/corners.glsl"))
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct BlurProgram(GlesTexProgram);
@@ -512,6 +516,31 @@ mod tests {
 
     #[test]
     #[ignore = "requires an EGL rendering device"]
+    fn shared_corner_shaders_compile() {
+        use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
+        use smithay::backend::renderer::gles::GlesRenderer;
+        let device = EGLDevice::enumerate().unwrap().last().expect("an EGL device");
+        let display = unsafe { EGLDisplay::new(device).unwrap() };
+        let context = EGLContext::new(&display).unwrap();
+        let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
+        for source in [super::ROUNDED_TEXTURE_SHADER, super::BLUR_SHADER] {
+            renderer
+                .compile_custom_texture_shader(&super::corner_shader(source), &[])
+                .unwrap();
+        }
+        for source in [
+            super::ROUNDED_BORDER_SHADER,
+            super::WINDOW_SHADOW_SHADER,
+            super::MATERIAL_SHADER,
+        ] {
+            renderer
+                .compile_custom_pixel_shader(&super::corner_shader(source), &[])
+                .unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "requires an EGL rendering device"]
     fn translucent_blur_does_not_leak_the_sharp_backdrop() {
         use smithay::backend::allocator::Fourcc;
         use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
@@ -523,7 +552,7 @@ mod tests {
         let context = EGLContext::new(&display).unwrap();
         let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
         let program = renderer
-            .compile_custom_texture_shader(super::BLUR_SHADER, &super::blur_uniform_names())
+            .compile_custom_texture_shader(&super::corner_shader(super::BLUR_SHADER), &super::blur_uniform_names())
             .unwrap();
         let size = (32, 32).into();
         let mut pixels = vec![128u8; 32 * 32 * 4];

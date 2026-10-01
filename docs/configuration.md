@@ -183,7 +183,7 @@ Filled controls choose a contrasting text color automatically.
 | `border-width` | number ≥ 0 | `1` | Window border thickness |
 | `focus-ring-width` | number ≥ 0 | `2` | Focused border thickness |
 | `window-radius` | number ≥ 0 | `14` | Managed-window corners, independent of the shell |
-| `shell-radius` | number ≥ 0 | `14` | All shell surfaces, cards, widgets and interaction backgrounds; 0 makes them square |
+| `shell-radius` | number ≥ 0 | `14` | All shell surfaces, cards, widgets and interaction backgrounds; rounded to the nearest logical pixel to match blur regions; 0 makes them square |
 | `top-bar-height` | number > 0 | `28` | Menu-bar height |
 | `top-bar-margin-top` | integer ≥ 0 | `0` | Space above bar |
 | `top-bar-window-gap` | integer ≥ 0 | `0` | Clearance below bar |

@@ -96,6 +96,41 @@ pub(crate) fn physical_rect(
     )
 }
 
+/// A single physical outline shared by content and all of its decorations.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct RoundedRect {
+    pub rect: Rectangle<i32, Physical>,
+    pub radius: f32,
+}
+
+impl RoundedRect {
+    pub(crate) fn new(rect: ferese_layout::Rect, origin: Point<i32, Logical>, scale: f64, radius: f64) -> Self {
+        let rect = physical_rect(rect, origin, scale);
+        Self {
+            radius: clamp_radius(radius * scale, rect.size),
+            rect,
+        }
+    }
+
+    pub(crate) fn from_logical(rect: Rectangle<i32, Logical>, scale: f64, radius: f64) -> Self {
+        Self::new(
+            ferese_layout::Rect::new(
+                rect.loc.x as f64,
+                rect.loc.y as f64,
+                rect.size.w as f64,
+                rect.size.h as f64,
+            ),
+            (0, 0).into(),
+            scale,
+            radius,
+        )
+    }
+}
+
+pub(crate) fn clamp_radius(requested: f64, size: smithay::utils::Size<i32, Physical>) -> f32 {
+    requested.min(f64::from(size.w.min(size.h)) / 2.0).max(0.0) as f32
+}
+
 pub(crate) fn handoff_alpha(elapsed: Duration) -> f32 {
     let progress = (elapsed.as_secs_f64() / HANDOFF.as_secs_f64()).clamp(0.0, 1.0);
     (1.0 - progress * progress * (3.0 - 2.0 * progress)) as f32
@@ -259,6 +294,51 @@ impl RenderElement<GlesRenderer> for NativeTextureElement {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rounded_outline_clamps_after_physical_snapping() {
+        // Logical clamping would give 1.125; the snapped 3px rect allows radius 1.5.
+        let outline = RoundedRect::new(ferese_layout::Rect::new(0.2, 0.2, 1.5, 4.0), (0, 0).into(), 1.5, 20.0);
+        assert_eq!(outline.rect, Rectangle::new((0, 0).into(), (3, 6).into()));
+        assert_eq!(outline.radius, 1.5);
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let rect = ferese_layout::Rect::new(-20.4, -10.2, 8.8, 6.4);
+            let outline = RoundedRect::new(rect, (-10, -5).into(), scale, 100.0);
+            assert_eq!(outline.rect, physical_rect(rect, (-10, -5).into(), scale));
+            assert_eq!(
+                outline.radius,
+                outline.rect.size.w.min(outline.rect.size.h) as f32 / 2.0
+            );
+        }
+    }
+
+    #[test]
+    fn physical_radius_preserves_fractions_and_handles_zero() {
+        let size = (11, 7).into();
+        assert_eq!(clamp_radius(100.0, size), 3.5);
+        assert_eq!(clamp_radius(2.25, size), 2.25);
+        assert_eq!(clamp_radius(0.0, size), 0.0);
+        assert_eq!(clamp_radius(-1.0, size), 0.0);
+        assert_eq!(clamp_radius(2.0, (0, 10).into()), 0.0);
+        let outline = RoundedRect::new(ferese_layout::Rect::new(0.0, 0.0, 10.0, 10.0), (0, 0).into(), 1.5, 1.5);
+        assert_eq!(outline.radius, 2.25);
+    }
+
+    #[test]
+    fn material_and_window_outline_agree_for_the_same_rect() {
+        let logical = Rectangle::new((-3, 7).into(), (11, 9).into());
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            assert_eq!(
+                RoundedRect::from_logical(logical, scale, 100.0),
+                RoundedRect::new(
+                    ferese_layout::Rect::new(-3.0, 7.0, 11.0, 9.0),
+                    (0, 0).into(),
+                    scale,
+                    100.0
+                )
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

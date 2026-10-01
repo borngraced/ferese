@@ -136,7 +136,6 @@ pub(crate) fn output_elements(
 
     for (window, id, visual, decoration_progress, close_alpha) in windows {
         let constrain = rounded_visual_rect(visual, output_geometry.loc);
-        let pixels = physical_rect(visual, output_geometry.loc, scale);
         let material_surface = window
             .toplevel()
             .map(|toplevel| toplevel.wl_surface())
@@ -149,6 +148,8 @@ pub(crate) fn output_elements(
         } else {
             state.theme_settings.window_radius
         } * decoration_progress;
+        let corners = RoundedRect::new(visual, output_geometry.loc, scale, window_radius);
+        let pixels = corners.rect;
         // Only overview/close intentionally scale the complete application.
         let scale_content = state.overview.is_presenting() || state.closing_visual(id).0 != 1.0;
         let behavior = resize_content_behavior(scale_content);
@@ -159,9 +160,7 @@ pub(crate) fn output_elements(
             renderer,
             id,
             constrain,
-            pixels,
-            scale,
-            window_radius,
+            corners,
             [0.0, 0.0, 0.0, dim as f32 * close_alpha],
             false,
             output,
@@ -195,9 +194,8 @@ pub(crate) fn output_elements(
                 renderer,
                 id,
                 constrain,
-                pixels,
+                corners,
                 scale,
-                window_radius,
                 border_width,
                 border_color,
                 gradient,
@@ -213,9 +211,8 @@ pub(crate) fn output_elements(
                 renderer,
                 id,
                 constrain,
-                pixels,
+                corners,
                 scale,
-                window_radius,
                 shadow_offset_y,
                 shadow_blur,
                 shadow_opacity * f64::from(close_alpha) * decoration_progress,
@@ -250,8 +247,7 @@ pub(crate) fn output_elements(
                             program: Some(programs.texture.clone()),
                             uniforms: vec![
                                 Uniform::new("clip_rect", clip).into_owned(),
-                                Uniform::new("radius", scaled_effect_value(window_radius, constrain, scale))
-                                    .into_owned(),
+                                Uniform::new("radius", corners.radius).into_owned(),
                             ],
                         }
                         .into(),
@@ -261,10 +257,8 @@ pub(crate) fn output_elements(
             elements.extend(rounded_window_elements(
                 renderer,
                 &window,
-                constrain,
-                pixels,
+                corners,
                 scale,
-                window_radius,
                 close_alpha,
                 state
                     .window_geometry
@@ -281,18 +275,7 @@ pub(crate) fn output_elements(
             {
                 let mut color = state.theme_settings.surface_base_color.0;
                 color[3] = close_alpha;
-                if let Some(fill) = window_tint_element(
-                    state,
-                    renderer,
-                    id,
-                    constrain,
-                    pixels,
-                    scale,
-                    window_radius,
-                    color,
-                    true,
-                    output,
-                ) {
+                if let Some(fill) = window_tint_element(state, renderer, id, constrain, corners, color, true, output) {
                     // Front-to-back: fill uncovered strips behind the native
                     // content instead of stretching it or exposing wallpaper.
                     elements.push(fill.into());
@@ -308,7 +291,7 @@ pub(crate) fn output_elements(
                     surface,
                     MaterialSurface {
                         geometry: constrain,
-                        radius: window_radius as f32,
+                        corners,
                         index: 0,
                         capture_geometry: constrain,
                         alpha: close_alpha,

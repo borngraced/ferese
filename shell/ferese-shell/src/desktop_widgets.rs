@@ -361,12 +361,13 @@ impl FereseShell {
             && editor.id == id
         {
             let id = id.to_owned();
+            let editor_radius = ferese_theme::inner_radius(self.config.theme.material_radius, note.padding);
             body = body.push(
                 cosmic::widget::TextEditor::new(&editor.content)
-                    .style(|theme, status| {
+                    .style(move |theme, status| {
                         use cosmic::iced::widget::text_editor::Catalog;
                         let mut style = theme.style(&<cosmic::Theme as Catalog>::default(), status);
-                        style.border.radius = motion::radius(f32::MAX).into();
+                        style.border.radius = editor_radius.into();
                         style
                     })
                     .height(Length::Fill)

@@ -604,6 +604,9 @@ pub fn resolve_with_context(
             *path = theme_path(directory, path);
         }
         validate(&tokens)?;
+        // Effects regions encode integer logical radii; publish the same value
+        // to the shell and compositor, without rewriting the authored config.
+        tokens.geometry.shell_radius = tokens.geometry.shell_radius.round();
         let requested_accent = tokens.colors.accent.clone();
         transform(&mut tokens, &policy.accessibility, &mut warnings);
         let theme = ResolvedTheme {
@@ -1297,6 +1300,22 @@ pub fn import_family(id: &str, source: &str) -> Result<ImportedFamily, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn resolved_shell_radius_matches_integer_effect_regions() {
+        for (requested, expected) in [(0.0, 0.0), (0.4, 0.0), (13.4, 13.0), (13.5, 14.0)] {
+            let document = crate::Document::parse(&format!(
+                "theme {{ geometry {{ shell-radius {requested}; window-radius 7.25; }} }}"
+            ))
+            .unwrap();
+            let result = super::resolve(&document, std::path::Path::new("/tmp"), jiff::Timestamp::now(), |_| {
+                Err("unexpected theme file".into())
+            })
+            .unwrap();
+            assert_eq!(result.theme.tokens.geometry.shell_radius, expected);
+            assert_eq!(result.theme.tokens.geometry.window_radius, 7.25);
+        }
+    }
+
     use super::*;
 
     fn candidate(source: &str) -> Result<Candidate, String> {

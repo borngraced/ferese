@@ -13,13 +13,10 @@ varying vec2 v_coords;
 uniform float tint;
 #endif
 
+//_CORNERS_
+
 void main() {
-    vec2 point = gl_FragCoord.xy - shadow_rect.xy;
-    vec2 half_size = shadow_rect.zw * 0.5;
-    vec2 distance = abs(point - half_size) - (half_size - vec2(radius));
-    float signed_distance = length(max(distance, 0.0))
-        + min(max(distance.x, distance.y), 0.0)
-        - radius;
+    float signed_distance = rounded_rect_distance(gl_FragCoord.xy, shadow_rect, radius);
     float sigma = max(blur * 0.5, 0.5);
     float normalized_distance = max(signed_distance, 0.0) / sigma;
     float coverage = exp(-0.5 * normalized_distance * normalized_distance);

@@ -18,23 +18,16 @@ varying vec2 v_coords;
 uniform float tint;
 #endif
 
-void main() {
-    vec2 point = gl_FragCoord.xy - clip_rect.xy;
-    vec2 half_size = clip_rect.zw * 0.5;
-    vec2 distance = abs(point - half_size) - (half_size - vec2(radius));
-    float signed_distance = length(max(distance, 0.0))
-        + min(max(distance.x, distance.y), 0.0)
-        - radius;
-    float outer_coverage = 1.0 - smoothstep(-0.5, 0.5, signed_distance);
+//_CORNERS_
 
-    vec2 inner_half_size = max(half_size - vec2(border_width), vec2(0.0));
+void main() {
+    float signed_distance = rounded_rect_distance(gl_FragCoord.xy, clip_rect, radius);
+    float outer_coverage = edge_coverage(signed_distance);
+
+    vec2 inner_size = max(clip_rect.zw - vec2(2.0 * border_width), vec2(0.0));
+    vec4 inner_rect = vec4(clip_rect.xy + (clip_rect.zw - inner_size) * 0.5, inner_size);
     float inner_radius = max(radius - border_width, 0.0);
-    vec2 inner_distance = abs(point - half_size)
-        - (inner_half_size - vec2(inner_radius));
-    float inner_signed_distance = length(max(inner_distance, 0.0))
-        + min(max(inner_distance.x, inner_distance.y), 0.0)
-        - inner_radius;
-    float inner_coverage = 1.0 - smoothstep(-0.5, 0.5, inner_signed_distance);
+    float inner_coverage = edge_coverage(rounded_rect_distance(gl_FragCoord.xy, inner_rect, inner_radius));
     float coverage = max(outer_coverage - inner_coverage, 0.0);
     float progress = clamp(dot(gl_FragCoord.xy - gradient_line.xy, gradient_line.zw), 0.0, 1.0);
     // Interpolate premultiplied endpoints: a transparent endpoint must not

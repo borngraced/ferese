@@ -78,20 +78,25 @@ pub fn separator<'a, M: 'a>(foreground: Color, opacity: f32) -> Element<'a, M> {
 
 pub fn switch<'a, M: 'a>(enabled: bool, palette: crate::Palette, opacity: f32) -> Element<'a, M> {
     let (track, thumb) = crate::controls::switch_colors(palette, enabled, false);
+    let track_radius = 10.;
+    let padding = 2.;
     let knob = container(cosmic::widget::Space::new().width(16).height(16))
         .width(16)
         .height(16)
-        .class(crate::controls::surface(Color { a: opacity, ..thumb }, 8.));
+        .class(crate::controls::surface(
+            Color { a: opacity, ..thumb },
+            crate::inner_radius(track_radius, padding),
+        ));
     container(knob)
         .width(36)
         .height(20)
-        .padding(2)
+        .padding(padding)
         .align_x(if enabled {
             cosmic::iced::alignment::Horizontal::Right
         } else {
             cosmic::iced::alignment::Horizontal::Left
         })
-        .class(crate::controls::surface(track.scale_alpha(opacity), 10.))
+        .class(crate::controls::surface(track.scale_alpha(opacity), track_radius))
         .into()
 }
 
