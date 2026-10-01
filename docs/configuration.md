@@ -87,8 +87,10 @@ Live config is limited to 60 KiB.
 | `focus-strategy` | `"minimal"`, `"center_on_focus"`, `"paged"` | `"minimal"` | Viewport movement on focus |
 | `width-presets` | array of widths | `[0.3333333333333333, 0.5, 0.6666666666666666, "full"]` | Super+R cycle; empty uses defaults |
 
-`minimal` scrolls only to reveal the focused window. `center_on_focus` centers
-it. `paged` packs columns into viewport-sized pages: halves form pairs, thirds
+`minimal` leaves fully visible columns in place and scrolls only enough to reveal
+a hidden edge. Columns as wide as the viewport or wider align to its left edge,
+without keeping a sliver of the neighboring window. `center_on_focus` centers
+the focused column. `paged` packs columns into viewport-sized pages: halves form pairs, thirds
 form triples; mixed widths and client minimum sizes determine actual boundaries.
 Changing default width preserves manually resized columns.
 

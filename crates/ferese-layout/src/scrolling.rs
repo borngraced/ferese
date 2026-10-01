@@ -9,8 +9,6 @@ const DEFAULT_WIDTH: f64 = 0.5;
 const MIN_COLUMN_WIDTH: f64 = 0.1;
 const MAX_COLUMN_WIDTH: f64 = 2.0;
 const MIN_ROW_HEIGHT: f64 = 0.05;
-const COMFORT_START: f64 = 0.2;
-const COMFORT_END: f64 = 0.8;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ColumnWidth {
@@ -75,7 +73,6 @@ pub struct ScrollingLayout {
     columns: Vec<Column>,
     active_column: Option<usize>,
     viewport_x: f64,
-    neighbor_context: f64,
     default_width: ColumnWidth,
     focus_strategy: ViewportFocusStrategy,
     reveal_pending: Option<WindowId>,
@@ -90,7 +87,6 @@ impl Default for ScrollingLayout {
             columns: Vec::new(),
             active_column: None,
             viewport_x: 0.0,
-            neighbor_context: 48.0,
             default_width: ColumnWidth::default(),
             focus_strategy: ViewportFocusStrategy::Minimal,
             reveal_pending: None,
@@ -226,6 +222,9 @@ impl ScrollingLayout {
     pub fn slide_focus_from(&mut self, previous: WindowId, focused: WindowId) -> Result<(), LayoutError> {
         self.window_location(previous)
             .ok_or(LayoutError::UnknownWindow(previous))?;
+        if self.focus_strategy == ViewportFocusStrategy::Minimal {
+            return self.focus_and_reveal(focused);
+        }
         self.focus_without_reveal(focused)?;
         self.reveal_pending = None;
         self.swipe_focus_pending = Some((previous, focused));
@@ -515,21 +514,10 @@ impl ScrollingLayout {
             return;
         }
 
-        let comfort_start = viewport_width * COMFORT_START;
-        let comfort_end = viewport_width * COMFORT_END;
-        let comfort_width = comfort_end - comfort_start;
-
-        if width > comfort_width {
-            let context = finite_nonnegative(self.neighbor_context).min(viewport_width / 3.0);
-            if start > self.viewport_x + comfort_start {
-                self.viewport_x = start - context;
-            } else if end < self.viewport_x + comfort_end {
-                self.viewport_x = end - viewport_width + context;
-            }
-        } else if start < self.viewport_x + comfort_start {
-            self.viewport_x = start - comfort_start;
-        } else if end > self.viewport_x + comfort_end {
-            self.viewport_x = end - comfort_end;
+        if width >= viewport_width || start < self.viewport_x {
+            self.viewport_x = start;
+        } else if end > self.viewport_x + viewport_width {
+            self.viewport_x = end - viewport_width;
         }
     }
 
@@ -804,8 +792,62 @@ mod tests {
             .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(4)))
             .unwrap();
 
-        assert_eq!(layout.viewport_x(), 1_200.0);
-        assert_eq!(result.geometry[&window(4)].x, 300.0);
+        assert_eq!(layout.viewport_x(), 1_000.0);
+        assert_eq!(result.geometry[&window(4)].x, 500.0);
+    }
+
+    #[test]
+    fn minimal_reveal_uses_the_nearest_edge_and_keeps_visible_columns_still() {
+        for (viewport, start, width, expected) in [
+            (500.0, 500.0, 500.0, 500.0),
+            (500.0, 1000.0, 500.0, 500.0),
+            (500.0, 400.0, 500.0, 400.0),
+            (500.0, 1100.0, 500.0, 600.0),
+            (500.0, 400.0, 1000.0, 400.0),
+            (500.0, 1100.0, 1000.0, 1100.0),
+            (500.0, 400.0, 1500.0, 400.0),
+            (500.0, 1100.0, 1500.0, 1100.0),
+        ] {
+            let mut layout = ScrollingLayout {
+                viewport_x: viewport,
+                ..ScrollingLayout::default()
+            };
+            layout.reveal_column(&[(start, width)], 1000.0, 0);
+            assert_eq!(
+                layout.viewport_x(),
+                expected,
+                "viewport={viewport}, start={start}, width={width}"
+            );
+            layout.reveal_column(&[(start, width)], 1000.0, 0);
+            assert_eq!(layout.viewport_x(), expected, "repeated reveal must stay still");
+        }
+    }
+
+    #[test]
+    fn minimal_reveal_aligns_full_width_columns_without_neighbor_context() {
+        let mut layout = ScrollingLayout::with_default_width(ColumnWidth::Full);
+        layout.insert(window(1), None).unwrap();
+        layout.insert(window(2), Some(window(1))).unwrap();
+        let bounds = Rect::new(0.0, 0.0, 1000.0, 800.0);
+        let gaps = GapConfig {
+            inner: 10.0,
+            outer: 0.0,
+            smart: false,
+        };
+        let result = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(2)))
+            .unwrap();
+        assert_eq!(layout.viewport_x(), 1010.0);
+        assert_eq!(result.geometry[&window(2)].x, 0.0);
+        let previous = result.geometry[&window(1)];
+        assert!(previous.x + previous.width <= 0.0);
+        layout.focus_and_reveal(window(1)).unwrap();
+        let result = layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(1)))
+            .unwrap();
+        assert_eq!(layout.viewport_x(), 0.0);
+        assert_eq!(result.geometry[&window(1)].x, 0.0);
+        assert!(result.geometry[&window(2)].x >= bounds.width);
     }
 
     #[test]
@@ -889,6 +931,31 @@ mod tests {
                 geometry[&window(first + 1)].x + geometry[&window(first + 1)].width,
                 990.0
             );
+        }
+    }
+
+    #[test]
+    fn minimal_swipe_focus_reveals_only_hidden_edges() {
+        let mut layout = ScrollingLayout::default();
+        for id in 1..=3 {
+            layout.insert(window(id), Some(window(id.saturating_sub(1)))).unwrap();
+        }
+        let bounds = Rect::new(0.0, 0.0, 1000.0, 800.0);
+        let gaps = GapConfig {
+            inner: 0.0,
+            outer: 0.0,
+            smart: false,
+        };
+        layout.focus_and_reveal(window(1)).unwrap();
+        layout
+            .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(1)))
+            .unwrap();
+        for (previous, focused, expected) in [(1, 2, 0.0), (2, 3, 500.0), (3, 2, 500.0), (2, 1, 0.0)] {
+            layout.slide_focus_from(window(previous), window(focused)).unwrap();
+            layout
+                .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(focused)))
+                .unwrap();
+            assert_eq!(layout.viewport_x(), expected);
         }
     }
 
@@ -1061,7 +1128,7 @@ mod tests {
     }
 
     #[test]
-    fn viewport_is_not_clamped_to_the_column_strip() {
+    fn minimal_reveal_of_the_first_column_aligns_to_the_strip_start() {
         let mut layout = ScrollingLayout::default();
         let bounds = Rect::new(0.0, 0.0, 1_000.0, 800.0);
         let gaps = GapConfig {
@@ -1080,7 +1147,7 @@ mod tests {
             .geometry_with_constraints(bounds, gaps, &HashMap::new(), Some(window(1)))
             .unwrap();
 
-        assert_eq!(layout.viewport_x(), -200.0);
+        assert_eq!(layout.viewport_x(), 0.0);
     }
 
     #[test]
