@@ -414,6 +414,23 @@ window rules can override that behavior.
 | `floating` | boolean | Leave placement unchanged |
 | `width`, `height` | numbers > 0 | Application-chosen floating size |
 | `fullscreen` | boolean | Leave fullscreen state unchanged |
+| `block-out-from-screencasts` | boolean | Exclude from captures; enabled by default for Ferese authentication dialogs |
+
+`window-rule app-id="org.example.Private" block-out-from-screencasts=#true`
+keeps matching windows visible on the display but omits them (including their
+popups, subsurfaces, shadows and overview previews) from monitor and region
+captures. The background or windows behind them remain visible in the capture.
+Transient children inherit protection even on another output. Direct window
+capture fails, ending an active window stream. Custom cursors from a client with
+a protected window are also omitted until the cursor image is replaced.
+
+This applies to portal sharing, recording, native capture protocols and screenshots:
+these routes share capture buffers. The rule is checked against current app-ID,
+title and parent metadata, and updates on config reload. Other placement rules
+retain their existing lifecycle. Later matching rules may set the field to `#false`,
+including for `dev.ferese.Authentication`; a protected parent still protects its
+children. A protection change cancels deferred screenshots and window frames.
+Frames already delivered to a capture client cannot be recalled.
 
 Every rule needs at least one matcher, and supplied matchers must all match.
 Rules apply in order; later fields override earlier ones. Dimensions imply

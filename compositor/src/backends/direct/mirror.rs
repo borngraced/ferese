@@ -47,7 +47,7 @@ pub(super) fn elements(
     ])
 }
 
-fn compose(
+pub(super) fn compose(
     renderer: &mut GlesRenderer,
     texture: &mut Option<GlesTexture>,
     canvas: &Output,
@@ -69,7 +69,7 @@ fn compose(
     Ok(())
 }
 
-fn fitted_texture(
+pub(super) fn fitted_texture(
     texture: GlesTexture,
     target: &Output,
     id: smithay::backend::renderer::element::Id,

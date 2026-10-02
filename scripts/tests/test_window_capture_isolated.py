@@ -105,7 +105,7 @@ class WindowCapture(unittest.TestCase):
                 ready = json.loads(worker.stdout.readline())
                 self.assertEqual((ready["width"], ready["height"]), (round(640 * scale), round(480 * scale)))
                 raw = root / "frames.bgrx"
-                subprocess.run(["gst-launch-1.0", "-q", "pipewiresrc", f'path={ready["node"]}',
+                subprocess.run(["gst-launch-1.0", "-q", "pipewiresrc", "min-buffers=4", f'path={ready["node"]}',
                                 "num-buffers=15", "!", "video/x-raw,format=BGRx", "!", "filesink",
                                 f"location={raw}"], env=stream_env, check=True, timeout=20)
                 pixels = raw.read_bytes()
@@ -118,9 +118,35 @@ class WindowCapture(unittest.TestCase):
                     blue = start + ((height * 3 // 4) * width + width // 2) * 4
                     self.assertEqual(pixels[red:red + 3], bytes([0, 0, 255]))
                     self.assertEqual(pixels[blue:blue + 3], bytes([255, 0, 0]))
-                worker.stdin.close()
+                # A live rule change revokes the window stream and synchronous
+                # window screenshot route, while normal display mapping remains.
+                config.write_text('window-rule app-id="ferese.test.window-capture" floating=#true\n'
+                                  'window-rule title="Capture target" block-out-from-screencasts=#true\n')
+                call("reload-config")
                 self.assertEqual(worker.wait(timeout=7), 0)
+                worker.stdin.close()
                 worker.stdout.close()
+                rejected = subprocess.run([str(REPO / "target/debug/feresectl"), "screenshot-window", str(target["id"])],
+                                          env=env, capture_output=True, timeout=10)
+                self.assertNotEqual(rejected.returncode, 0)
+                self.assertIn(b"protected", rejected.stderr)
+                self.assertTrue(next(window for window in windows(2) if window["id"] == target["id"])["mapped"])
+                with Image.open(io.BytesIO(call("screenshot-window", str(cover["id"])))) as image:
+                    self.assertEqual(image.convert("RGB").getpixel((image.width // 2, image.height // 2)), (0, 255, 0))
+                os.killpg(processes[2].pid, signal.SIGTERM)
+                processes[2].wait(timeout=5)
+                protected = windows(1)[0]
+                self.assertTrue(protected["mapped"])
+                for args in [("screenshot",), ("screenshot", "--geometry",
+                             f'{protected["x"]},{protected["y"]} {protected["width"]}x{protected["height"]}')]:
+                    with Image.open(io.BytesIO(call(*args))) as image:
+                        self.assertFalse(any(pixel in ((255, 0, 0), (0, 0, 255))
+                                             for pixel in image.convert("RGB").getdata()))
+                # Reusing the capture target after opt-out must produce a fresh frame.
+                config.write_text('window-rule app-id="ferese.test.window-capture" floating=#true\n')
+                call("reload-config")
+                with Image.open(io.BytesIO(call("screenshot-window", str(target["id"])))) as image:
+                    self.assertEqual(image.convert("RGB").getpixel((image.width // 2, image.height // 4)), (255, 0, 0))
             finally:
                 for process in reversed(processes):
                     if process.poll() is None:

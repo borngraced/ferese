@@ -898,6 +898,10 @@ impl Ferese {
             reject("Window no longer exists".into());
             return;
         };
+        if self.capture_protected(&window) {
+            reject("Window is protected from capture".into());
+            return;
+        }
         let Some(output) = self
             .space
             .outputs()

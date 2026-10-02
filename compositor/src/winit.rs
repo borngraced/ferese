@@ -18,7 +18,7 @@ use smithay::wayland::presentation::Refresh;
 
 use crate::Ferese;
 use crate::metrics::{FrameEffectMetrics, RenderMetrics};
-use crate::render::{animated_window_elements, frame_effect_metrics, layer_surfaces, output_elements, redraw_output};
+use crate::render::{animated_window_elements, frame_effect_metrics, layer_surfaces};
 
 pub(crate) type NestedBackend = Rc<RefCell<winit::WinitGraphicsBackend<GlesRenderer>>>;
 type DamageRenderResult = Result<
@@ -89,6 +89,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
             TimeoutAction::ToDuration(redraw_refresh.get())
         })?;
 
+    let mut capture_texture = None;
     event_loop
         .handle()
         .insert_source(event_source, move |event, _, state| {
@@ -133,16 +134,25 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                                 &elements,
                                 [0.035, 0.04, 0.055, 1.0],
                             )?;
-                            let cursorless_capture = state.has_pending_screencopy(&output, false);
-                            let captured_with_cursor =
-                                state.process_screencopies(renderer, &framebuffer, &output, true);
-
-                            if cursorless_capture {
-                                let cursorless_elements = output_elements(state, renderer, &output, false);
-                                redraw_output(renderer, &mut framebuffer, &output, &cursorless_elements)?;
-                                state.process_screencopies(renderer, &framebuffer, &output, false);
-                                redraw_output(renderer, &mut framebuffer, &output, &elements)?;
-                            } else if captured_with_cursor {
+                            // Keep the existing readback-only path when the
+                            // displayed scene has no privacy exclusions.
+                            let mut capture_changed_binding = !state.has_capture_exclusions()
+                                && state.process_screencopies(renderer, &framebuffer, &output, true);
+                            if state.has_pending_screencopy(&output, false)
+                                || state.has_pending_screencopy(&output, true)
+                            {
+                                let scene = state.sample_frame(&output, Duration::ZERO);
+                                crate::backends::direct::capture::capture_output(
+                                    state,
+                                    renderer,
+                                    &mut capture_texture,
+                                    &output,
+                                    &scene,
+                                )?;
+                                capture_changed_binding = true;
+                            }
+                            if capture_changed_binding {
+                                // Restore the display framebuffer binding after offscreen readback.
                                 let _ = renderer
                                     .render(
                                         &mut framebuffer,

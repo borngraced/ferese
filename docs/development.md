@@ -72,6 +72,17 @@ Encoding needs the recorder's GStreamer plugins. The transport test needs libei
 and uses synthetic input over a private socket pair. Hardware pointer barriers,
 multiple monitors, display sleep, and live authentication still need session tests.
 
+## Capture privacy checks
+
+The capture privacy regression uses disposable Wayland clients and offscreen EGL
+(including software Mesa); it does not capture the host desktop or validate DRM:
+
+```sh
+cargo test --locked -p ferese capture_privacy_pixels_and_policy_transitions -- --ignored
+cargo test --locked -p ferese backends::direct::capture::tests -- --ignored
+cargo test --locked -p ferese mirrored_pixels_fit -- --ignored
+```
+
 ## Report a bug
 
 Include the commit or installed release, reproduction steps, backend (nested or

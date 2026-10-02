@@ -101,6 +101,7 @@ impl Ferese {
         self.output_redraw_pending.retain(|pending| pending != output);
         if let Some(id) = self.output_ids.get(output) {
             self.render.remove_output(*id);
+            self.capture_render.remove_output(*id);
         }
         self.pending_screencopies.retain(|capture| {
             if capture.output == *output {

@@ -333,6 +333,7 @@ impl SessionLockHandler for Ferese {
         // Replacing an orphan never passes through Unlocked. Existing protected
         // presentation facts remain valid, but old surfaces must not own input.
         self.session_lock.lifecycle = Lifecycle::Acquiring(confirmation);
+        self.capture_epoch = self.capture_epoch.wrapping_add(1);
         self.session_lock.surfaces.clear();
         self.cancel_logout_confirmation();
         self.refresh_idle_inhibition();
@@ -473,6 +474,7 @@ mod tests {
         let mut event_loop = EventLoop::try_new().unwrap();
         let config = crate::config::Config::default().runtime_config().unwrap();
         let mut state = Ferese::new(&mut event_loop, Display::new().unwrap(), config).unwrap();
+        let capture_epoch = state.capture_epoch;
 
         let acquire = |state: &mut Ferese| {
             let (server, mut wire) = UnixStream::pair().unwrap();
@@ -496,6 +498,10 @@ mod tests {
 
         let mut first = acquire(&mut state);
         dispatch(&mut event_loop, &mut state);
+        assert_ne!(
+            state.capture_epoch, capture_epoch,
+            "lock revokes deferred window snapshots"
+        );
         assert!(
             matches!(state.session_lock.lifecycle, Lifecycle::Locked(_)),
             "no outputs must confirm immediately"

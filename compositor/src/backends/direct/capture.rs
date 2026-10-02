@@ -5,10 +5,10 @@ use smithay::backend::renderer::{Bind, Offscreen, Texture};
 use smithay::output::Output;
 
 use crate::Ferese;
-use crate::render::{redraw_output, sampled_output_elements};
+use crate::render::{capture_output_elements, redraw_output};
 use crate::state::FrameScene;
 
-pub(super) fn capture_output(
+pub(crate) fn capture_output(
     state: &mut Ferese,
     renderer: &mut GlesRenderer,
     texture: &mut Option<GlesTexture>,
@@ -22,11 +22,38 @@ pub(super) fn capture_output(
 
         // Sample the same scene into an independent target: the displayed
         // primary buffer may omit both a scanned-out client and hardware cursor.
-        let elements = sampled_output_elements(state, renderer, output, include_cursor, scene);
+        let elements = capture_output_elements(state, renderer, output, include_cursor, scene);
         let target = render_capture(renderer, texture, output, &elements)?;
         state.process_screencopies(renderer, &target, output, include_cursor);
     }
 
+    Ok(())
+}
+
+pub(super) fn capture_mirror(
+    state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+    source: &Output,
+    scene: &FrameScene,
+    output: &mut super::DirectOutput,
+) -> Result<(), GlesError> {
+    for include_cursor in [true, false] {
+        if !state.has_pending_screencopy(&output.output, include_cursor) {
+            continue;
+        }
+        let elements = capture_output_elements(state, renderer, source, include_cursor, scene);
+        // Never sample mirror_texture: it contains the unfiltered display.
+        let canvas = output.mirror_canvas.as_ref().expect("mirror display composed");
+        super::mirror::compose(renderer, &mut output.mirror_capture_texture, canvas, source, &elements)?;
+        let element = super::mirror::fitted_texture(
+            output.mirror_capture_texture.as_ref().unwrap().clone(),
+            &output.output,
+            smithay::backend::renderer::element::Id::new(),
+            Default::default(),
+        );
+        let target = render_capture(renderer, &mut output.capture_texture, &output.output, &[element])?;
+        state.process_screencopies(renderer, &target, &output.output, include_cursor);
+    }
     Ok(())
 }
 

@@ -20,7 +20,7 @@ use overview::*;
 pub(crate) use resources::RenderResources;
 use scene::cursor_elements;
 pub(crate) use scene::{
-    animated_window_elements, frame_effect_metrics, layer_surfaces, output_elements, sampled_output_elements,
+    animated_window_elements, capture_output_elements, frame_effect_metrics, layer_surfaces, sampled_output_elements,
 };
 pub(crate) use shader::SharedPixelShaderElement;
 use smithay::backend::allocator::Fourcc;

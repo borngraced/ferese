@@ -91,6 +91,7 @@ pub(super) fn overview_strip_elements(
     output_geometry: Rectangle<i32, Logical>,
     scale: f64,
     frame: &crate::state::FrameScene,
+    capture: bool,
 ) -> Vec<AnimatedWindowRenderElement> {
     let alpha = frame.overview.opacity();
     if alpha <= 0.001 {
@@ -139,7 +140,13 @@ pub(super) fn overview_strip_elements(
     // has a fresh seed; iterating it changes z indices and damages still captions.
     let caption_ids = state.windows.ordered_ids().rev().collect::<Vec<_>>();
     for id in caption_ids {
-        if !state.window_belongs_to_output(id, output) {
+        if (capture
+            && state
+                .windows
+                .window(id)
+                .is_none_or(|window| state.capture_protected(window)))
+            || !state.window_belongs_to_output(id, output)
+        {
             continue;
         }
         let Some(rect) = frame.windows.get(&id).map(|sample| sample.rect) else {
@@ -222,6 +229,9 @@ pub(super) fn overview_strip_elements(
         }
         for (id, rect) in &card.windows {
             if let Some(window) = state.windows.window(*id) {
+                if capture && state.capture_protected(window) {
+                    continue;
+                }
                 let shape = window_corner_shape(window);
 
                 if let Some(programs) = corner_program(&mut state.render, renderer, shape) {

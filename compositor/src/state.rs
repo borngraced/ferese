@@ -1,4 +1,5 @@
 mod animation;
+mod capture_privacy;
 mod floating;
 mod focus;
 mod hit_testing;
@@ -339,6 +340,10 @@ pub struct Ferese {
     output_identity_ids: HashMap<String, OutputId>,
     pub(crate) windows: WindowRegistry<Window>,
     pub(crate) render: crate::render::RenderResources,
+    pub(crate) capture_render: crate::render::RenderResources,
+    pub(crate) capture_epoch: u64,
+    capture_protected_windows: HashSet<WindowId>,
+    capture_protected_cursor: Option<WlSurface>,
     pub(crate) daemons: Option<std::rc::Rc<std::cell::RefCell<crate::daemon::Runner>>>,
     pub(crate) display_presentation: crate::display_presentation::DisplayPresentation,
     pub(crate) nested_backend: Option<NestedBackend>,
@@ -572,6 +577,10 @@ impl Ferese {
             output_identity_ids: HashMap::new(),
             windows: WindowRegistry::default(),
             render: Default::default(),
+            capture_render: Default::default(),
+            capture_epoch: 0,
+            capture_protected_windows: HashSet::new(),
+            capture_protected_cursor: None,
             display_presentation: Default::default(),
             daemons: None,
             nested_backend: None,
@@ -795,6 +804,7 @@ impl Ferese {
         }
 
         if old_rules != self.window_rules {
+            self.refresh_capture_privacy();
             self.reapply_window_rules(&old_rules);
         }
 
