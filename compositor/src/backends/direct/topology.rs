@@ -13,6 +13,7 @@ pub(super) enum Availability {
 
 pub(super) struct DeviceState {
     pub availability: Availability,
+    identity: Option<PathBuf>,
     failures: u32,
     retry_at: Option<Instant>,
 }
@@ -21,13 +22,36 @@ impl Default for DeviceState {
     fn default() -> Self {
         Self {
             availability: Availability::Missing,
+            identity: None,
             failures: 0,
             retry_at: None,
         }
     }
 }
 
+fn device_identity(path: &Path) -> Option<PathBuf> {
+    // The parent hardware identity survives cardN renumbering after unplug.
+    std::fs::canonicalize(Path::new("/sys/class/drm").join(path.file_name()?).join("device")).ok()
+}
+
 impl DeviceState {
+    pub fn known(path: &Path) -> Self {
+        Self {
+            identity: device_identity(path),
+            ..Self::default()
+        }
+    }
+
+    fn current_path<'a>(&self, original: &Path, observed: &'a [(PathBuf, Option<PathBuf>)]) -> Option<&'a Path> {
+        observed
+            .iter()
+            .find(|(path, identity)| match &self.identity {
+                Some(expected) => identity.as_ref() == Some(expected),
+                None => path == original,
+            })
+            .map(|(path, _)| path.as_path())
+    }
+
     pub fn failed(&mut self, now: Instant) {
         self.availability = Availability::Unavailable;
         self.failures = self.failures.saturating_add(1);
@@ -41,7 +65,9 @@ impl DeviceState {
     }
 
     pub fn missing(&mut self) {
-        *self = Self::default();
+        self.availability = Availability::Missing;
+        self.failures = 0;
+        self.retry_at = None;
     }
 }
 
@@ -83,6 +109,31 @@ mod tests {
     }
 
     #[test]
+    fn replug_matches_hardware_even_when_card_numbers_change() {
+        let original = Path::new("/dev/dri/card0");
+        let identity = PathBuf::from("/sys/devices/pci0000:00/0000:00:02.0");
+        let mut slot = DeviceState {
+            identity: Some(identity.clone()),
+            ..DeviceState::default()
+        };
+        slot.failed(Instant::now());
+        slot.missing();
+        let observed = vec![
+            (
+                PathBuf::from("/dev/dri/card0"),
+                Some(PathBuf::from("/sys/devices/other-gpu")),
+            ),
+            (PathBuf::from("/dev/dri/card2"), Some(identity)),
+        ];
+        assert_eq!(
+            slot.current_path(original, &observed),
+            Some(Path::new("/dev/dri/card2"))
+        );
+        assert!(slot.current_path(original, &observed[..1]).is_none());
+        assert!(slot.current_path(original, &[]).is_none());
+    }
+
+    #[test]
     fn unavailable_devices_retry_independently_with_capped_backoff() {
         let now = Instant::now();
         let mut topology = Topology::default();
@@ -109,6 +160,17 @@ mod tests {
     }
 }
 
+fn slot_mut<'a>(state: &'a mut Ferese, path: &Path) -> &'a mut DeviceState {
+    state
+        .direct_backend
+        .as_mut()
+        .unwrap()
+        .topology
+        .devices
+        .get_mut(path)
+        .unwrap()
+}
+
 /// The only entry point for applying the current output configuration to DRM.
 pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
     let Some(backend) = state.direct_backend.as_mut() else {
@@ -121,14 +183,25 @@ pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
     backend.topology.reconciling = true;
     backend.topology.dirty = false;
     if reactivate {
-        backend.presentation.values_mut().for_each(PresentationClock::reset_timing);
+        backend
+            .presentation
+            .values_mut()
+            .for_each(PresentationClock::reset_timing);
     }
     if let Some(token) = backend.topology.retry_timer.take() {
         state.loop_handle.remove(token);
     }
     let paths = backend.topology.devices.keys().cloned().collect::<Vec<_>>();
     let invalidated = std::mem::take(&mut backend.topology.invalidated);
-    let observed = all_gpus(backend.session.seat());
+    let observed = all_gpus(backend.session.seat()).map(|paths| {
+        paths
+            .into_iter()
+            .map(|path| {
+                let identity = device_identity(&path);
+                (path, identity)
+            })
+            .collect::<Vec<_>>()
+    });
     let automatic = state
         .output_profiles
         .iter()
@@ -141,27 +214,24 @@ pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
     }
 
     for path in paths {
-        let existing = DrmNode::from_path(&path)
+        let slot = &state.direct_backend.as_ref().unwrap().topology.devices[&path];
+        let current_path = observed
+            .as_ref()
             .ok()
+            .and_then(|devices| slot.current_path(&path, devices));
+        let existing = current_path
+            .and_then(|path| DrmNode::from_path(path).ok())
             .filter(|node| state.direct_backend.as_ref().unwrap().devices.contains_key(node));
-        // If the path vanished, its retained identity still identifies the old fd.
-        let previous = match state.direct_backend.as_ref().unwrap().topology.devices[&path].availability {
+        let previous = match slot.availability {
             Availability::Ready(node) | Availability::Degraded(node) => Some(node),
             _ => existing,
         };
-        let found = observed.as_ref().map(|paths| paths.contains(&path));
+        let found = observed.as_ref().map(|_| current_path.is_some());
         if !matches!(found, Ok(true)) {
             if let Some(node) = previous {
                 remove_device(state, node);
             }
-            let entry = state
-                .direct_backend
-                .as_mut()
-                .unwrap()
-                .topology
-                .devices
-                .get_mut(&path)
-                .unwrap();
+            let entry = slot_mut(state, &path);
             match found {
                 Ok(false) => entry.missing(),
                 Err(error) => {
@@ -178,19 +248,11 @@ pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
         }
         let node = match existing {
             Some(node) => node,
-            None => match open_device(state, &path) {
+            None => match open_device(state, current_path.unwrap()) {
                 Ok(node) => node,
                 Err(error) => {
                     tracing::warn!(%error, ?path, "DRM device unavailable; will retry");
-                    state
-                        .direct_backend
-                        .as_mut()
-                        .unwrap()
-                        .topology
-                        .devices
-                        .get_mut(&path)
-                        .unwrap()
-                        .failed(Instant::now());
+                    slot_mut(state, &path).failed(Instant::now());
                     continue;
                 }
             },
@@ -223,15 +285,7 @@ pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
         if let Err(error) = activation {
             tracing::warn!(%error, ?node, "DRM reactivation failed; retiring unavailable outputs");
             remove_device(state, node);
-            state
-                .direct_backend
-                .as_mut()
-                .unwrap()
-                .topology
-                .devices
-                .get_mut(&path)
-                .unwrap()
-                .failed(Instant::now());
+            slot_mut(state, &path).failed(Instant::now());
             continue;
         }
 
@@ -261,14 +315,7 @@ pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
         if complete.is_err() {
             remove_device(state, node);
         }
-        let entry = state
-            .direct_backend
-            .as_mut()
-            .unwrap()
-            .topology
-            .devices
-            .get_mut(&path)
-            .unwrap();
+        let entry = slot_mut(state, &path);
         if complete == Ok(true) {
             entry.ready(node);
         } else {

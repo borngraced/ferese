@@ -266,7 +266,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         .unwrap()
         .topology
         .devices
-        .insert(primary_path, Default::default());
+        .insert(primary_path.clone(), topology::DeviceState::known(&primary_path));
     lid::request_refresh(state, false);
 
     event_loop
@@ -508,9 +508,6 @@ fn open_device(state: &mut Ferese, path: &Path) -> Result<DrmNode, Box<dyn Error
         .and_then(Result::ok)
         .unwrap_or(node);
     let feedback = DmabufFeedbackBuilder::new(render_node.dev_id(), dmabuf_formats).build()?;
-    let dmabuf_global = state
-        .dmabuf_state
-        .create_global_with_default_feedback::<Ferese>(&display_handle, &feedback);
     let registration = state
         .loop_handle
         .insert_source(notifier, move |event, metadata, state| match event {
@@ -633,6 +630,9 @@ fn open_device(state: &mut Ferese, path: &Path) -> Result<DrmNode, Box<dyn Error
             }
         })?;
 
+    let dmabuf_global = state
+        .dmabuf_state
+        .create_global_with_default_feedback::<Ferese>(&display_handle, &feedback);
     state
         .direct_backend
         .as_mut()
@@ -1311,6 +1311,12 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) -> Result<bool, ()> {
     }
 
     {
+        // Connector detection is not proof that its requested mode was applied.
+        for info in &mut device.connected_outputs {
+            info.enabled = false;
+            info.current_mode = None;
+        }
+
         for output in device.outputs.values() {
             if let Some(info) = device
                 .connected_outputs

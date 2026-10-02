@@ -74,3 +74,34 @@ multiple monitors, display sleep, and live authentication still need session tes
 Include the commit or installed release, reproduction steps, backend (nested or
 direct), monitor scales/transforms, and relevant logs. Avoid publishing passwords,
 access tokens, or private window content.
+
+## Resume recovery
+
+The direct backend retains known GPU identities while their DRM resources are
+unavailable. Hotplug, configuration and lid changes reconcile through one path;
+inactive sessions defer that work. Activation reads the lid asynchronously, then
+re-enumerates devices and connectors before allowing presentation. A logind
+system-wake signal follows the same path, including when seat ownership did not
+change. Newer libinput observations supersede in-flight lid reads. A failed read
+preserves the last observation; a three-second deadline prevents a stalled bus
+from blocking recovery indefinitely.
+
+Device failures retire their output globals and retry with exponential backoff
+capped at 32 seconds. Working devices remain usable. Known hardware can return
+under a different `cardN` path. This does not expand support to previously
+unmanaged secondary GPUs. Connected-output reports mark a mode active only when
+output creation succeeded. Lock ownership is retained throughout recovery.
+
+Run the ordering and private D-Bus checks with:
+
+```sh
+cargo test --locked -p ferese backends::direct::topology
+cargo test --locked -p ferese backends::direct::lid -- --include-ignored
+```
+
+The D-Bus test requires `dbus-daemon` and permission to create private sockets.
+Hardware validation still needs a direct session: change monitors while on
+another VT, suspend/resume with a dock disconnected, change the lid while
+suspended, and unplug/reconnect the managed GPU where supported. Verify current
+output geometry, idle notifications, recovery after failures and continued lock
+protection. Nested sessions do not validate DRM reacquisition.
