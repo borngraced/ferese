@@ -225,6 +225,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
 }
 
 fn send_nested_frame_callbacks(state: &mut Ferese, output: &Output) {
+    let eligible = state.callback_outputs();
     if state.session_lock.active {
         state.lock_frame_callbacks(output);
         return;
@@ -237,14 +238,10 @@ fn send_nested_frame_callbacks(state: &mut Ferese, output: &Output) {
             .get(*window)
             .is_some_and(|id| state.window_belongs_to_output(*id, output))
     }) {
-        window.send_frame(output, time, None, |surface, _| {
-            state.display_presentation.callback_output(&surface.into())
-        });
+        window.send_frame(output, time, None, |surface, _| eligible.get(&surface.into()).cloned());
     }
     for layer in layer_surfaces(output) {
-        layer.send_frame(output, time, None, |surface, _| {
-            state.display_presentation.callback_output(&surface.into())
-        });
+        layer.send_frame(output, time, None, |surface, _| eligible.get(&surface.into()).cloned());
     }
     state.send_cursor_frame(output);
 }

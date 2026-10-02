@@ -20,6 +20,7 @@ mod overview;
 mod portal_session;
 mod portal_shortcuts;
 mod presentation;
+mod presentation_policy;
 mod private_client;
 mod reload;
 mod render;

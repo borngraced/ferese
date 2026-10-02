@@ -44,9 +44,6 @@ impl Ferese {
                 geometry.settle_presentation();
             }
 
-            window.with_surfaces(|surface, _| {
-                self.display_presentation.remove_surface(&surface.into());
-            });
             self.space.unmap_elem(&window);
         }
         self.refresh_idle_inhibition();

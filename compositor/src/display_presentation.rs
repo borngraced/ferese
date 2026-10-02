@@ -43,28 +43,16 @@ impl DisplayPresentation {
         }
     }
 
+    #[cfg(test)]
     pub fn visible(&self, surface: &Id) -> bool {
         self.outputs.values().any(|record| record.displayed.contains(surface))
     }
 
-    // Membership describes every output; callback ownership is a separate choice.
-    // A stable tie-break avoids alternating owners when refresh rates match.
-    pub fn callback_output(&self, surface: &Id) -> Option<Output> {
+    pub fn outputs_for<'a>(&'a self, surface: &'a Id) -> impl Iterator<Item = &'a Output> {
         self.outputs
             .iter()
             .filter(|(_, record)| record.displayed.contains(surface))
             .map(|(output, _)| output)
-            .max_by_key(|output| (output.current_mode().map_or(0, |mode| mode.refresh), output.name()))
-            .cloned()
-    }
-
-    pub fn remove_surface(&mut self, surface: &Id) {
-        for record in self.outputs.values_mut() {
-            record.displayed.remove(surface);
-            if let Some(queued) = &mut record.queued {
-                queued.remove(surface);
-            }
-        }
     }
 
     pub fn remove_output(&mut self, output: &Output) {
@@ -126,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn outputs_are_independent_and_removal_cannot_resurrect_a_surface() {
+    fn outputs_are_independent_and_queued_history_survives_until_presentation() {
         let mut record = DisplayPresentation::default();
         let a = output("a");
         let b = output("b");
@@ -138,9 +126,9 @@ mod tests {
         record.remove_output(&a);
         assert!(record.visible(&id));
         record.queued(&b, &scene(&id));
-        record.remove_surface(&id);
+        assert!(record.visible(&id));
         record.presented(&b);
-        assert!(!record.visible(&id));
+        assert!(record.visible(&id));
         record.clear();
         assert!(!record.visible(&id));
     }
@@ -154,21 +142,5 @@ mod tests {
         states.states.get_mut(&id).unwrap().visible_area = 20;
         states.states.get_mut(&id).unwrap().presentation_state = RenderElementPresentationState::Skipped;
         assert!(visible(&states).is_empty());
-    }
-    #[test]
-    fn callback_ownership_is_stable_and_moves_when_an_output_disappears() {
-        let mut record = DisplayPresentation::default();
-        let a = output("a");
-        let b = output("b");
-        let id = Id::new();
-        for output in [&a, &b] {
-            record.queued(output, &scene(&id));
-            record.presented(output);
-        }
-        assert_eq!(record.callback_output(&id), Some(b.clone()));
-        record.remove_output(&b);
-        assert_eq!(record.callback_output(&id), Some(a.clone()));
-        record.remove_surface(&id);
-        assert_eq!(record.callback_output(&id), None);
     }
 }

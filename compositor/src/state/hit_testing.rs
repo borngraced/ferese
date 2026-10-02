@@ -109,6 +109,7 @@ impl Ferese {
     }
 
     pub fn send_cursor_frame(&self, output: &Output) {
+        let eligible = self.callback_outputs();
         let CursorImageStatus::Surface(surface) = &self.cursor_status else {
             return;
         };
@@ -120,7 +121,7 @@ impl Ferese {
         }
 
         send_frames_surface_tree(surface, output, self.start_time.elapsed(), None, |surface, _| {
-            self.display_presentation.callback_output(&surface.into())
+            eligible.get(&surface.into()).cloned()
         });
     }
 

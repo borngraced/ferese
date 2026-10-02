@@ -1560,6 +1560,7 @@ fn deliver_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle
 }
 
 fn send_frame_callbacks(state: &mut Ferese, output: &Output) {
+    let eligible = state.callback_outputs();
     if state.session_lock.active {
         state.lock_frame_callbacks(output);
         return;
@@ -1576,13 +1577,13 @@ fn send_frame_callbacks(state: &mut Ferese, output: &Output) {
         })
         .for_each(|window| {
             window.send_frame(output, state.start_time.elapsed(), None, |surface, _| {
-                state.display_presentation.callback_output(&surface.into())
+                eligible.get(&surface.into()).cloned()
             });
         });
     let layers = layer_map_for_output(output).layers().cloned().collect::<Vec<_>>();
     layers.iter().for_each(|layer| {
         layer.send_frame(output, state.start_time.elapsed(), None, |surface, _| {
-            state.display_presentation.callback_output(&surface.into())
+            eligible.get(&surface.into()).cloned()
         });
     });
     state.send_cursor_frame(output);
