@@ -3,7 +3,7 @@ name = "ferese-polkit-agent"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-rust-version = "1.95"
+rust-version.workspace = true
 
 [dependencies]
 ferese-config = { path = "../../crates/ferese-config" }

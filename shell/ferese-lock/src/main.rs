@@ -1,5 +1,3 @@
-#![feature(box_patterns)]
-
 mod appearance;
 mod auth;
 mod runtime;
@@ -264,9 +262,7 @@ impl cosmic::Application for Locker {
                     }
                 }
             }
-            Message::Event(box Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers))) => {
-                self.caps_lock = modifiers.contains(iced::keyboard::Modifiers::CAPS_LOCK);
-            }
+            Message::Event(event) => return self.handle_event(*event),
             Message::Tick => {
                 let now = jiff::Zoned::now();
                 self.clock = now.strftime(self.appearance.clock_format()).to_string();
@@ -315,56 +311,8 @@ impl cosmic::Application for Locker {
                 self.status = "Password not accepted. Try again.";
                 return focus();
             }
-            Message::Event(box Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Output(
-                event,
-                output,
-            )))) if !self.preview => {
-                if matches!(event, wayland::OutputEvent::Removed) {
-                    if let Some(id) = self.outputs.remove(&output) {
-                        return session_lock::destroy_lock_surface(id);
-                    }
-                } else if !self.outputs.contains_key(&output) {
-                    let id = window::Id::unique();
-                    self.outputs.insert(output.clone(), id);
-                    if self.started {
-                        return session_lock::get_lock_surface(id, output);
-                    }
-                }
-            }
-            Message::Event(box Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::SessionLock(
-                event,
-            )))) if !self.preview => match event {
-                wayland::SessionLockEvent::Locked => {
-                    if self.confirmation.observe() {
-                        use std::io::Write;
-                        if std::env::var_os("FERESE_LOCK_READY").is_some() {
-                            let _ = writeln!(std::io::stdout().lock(), "FERESE_LOCKED");
-                        }
-                    }
-                    if !self.started {
-                        self.started = true;
-                        return Task::batch(
-                            self.outputs
-                                .iter()
-                                .map(|(output, id)| session_lock::get_lock_surface(*id, output.clone())),
-                        );
-                    }
-                }
-                wayland::SessionLockEvent::Focused(..) => return focus(),
-                wayland::SessionLockEvent::Unlocked if self.state == AuthState::Unlocking => {
-                    return iced::exit();
-                }
-                wayland::SessionLockEvent::Finished | wayland::SessionLockEvent::NotSupported => {
-                    eprintln!("ferese-lock: compositor refused the lock");
-                    return iced::exit();
-                }
-                _ => {}
-            },
-            Message::Event(box Event::Window(window::Event::Opened { .. })) => {
-                return focus();
-            }
-            _ => {}
         }
+
         Task::none()
     }
 
@@ -387,6 +335,64 @@ fn focus() -> Task<Message> {
 }
 
 impl Locker {
+    fn handle_event(&mut self, event: Event) -> Task<Message> {
+        match event {
+            Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) => {
+                self.caps_lock = modifiers.contains(iced::keyboard::Modifiers::CAPS_LOCK);
+            }
+            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Output(event, output)))
+                if !self.preview =>
+            {
+                if matches!(event, wayland::OutputEvent::Removed) {
+                    if let Some(id) = self.outputs.remove(&output) {
+                        return session_lock::destroy_lock_surface(id);
+                    }
+                } else if !self.outputs.contains_key(&output) {
+                    let id = window::Id::unique();
+                    self.outputs.insert(output.clone(), id);
+                    if self.started {
+                        return session_lock::get_lock_surface(id, output);
+                    }
+                }
+            }
+            Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::SessionLock(event))) if !self.preview => {
+                match event {
+                    wayland::SessionLockEvent::Locked => {
+                        if self.confirmation.observe() {
+                            use std::io::Write;
+                            if std::env::var_os("FERESE_LOCK_READY").is_some() {
+                                let _ = writeln!(std::io::stdout().lock(), "FERESE_LOCKED");
+                            }
+                        }
+                        if !self.started {
+                            self.started = true;
+                            return Task::batch(
+                                self.outputs
+                                    .iter()
+                                    .map(|(output, id)| session_lock::get_lock_surface(*id, output.clone())),
+                            );
+                        }
+                    }
+                    wayland::SessionLockEvent::Focused(..) => return focus(),
+                    wayland::SessionLockEvent::Unlocked if self.state == AuthState::Unlocking => {
+                        return iced::exit();
+                    }
+                    wayland::SessionLockEvent::Finished | wayland::SessionLockEvent::NotSupported => {
+                        eprintln!("ferese-lock: compositor refused the lock");
+                        return iced::exit();
+                    }
+                    _ => {}
+                }
+            }
+            Event::Window(window::Event::Opened { .. }) => {
+                return focus();
+            }
+            _ => {}
+        }
+
+        Task::none()
+    }
+
     fn label<'a>(
         &self,
         label: impl Into<std::borrow::Cow<'a, str>> + 'a,

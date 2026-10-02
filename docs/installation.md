@@ -9,14 +9,14 @@ For a full session, you’ll need a Wayland-capable graphics driver and a local 
 session with seat access through logind or seatd. A nested preview runs inside your
 existing Wayland desktop.
 
-To build Ferese, install **Rust 1.95 or newer**, a C/C++ toolchain, CMake, pkg-config
-and the libraries below. The installer builds the Ferese components once those system
-packages are in place.
+To build Ferese, install **Rust 1.95.0**, a C/C++ toolchain, CMake, pkg-config,
+Python 3.9 or newer, and the libraries below. Once those packages are installed,
+the installer builds the Ferese components.
 
 ### Fedora
 
 ```sh
-sudo dnf install git curl gcc gcc-c++ make cmake pkgconf-pkg-config \
+sudo dnf install python3 git curl gcc gcc-c++ make cmake pkgconf-pkg-config \
   wayland-devel libxkbcommon-devel libinput-devel systemd-devel libseat-devel \
   mesa-libgbm-devel mesa-libEGL-devel libdrm-devel fontconfig-devel \
   freetype-devel expat-devel dbus-daemon dbus-tools desktop-file-utils foot pam \
@@ -28,7 +28,7 @@ sudo dnf install git curl gcc gcc-c++ make cmake pkgconf-pkg-config \
 ### Arch Linux
 
 ```sh
-sudo pacman -S --needed base-devel git curl cmake pkgconf wayland libxkbcommon \
+sudo pacman -S --needed python base-devel git curl cmake pkgconf wayland libxkbcommon \
   libinput systemd seatd mesa libdrm fontconfig freetype2 expat dbus \
   desktop-file-utils foot pam clang pipewire libpipewire wireplumber polkit \
   xdg-desktop-portal xdg-desktop-portal-gtk \
@@ -39,7 +39,7 @@ sudo pacman -S --needed base-devel git curl cmake pkgconf wayland libxkbcommon \
 
 ```sh
 sudo apt update
-sudo apt install build-essential git curl cmake pkg-config libwayland-dev \
+sudo apt install python3 build-essential git curl cmake pkg-config libwayland-dev \
   libxkbcommon-dev libinput-dev libudev-dev libseat-dev libgbm-dev libegl-dev \
   libdrm-dev libfontconfig1-dev libfreetype-dev libexpat1-dev dbus-bin \
   dbus-user-session desktop-file-utils foot libpam0g clang libclang-dev \
@@ -56,20 +56,15 @@ libraries.
 
 ### Rust toolchain
 
-Check your toolchain:
+Install Rust through [rustup.rs](https://rustup.rs/). The checkout's
+`rust-toolchain.toml` selects the required compiler and rustfmt automatically.
+All workspace crates inherit their minimum Rust version from the root `Cargo.toml`.
+
+From inside the checkout, verify the selected toolchain:
 
 ```sh
-rustc --version
+rustup show active-toolchain
 cargo --version
-```
-
-If you don’t have Rust yet, follow the instructions at [rustup.rs](https://rustup.rs/)
-and reopen your terminal, then select the required toolchain for this checkout after
-cloning:
-
-```sh
-rustup toolchain install 1.95.0
-rustup override set 1.95.0
 ```
 
 ## Build and install
@@ -233,11 +228,22 @@ git pull --ff-only
 Log out and back in to use the new release. A running session keeps its existing
 processes and release paths until it restarts.
 
-Each release records the portal configuration it ships so later upgrades can identify
-it. Installation stops if it encounters modified or untracked administrator files.
-To replace Ferese portal configuration from an earlier development install, build first
-and run `./scripts/install.sh --skip-build --replace-portal-config`, which backs up the
-existing files in the new release’s `portal-config.previous/` directory.
+The installer prepares a complete release bundle before asking for administrator
+access. Its manifest records the source commit, dirty-tree status, build features,
+file modes and SHA-256 checksums. The installer verifies the bundle again after
+copying it into a root-owned staging directory. These checks detect changed or incomplete
+bundles; they are not a publisher signature.
+
+The installer reports system installation and user setup separately. If user setup
+fails after installation, retry it as your normal user:
+
+```sh
+python3 scripts/installer/install.py user-setup
+```
+
+This backs up the exact old development portal override when present and reloads
+user systemd configuration. It preserves custom overrides and does not restart the
+running desktop or portal.
 
 Installer options:
 
@@ -245,17 +251,39 @@ Installer options:
 ./scripts/install.sh --dry-run
 ./scripts/install.sh --offline --release-id my-build
 ./scripts/install.sh --resize-metrics
-./scripts/install.sh --skip-build
+./scripts/install.sh --bundle-only ./target/bundles/my-build --release-id my-build
+./scripts/install.sh --bundle ./target/bundles/my-build
 ```
 
-Use `--dry-run` to see the planned commands, `--offline` when dependencies are already
-cached, or `--skip-build` after building every component from the revision you want to
-install. The latter uses binaries already in `target/release/`, and
-`./scripts/install.sh --help` lists all available options.
+`--bundle` replaces `--skip-build` and installs a complete bundle instead of loose
+files in `target/release/`. Build options cannot be combined with `--bundle`.
+The front-end dry run prints commands. To inspect the filesystem changes planned
+for an existing bundle, run:
 
-Use `--resize-metrics` to enable resize-barrier counters and duration histograms in
-the release build. Ferese prints the measurements to its session log on normal exit.
-This option requires building and cannot be combined with `--skip-build`.
+```sh
+./scripts/install-session.sh install ./target/bundles/my-build --dry-run
+```
+
+Modified administrator files stop installation before activation. To explicitly
+replace Ferese's portal definition and preferences, use
+`./scripts/install.sh --bundle ./target/bundles/my-build --replace-portal-config`.
+Transaction backups live under `/usr/local/lib/ferese/transactions/`; each
+`journal.json` maps the numbered backups to their original paths. Existing PAM
+policies are preserved.
+
+A lock prevents concurrent installations. The installer records recovery data
+before changing system files, then updates integration files and switches `current`
+last. If an operation fails, it restores the previous files. After an interruption,
+recovery runs on the next install, or you can run it yourself:
+
+```sh
+sudo ./scripts/install-session.sh recover
+```
+
+Recovery stops if a recorded file was subsequently changed by an administrator.
+Inspect the conflict and the retained `.transaction/journal.json` before restoring
+the recorded old or new contents and retrying. Multi-file installation is
+recoverable, not a single atomic filesystem operation.
 
 ## Logout and recovery
 
@@ -274,29 +302,29 @@ then choose another desktop at the next login.
 
 ### Roll back a release
 
-While Ferese is stopped, inspect the retained releases:
+Stop the Ferese session, then run from the checkout:
 
 ```sh
-readlink /usr/local/lib/ferese/current
-readlink /usr/local/lib/ferese/previous
-ls /usr/local/lib/ferese/releases/
+sudo ./scripts/install-session.sh rollback
+# Or select a retained bundle by its release ID:
+sudo ./scripts/install-session.sh rollback my-build
 ```
 
-If `previous` exists and points to the release you want, switch back:
+Rollback restores both the binaries and that release's session, systemd, portal
+and icon files. It refuses to overwrite modified administrator files and preserves
+existing PAM policy. Log in again to use the selected release. After rollback,
+`previous` points to the release you just left.
+
+Releases installed before bundle manifests can be upgraded using their retained
+ownership records, but cannot be selected by this rollback command. Keep the old
+release directory until you have validated the first bundled installation.
+
+To remove managed commands and desktop integration while retaining release bundles,
+transaction backups, PAM policy and user configuration:
 
 ```sh
-sudo sh -eu -c '
-  cd /usr/local/lib/ferese
-  previous_release=$(readlink previous)
-  test -x "$previous_release/ferese-session"
-  ln -sfn -- "$previous_release" current-rollback
-  mv -Tf -- current-rollback current
-'
+sudo ./scripts/install-session.sh uninstall
 ```
-
-Log in again to use the selected binaries, with your config and PAM policy still in
-place. If you also need to recover a configuration edit, Settings keeps a backup when
-saving, as described in [Saving and validation](configuration.md#saving-and-validation).
 
 ### Remove the login option
 

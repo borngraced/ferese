@@ -3,7 +3,7 @@ name = "xdg-desktop-portal-ferese"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-rust-version = "1.95"
+rust-version.workspace = true
 
 [[bin]]
 name = "xdg-desktop-portal-ferese"
