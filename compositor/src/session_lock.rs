@@ -145,6 +145,11 @@ impl Lock {
 }
 
 impl Ferese {
+    pub(crate) fn refresh_lock_outputs(&mut self) {
+        self.confirm_lock_if_ready();
+        self.refresh_lock_idle_policy();
+    }
+
     fn lock_outputs_protected(&self) -> bool {
         if let Some(backend) = self.direct_backend.as_ref() {
             // Reconciliation temporarily removes devices while staging changes.
@@ -566,7 +571,7 @@ mod tests {
         dispatch(&mut event_loop, &mut state);
         assert!(matches!(state.session_lock.lifecycle, Lifecycle::Orphaned));
 
-        let _replacement = acquire(&mut state);
+        let replacement = acquire(&mut state);
         dispatch(&mut event_loop, &mut state);
         assert!(matches!(state.session_lock.lifecycle, Lifecycle::Acquiring(_)));
         state.unregister_output(&output);
@@ -574,6 +579,30 @@ mod tests {
             matches!(state.session_lock.lifecycle, Lifecycle::Locked(_)),
             "removing the last pending output must confirm"
         );
+
+        drop(replacement);
+        dispatch(&mut event_loop, &mut state);
+        state.space.map_output(&output, (0, 0));
+        state.session_lock.output_added(&output);
+
+        let mut pending = acquire(&mut state);
+        dispatch(&mut event_loop, &mut state);
+        assert!(matches!(state.session_lock.lifecycle, Lifecycle::Acquiring(_)));
+        assert!(state.session_lock.idle_timer.is_none());
+
+        // Remove the final display without delivering a frame or confirming during removal.
+        state.space.unmap_output(&output);
+        state.session_lock.output_removed(&output);
+        assert!(matches!(state.session_lock.lifecycle, Lifecycle::Acquiring(_)));
+
+        state.refresh_lock_outputs();
+        assert!(matches!(state.session_lock.lifecycle, Lifecycle::Locked(_)));
+        assert!(state.session_lock.idle_timer.is_some());
+        state.display_handle.flush_clients().unwrap();
+        pending.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        pending.read_exact(&mut event).unwrap();
+        assert_eq!(u32::from_ne_bytes(event[..4].try_into().unwrap()), 2);
+        assert_eq!(u32::from_ne_bytes(event[4..].try_into().unwrap()), 8u32 << 16);
     }
 
     #[test]

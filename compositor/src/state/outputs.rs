@@ -136,8 +136,7 @@ impl Ferese {
         self.session_lock.surfaces.remove(output);
         self.session_lock.backgrounds.remove(output);
         self.session_lock.output_removed(output);
-        self.confirm_lock_if_ready();
-        self.refresh_lock_idle_policy();
+        self.refresh_lock_outputs();
 
         let old_geometry = self.output_workspaces.geometry(output_id);
         let evacuated = self

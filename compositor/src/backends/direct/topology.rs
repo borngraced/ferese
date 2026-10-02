@@ -346,6 +346,7 @@ pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
         }
     }
 
+    state.refresh_lock_outputs();
     state.refresh_idle_inhibition();
     sync_battery_timer(state);
     state.restore_output_focus();
