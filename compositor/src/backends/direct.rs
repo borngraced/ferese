@@ -6,6 +6,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 mod capture;
+mod lid;
 mod output_power;
 mod planes;
 mod redraw;
@@ -53,7 +54,8 @@ use crate::render::{frame_effect_metrics, sampled_output_elements};
 pub struct DirectBackendState {
     pub session: LibSeatSession,
     pub active: bool,
-    lid_closed: bool,
+    lid: lid::LidState,
+    lid_reader: lid::Reader,
     topology: Topology,
     pub(crate) low_power: bool,
     devices: HashMap<DrmNode, DirectDevice>,
@@ -69,7 +71,7 @@ pub struct DirectBackendState {
 
 impl DirectBackendState {
     fn can_render(&self) -> bool {
-        self.active && !self.topology.reconciling
+        self.active && !self.topology.reconciling && !self.lid.pending()
     }
 
     pub(crate) fn dump_scheduling_metrics(&self) {
@@ -239,10 +241,12 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         libinput_context.suspend();
     }
 
+    let lid_reader = lid::Reader::start(state)?;
     state.direct_backend = Some(DirectBackendState {
         session,
         active: session_active,
-        lid_closed: initial_lid_closed(),
+        lid: lid::LidState::default(),
+        lid_reader,
         topology: Topology::default(),
         low_power: super::power::low_power(false, super::power::battery_percent()),
         devices: HashMap::new(),
@@ -263,8 +267,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         .topology
         .devices
         .insert(primary_path, Default::default());
-    reconcile_outputs(state, false);
-    sync_battery_timer(state);
+    lid::request_refresh(state, false);
 
     event_loop
         .handle()
@@ -291,6 +294,10 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                 let handle = state.loop_handle.clone();
                 if let Some(backend) = state.direct_backend.as_mut() {
                     backend.active = false;
+                    backend.lid.pause();
+                    if let Some(token) = backend.lid_reader.deadline.take() {
+                        handle.remove(token);
+                    }
                     backend.topology.dirty = true;
                     if let Some(token) = backend.topology.retry_timer.take() {
                         handle.remove(token);
@@ -336,12 +343,8 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
 
                 let seat = state.seat.clone();
                 state.idle_notifier_state.notify_activity(&seat);
-                reconcile_outputs(state, true);
-                sync_battery_timer(state);
-                state.reset_animation_clock();
-                tracing::info!("direct session activated");
-                state.lock_input_activity();
-                render_all(state);
+                lid::request_refresh(state, true);
+                tracing::info!("direct session reacquired; refreshing external state");
             }
         })?;
     event_loop.handle().insert_source(udev_backend, |event, _, state| {
@@ -468,7 +471,7 @@ pub(crate) fn validate_live_outputs(state: &Ferese, profiles: &[OutputProfile]) 
     let mut usable = 0;
     for device in backend.devices.values() {
         let mut scan = select_outputs(&device.drm, profiles, backend.low_power).map_err(|e| e.to_string())?;
-        apply_lid_policy(&mut scan, backend.lid_closed);
+        apply_lid_policy(&mut scan, backend.lid.closed());
         usable += scan.selections.len();
     }
     if usable == 0 {
@@ -864,22 +867,19 @@ pub(crate) fn set_lid_closed(state: &mut Ferese, closed: bool) {
     let Some(backend) = state.direct_backend.as_mut() else {
         return;
     };
-    if backend.lid_closed == closed {
-        return;
+    // Even an unchanged switch observation supersedes an in-flight DBus read.
+    if backend.lid.observe(closed) {
+        tracing::info!(closed, "laptop lid state changed");
+        reconcile_outputs(state, false);
     }
-    backend.lid_closed = closed;
-    tracing::info!(closed, "laptop lid state changed");
-    reconcile_outputs(state, false);
 }
 
-fn initial_lid_closed() -> bool {
-    std::fs::read_dir("/proc/acpi/button/lid")
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(Result::ok)
-        .filter_map(|entry| std::fs::read_to_string(entry.path().join("state")).ok())
-        .any(|state| state.split_whitespace().last() == Some("closed"))
+pub(crate) fn system_resumed(state: &mut Ferese) {
+    if state.direct_backend.as_ref().is_some_and(|backend| backend.active) {
+        let seat = state.seat.clone();
+        state.idle_notifier_state.notify_activity(&seat);
+    }
+    lid::request_refresh(state, true);
 }
 
 fn internal_connector(interface: connector::Interface) -> bool {
@@ -1122,7 +1122,10 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) -> Result<bool, ()> {
         }
     };
 
-    let lid_closed = state.direct_backend.as_ref().is_some_and(|backend| backend.lid_closed);
+    let lid_closed = state
+        .direct_backend
+        .as_ref()
+        .is_some_and(|backend| backend.lid.closed());
     apply_lid_policy(&mut scan, lid_closed);
     device.connected_outputs = scan.connected_outputs;
     let mut complete = true;
@@ -1562,6 +1565,7 @@ fn deliver_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle
     output.callback_timer = None;
     if !backend.active
         || backend.topology.reconciling
+        || backend.lid.pending()
         || !device.drm.is_active()
         || !output.power.can_render()
         || state.session_lock.sleeping

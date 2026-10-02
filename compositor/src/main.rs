@@ -27,6 +27,7 @@ mod render;
 #[cfg(feature = "resize-metrics")]
 mod resize_metrics;
 mod resize_transaction;
+mod resume;
 mod session_lock;
 mod shell_control;
 mod stacking;
@@ -93,6 +94,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut state = Ferese::new(&mut event_loop, display, runtime)?;
     state.config_source = initial_source.filter(|source| source.len() <= 60 * 1024);
     theme::init(&mut event_loop, &mut state, candidate)?;
+    resume::init(&mut event_loop)?;
     overview::init_font_loader(&mut event_loop, &mut state)?;
     backends::init(launch.backend, &mut event_loop, &mut state)?;
     info!(socket = ?state.socket_name, backend = ?launch.backend, "Ferese is accepting Wayland clients");

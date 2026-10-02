@@ -114,12 +114,15 @@ pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
     let Some(backend) = state.direct_backend.as_mut() else {
         return;
     };
-    if !backend.topology.request(backend.active) {
+    if !backend.topology.request(backend.active && !backend.lid.pending()) {
         return;
     }
 
     backend.topology.reconciling = true;
     backend.topology.dirty = false;
+    if reactivate {
+        backend.presentation.values_mut().for_each(PresentationClock::reset_timing);
+    }
     if let Some(token) = backend.topology.retry_timer.take() {
         state.loop_handle.remove(token);
     }
@@ -198,6 +201,15 @@ pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
             let device = state.direct_backend.as_mut().unwrap().devices.get_mut(&node).unwrap();
             device.drm.activate(true).map(|()| {
                 for (crtc, output) in &mut device.outputs {
+                    cancel_output_timers(&state.loop_handle, output);
+                    output.surface.reset_buffers();
+                    output.primary_commit = None;
+                    output.capture_texture = None;
+                    output.frame_pending = false;
+                    output.lock_frame_pending = false;
+                    output.power.suspended();
+                    state.display_presentation.remove_output(&output.output);
+
                     if let Err(error) = output.surface.clear().and_then(|()| output.surface.reset_state()) {
                         tracing::warn!(%error, ?node, ?crtc, "output reset failed; recreating output");
                         failed_outputs.push(*crtc);
@@ -291,6 +303,7 @@ pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
         }
     }
 
+    state.refresh_idle_inhibition();
     sync_battery_timer(state);
     state.restore_output_focus();
     state.relayout();

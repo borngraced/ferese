@@ -265,32 +265,6 @@ pub(crate) fn init(
     }
     paths.lock().unwrap().insert(PathBuf::from("/etc/localtime"));
     let wakeup = state.loop_signal.clone();
-    let resume_sender = sender.clone();
-    let resume_wakeup = wakeup.clone();
-    std::thread::Builder::new()
-        .name("ferese-theme-resume".into())
-        .spawn(move || {
-            let monitor = || -> zbus::Result<()> {
-                let connection = zbus::blocking::Connection::system()?;
-                let proxy = zbus::blocking::Proxy::new(
-                    &connection,
-                    "org.freedesktop.login1",
-                    "/org/freedesktop/login1",
-                    "org.freedesktop.login1.Manager",
-                )?;
-                for message in proxy.receive_signal("PrepareForSleep")? {
-                    let (sleeping,): (bool,) = message.body().deserialize()?;
-                    if !sleeping {
-                        let _ = resume_sender.try_send(());
-                        resume_wakeup.wakeup();
-                    }
-                }
-                Ok(())
-            };
-            if let Err(error) = monitor() {
-                tracing::warn!(%error, "theme resume monitor unavailable");
-            }
-        })?;
     let system_sender = sender.clone();
     let system_wakeup = wakeup.clone();
     std::thread::Builder::new()
