@@ -77,6 +77,7 @@ pub(super) fn append_material_surface(
                 clip_rect: *clip_rect,
                 radius: *radius,
                 clip_changed: false,
+                opaque_clip: None,
             })
         } else {
             WindowContentRenderElement::Popup(element)

@@ -399,6 +399,39 @@ struct RoundedSurfaceRenderElement {
     clip_rect: [f32; 4],
     radius: f32,
     clip_changed: bool,
+    opaque_clip: Option<Rectangle<i32, Physical>>,
+}
+
+fn rounded_opaque_regions(
+    opaque: &[Rectangle<i32, Physical>],
+    location: Point<i32, Physical>,
+    clip: Rectangle<i32, Physical>,
+    radius: f32,
+) -> OpaqueRegions<i32, Physical> {
+    // Stay a physical pixel inside the AA edge. The two strips cover the
+    // solid cross without claiming any opacity in the curved corners.
+    let inset = radius.ceil() as i32 + 1;
+    let interiors = [
+        Rectangle::new(
+            (clip.loc.x + inset, clip.loc.y + 1).into(),
+            ((clip.size.w - 2 * inset).max(0), (clip.size.h - 2).max(0)).into(),
+        ),
+        Rectangle::new(
+            (clip.loc.x + 1, clip.loc.y + inset).into(),
+            ((clip.size.w - 2).max(0), (clip.size.h - 2 * inset).max(0)).into(),
+        ),
+    ];
+    opaque
+        .iter()
+        .flat_map(|region| {
+            let region = Rectangle::new(region.loc + location, region.size);
+            interiors
+                .iter()
+                .filter(|rect| rect.size.w > 0 && rect.size.h > 0)
+                .filter_map(move |interior| region.intersection(*interior))
+                .map(move |rect| Rectangle::new(rect.loc - location, rect.size))
+        })
+        .collect()
 }
 
 impl Element for RoundedSurfaceRenderElement {
@@ -430,11 +463,22 @@ impl Element for RoundedSurfaceRenderElement {
     }
 
     fn opaque_regions(&self, scale: RenderScale<f64>) -> OpaqueRegions<i32, Physical> {
-        if self.radius == 0.0 {
-            self.inner.opaque_regions(scale)
-        } else {
-            OpaqueRegions::default()
+        if self.inner.alpha() < 1.0 {
+            return OpaqueRegions::default();
         }
+        if self.radius == 0.0 {
+            return self.inner.opaque_regions(scale);
+        }
+        let Some(clip) = self.opaque_clip else {
+            return OpaqueRegions::default();
+        };
+
+        rounded_opaque_regions(
+            &self.inner.opaque_regions(scale),
+            self.inner.geometry(scale).loc,
+            clip,
+            self.radius,
+        )
     }
 
     fn alpha(&self) -> f32 {
@@ -993,5 +1037,40 @@ mod tests {
 
             assert_eq!(frame.loc.x + frame.size.w, 500);
         }
+    }
+}
+
+#[cfg(test)]
+mod rounded_opacity_tests {
+    use super::*;
+
+    #[test]
+    fn opaque_cross_stays_inside_client_opacity_and_clear_of_antialiased_corners() {
+        let clip = Rectangle::new((20, 30).into(), (120, 80).into());
+        let location = Point::from((15, 22));
+        let client = Rectangle::new((10, 12).into(), (70, 55).into());
+        let result = rounded_opaque_regions(&[client], location, clip, 18.5);
+        assert!(!result.is_empty());
+
+        for rect in result.iter() {
+            assert_eq!(rect.intersection(client), Some(*rect));
+            for y in rect.loc.y..rect.loc.y + rect.size.h {
+                for x in rect.loc.x..rect.loc.x + rect.size.w {
+                    let x = (x + location.x - clip.loc.x) as f64 + 0.5;
+                    let y = (y + location.y - clip.loc.y) as f64 + 0.5;
+                    let dx = (x - 60.).abs() - (60. - 18.5);
+                    let dy = (y - 40.).abs() - (40. - 18.5);
+                    let distance = dx.max(0.).hypot(dy.max(0.)) + dx.max(dy).min(0.) - 18.5;
+                    assert!(distance <= -0.5);
+                }
+            }
+        }
+        assert!(rounded_opaque_regions(&[], location, clip, 18.5).is_empty());
+    }
+
+    #[test]
+    fn tiny_rounded_surfaces_never_claim_negative_or_outside_regions() {
+        let clip = Rectangle::new((0, 0).into(), (2, 2).into());
+        assert!(rounded_opaque_regions(&[clip], Point::default(), clip, 1.).is_empty());
     }
 }

@@ -414,6 +414,7 @@ pub(super) fn rounded_window_elements(
                     clip_rect: clip,
                     radius,
                     clip_changed,
+                    opaque_clip: matches!(behavior, ConstrainScaleBehavior::CutOff).then_some(physical_constrain),
                 }
                 .into()
             }
