@@ -1,6 +1,14 @@
 //! Session-owned services. Never grant shell/effects privileges to daemons.
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::process::Child;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
+
+use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+use smithay::reexports::calloop::{Interest, Mode, PostAction, RegistrationToken};
 
 use crate::Ferese;
 use crate::config::DaemonConfig;
@@ -13,9 +21,109 @@ struct Service {
     finished: bool,
 }
 
-pub(crate) struct Runner(Vec<Service>);
+pub(crate) struct Runner(
+    Vec<Service>,
+    HashMap<u32, RegistrationToken>,
+    Option<(RegistrationToken, Instant)>,
+);
+
+fn pidfd(pid: u32) -> std::io::Result<OwnedFd> {
+    // SAFETY: pidfd_open has no pointer arguments and returns a new owned fd.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: a successful syscall returned a unique valid descriptor.
+    Ok(unsafe { OwnedFd::from_raw_fd(fd as i32) })
+}
 
 impl Runner {
+    pub fn start(state: &mut Ferese) -> Rc<RefCell<Self>> {
+        let runner = Rc::new(RefCell::new(Self::new(
+            &state.autostart,
+            state.direct_backend.is_none(),
+        )));
+        Self::refresh(&runner, state);
+        runner
+    }
+
+    pub fn refresh(owner: &Rc<RefCell<Self>>, state: &mut Ferese) {
+        let mut runner = owner.borrow_mut();
+        runner.tick(state);
+        let pids = runner
+            .0
+            .iter()
+            .filter_map(|service| service.child.as_ref().map(Child::id))
+            .collect::<Vec<_>>();
+        runner.1.retain(|pid, token| {
+            if pids.contains(pid) {
+                true
+            } else {
+                state.loop_handle.remove(*token);
+                false
+            }
+        });
+
+        let mut watch_retry = None;
+        for pid in pids {
+            if runner.1.contains_key(&pid) {
+                continue;
+            }
+            let weak = Rc::downgrade(owner);
+            let source = pidfd(pid).map(|fd| Generic::new(fd, Interest::READ, Mode::Level));
+            let result = source.and_then(|source| {
+                state
+                    .loop_handle
+                    .insert_source(source, move |_, _, state| {
+                        if let Some(owner) = weak.upgrade() {
+                            owner.borrow_mut().1.remove(&pid);
+                            Self::refresh(&owner, state);
+                        }
+                        Ok(PostAction::Remove)
+                    })
+                    .map_err(std::io::Error::other)
+            });
+            match result {
+                Ok(token) => {
+                    runner.1.insert(pid, token);
+                }
+                Err(error) => {
+                    tracing::warn!(%error, pid, "could not watch daemon exit; retrying registration");
+                    watch_retry = Some(Instant::now() + Duration::from_secs(5));
+                }
+            }
+        }
+
+        let deadline = runner
+            .0
+            .iter()
+            .filter(|service| service.child.is_none() && !service.finished)
+            .map(|service| service.next_start)
+            .chain(watch_retry)
+            .min();
+        if runner.2.as_ref().map(|(_, deadline)| *deadline) == deadline {
+            return;
+        }
+        if let Some((token, _)) = runner.2.take() {
+            state.loop_handle.remove(token);
+        }
+        if let Some(deadline) = deadline {
+            let weak = Rc::downgrade(owner);
+            match state
+                .loop_handle
+                .insert_source(Timer::from_deadline(deadline), move |_, _, state| {
+                    if let Some(owner) = weak.upgrade() {
+                        owner.borrow_mut().2 = None;
+                        Self::refresh(&owner, state);
+                    }
+                    TimeoutAction::Drop
+                }) {
+                Ok(token) => runner.2 = Some((token, deadline)),
+                Err(error) => tracing::warn!(%error, "could not arm daemon restart deadline"),
+            }
+        }
+    }
+
     pub fn reconcile(&mut self, configs: &[DaemonConfig], nested: bool) {
         let mut previous = std::mem::take(&mut self.0);
         for config in configs.iter().filter(|c| c.enabled && (!nested || c.nested)) {
@@ -62,6 +170,8 @@ impl Runner {
                     finished: false,
                 })
                 .collect(),
+            HashMap::new(),
+            None,
         )
     }
 
@@ -117,6 +227,29 @@ impl Drop for Runner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pidfd_wakes_the_loop_once_and_the_child_is_reaped() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 7"])
+            .spawn()
+            .unwrap();
+        let fd = pidfd(child.id()).unwrap();
+        let mut events = smithay::reexports::calloop::EventLoop::<usize>::try_new().unwrap();
+        events
+            .handle()
+            .insert_source(Generic::new(fd, Interest::READ, Mode::Level), move |_, _, count| {
+                assert_eq!(child.wait().unwrap().code(), Some(7));
+                *count += 1;
+                Ok(PostAction::Remove)
+            })
+            .unwrap();
+        let mut count = 0;
+        events.dispatch(Some(Duration::from_secs(2)), &mut count).unwrap();
+        assert_eq!(count, 1);
+        events.dispatch(Some(Duration::ZERO), &mut count).unwrap();
+        assert_eq!(count, 1);
+    }
+
     #[test]
     fn live_reconcile_keeps_existing_process_and_changes_policy_without_restart() {
         let mut config = DaemonConfig {

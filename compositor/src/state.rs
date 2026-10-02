@@ -334,6 +334,7 @@ pub struct Ferese {
     output_identity_ids: HashMap<String, OutputId>,
     pub(crate) windows: WindowRegistry<Window>,
     pub(crate) render: crate::render::RenderResources,
+    pub(crate) daemons: Option<std::rc::Rc<std::cell::RefCell<crate::daemon::Runner>>>,
     pub(crate) display_presentation: crate::display_presentation::DisplayPresentation,
     pub(crate) nested_backend: Option<NestedBackend>,
     pub(crate) wallpaper: WallpaperState,
@@ -563,6 +564,7 @@ impl Ferese {
             windows: WindowRegistry::default(),
             render: Default::default(),
             display_presentation: Default::default(),
+            daemons: None,
             nested_backend: None,
             wallpaper: WallpaperState::with_wakeup(config.wallpaper, Some(event_loop.get_signal())),
             window_stack: WindowStack::default(),
@@ -747,6 +749,9 @@ impl Ferese {
         self.viewport_spring_config = config.viewport_spring_config;
         self.output_profiles = config.output_profiles;
         self.autostart = config.autostart;
+        if let Some(runner) = self.daemons.clone() {
+            crate::daemon::Runner::refresh(&runner, self);
+        }
 
         if touchpad_changed {
             crate::backends::direct::reload_input_devices(self);

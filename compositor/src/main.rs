@@ -80,7 +80,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let directory = config::config_path()
         .and_then(|path| path.parent().map(ToOwned::to_owned))
         .unwrap_or_else(|| std::path::PathBuf::from("."));
-    let (config, runtime, candidate) = theme::prepare(source, &directory)?;
+    let (_, runtime, candidate) = theme::prepare(source, &directory)?;
     let mut event_loop = EventLoop::try_new()?;
     let signals = Signals::new(&[Signal::SIGINT, Signal::SIGTERM])?;
     event_loop
@@ -95,22 +95,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     theme::init(&mut event_loop, &mut state, candidate)?;
     overview::init_font_loader(&mut event_loop, &mut state)?;
     backends::init(launch.backend, &mut event_loop, &mut state)?;
-    use calloop::timer::{TimeoutAction, Timer};
     info!(socket = ?state.socket_name, backend = ?launch.backend, "Ferese is accepting Wayland clients");
     let mut child = spawn_client(&mut state, launch.client, launch.client_capabilities);
-    let runner = std::rc::Rc::new(std::cell::RefCell::new(daemon::Runner::new(
-        &config.autostart,
-        launch.backend == backends::BackendKind::Nested,
-    )));
-    runner.borrow_mut().tick(&mut state);
-    let services = runner.clone();
-    event_loop.handle().insert_source(
-        Timer::from_duration(Duration::from_secs(1)),
-        move |_, _, state: &mut Ferese| {
-            services.borrow_mut().tick(state);
-            TimeoutAction::ToDuration(Duration::from_secs(1))
-        },
-    )?;
+    let runner = daemon::Runner::start(&mut state);
+    state.daemons = Some(runner.clone());
     let reload_handle = event_loop.handle();
     let result = event_loop.run(None, &mut state, |state| {
         state.poll_theme();
