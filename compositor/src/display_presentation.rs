@@ -1,7 +1,9 @@
 //! Visibility of client content on displayed outputs, independent of capture.
 use std::collections::{HashMap, HashSet};
 
-use smithay::backend::renderer::element::{Id, RenderElementPresentationState, RenderElementStates};
+use smithay::backend::renderer::element::{
+    Id, RenderElementPresentationState, RenderElementState, RenderElementStates,
+};
 use smithay::output::Output;
 
 #[derive(Default)]
@@ -15,14 +17,15 @@ pub(crate) struct DisplayPresentation {
     outputs: HashMap<Output, OutputPresentation>,
 }
 
+pub(crate) fn is_visible(state: RenderElementState) -> bool {
+    state.visible_area > 0 && state.presentation_state != RenderElementPresentationState::Skipped
+}
+
 fn visible(states: &RenderElementStates) -> HashSet<Id> {
     states
         .states
         .iter()
-        .filter_map(|(id, state)| {
-            (state.visible_area > 0 && state.presentation_state != RenderElementPresentationState::Skipped)
-                .then(|| id.clone())
-        })
+        .filter_map(|(id, state)| is_visible(*state).then(|| id.clone()))
         .collect()
 }
 
@@ -112,6 +115,8 @@ mod tests {
         record.queued(&output, &scene(&id));
         assert!(!record.visible(&id));
         record.presented(&output);
+        assert!(record.visible(&id));
+        record.presented(&output); // No new submission keeps the last displayed scene.
         assert!(record.visible(&id));
 
         record.queued(&output, &RenderElementStates::default());

@@ -2,9 +2,7 @@
 //! logical pixels. Content, clips and decorations share those exact edges.
 use std::time::{Duration, Instant};
 
-use smithay::backend::renderer::element::{
-    Element, Id, Kind, RenderElement, RenderElementPresentationState, RenderElementStates,
-};
+use smithay::backend::renderer::element::{Element, Id, Kind, RenderElement, RenderElementStates};
 use smithay::backend::renderer::gles::{GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform};
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet};
 use smithay::desktop::utils::OutputPresentationFeedback;
@@ -55,9 +53,7 @@ pub(crate) fn take_output_feedback(
 fn rendered_feedback_output(output: &Output, id: Id, rendered: &RenderElementStates) -> Option<Output> {
     rendered
         .element_render_state(id)
-        .is_some_and(|state| {
-            state.visible_area > 0 && state.presentation_state != RenderElementPresentationState::Skipped
-        })
+        .is_some_and(crate::display_presentation::is_visible)
         .then(|| output.clone())
 }
 
@@ -330,7 +326,7 @@ mod tests {
 
     #[test]
     fn presentation_feedback_excludes_missing_and_occluded_surfaces() {
-        use smithay::backend::renderer::element::RenderElementState;
+        use smithay::backend::renderer::element::{RenderElementPresentationState, RenderElementState};
         use smithay::output::{PhysicalProperties, Subpixel};
 
         let output = Output::new(
