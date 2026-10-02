@@ -60,7 +60,13 @@ def ensure_directory(path, mode=0o755):
         cursor = cursor.parent
 
     for directory in reversed(missing):
-        directory.mkdir(mode=mode)
+        # This CLI is single-threaded. Apply the requested mode at creation so
+        # a process killed before chmod cannot leave a umask-restricted parent.
+        previous_umask = os.umask(0)
+        try:
+            directory.mkdir(mode=mode)
+        finally:
+            os.umask(previous_umask)
         directory.chmod(mode)
         sync_dir(directory.parent)
 

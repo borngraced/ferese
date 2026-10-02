@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 HELPER = REPO / 'scripts/installer/install.py'
@@ -239,6 +240,72 @@ m.main()
         self.run_command('install', self.bundles[0], '--dry-run')
         self.assertEqual(before, self.snapshot())
         self.assertFalse(self.base.exists())
+
+    def test_killed_directory_creation_can_retry_with_public_permissions(self):
+        # Cover persistent parents, including creation before the lock/journal and
+        # during publication. Staging trees are unpublished and rebuilt on retry.
+        directories = {'usr', 'usr/local', 'usr/local/lib', PREFIX, PREFIX + '/releases',
+                       PREFIX + '/transactions', 'usr/local/bin'}
+        for rule in installer.INVENTORY['files']:
+            if 'destination' in rule:
+                parent = Path(rule['destination'].lstrip('/')).parent
+                directories.update(str(path) for path in (parent, *parent.parents) if str(path) != '.')
+        for relative in sorted(directories):
+            with self.subTest(directory=relative), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / 'root'
+                pam = root / 'etc/pam.d/login'
+                pam.parent.mkdir(parents=True)
+                pam.write_text('test PAM stack\n')
+                target = root / relative
+                code = f'''import importlib.util, os
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('installer', {str(HELPER)!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+original = Path.mkdir
+def mkdir(self, *args, **kwargs):
+    original(self, *args, **kwargs)
+    if self == Path({str(target)!r}):
+        os._exit(91)
+Path.mkdir = mkdir
+os.umask(0o077)
+m.main()
+'''
+                args = ['install', str(self.bundles[0]), '--root', str(root)]
+                result = subprocess.run([sys.executable, '-c', code, *args], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 91, result.stderr)
+                mode = 0o700 if relative.endswith('/transactions') else 0o755
+                created_mode = target.stat().st_mode & 0o777
+                retry = f"import os, runpy; os.umask(0o077); runpy.run_path({str(HELPER)!r}, run_name='__main__')"
+                result = subprocess.run([sys.executable, '-c', retry, *args], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(created_mode, mode)
+                self.assertEqual(target.stat().st_mode & 0o777, mode)
+                self.assertEqual(os.readlink(root / PREFIX / 'current'), 'releases/first')
+                self.assertFalse((root / PREFIX / '.transaction').exists())
+
+    def test_existing_directory_permissions_are_preserved(self):
+        for relative in ('usr', 'usr/local', 'usr/local/lib', PREFIX,
+                         PREFIX + '/releases', 'usr/share/wayland-sessions'):
+            path = self.root / relative
+            path.mkdir(parents=True, exist_ok=True)
+            path.chmod(0o750)
+        self.install()
+        for relative in ('usr', 'usr/local', 'usr/local/lib', PREFIX,
+                         PREFIX + '/releases', 'usr/share/wayland-sessions'):
+            self.assertEqual((self.root / relative).stat().st_mode & 0o777, 0o750)
+
+    def test_directory_creation_restores_umask_on_success_and_failure(self):
+        previous = os.umask(0o077)
+        try:
+            installer.ensure_directory(self.root / 'new')
+            self.assertEqual(os.umask(0o077), 0o077)
+            with mock.patch.object(Path, 'mkdir', side_effect=OSError('mkdir failed')):
+                with self.assertRaises(OSError):
+                    installer.ensure_directory(self.root / 'failed')
+            self.assertEqual(os.umask(0o077), 0o077)
+        finally:
+            os.umask(previous)
 
     def test_custom_pam_is_preserved(self):
         pam = self.root / 'etc/pam.d/ferese-lock'
