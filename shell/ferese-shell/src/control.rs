@@ -1,8 +1,8 @@
 use std::error::Error;
 use std::os::fd::{FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
-use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::{Arc, mpsc};
 use std::thread;
 
 use ferese_protocols::shell::v1::client::ferese_shell_manager_v1::FereseShellManagerV1;
@@ -60,6 +60,7 @@ pub(crate) struct ShellControl {
     _manager: FereseShellManagerV1,
     shell: FereseShellV1,
     updates: Receiver<ControlUpdate>,
+    wake: Wake,
 }
 
 pub(crate) struct ControlPoll {
@@ -67,9 +68,44 @@ pub(crate) struct ControlPoll {
     pub(crate) snapshot: Option<ShellSnapshot>,
     pub(crate) overview_active: Option<bool>,
     pub(crate) disconnected: bool,
-    pub(crate) logout: Option<(u32, String)>,
-    pub(crate) logout_cancelled: Vec<u32>,
-    pub(crate) guide_toggles: Vec<String>,
+    pub(crate) commands: Vec<ControlCommand>,
+}
+
+pub(crate) enum ControlCommand {
+    Logout(u32, String),
+    CancelLogout(u32),
+    ToggleGuide(String),
+}
+
+#[derive(Clone)]
+struct Wake(Arc<tokio::sync::Notify>);
+
+impl std::hash::Hash for Wake {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::ptr::hash(Arc::as_ptr(&self.0), state);
+    }
+}
+
+impl Wake {
+    fn stream(&self) -> impl cosmic::iced::futures::Stream<Item = ()> + use<> {
+        cosmic::iced::futures::stream::unfold(self.clone(), |wake| async move {
+            wake.0.notified().await;
+            Some(((), wake))
+        })
+    }
+}
+
+struct UpdateSender {
+    sender: Sender<ControlUpdate>,
+    wake: Wake,
+}
+
+impl UpdateSender {
+    fn send(&self, update: ControlUpdate) -> Result<(), mpsc::SendError<ControlUpdate>> {
+        self.sender.send(update)?;
+        self.wake.0.notify_one();
+        Ok(())
+    }
 }
 
 enum ControlUpdate {
@@ -90,7 +126,11 @@ impl ShellControl {
         let manager = globals.bind::<FereseShellManagerV1, _, _>(&qh, 4..=5, ())?;
         let shell = manager.get_shell(&qh, ());
         let (sender, updates) = mpsc::channel();
-        let mut state = ControlState::new(sender);
+        let wake = Wake(Arc::new(tokio::sync::Notify::new()));
+        let mut state = ControlState::new(UpdateSender {
+            sender,
+            wake: wake.clone(),
+        });
 
         connection.flush()?;
         thread::Builder::new()
@@ -105,7 +145,12 @@ impl ShellControl {
             _manager: manager,
             shell,
             updates,
+            wake,
         })
+    }
+
+    pub(crate) fn subscription(&self) -> cosmic::iced::Subscription<()> {
+        cosmic::iced::Subscription::run_with(self.wake.clone(), Wake::stream)
     }
 
     pub(crate) fn poll(&self) -> ControlPoll {
@@ -114,21 +159,14 @@ impl ShellControl {
             snapshot: None,
             overview_active: None,
             disconnected: false,
-            logout: None,
-            logout_cancelled: Vec::new(),
-            guide_toggles: Vec::new(),
+            commands: Vec::new(),
         };
 
         loop {
             match self.updates.try_recv() {
-                Ok(ControlUpdate::Logout(serial, output)) => poll.logout = Some((serial, output)),
-                Ok(ControlUpdate::ToggleGuide(output)) => poll.guide_toggles.push(output),
-                Ok(ControlUpdate::LogoutCancelled(serial)) => {
-                    if poll.logout.as_ref().is_some_and(|(pending, _)| *pending == serial) {
-                        poll.logout = None;
-                    }
-                    poll.logout_cancelled.push(serial);
-                }
+                Ok(ControlUpdate::Logout(serial, output)) => poll.commands.push(ControlCommand::Logout(serial, output)),
+                Ok(ControlUpdate::ToggleGuide(output)) => poll.commands.push(ControlCommand::ToggleGuide(output)),
+                Ok(ControlUpdate::LogoutCancelled(serial)) => poll.commands.push(ControlCommand::CancelLogout(serial)),
                 Ok(ControlUpdate::Config(source)) => poll.config = Some(source),
                 Ok(ControlUpdate::Snapshot(snapshot)) => poll.snapshot = Some(snapshot),
                 Ok(ControlUpdate::OverviewState(active)) => poll.overview_active = Some(active),
@@ -190,13 +228,13 @@ fn control_connection() -> Result<Connection, Box<dyn Error>> {
 
 struct ControlState {
     config: Option<String>,
-    sender: Sender<ControlUpdate>,
+    sender: UpdateSender,
     pending: ShellSnapshot,
     serial: Option<u32>,
 }
 
 impl ControlState {
-    fn new(sender: Sender<ControlUpdate>) -> Self {
+    fn new(sender: UpdateSender) -> Self {
         Self {
             sender,
             config: None,
@@ -398,5 +436,37 @@ mod workspace_tests {
         );
         assert_eq!(snapshot.workspaces_for_output(None).count(), 0);
         assert_eq!(snapshot.workspaces_for_output(Some(99)).count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use cosmic::iced::futures::{FutureExt, StreamExt};
+
+    use super::*;
+
+    #[test]
+    fn control_updates_wake_without_a_clock_tick_even_before_subscription() {
+        let wake = Wake(Arc::new(tokio::sync::Notify::new()));
+        let (sender, receiver) = mpsc::channel();
+        let sender = UpdateSender {
+            sender,
+            wake: wake.clone(),
+        };
+        sender.send(ControlUpdate::OverviewState(true)).ok().unwrap();
+        let stream = wake.stream();
+        cosmic::iced::futures::pin_mut!(stream);
+
+        assert_eq!(stream.next().now_or_never(), Some(Some(())));
+        assert!(matches!(receiver.try_recv(), Ok(ControlUpdate::OverviewState(true))));
+        assert_eq!(stream.next().now_or_never(), None);
+
+        sender.send(ControlUpdate::Logout(7, "display".into())).ok().unwrap();
+        sender.send(ControlUpdate::LogoutCancelled(7)).ok().unwrap();
+        sender.send(ControlUpdate::Disconnected).ok().unwrap();
+        assert_eq!(stream.next().now_or_never(), Some(Some(())));
+        assert!(matches!(receiver.try_recv(), Ok(ControlUpdate::Logout(7, _))));
+        assert!(matches!(receiver.try_recv(), Ok(ControlUpdate::LogoutCancelled(7))));
+        assert!(matches!(receiver.try_recv(), Ok(ControlUpdate::Disconnected)));
     }
 }

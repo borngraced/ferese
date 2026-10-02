@@ -235,6 +235,7 @@ enum Message {
     Event(Event, window::Id),
     NativeSurface(window::Id, Result<(Connection, wl_surface::WlSurface), String>),
     Tick,
+    ControlReady,
     ActivateWorkspace(u64),
     ToggleOverview,
     StatusUpdated(status::Update),
@@ -340,6 +341,9 @@ impl cosmic::Application for FereseShell {
 
     fn subscription(&self) -> Subscription<Self::Message> {
         Subscription::batch([
+            self.control.as_ref().map_or_else(Subscription::none, |control| {
+                control.subscription().map(|_| Message::ControlReady)
+            }),
             ferese_theme::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
             if self
                 .system_modal
@@ -764,6 +768,9 @@ impl cosmic::Application for FereseShell {
                         .unwrap_or_default();
                 }
 
+                Task::none()
+            }
+            Message::ControlReady => {
                 let mut reload_task = Task::none();
                 if let Some(control) = &self.control {
                     let poll = control.poll();
@@ -810,17 +817,15 @@ impl cosmic::Application for FereseShell {
                         }
                         reload_task = Task::batch(tasks);
                     }
-                    for output in poll.guide_toggles {
-                        reload_task = Task::batch([reload_task, self.toggle_guide(output)]);
-                    }
-                    for serial in poll.logout_cancelled {
-                        reload_task = Task::batch([reload_task, self.cancel_logout_modal(serial)]);
-                    }
-                    if let Some((serial, output)) = poll.logout {
-                        reload_task = Task::batch([
-                            reload_task,
-                            self.open_system_modal(system_modal::PowerAction::Logout(serial), Some(&output)),
-                        ]);
+                    for command in poll.commands {
+                        let task = match command {
+                            control::ControlCommand::ToggleGuide(output) => self.toggle_guide(output),
+                            control::ControlCommand::CancelLogout(serial) => self.cancel_logout_modal(serial),
+                            control::ControlCommand::Logout(serial, output) => {
+                                self.open_system_modal(system_modal::PowerAction::Logout(serial), Some(&output))
+                            }
+                        };
+                        reload_task = Task::batch([reload_task, task]);
                     }
                 }
                 reload_task
