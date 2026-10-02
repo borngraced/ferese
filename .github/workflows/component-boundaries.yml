@@ -1,0 +1,20 @@
+name: Component boundaries
+on:
+  push:
+    paths:
+      - "**/Cargo.toml"
+      - "scripts/tests/test_component_boundaries.py"
+      - ".github/workflows/component-boundaries.yml"
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "scripts/tests/test_component_boundaries.py"
+      - ".github/workflows/component-boundaries.yml"
+permissions:
+  contents: read
+jobs:
+  dependencies:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: python3 scripts/tests/test_component_boundaries.py
