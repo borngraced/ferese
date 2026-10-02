@@ -57,6 +57,7 @@ pub struct DirectBackendState {
     input_devices: Vec<LibinputDevice>,
     presentation: HashMap<(DrmNode, crtc::Handle), PresentationClock>,
     pub(crate) connected_outputs: Vec<ConnectedOutputInfo>,
+    power_retry: Option<RegistrationToken>,
     animation_timer: Option<RegistrationToken>,
     animation_deadline: Option<Instant>,
     scheduling_metrics: SchedulingMetrics,
@@ -236,6 +237,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         input_devices: Vec::new(),
         presentation: HashMap::new(),
         connected_outputs: Vec::new(),
+        power_retry: None,
         animation_timer: None,
         animation_deadline: None,
         scheduling_metrics: SchedulingMetrics::new(),
@@ -274,6 +276,9 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                 let handle = state.loop_handle.clone();
                 if let Some(backend) = state.direct_backend.as_mut() {
                     backend.active = false;
+                    if let Some(token) = backend.power_retry.take() {
+                        handle.remove(token);
+                    }
                     backend
                         .presentation
                         .values_mut()
@@ -702,6 +707,35 @@ fn apply_output_power(state: &mut Ferese) {
             }
         }
     }
+    let retry = backend.active
+        && backend
+            .devices
+            .values()
+            .filter(|device| device.drm.is_active())
+            .any(|device| {
+                device
+                    .outputs
+                    .values()
+                    .any(|output| output.power.needs_power_off() && !output.frame_pending)
+            });
+    if !retry {
+        if let Some(token) = backend.power_retry.take() {
+            state.loop_handle.remove(token);
+        }
+    } else if backend.power_retry.is_none() {
+        match state
+            .loop_handle
+            .insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, state| {
+                if let Some(backend) = state.direct_backend.as_mut() {
+                    backend.power_retry = None;
+                }
+                apply_output_power(state);
+                TimeoutAction::Drop
+            }) {
+            Ok(token) => backend.power_retry = Some(token),
+            Err(error) => tracing::warn!(%error, "could not arm failed power-off retry"),
+        }
+    }
     state.refresh_idle_inhibition();
 }
 
@@ -717,6 +751,7 @@ pub(crate) fn wake_locked_outputs(state: &mut Ferese) {
             }
         }
     }
+    apply_output_power(state);
     render_all(state);
 }
 

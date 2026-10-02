@@ -44,14 +44,17 @@ impl IdleSettings {
         Ok(self)
     }
 
-    fn next_poll(self, elapsed: Duration, fade_duration: Duration) -> Duration {
+    fn next_deadline(self, elapsed: Duration, fade_duration: Duration) -> Option<Duration> {
+        if self.sleep_after_seconds != 0 && elapsed >= Duration::from_secs(self.sleep_after_seconds) {
+            return None;
+        }
         let dim_at = Duration::from_secs(self.dim_after_seconds);
         if !fade_duration.is_zero()
             && self.dim_after_seconds != 0
             && elapsed >= dim_at
             && elapsed < dim_at + fade_duration
         {
-            return Duration::from_millis(16);
+            return Some(Duration::from_millis(16));
         }
         [self.dim_after_seconds, self.sleep_after_seconds]
             .into_iter()
@@ -59,8 +62,6 @@ impl IdleSettings {
             .filter_map(|delay| Duration::from_secs(delay).checked_sub(elapsed))
             .filter(|delay| !delay.is_zero())
             .min()
-            .unwrap_or(Duration::from_secs(1))
-            .min(Duration::from_secs(1))
     }
 
     fn appearance(self, elapsed: Duration, fade_duration: Duration) -> (f32, bool) {
@@ -125,6 +126,42 @@ impl Ferese {
             crate::backends::direct::wake_locked_outputs(self);
             self.cursor_redraw_pending = true;
         }
+        self.rearm_lock_idle();
+    }
+
+    pub(crate) fn refresh_lock_idle_policy(&mut self) {
+        self.update_lock_idle(Instant::now());
+        self.rearm_lock_idle();
+    }
+
+    fn rearm_lock_idle(&mut self) {
+        if let Some(token) = self.session_lock.idle_timer.take() {
+            self.loop_handle.remove(token);
+        }
+        if !self.session_lock.ready_for_idle(self.space.outputs()) {
+            return;
+        }
+
+        let elapsed = self
+            .session_lock
+            .idle_since
+            .map_or(Duration::ZERO, |since| since.elapsed());
+        let Some(delay) = self
+            .lock_idle
+            .next_deadline(elapsed, self.animation_duration(Duration::from_millis(500)))
+        else {
+            return;
+        };
+        match self
+            .loop_handle
+            .insert_source(Timer::from_duration(delay), |_, _, state| {
+                state.session_lock.idle_timer = None;
+                state.refresh_lock_idle_policy();
+                TimeoutAction::Drop
+            }) {
+            Ok(token) => self.session_lock.idle_timer = Some(token),
+            Err(error) => tracing::warn!(%error, "could not arm lock idle deadline"),
+        }
     }
 
     fn update_lock_idle(&mut self, now: Instant) {
@@ -186,7 +223,7 @@ impl Ferese {
         if !self.session_lock.active {
             return;
         }
-        self.session_lock.presented.insert(output.clone());
+        let newly_presented = self.session_lock.presented.insert(output.clone());
         if self
             .space
             .outputs()
@@ -197,6 +234,9 @@ impl Ferese {
             confirmation.lock();
             self.session_lock.confirmed = true;
             tracing::info!("session lock confirmed after safe output frames");
+        }
+        if newly_presented {
+            self.refresh_lock_idle_policy();
         }
     }
 
@@ -239,26 +279,6 @@ impl SessionLockHandler for Ferese {
         self.session_lock.active = true;
         self.refresh_idle_inhibition();
         self.session_lock.idle_since = Some(Instant::now());
-        match self
-            .loop_handle
-            .insert_source(Timer::from_duration(Duration::from_secs(1)), |_, _, state| {
-                if !state.session_lock.active {
-                    return TimeoutAction::Drop;
-                }
-                state.update_lock_idle(Instant::now());
-                let elapsed = state
-                    .session_lock
-                    .idle_since
-                    .map_or(Duration::ZERO, |since| since.elapsed());
-                TimeoutAction::ToDuration(
-                    state
-                        .lock_idle
-                        .next_poll(elapsed, state.animation_duration(Duration::from_millis(500))),
-                )
-            }) {
-            Ok(token) => self.session_lock.idle_timer = Some(token),
-            Err(error) => tracing::warn!(%error, "could not schedule lock screen inactivity"),
-        }
         self.input_capture.disable_all();
         self.portal_session.set_locked(true);
         self.session_lock.owner = Some(confirmation.ext_session_lock().clone());
@@ -375,8 +395,8 @@ mod tests {
             let halfway = policy.appearance(Duration::from_millis(half_at), fade);
             assert!((halfway.0 - 0.325).abs() < 0.001 && !halfway.1);
             assert_eq!(
-                policy.next_poll(Duration::from_millis(half_at), fade),
-                Duration::from_millis(16)
+                policy.next_deadline(Duration::from_millis(half_at), fade),
+                Some(Duration::from_millis(16))
             );
             assert_eq!(policy.appearance(Duration::from_secs(120), fade), (1.0, true));
         }
@@ -409,16 +429,25 @@ mod tests {
             (0.0, false)
         );
         assert_eq!(
-            policy.next_poll(Duration::from_millis(29_998), Duration::from_millis(500)),
-            Duration::from_millis(2)
+            policy.next_deadline(Duration::from_millis(29_998), Duration::from_millis(500)),
+            Some(Duration::from_millis(2))
         );
         assert_eq!(
-            policy.next_poll(Duration::from_secs(30), Duration::from_millis(500)),
-            Duration::from_millis(16)
+            policy.next_deadline(Duration::from_secs(30), Duration::from_millis(500)),
+            Some(Duration::from_millis(16))
         );
         assert_eq!(
-            policy.next_poll(Duration::from_secs(30), Duration::ZERO),
-            Duration::from_secs(1)
+            policy.next_deadline(Duration::from_secs(30), Duration::ZERO),
+            Some(Duration::from_secs(90))
+        );
+        assert_eq!(policy.next_deadline(Duration::from_secs(120), Duration::ZERO), None);
+        assert_eq!(
+            IdleSettings {
+                dim_after_seconds: 0,
+                sleep_after_seconds: 0
+            }
+            .next_deadline(Duration::ZERO, Duration::ZERO),
+            None
         );
     }
 

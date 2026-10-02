@@ -699,6 +699,7 @@ impl Ferese {
         }
 
         self.lock_idle = config.lock_idle;
+        self.refresh_lock_idle_policy();
         self.advance_animations(Instant::now());
 
         let touchpad_changed = self.input_settings.touchpad != config.input_settings.touchpad;
