@@ -62,8 +62,16 @@ pub(super) struct Snapshot {
     _permit: Permit,
 }
 
+#[derive(Clone)]
 pub(crate) struct Global {
     budget: Arc<Mutex<Budget>>,
+    worker: std::sync::mpsc::SyncSender<Conversion>,
+}
+
+struct Conversion {
+    snapshot: Snapshot,
+    frame: ZwlrScreencopyFrameV1,
+    manager: FereseWindowCaptureManagerV1,
 }
 
 pub(crate) fn is_portal(stream: &std::os::unix::net::UnixStream) -> bool {
@@ -92,8 +100,79 @@ pub(crate) fn is_portal(stream: &std::os::unix::net::UnixStream) -> bool {
     matches!((expected, actual), (Some(expected), Some(actual)) if expected.dev() == actual.dev() && expected.ino() == actual.ino())
 }
 
-pub(super) fn init_global(display: &DisplayHandle) {
-    display.create_global::<Ferese, FereseWindowCaptureManagerV1, Global>(1, Global { budget: Arc::default() });
+pub(super) fn init_global(
+    display: &DisplayHandle,
+    loop_handle: &smithay::reexports::calloop::LoopHandle<'static, Ferese>,
+) {
+    use smithay::reexports::calloop::channel;
+    let (worker, requests) = std::sync::mpsc::sync_channel::<Conversion>(MAX_FRAMES);
+    let (results, source) = channel::sync_channel::<Conversion>(MAX_FRAMES);
+    let Ok(token) = loop_handle.insert_source(source, |event, _, state| {
+        if let channel::Event::Msg(result) = event {
+            finish_conversion(state, result);
+        }
+    }) else {
+        tracing::warn!("window capture result source could not be registered");
+        return;
+    };
+
+    if let Err(error) = std::thread::Builder::new()
+        .name("ferese-capture".into())
+        .spawn(move || {
+            while let Ok(mut job) = requests.recv() {
+                if job.frame.is_alive() {
+                    crate::render::convert_window_pixels(&mut job.snapshot.pixels.pixels);
+                }
+                // Permits cap the total number of queued, working and completed
+                // frames at MAX_FRAMES, so the result queue cannot fill here.
+                if results.send(job).is_err() {
+                    break;
+                }
+            }
+        })
+    {
+        loop_handle.remove(token);
+        tracing::warn!(%error, "window capture worker could not be started");
+        return;
+    }
+
+    display.create_global::<Ferese, FereseWindowCaptureManagerV1, Global>(
+        1,
+        Global {
+            budget: Arc::default(),
+            worker,
+        },
+    );
+}
+
+fn finish_conversion(state: &Ferese, result: Conversion) {
+    let Conversion {
+        snapshot,
+        frame,
+        manager,
+    } = result;
+    let Some(data) = frame.data::<Arc<FrameData>>() else {
+        return;
+    };
+    if !frame.is_alive() || *data.used.lock().unwrap() {
+        return;
+    }
+    if state.session_lock.active
+        || !super::screencopy::capture_allowed()
+        || !state.windows.ids().values().any(|id| *id == snapshot.id)
+    {
+        *data.used.lock().unwrap() = true;
+        frame.failed();
+        return;
+    }
+
+    let size = (snapshot.pixels.width as u32, snapshot.pixels.height as u32);
+    let logical_size = snapshot.logical_size;
+    *data.snapshot.lock().unwrap() = Some(snapshot);
+    if manager.is_alive() {
+        manager.geometry(&frame, logical_size.0, logical_size.1);
+    }
+    frame.buffer(wl_shm::Format::Argb8888, size.0, size.1, size.0 * 4);
 }
 
 impl GlobalDispatch<FereseWindowCaptureManagerV1, Global> for Ferese {
@@ -113,17 +192,17 @@ impl GlobalDispatch<FereseWindowCaptureManagerV1, Global> for Ferese {
         global: &Global,
         data_init: &mut DataInit<'_, Self>,
     ) {
-        data_init.init(resource, global.budget.clone());
+        data_init.init(resource, global.clone());
     }
 }
 
-impl Dispatch<FereseWindowCaptureManagerV1, Arc<Mutex<Budget>>> for Ferese {
+impl Dispatch<FereseWindowCaptureManagerV1, Global> for Ferese {
     fn request(
         state: &mut Self,
         _: &Client,
         manager: &FereseWindowCaptureManagerV1,
         request: manager::Request,
-        budget: &Arc<Mutex<Budget>>,
+        global: &Global,
         _: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
@@ -137,13 +216,12 @@ impl Dispatch<FereseWindowCaptureManagerV1, Arc<Mutex<Budget>>> for Ferese {
             let id = WindowId((u64::from(window_hi) << 32) | u64::from(window_lo));
             let mut busy = false;
             let snapshot = (overlay_cursor <= 1)
-                .then(|| state.window_snapshot(id, overlay_cursor == 1, budget, &mut busy))
+                .then(|| state.window_snapshot(id, overlay_cursor == 1, &global.budget, &mut busy))
                 .flatten();
             let size = snapshot
                 .as_ref()
                 .map(|snapshot| (snapshot.pixels.width, snapshot.pixels.height))
                 .unwrap_or((1, 1));
-            let logical_size = snapshot.as_ref().map(|snapshot| snapshot.logical_size);
             let failed = snapshot.is_none();
             let resource = data_init.init(
                 frame,
@@ -152,7 +230,7 @@ impl Dispatch<FereseWindowCaptureManagerV1, Arc<Mutex<Budget>>> for Ferese {
                     region: Rectangle::from_size(size.into()),
                     overlay_cursor: false,
                     used: Mutex::new(failed),
-                    snapshot: Mutex::new(snapshot),
+                    snapshot: Mutex::new(None),
                 }),
             );
             if failed {
@@ -160,15 +238,18 @@ impl Dispatch<FereseWindowCaptureManagerV1, Arc<Mutex<Budget>>> for Ferese {
                     manager.busy(&resource);
                 }
                 resource.failed();
-            } else {
-                let logical_size = logical_size.unwrap();
-                manager.geometry(&resource, logical_size.0, logical_size.1);
-                resource.buffer(
-                    wl_shm::Format::Argb8888,
-                    size.0 as u32,
-                    size.1 as u32,
-                    size.0 as u32 * 4,
-                );
+            } else if global
+                .worker
+                .try_send(Conversion {
+                    snapshot: snapshot.unwrap(),
+                    frame: resource.clone(),
+                    manager: manager.clone(),
+                })
+                .is_err()
+            {
+                *resource.data::<Arc<FrameData>>().unwrap().used.lock().unwrap() = true;
+                manager.busy(&resource);
+                resource.failed();
             }
         }
     }

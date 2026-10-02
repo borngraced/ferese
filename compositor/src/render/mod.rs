@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-pub(crate) use capture::{capture_resize_snapshot, capture_window_buffer, capture_window_frame};
+pub(crate) use capture::{capture_resize_snapshot, capture_window_buffer, capture_window_frame, convert_window_pixels};
 use decorations::*;
 use materials::*;
 use overview::*;

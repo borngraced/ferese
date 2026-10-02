@@ -1,11 +1,27 @@
 use super::*;
 
+#[derive(Default)]
+struct CaptureTarget(std::sync::Mutex<Option<GlesTexture>>);
+
 pub(crate) fn capture_resize_snapshot(
     renderer: &mut GlesRenderer,
     window: &smithay::desktop::Window,
     geometry: Rectangle<i32, Logical>,
     scale: f64,
     remaining: usize,
+) -> Result<Option<ResizeSnapshot>, GlesError> {
+    // Called before on_commit_buffer_handler: renderer surface state still
+    // owns the previous buffer during an actual resize handoff.
+    render_window_texture(renderer, window, geometry, scale, remaining, None)
+}
+
+fn render_window_texture(
+    renderer: &mut GlesRenderer,
+    window: &smithay::desktop::Window,
+    geometry: Rectangle<i32, Logical>,
+    scale: f64,
+    remaining: usize,
+    reusable: Option<GlesTexture>,
 ) -> Result<Option<ResizeSnapshot>, GlesError> {
     let Some(toplevel) = window.toplevel() else {
         return Ok(None);
@@ -17,8 +33,6 @@ pub(crate) fn capture_resize_snapshot(
     if bytes == 0 || bytes > remaining {
         return Ok(None);
     }
-    // Called before on_commit_buffer_handler: renderer surface state still
-    // owns the previous buffer. Copy only during an actual resize handoff.
     let content = render_elements_from_surface_tree::<GlesRenderer, WaylandSurfaceRenderElement<GlesRenderer>>(
         renderer,
         toplevel.wl_surface(),
@@ -30,7 +44,10 @@ pub(crate) fn capture_resize_snapshot(
     if content.is_empty() {
         return Ok(None);
     }
-    let mut texture = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, (size.w, size.h).into())?;
+    let mut texture = match reusable.filter(|texture| texture.size() == (size.w, size.h).into()) {
+        Some(texture) => texture,
+        None => Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, (size.w, size.h).into())?,
+    };
     {
         let mut target = renderer.bind(&mut texture)?;
         let mut frame = renderer.render(&mut target, size, Transform::Normal)?;
@@ -56,7 +73,9 @@ pub(crate) fn capture_window_buffer(
     geometry: Rectangle<i32, Logical>,
     scale: f64,
 ) -> Result<crate::handlers::screenshot::CaptureBuffer, String> {
-    capture_window_frame(renderer, window, geometry, scale, None)
+    let mut buffer = capture_window_frame(renderer, window, geometry, scale, None)?;
+    convert_window_pixels(&mut buffer.pixels);
+    Ok(buffer)
 }
 
 pub(crate) fn capture_window_frame(
@@ -66,7 +85,15 @@ pub(crate) fn capture_window_frame(
     scale: f64,
     cursor: Option<(&Ferese, Rectangle<i32, Logical>)>,
 ) -> Result<crate::handlers::screenshot::CaptureBuffer, String> {
-    let mut snapshot = capture_resize_snapshot(renderer, window, geometry, scale, 128 * 1024 * 1024)
+    // One reusable render target per EGL context. Resize handoff snapshots keep
+    // their own textures because they outlive the capture call.
+    let cache = renderer
+        .egl_context()
+        .user_data()
+        .get_or_insert_threadsafe(|| Arc::new(CaptureTarget::default()))
+        .clone();
+    let reusable = cache.0.lock().unwrap().take();
+    let mut snapshot = render_window_texture(renderer, window, geometry, scale, 128 * 1024 * 1024, reusable)
         .map_err(|error| error.to_string())?
         .ok_or("Window has no capturable content")?;
     let size = snapshot.texture.size();
@@ -95,11 +122,26 @@ pub(crate) fn capture_window_frame(
         .checked_mul(size.h as usize)
         .and_then(|pixels| pixels.checked_mul(4))
         .ok_or("Window is too large")?;
+    // Smithay maps its PBO here and can wait for the GPU. Nonblocking readback
+    // needs a retained mapping plus an EGL-context-owned fence, polled before
+    // mapping; moving this call to the conversion worker is not context-safe.
     let source = renderer.map_texture(&mapping).map_err(|error| error.to_string())?;
     if source.len() < bytes {
         return Err("Incomplete window readback".into());
     }
-    let mut pixels = source[..bytes].to_vec();
+    let pixels = source[..bytes].to_vec();
+    *cache.0.lock().unwrap() = Some(snapshot.texture);
+
+    Ok(crate::handlers::screenshot::CaptureBuffer {
+        width: size.w,
+        height: size.h,
+        stride: size.w as usize * 4,
+        pixels,
+    })
+}
+
+/// Convert premultiplied ABGR readback into the capture protocol's straight ARGB.
+pub(crate) fn convert_window_pixels(pixels: &mut [u8]) {
     for pixel in pixels.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
         let alpha = pixel[3] as u16;
@@ -110,10 +152,19 @@ pub(crate) fn capture_window_frame(
                 .min(255) as u8;
         }
     }
-    Ok(crate::handlers::screenshot::CaptureBuffer {
-        width: size.w,
-        height: size.h,
-        stride: size.w as usize * 4,
-        pixels,
-    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn readback_conversion_preserves_color_and_handles_zero_alpha() {
+        let mut pixels = vec![10, 20, 30, 255, 32, 64, 128, 128, 9, 8, 7, 0, 1, 1, 1, 1];
+        convert_window_pixels(&mut pixels);
+        assert_eq!(
+            pixels,
+            [30, 20, 10, 255, 255, 128, 64, 128, 0, 0, 0, 0, 255, 255, 255, 1]
+        );
+    }
 }

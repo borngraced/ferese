@@ -463,7 +463,7 @@ impl Ferese {
     ) -> Result<Self, Box<dyn Error>> {
         let display_handle = display.handle();
 
-        crate::handlers::screencopy::init_global(&display_handle);
+        crate::handlers::screencopy::init_global(&display_handle, &event_loop.handle());
         crate::effects::init_global(&display_handle);
         crate::shell_control::init_global(&display_handle);
 

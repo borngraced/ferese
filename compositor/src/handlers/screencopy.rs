@@ -151,10 +151,13 @@ fn capture_opted_in(value: Option<&std::ffi::OsStr>) -> bool {
     value.is_some_and(|value| value == "1")
 }
 
-pub(crate) fn init_global(display: &DisplayHandle) {
+pub(crate) fn init_global(
+    display: &DisplayHandle,
+    loop_handle: &smithay::reexports::calloop::LoopHandle<'static, Ferese>,
+) {
     if capture_allowed() {
         display.create_global::<Ferese, ZwlrScreencopyManagerV1, ()>(3, ());
-        super::window_capture::init_global(display);
+        super::window_capture::init_global(display, loop_handle);
         tracing::info!("authorized screencopy is enabled for this session");
     }
 }

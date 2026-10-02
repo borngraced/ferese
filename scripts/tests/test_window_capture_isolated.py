@@ -1,13 +1,15 @@
 """Verify isolated window capture without exposing host desktop content.
 
 FERESE_TEST_WINDOW_CAPTURE=1 python3 scripts/tests/test_window_capture_isolated.py
-Requires built debug binaries, a Wayland host, cc, wayland-scanner and Pillow.
+Requires built debug binaries, a Wayland host, PipeWire, gst-launch-1.0,
+cc, wayland-scanner and Pillow.
 """
 import io
 import json
 import os
 from pathlib import Path
 import signal
+import selectors
 import subprocess
 import tempfile
 import time
@@ -89,10 +91,41 @@ class WindowCapture(unittest.TestCase):
                     self.assertEqual(image.convert("RGBA").getpixel((round(40 * scale), round(80 * scale))), (255, 0, 0, 128))
                 with Image.open(io.BytesIO(call("screenshot-window", str(cover["id"])))) as image:
                     self.assertEqual(image.convert("RGB").getpixel((image.width // 2, image.height // 2)), (0, 255, 0))
+                # Exercise the asynchronous conversion worker and reuse its render
+                # target across a stream, not just the synchronous screenshot path.
+                stream_env = dict(env, PIPEWIRE_REMOTE=str(Path(os.environ["XDG_RUNTIME_DIR"]) / "pipewire-0"))
+                worker = subprocess.Popen([str(REPO / "target/debug/xdg-desktop-portal-ferese"),
+                                           "--stream-window", str(target["id"]), "hidden"],
+                                          env=stream_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                          stderr=log, start_new_session=True)
+                processes.append(worker)
+                with selectors.DefaultSelector() as selector:
+                    selector.register(worker.stdout, selectors.EVENT_READ)
+                    self.assertTrue(selector.select(10), "window stream did not publish a node")
+                ready = json.loads(worker.stdout.readline())
+                self.assertEqual((ready["width"], ready["height"]), (round(640 * scale), round(480 * scale)))
+                raw = root / "frames.bgrx"
+                subprocess.run(["gst-launch-1.0", "-q", "pipewiresrc", f'path={ready["node"]}',
+                                "num-buffers=15", "!", "video/x-raw,format=BGRx", "!", "filesink",
+                                f"location={raw}"], env=stream_env, check=True, timeout=20)
+                pixels = raw.read_bytes()
+                width, height = ready["width"], ready["height"]
+                frame_bytes = width * height * 4
+                self.assertEqual(len(pixels), frame_bytes * 15)
+                for frame_index in (0, 14):
+                    start = frame_index * frame_bytes
+                    red = start + ((height // 4) * width + width // 2) * 4
+                    blue = start + ((height * 3 // 4) * width + width // 2) * 4
+                    self.assertEqual(pixels[red:red + 3], bytes([0, 0, 255]))
+                    self.assertEqual(pixels[blue:blue + 3], bytes([255, 0, 0]))
+                worker.stdin.close()
+                self.assertEqual(worker.wait(timeout=7), 0)
+                worker.stdout.close()
             finally:
                 for process in reversed(processes):
-                    os.killpg(process.pid, signal.SIGTERM)
-                    process.wait(timeout=5)
+                    if process.poll() is None:
+                        os.killpg(process.pid, signal.SIGTERM)
+                        process.wait(timeout=5)
                 log.close()
 
 
