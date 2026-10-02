@@ -50,8 +50,23 @@ def sync_dir(path):
         os.close(fd)
 
 
+def ensure_directory(path, mode=0o755):
+    missing = []
+    cursor = path
+    while not cursor.exists():
+        if cursor.is_symlink():
+            fail(f'Refusing dangling directory symlink: {cursor}')
+        missing.append(cursor)
+        cursor = cursor.parent
+
+    for directory in reversed(missing):
+        directory.mkdir(mode=mode)
+        directory.chmod(mode)
+        sync_dir(directory.parent)
+
+
 def atomic_bytes(path, data, mode=0o644):
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     fd, temporary = tempfile.mkstemp(prefix='.ferese-', dir=path.parent)
     try:
         with os.fdopen(fd, 'wb') as stream:
@@ -68,7 +83,7 @@ def atomic_bytes(path, data, mode=0o644):
 
 
 def atomic_copy(path, source, mode):
-    path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(path.parent)
     fd, temporary = tempfile.mkstemp(prefix='.ferese-', dir=path.parent)
     try:
         with os.fdopen(fd, 'wb') as output:
@@ -150,10 +165,10 @@ def bundle(args):
     if output.exists() or output.is_symlink():
         fail(f'Bundle already exists: {output}')
 
-    output.parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(output.parent)
     with tempfile.TemporaryDirectory(prefix='.bundle-', dir=output.parent) as temporary:
         staging = Path(temporary) / 'release'
-        staging.mkdir()
+        ensure_directory(staging)
         files = []
         for rule in INVENTORY['files']:
             sources = sorted(source.glob(rule['source']))
@@ -210,7 +225,7 @@ class Installation:
 
     @contextlib.contextmanager
     def lock(self):
-        self.base.mkdir(parents=True, exist_ok=True)
+        ensure_directory(self.base)
         lock_path = self.path(PREFIX + '/.install.lock')
         fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         try:
@@ -339,7 +354,7 @@ class Installation:
 
     def write_state(self, absolute, state, source=None):
         path = self.path(absolute)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_directory(path.parent)
         if state['kind'] == 'absent':
             path.unlink(missing_ok=True)
             sync_dir(path.parent)
@@ -359,7 +374,7 @@ class Installation:
 
     def archive(self, journal):
         history = self.path(PREFIX + '/transactions')
-        history.mkdir(mode=0o700, exist_ok=True)
+        ensure_directory(history, 0o700)
         os.rename(self.transaction, history / journal['id'])
         sync_dir(history)
         sync_dir(self.base)
@@ -433,7 +448,7 @@ class Installation:
         if releases.is_symlink():
             fail(f'Refusing symlinked release directory: {releases}')
 
-        releases.mkdir(parents=True, exist_ok=True)
+        ensure_directory(releases)
         destination = releases / manifest['release']
         if os.path.lexists(destination):
             if self.manifest(manifest['release']) != manifest:
@@ -443,7 +458,7 @@ class Installation:
 
         with tempfile.TemporaryDirectory(prefix='.stage-', dir=releases) as temporary:
             staging = Path(temporary) / 'release'
-            staging.mkdir()
+            ensure_directory(staging)
             for item in manifest['files']:
                 atomic_copy(staging / item['target'], origin / item['target'], int(item['mode'], 8))
 

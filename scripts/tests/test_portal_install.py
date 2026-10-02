@@ -224,6 +224,16 @@ m.main()
         self.assertIn('in progress', result.stderr)
         self.assertFalse((self.base / 'current').exists())
 
+    def test_restrictive_umask_does_not_make_installed_release_private(self):
+        result = subprocess.run([sys.executable, '-c',
+                                 f"import os, runpy; os.umask(0o077); runpy.run_path({str(HELPER)!r}, run_name='__main__')",
+                                 'install', str(self.bundles[0]), '--root', str(self.root)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for relative in ('usr', 'usr/local', PREFIX, PREFIX + '/releases', PREFIX + '/releases/first',
+                         PREFIX + '/releases/first/wallpapers', 'usr/share/wayland-sessions'):
+            self.assertEqual((self.root / relative).stat().st_mode & 0o777, 0o755, relative)
+
     def test_dry_run_does_not_write(self):
         before = self.snapshot()
         self.run_command('install', self.bundles[0], '--dry-run')
