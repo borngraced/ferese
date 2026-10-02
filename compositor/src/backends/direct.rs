@@ -6,9 +6,11 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 mod capture;
+mod output_power;
 mod planes;
 mod redraw;
 mod scheduling;
+use output_power::{OutputPower, Power};
 use redraw::{AnimationFallback, SchedulingMetrics};
 use scheduling::*;
 use smithay::backend::allocator::Fourcc;
@@ -190,7 +192,7 @@ struct DirectOutput {
     cursor_visible: bool,
     scheduler: crate::frame_scheduler::FrameScheduler,
     render_timer: Option<RegistrationToken>,
-    power_off: bool,
+    power: OutputPower,
     callback_timer: Option<RegistrationToken>,
     lock_frame_pending: bool,
 }
@@ -284,7 +286,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                             output.primary_commit = None;
                             output.capture_texture = None;
                             output.frame_pending = false;
-                            output.power_off = false;
+                            output.power.suspended();
                         });
                     });
                 }
@@ -577,6 +579,7 @@ fn open_primary_device(
                         && retired
                     {
                         output.frame_pending = false;
+                        output.power.presented();
                         if let DrmEventTime::Monotonic(timestamp) = metadata.time {
                             let now = monotonic_now();
                             if timestamp <= now + refresh_duration_from_mode(output.mode) {
@@ -608,6 +611,8 @@ fn open_primary_device(
                         }
                         state.refresh_idle_inhibition();
                     }
+
+                    apply_output_power(state);
 
                     state.record_drm_presentation(node, crtc, metadata.time, metadata.sequence);
                     tracing::trace!(?node, ?crtc, sequence = metadata.sequence, "page flip");
@@ -662,25 +667,37 @@ pub(crate) fn sleep_locked_outputs(state: &mut Ferese) {
         return;
     }
 
+    if let Some(backend) = state.direct_backend.as_mut() {
+        for device in backend.devices.values_mut() {
+            for output in device.outputs.values_mut() {
+                output.power.request(Power::Off);
+            }
+        }
+    }
+    apply_output_power(state);
+}
+
+// Apply runtime requests without changing output globals or workspace ownership.
+fn apply_output_power(state: &mut Ferese) {
     let Some(backend) = state.direct_backend.as_mut() else {
         return;
     };
 
     for device in backend.devices.values_mut().filter(|device| device.drm.is_active()) {
         for output in device.outputs.values_mut() {
-            if output.power_off || output.frame_pending {
+            if !output.power.needs_power_off() || output.frame_pending {
                 continue;
             }
 
             match output.surface.clear() {
                 Ok(()) => {
                     cancel_output_timers(&state.loop_handle, output);
-                    output.power_off = true;
+                    output.power.powered_off();
                     state.display_presentation.remove_output(&output.output);
                 }
 
                 Err(error) => {
-                    tracing::warn!(%error, output = %output.output.name(), "could not sleep locked display")
+                    tracing::warn!(%error, output = %output.output.name(), "could not apply output power-off request")
                 }
             }
         }
@@ -693,9 +710,10 @@ pub(crate) fn wake_locked_outputs(state: &mut Ferese) {
     if let Some(backend) = state.direct_backend.as_mut() {
         for device in backend.devices.values_mut() {
             for output in device.outputs.values_mut() {
-                if std::mem::take(&mut output.power_off) {
+                if output.power.needs_wake() {
                     output.surface.reset_buffer_ages();
                 }
+                output.power.request(Power::On);
             }
         }
     }
@@ -892,7 +910,7 @@ fn render_output(
             .as_ref()
             .and_then(|backend| backend.devices.get(&node))
             .and_then(|device| device.outputs.get(&crtc))
-            .is_none_or(|output| output.power_off || output.frame_pending);
+            .is_none_or(|output| !output.power.can_render() || output.frame_pending);
         if asleep {
             return false;
         }
@@ -917,7 +935,7 @@ fn render_output(
         return false;
     };
 
-    if !device.drm.is_active() || output.frame_pending {
+    if !device.drm.is_active() || !output.power.can_render() || output.frame_pending {
         device.outputs.insert(crtc, output);
         restore_device(state, node, device);
         return false;
@@ -1367,7 +1385,7 @@ fn animation_fallbacks(state: &mut Ferese) -> Vec<(DrmNode, crtc::Handle, Instan
         if let Some(deadline) = output.animation_fallback.deadline(
             now,
             refresh_duration_from_mode(output.mode),
-            active && !output.power_off,
+            active && output.power.can_render(),
             chained,
         ) {
             fallbacks.push((node, crtc, deadline));
@@ -1518,7 +1536,12 @@ fn deliver_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle
     };
 
     output.callback_timer = None;
-    if !backend.active || !device.drm.is_active() || state.session_lock.sleeping || output.frame_pending {
+    if !backend.active
+        || !device.drm.is_active()
+        || !output.power.can_render()
+        || state.session_lock.sleeping
+        || output.frame_pending
+    {
         return;
     }
 
@@ -1804,7 +1827,7 @@ fn create_direct_output(
         frame_pending: false,
         animation_fallback: AnimationFallback::default(),
         cursor_visible: false,
-        power_off: false,
+        power: OutputPower::default(),
         scheduler: crate::frame_scheduler::FrameScheduler::new(refresh_duration_from_mode(mode)),
         render_timer: None,
         callback_timer: None,

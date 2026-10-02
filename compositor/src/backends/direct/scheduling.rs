@@ -39,7 +39,7 @@ pub(super) fn request_frame(state: &mut Ferese, node: DrmNode, crtc: crtc::Handl
         return;
     };
 
-    if output.power_off {
+    if !output.power.can_render() {
         return;
     }
 
@@ -63,7 +63,11 @@ pub(super) fn arm_frame(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
         return;
     };
 
-    if output.render_timer.is_some() || output.frame_pending || output.power_off || state.session_lock.sleeping {
+    if output.render_timer.is_some()
+        || output.frame_pending
+        || !output.power.can_render()
+        || state.session_lock.sleeping
+    {
         return;
     }
 
@@ -110,7 +114,7 @@ fn dispatch_frame(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, identit
     };
 
     output.render_timer = None;
-    if output.frame_pending || output.power_off || state.session_lock.sleeping {
+    if output.frame_pending || !output.power.can_render() || state.session_lock.sleeping {
         return;
     }
 
