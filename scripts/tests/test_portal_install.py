@@ -36,7 +36,7 @@ class InstallerTest(unittest.TestCase):
                 target = cls.source / path.relative_to(REPO)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(b'#!/bin/sh\nexit 0\n' if rule['source'].startswith('target/release/') else path.read_bytes())
-                target.chmod(int(rule['mode'], 8))
+                target.chmod(0o755 if rule['source'].startswith('target/release/') else path.stat().st_mode & 0o777)
 
         cls.bundles = []
         for name in ('first', 'second'):
@@ -105,6 +105,11 @@ m.main()
                 result[str(path.relative_to(self.root))] = path.read_bytes()
 
         return result
+
+    def test_launcher_permissions_are_assigned_when_bundling(self):
+        self.assertEqual((self.source / 'packaging/ferese-session').stat().st_mode & 0o111, 0)
+        for name in ('ferese-session', 'ferese-session-shell', 'ferese-screenshot'):
+            self.assertEqual((self.bundles[0] / name).stat().st_mode & 0o777, 0o755)
 
     def test_fresh_upgrade_and_rollback_restore_all_integration(self):
         self.install()

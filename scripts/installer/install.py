@@ -163,7 +163,7 @@ def bundle(args):
             for origin in sources:
                 if origin.is_symlink() or not origin.is_file():
                     fail(f'Bundle input must be a regular file: {origin}')
-                if rule['mode'] == '0755' and not os.access(origin, os.X_OK):
+                if rule['source'].startswith('target/release/') and not os.access(origin, os.X_OK):
                     fail(f'Bundle input is not executable: {origin}')
 
                 item = record(rule, origin.name)
