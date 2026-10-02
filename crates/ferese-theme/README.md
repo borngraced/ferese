@@ -1,7 +1,7 @@
 # Ferese theme
 
-The shared native UI theme for the shell, settings, lock screen, authentication
-prompt and screen-sharing/recording chooser.
+This crate supplies the shared native UI theme used by the shell, settings, lock
+screen, authentication prompt and screen-sharing/recording chooser.
 
 - `Palette` resolves KDL colors and corners and builds the native toolkit theme.
 - `PRESETS` defines twelve variants in six families.
@@ -17,8 +17,8 @@ prompt and screen-sharing/recording chooser.
   Keep the attachment alive with its window and make the client background
   transparent after attachment succeeds. Other compositors retain the client fill.
 
-Applications supply layout, data, actions, and animation progress. Extend shared
-components when a style is needed across apps.
+Each application supplies its layout, data, actions and animation progress.
+Add styles used by several apps to the shared components.
 
 ```rust
 let palette = ferese_theme::Palette::from_document(Some(&document));
@@ -28,5 +28,5 @@ let font = ferese_theme::font(Some("Inter"));
 let label = ferese_theme::text("Appearance", font);
 ```
 
-The compositor owns backdrop blur and material rendering. This crate does not
-provide a client-side imitation of those effects.
+Backdrop blur and material rendering happen in the compositor. This crate does
+not reproduce those effects on the client.

@@ -2,23 +2,21 @@
 
 ## Get started
 
-- [Installation](installation.md): dependencies, login, previews, updates, and recovery.
-- [Configuration](configuration.md): KDL syntax, layouts, input, shortcuts, and displays.
-- [Why Ferese](why-ferese.md): layouts and the shared desktop theme.
-
-- [Screenshots](screenshots.md): desktop themes, overview and shell controls.
+- [Installation](installation.md): install dependencies, log in, preview changes, update and recover a session.
+- [Configuration](configuration.md): configure layouts, input, shortcuts and displays in KDL.
+- [Why Ferese](why-ferese.md): window layouts and a shared theme for the desktop.
+- [Screenshots](screenshots.md): see the themes, overview and shell controls.
 
 ## Use the desktop
 
-- [Shortcuts and gestures](shortcuts.md): keyboard navigation, Super-drag, resize, and window grouping.
-
-- [Lock screen](locking.md): appearance, automatic locking, and display sleep.
-- [Screen sharing and recording](screen-sharing.md): choosing sources and stopping a session.
-- [Desktop portals](portals.md): application integration and supported services.
+- [Shortcuts and gestures](shortcuts.md): keyboard navigation, moving and resizing with Super-drag, and window grouping.
+- [Lock screen](locking.md): change its appearance, set up automatic locking and configure display sleep.
+- [Screen sharing and recording](screen-sharing.md): choose a source and stop sharing.
+- [Desktop portals](portals.md): services available to applications.
 
 ## Develop Ferese
 
-- [Development](development.md): builds, tests, and portal checks.
+- [Development](development.md): build Ferese, run tests and check portal contracts.
 - [Nested resize checks](nested-resize-testing.md).
 - [Client soak testing](native-soak-testing.md).
 - [Performance measurements](performance-baseline.md).

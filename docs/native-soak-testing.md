@@ -1,13 +1,12 @@
 # Native-client soak testing
 
-The soak runner repeatedly creates and destroys native Wayland clients while
-exercising focus, resize, column width, fullscreen, floating, and workspace
-paths. Every tenth iteration also terminates a client abruptly. If a local
-malformed-client probe is available, it opens three isolated connections that
-send malformed Wayland messages. The runner requires
-Ferese to disconnect each malformed client and then checks that the compositor
-and authenticated IPC socket remain responsive. It also records compositor RSS
-growth.
+The soak runner repeatedly opens and closes native Wayland clients, testing focus,
+resize, column width, fullscreen, floating windows and workspace changes. Every
+tenth iteration terminates a client abruptly. When a local malformed-client probe
+is available, it sends malformed Wayland messages through three isolated connections.
+The runner requires Ferese to disconnect each malformed client, then checks that
+the compositor and authenticated IPC socket still respond. It also records
+compositor RSS growth.
 
 Build `ferese` and `feresectl` and start a disposable
 [nested session](installation.md#preview-and-logs). Select its Wayland socket and
@@ -29,10 +28,10 @@ FERESE_SOAK_SECONDS=300 \
 ./scripts/soak-native.sh
 ```
 
-Development probes are local-only, not distributed in the Cargo workspace.
-Supply an existing executable with `FERESE_MALFORMED_CLIENT` to enable protocol
-checks. An explicitly configured missing probe is an error; without a probe,
-the runner reports that protocol checks are skipped.
+Development probes are local tools and are not distributed in the Cargo workspace.
+Set `FERESE_MALFORMED_CLIENT` to an existing executable to enable protocol checks.
+If you explicitly configure a probe that does not exist, the runner reports an
+error. Without a probe, it reports that protocol checks are skipped.
 
 The local probe can also be run independently against a disposable Ferese session:
 

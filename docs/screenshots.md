@@ -1,6 +1,6 @@
 # Screenshots
 
-Captured on September 30, 2026. Select an image to view it at full size.
+These screenshots were taken on September 30, 2026. Click an image to open it at full size.
 
 ## Ferese Blue
 
@@ -22,7 +22,7 @@ Windows and workspaces over a custom wallpaper.
 
 ## Power controls
 
-Power profiles and restart, power off and suspend actions.
+Power controls for selecting a profile, restarting, powering off and suspending.
 
 [![Power profiles and restart, power off and suspend actions.](images/screenshots/power-controls.png)](images/screenshots/power-controls.png)
 
@@ -34,7 +34,7 @@ Application previews and workspace selection.
 
 ## Shortcut guide
 
-The login guide shows the configured keyboard shortcuts.
+The shortcut guide displayed at login, using the configured keyboard shortcuts.
 
 [![The login guide shows the configured keyboard shortcuts.](images/screenshots/shortcut-guide.png)](images/screenshots/shortcut-guide.png)
 

@@ -1,8 +1,8 @@
 # Desktop portals
 
-Desktop portals let applications request screen sharing, screenshots, wallpaper
-changes, and other desktop services. Ferese provides themed consent dialogs;
-GTK supplies file, print, and other standard dialogs.
+Applications use desktop portals to request screen sharing, screenshots, wallpaper
+changes and other desktop services. Ferese supplies themed consent dialogs, while
+GTK handles file, print and other standard dialogs.
 
 Install `xdg-desktop-portal`, `xdg-desktop-portal-gtk`, and Ferese's backend through
 [Installation](installation.md). The session launcher starts the services with
@@ -29,23 +29,24 @@ This does not affect ordinary application clipboard use.
 
 ## Consent and capture
 
-Screenshot and screen-sharing requests ask for approval. Screen sharing can
-remember display permissions when the application requests it and the user opts
-in. Window sharing always asks again. See [Screen sharing](screen-sharing.md).
+Screenshot and screen-sharing requests need approval. Display-sharing permissions
+can be remembered when the application requests it and the user opts in. Window
+sharing always asks again. See [Screen sharing](screen-sharing.md).
 Window captures contain the selected app and its subsurfaces; separate popups,
 other apps, shell layers, and compositor decorations are excluded.
 
-InputCapture starts at an approved display-edge barrier. **Ctrl+Alt+Escape**
-returns local control. Locking, disconnecting the receiver, or changing displays
-or the keyboard layout stops capture. Touch and remembered InputCapture grants
-are not supported. InputCapture forwards local input; it does not inject remote input.
+InputCapture starts at an approved barrier at the edge of a display. Press
+**Ctrl+Alt+Escape** to regain local control. Capture stops when you lock the session,
+disconnect the receiver, change displays or change the keyboard layout. Touch and
+remembered InputCapture grants are not supported. InputCapture forwards local
+input; it does not inject remote input.
 
 Wallpaper approval copies the image into Ferese's data directory and updates the
 config. Set `theme.background.lock-path` for a separate lock-screen image; otherwise
 it follows the desktop wallpaper.
 
 Global shortcuts cannot replace Ferese bindings or reserved escape/console keys.
-They stop when the app session closes and never activate on the lock screen.
+They stop when the app session closes. They never activate on the lock screen.
 Power confirmations show app inhibitors before proceeding. Ferese has no
 user-switch operation.
 

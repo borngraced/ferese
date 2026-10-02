@@ -15,9 +15,9 @@ ferese-lock --foreground   # stay attached until unlock
 Do not enter your real password in a preview. The account picture comes from
 AccountsService or `~/.face`; a silhouette is used when neither is available.
 
-Escape clears the password. Caps Lock is shown beside authentication status.
-Failed attempts show an error and delay retries. Authentication uses the system's
-PAM policy; both password and account validation must succeed.
+Press Escape to clear the password. The authentication status also shows whether
+Caps Lock is on. A failed attempt displays an error and delays the next retry.
+Authentication uses the system's PAM policy; both password and account validation must succeed.
 
 ## Automatic locking
 
@@ -46,23 +46,23 @@ lock-screen {
 }
 ```
 
-These delays start after locking, independently of the automatic-lock timer.
+Both delays start when the session locks, separately from the automatic-lock timer.
 Display sleep does not suspend the computer. A nested preview shows black
 instead of powering off the host display.
 
 ## Recovery and limits
 
-The lock covers all displays, including newly connected ones. If the lock UI
-crashes, the compositor keeps the session protected and permits a replacement
-locker to take over. A running locker cannot be replaced. Launch `ferese-lock`
-with the affected session's Wayland environment to recover; ending the session
-from another TTY remains an option (see [Recovery](installation.md#logout-and-recovery)).
+The lock covers all displays, including displays connected after locking. If the
+lock UI crashes, the compositor keeps the session protected and allows a replacement
+locker to take over. A running locker cannot be replaced. To recover, launch
+`ferese-lock` with the affected session's Wayland environment. You can also end the
+session from another TTY; see [Recovery](installation.md#logout-and-recovery).
 
-Readiness is reported only after protocol confirmation: every connected output
-has presented protected content, or there are no outputs. The pinned Iced runtime
-also emits a synthetic `Locked` event when making the request. The locker retains
-its two-event guard until upstream distinguishes request initiation from protocol
-confirmation; dependency upgrades must re-audit this workaround.
+The locker reports readiness only after protocol confirmation. At that point,
+every connected output has presented protected content, or there are no outputs.
+The pinned Iced runtime also emits a synthetic `Locked` event when it sends the
+request. The locker keeps a two-event guard until upstream separates that event
+from protocol confirmation. Dependency upgrades must re-audit this workaround.
 
 Password messages use zeroizing storage. Avatar files are limited to 8 MiB,
 4096 pixels per dimension, and a 32 MiB decoding budget. The clock updates at

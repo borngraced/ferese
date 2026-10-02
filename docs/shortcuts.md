@@ -3,6 +3,8 @@
 `Super` is usually the Windows key. These are the built-in defaults. Open
 **Settings → Shortcuts** to change bindings and gestures or disable the login
 guide. Your saved bindings can override these defaults.
+The [example config](../packaging/config.kdl) adds the app, media and arrow-key
+shortcuts listed below.
 
 ## Move and resize with the mouse
 
@@ -25,6 +27,9 @@ to nearby edges; continuing to drag beyond 20 logical pixels releases the snap.
 | Shortcut | Action |
 | --- | --- |
 | Super + H / J / K / L | Focus in that direction |
+| Super + Backspace | Return to the last focused window, including on another workspace or monitor |
+| Alt + Tab | Preview recent windows in focus order |
+| Alt + Shift + Tab | Preview recent windows in reverse focus order |
 | Super + Shift + H / J / K / L | Move the focused window in that direction |
 | Super + Ctrl + H / J / K / L | Resize in that direction |
 | Super + Q | Close the focused window |
@@ -33,6 +38,10 @@ to nearby edges; continuing to drag beyond 20 logical pixels releases the snap.
 
 Maximize fills the available workspace. Fullscreen also hides the bar and window
 decorations.
+
+Keep Alt held to cycle through recent windows. Release Alt to select the previewed
+window, or press Escape to cancel. Repeating Super + Backspace toggles between the
+two most recently focused windows.
 
 ## Columns and layouts
 
@@ -61,8 +70,8 @@ overview.
 | Super + Shift + 1–9 | Move the window to that workspace |
 | Super + Escape | Toggle between the last two visited workspaces on this monitor |
 
-Workspaces are created as needed. Selecting one visible on another monitor focuses
-that monitor.
+Workspaces are created as needed and numbered separately on each monitor.
+Workspace shortcuts select a workspace on the focused monitor.
 
 To make pressing the current workspace's shortcut toggle back too, enable
 **Settings → Windows → Toggle back with the same workspace shortcut**. It is off
@@ -98,6 +107,39 @@ Short or cancelled navigation swipes slide back. Diagonal swipes do not navigate
 Gestures can use the same actions
 as keyboard bindings, including overview or moving a window. Four- and five-finger
 bindings are supported too.
+
+## Reserved and context controls
+
+These controls are handled by the compositor rather than configurable bindings.
+
+| Control | Action |
+| --- | --- |
+| Enter in overview | Activate the selected window |
+| Escape in overview | Close overview |
+| Escape during Alt + Tab | Cancel the preview without changing focus |
+| Release Alt during Alt + Tab | Focus the previewed window |
+| Ctrl + Alt + Escape | Release an active shortcut inhibitor or input-capture session |
+| Ctrl + Alt + F1–F12 | Switch virtual terminals in a direct session |
+
+Virtual-terminal switching is unavailable in nested previews.
+
+## Example-config shortcuts
+
+The [example config](../packaging/config.kdl) adds these to the built-in defaults.
+App and hardware controls require their configured programs to be installed.
+
+| Shortcut | Action |
+| --- | --- |
+| Super + B | Open Firefox |
+| Super + Z | Open Zed |
+| Super + Alt + L | Lock with `ferese-lock` |
+| Super + Left / Down / Up / Right | Focus in that direction |
+| Super + Ctrl + Left / Down / Up / Right | Move the focused window in that direction |
+| Super + Alt + Left / Down / Up / Right | Resize in that direction |
+| Brightness up / down | Adjust brightness with `brightnessctl` |
+| Volume up / down | Adjust volume with `wpctl` |
+| Audio mute | Toggle output mute with `wpctl` |
+| Microphone mute | Toggle microphone mute with `wpctl` |
 
 ## Add a shortcut
 

@@ -13,13 +13,13 @@ FERESE_TRACE_PERFORMANCE=1 target/release/ferese --backend nested \
   --grant-effects --grant-shell-control -- target/release/ferese-shell
 ```
 
-Compare idle, several windows, overview, Settings navigation, translucent
-popovers, and screen capture separately. Allow startup to settle and repeat each
-sample. Record process CPU, child-process CPU, RSS, render attempts, and damaged
-frames. Keep build work and unrelated activity outside the sampling interval.
+Measure idle, several windows, overview, Settings navigation, translucent popovers
+and screen capture separately. Wait for startup to settle, then repeat each sample.
+Record process CPU, child-process CPU, RSS, render attempts and damaged frames.
+Do not build or run unrelated workloads during the sample.
 
-CPU percentages below use one core as 100%. Short samples are observations,
-not guarantees or hardware-session benchmarks.
+CPU percentages below use one core as 100%. These short samples describe observed
+behavior; they are not guarantees or hardware-session benchmarks.
 
 ## Direct frame timing
 
@@ -33,11 +33,11 @@ For a direct session, enable `FERESE_TRACE_PERFORMANCE=1` and
 `RUST_LOG=ferese::render=debug` before starting Ferese. The timing records include
 the planned render start, actual render start, timer lateness, presentation
 target, DRM presentation timestamp, and request-to-presentation duration.
-Missed deadlines compare submitted frames with their targets; idle gaps do not
-count. Request-to-presentation starts at the compositor's redraw request, so it
-does not include device input latency, client rendering before the request, or
-the display's pixel response. Render cost measures CPU preparation and queueing;
-asynchronous GPU work is covered conservatively by feedback-driven margins.
+Missed deadlines are counted against submitted frames' presentation targets;
+idle gaps do not count. Request-to-presentation timing starts at the compositor's
+redraw request. It does not include device input latency, client rendering before
+the request or the display's pixel response. Render cost measures CPU preparation
+and queueing. Feedback-driven margins allow conservatively for asynchronous GPU work.
 
 Check sustained animation, idle wakeup, callback-only clients, and mixed-refresh
 outputs separately. Nested sessions do not exercise the DRM scheduler.
@@ -52,23 +52,22 @@ while a render timer was scheduled or a frame was in flight. Compare these with
 coalesce and are not themselves rendered frames.
 
 `animation fallback scheduling` reports watchdog arms, cancellations, wakeups,
-recovery requests and observations of animations with an intact normal frame
-chain. Summaries are emitted during redraw activity every five seconds and on
-normal exit. The fallback counters reset with each summary. An orphaned animation
-gets a watchdog deadline two refresh intervals after its own output loses its
-frame chain. Recovery also retains a requested final frame if another output
-settles that animation while scheduling is unavailable. Idle, powered-off and
-disconnected outputs do not set that deadline.
-An already scheduled render or pending page flip suppresses the watchdog; this
-policy does not replace DRM error recovery or diagnose a permanently lost flip.
+recovery requests and animations whose normal frame chain is intact. Ferese emits
+summaries every five seconds during redraw activity and on normal exit, resetting
+the fallback counters each time. When an animation loses its output's frame chain,
+the watchdog deadline is two refresh intervals later. Recovery keeps a requested
+final frame even if another output settles the animation while scheduling is
+unavailable. Idle, powered-off and disconnected outputs do not set that deadline.
+The watchdog is suppressed when a render is already scheduled or a page flip is
+pending. It does not replace DRM error recovery or diagnose a permanently lost flip.
 
 The regression replays use a 60 Hz animation beside an idle 240 Hz output.
 The old fallback rule produces 60 unnecessary wakes in one simulated second;
 the new rule produces zero while the normal chain remains intact. Three cursor
 moves within one output require three output requests rather than the old six.
-These are deterministic scheduling counts, not live DRM CPU, latency or battery
-measurements. Verify those separately with the same hardware workload before
-making claims about power savings.
+These counts come from deterministic scheduling replays. They do not measure live
+DRM CPU use, latency or battery consumption. Measure those separately with the same
+hardware workload before claiming power savings.
 
 ## Settled overview damage
 
@@ -79,8 +78,8 @@ Intel Core Ultra 7 258V and Mesa 26.2.3. Ten-second process samples measured
 removing forced full damage from unchanged rounded thumbnails.
 
 A settled five-second interval changed from 300 damaged frames to zero.
-The nested backend still makes about 300 no-damage render attempts per interval;
-this change avoids unchanged submissions rather than changing nested scheduling.
+The nested backend still makes about 300 no-damage render attempts per interval.
+The change skips unchanged submissions; it does not alter nested scheduling.
 These short samples exclude host compositor CPU and do not measure battery
 discharge or direct DRM performance.
 
@@ -115,8 +114,8 @@ cached reading; the existing `wpctl` reader preserves volume and device semantic
 Disconnected subscriptions retain bounded polling, and missing sinks retry.
 Brightness and other status polling remain unchanged.
 
-These are short nested observations, exclude the host compositor, and do not
-measure battery discharge. Raw measurements and profiles were saved locally in
+These short nested samples exclude the host compositor and do not measure battery
+discharge. Raw measurements and profiles were saved locally in
 `/tmp/ferese-shell-profile-20261002`.
 
 The subscription regression starts its own PipeWire server, changes default

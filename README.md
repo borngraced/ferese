@@ -2,7 +2,7 @@
   <img src="docs/images/ferese-lockup.svg" width="300" alt="Ferese">
 </p>
 
-<p align="center"><strong>A complete Wayland desktop built around personalization</strong></p>
+<p align="center"><strong>A configurable Wayland desktop</strong></p>
 
 <p align="center">
   <a href="docs/installation.md">Install</a> ·
@@ -11,7 +11,7 @@
   <a href="docs/README.md">Documentation</a>
 </p>
 
-Ferese is a window manager and desktop shell built together and configured in one place, for people who want their desktop to be their own.
+Ferese combines a window manager and desktop shell with one configuration.
 
 ![Ferese Blue desktop with Settings and Control Center](docs/images/screenshots/ferese-main-hero.png)
 
@@ -19,14 +19,16 @@ Ferese is a window manager and desktop shell built together and configured in on
 
 ## Features
 
-- Scrolling columns, tree tiling and floating windows, with an overview of all your workspaces
-- Keyboard shortcuts and touchpad gestures you can remap
-- Multiple monitors with fractional scaling
-- Themes, wallpapers, blur and corners that update live, with Light/Dark/Auto modes and custom KDL themes
+- Scrolling columns with window grouping, tree tiling and floating windows that remember their size and placement
+- Workspace overview and recent-window switching
+- Remappable keyboard shortcuts and touchpad gestures
+- Multiple monitors with fractional scaling and automatic refresh-rate switching on low battery
+- Themes, wallpapers and blur that update live, with Light/Dark/Auto modes and custom KDL themes
+- Squircle window corners with matching borders and shadows
 - Desktop widgets, including a clock and sticky notes
-- Screenshots with annotation, plus screen sharing and built-in recording
-- A built-in lock screen
-- Integrated Settings and Control Center for configuring your desktop
+- Screenshots with annotation, screen sharing and built-in recording
+- A built-in lock screen and authentication dialogs
+- Settings and Control Center with Wi-Fi, Bluetooth and audio controls
 
 ## Install
 
@@ -45,9 +47,8 @@ guide](docs/installation.md) also walks you through previews, updates and recove
 
 ## Configure
 
-Make it yours through **Control Center → Settings** or `~/.config/ferese/config.kdl`,
-with changes applying as you make them and the last working configuration staying in
-place if an edit is invalid.
+Configure Ferese through **Control Center → Settings** or `~/.config/ferese/config.kdl`.
+Changes apply live. Invalid edits leave the last working configuration in place.
 
 The [configuration reference](docs/configuration.md) and [example
 config](packaging/config.kdl) cover everything from appearance and window layouts to
@@ -78,16 +79,14 @@ Shortcuts** whenever you want to change a shortcut or gesture.
 | Three-finger swipe up / down | Next / previous workspace |
 | Three-finger swipe left / right | Focus the window to the right / left |
 
-Explore [all shortcuts and mouse actions](docs/shortcuts.md) for more ways to arrange
-your windows and move between workspaces.
+See [all shortcuts and mouse actions](docs/shortcuts.md) for window and workspace controls.
 
 ## Documentation
 
-The [documentation index](docs/README.md) brings the desktop guides together, while
-[development instructions](docs/development.md) cover building, testing and
-contributing.
+The [documentation index](docs/README.md) lists the desktop guides.
+[Development instructions](docs/development.md) cover building, testing and contributing.
 
-Ferese is written in Rust using Smithay, with development happening [on
+Ferese is written in Rust using Smithay. Development happens [on
 GitHub](https://github.com/ferese-wm/ferese). If something goes wrong, [open an
 issue](https://github.com/ferese-wm/ferese/issues) with the steps to reproduce it and
 any relevant logs.

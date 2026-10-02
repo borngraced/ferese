@@ -1,8 +1,7 @@
 # Ferese website and handbook
 
-The website introduces Ferese as one desktop you can make your own, with a handbook
-built from the project’s Markdown guides so the website and repository share the same
-documentation.
+The website's handbook is built from the project's Markdown guides, so the website
+and repository share the same documentation.
 
 ## Local preview
 
@@ -14,8 +13,7 @@ python3 -m http.server 8080 --bind 127.0.0.1 --directory build/site
 ```
 
 Open http://localhost:8080 for the homepage or http://localhost:8080/docs/ for the
-handbook, then rebuild and refresh the browser whenever you change the site sources or
-guides.
+handbook. Rebuild and refresh the browser after changing the site sources or guides.
 
 - `site/index.html` and `site/styles.css`: homepage and shared visual design.
 - `site/content/index.md`: handbook introduction.
@@ -28,8 +26,8 @@ guides.
 ## GitHub Pages
 
 Choose **Settings → Pages → Source → GitHub Actions** to publish through the Pages
-workflow, which runs when site or documentation changes reach `main` and can also be
-started manually. The expected address is https://ferese-wm.github.io/ferese/.
+workflow. It runs when site or documentation changes reach `main`; you can also
+start it manually. The expected address is https://ferese-wm.github.io/ferese/.
 
 The site uses relative links, including for handbook search, so it also works under the
 `/ferese/` project path. Each build copies screenshots from `docs/images` into

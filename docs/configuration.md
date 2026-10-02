@@ -39,21 +39,22 @@ output-profile "docked" {
 }
 ```
 
-Repeated `binding`, `window-rule`, `output-profile`, `output`, `note` and
-`autostart` nodes describe lists of settings. Bindings accept positional
-keys/action/argument; profiles, outputs and notes accept a positional name,
-match or ID. Other fields can be properties or child nodes. Autostart accepts
-its command as positional arguments. Duplicate fields are rejected.
+Use repeated `binding`, `window-rule`, `output-profile`, `output`, `note` and
+`autostart` nodes for lists of settings. Bindings accept keys, an action and its
+argument positionally. Profiles, outputs and notes accept a positional name,
+match or ID; other fields can be properties or child nodes. Autostart commands
+use positional arguments. Duplicate fields are rejected.
 The dotted paths in the reference tables below describe nested sections.
 
 Settings preserves comments and custom fields when editing, while normalizing
-indentation. Configuration uses KDL.
+indentation.
 
 ## Saving and validation
 
-Settings saves automatically: text on Enter/focus loss, sliders when released.
-Undo restores the previous save; Reload picks up external edits without merging
-unfinished drafts. Wallpaper browsing needs `zenity`; a path can also be entered.
+Settings saves text when you press Enter or leave the field, and sliders when
+you release them. Undo restores the previous save. Reload reads external edits
+without merging unfinished drafts. Wallpaper browsing needs `zenity`, but you
+can also enter a path directly.
 Settings keeps `config.kdl.settings-backup` before saving.
 
 File edits reload automatically, including atomic editor saves. Invalid changes
@@ -414,11 +415,12 @@ window rules can override that behavior.
 | `width`, `height` | numbers > 0 | Application-chosen floating size |
 | `fullscreen` | boolean | Leave fullscreen state unchanged |
 
-At least one matcher is required; supplied matchers must all match. Rules apply
-in order, with later fields overriding earlier ones. Dimensions imply floating
-when `floating` is omitted. Floating apps without dimensions choose their own
-size. Placement first centers transients on the visible part of their parent,
-then tries remembered geometry, then the position with least summed overlap.
+Every rule needs at least one matcher, and supplied matchers must all match.
+Rules apply in order; later fields override earlier ones. Dimensions imply
+floating when `floating` is omitted. Floating apps without dimensions choose
+their own size. Ferese first tries to center transient windows on the visible
+part of their parent, then tries saved geometry, then the position with the least
+summed overlap.
 Equal-overlap candidates favor the focused window's center. If the size cannot
 fit, a per-output cascade advances by 32 logical pixels and wraps to the work-area
 origin. Placement respects layer-shell exclusive zones and client minimum sizes;
@@ -426,10 +428,11 @@ an oversized window keeps its size with its top-left corner reachable.
 
 Successful move/resize completion saves ordinary floating geometry by app ID in
 `$XDG_STATE_HOME/ferese/floating.json` (normally `~/.local/state/ferese/floating.json`).
-The output name and work-area fractions preserve placement across resolution
-changes. Missing outputs and restores with less than 25% visibility are skipped.
-Saves run on a worker and pending updates coalesce to the latest snapshot;
-drag completion updates memory immediately without waiting for storage.
+Geometry is stored with the output name and as fractions of its work area, so
+placement survives resolution changes. Restores are skipped if the output is
+missing or less than 25% of the window would be visible. A worker saves the
+latest snapshot, combining pending updates. Completing a drag updates memory
+immediately without waiting for storage.
 Transient dialogs and cancelled drags do not update this memory. Floating → tiled
 → floating also restores the window's last floating geometry. Nested previews
 keep drag memory in process and do not write the user's saved placements.

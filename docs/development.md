@@ -27,9 +27,9 @@ cargo test --locked -p xdg-desktop-portal-ferese
 python3 scripts/tests/test_portal_contracts.py
 ```
 
-The contract test uses a private bus. It checks signatures, appearance changes,
-invalid-config retention, and caller authorization. It does not prove complete
-compatibility with every app or open consent dialogs.
+The contract test runs on a private bus and checks signatures, appearance changes,
+caller authorization and retention of the last working config after invalid edits.
+It does not open consent dialogs or prove complete compatibility with every app.
 
 With release binaries built, run isolated integration checks:
 
@@ -41,9 +41,9 @@ FERESE_TEST_RESTORE=1 python3 scripts/tests/test_restore_isolated.py
 FERESE_TEST_WINDOW_STREAM=1 python3 scripts/tests/test_window_stream_isolated.py
 ```
 
-These cover shortcut cleanup, window capture, inhibitors, restored permissions,
-and live window streams. Check each script's dependencies before running it.
-They use disposable nested sessions or private buses.
+These checks use disposable nested sessions or private buses to test shortcut
+cleanup, window capture, inhibitors, restored permissions and live window streams.
+Check each script's dependencies before running it.
 
 For monitor streaming and lock revocation, install Python GI/GStreamer with
 `pipewiresrc`, `dbus-daemon`, `xdg-desktop-portal`, and `bwrap`, then run:
@@ -77,17 +77,17 @@ access tokens, or private window content.
 
 ## Resume recovery
 
-The direct backend retains known GPU identities while their DRM resources are
-unavailable. Hotplug, configuration and lid changes reconcile through one path;
-inactive sessions defer that work. Activation reads the lid asynchronously, then
-re-enumerates devices and connectors before allowing presentation. A logind
-system-wake signal follows the same path, including when seat ownership did not
-change. Newer libinput observations supersede in-flight lid reads. A failed read
-preserves the last observation; a three-second deadline prevents a stalled bus
-from blocking recovery indefinitely.
+The direct backend keeps track of known GPUs when their DRM resources are
+unavailable. It handles hotplug, configuration and lid changes through the same
+recovery path, deferring the work while the session is inactive. On activation,
+it reads the lid state asynchronously and re-enumerates devices and connectors
+before allowing presentation. A logind system-wake signal triggers the same work,
+even if seat ownership has not changed. New libinput observations take precedence
+over pending lid reads. If a read fails, Ferese keeps the last observation. Reads
+have a three-second deadline so a stalled bus cannot block recovery indefinitely.
 
-Device failures retire their output globals and retry with exponential backoff
-capped at 32 seconds. Working devices remain usable. Known hardware can return
+When a device fails, Ferese removes its output globals and retries with exponential
+backoff capped at 32 seconds. Working devices remain usable. Known hardware can return
 under a different `cardN` path. This does not expand support to previously
 unmanaged secondary GPUs. Connected-output reports mark a mode active only when
 output creation succeeded. Lock ownership is retained throughout recovery.

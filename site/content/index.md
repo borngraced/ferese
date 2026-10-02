@@ -1,11 +1,10 @@
 # Ferese handbook
 
-Ferese is a window manager and desktop shell built together and configured in one place,
-for people who want their desktop to be their own. This handbook helps you get settled,
-shape the desktop around the way you work and understand what you can change.
+Ferese combines a window manager and desktop shell with one configuration.
+This handbook covers installation, settings and desktop controls.
 
 [Browse screenshots](screenshots.md) to see the themes, layouts and desktop controls in
-use
+use.
 
 ## Get started
 
@@ -44,9 +43,8 @@ group windows, resize them and move between workspaces.
 - [Screen sharing and recording](screen-sharing.md): share an app or display, or save a video.
 - [Desktop portals](portals.md): integration with applications.
 
-Personalize the desktop in Settings or edit `~/.config/ferese/config.kdl` directly, with
-changes applying live and the last working configuration staying in place if an edit is
-invalid.
+Configure the desktop in Settings or edit `~/.config/ferese/config.kdl` directly.
+Changes apply live. Invalid edits leave the last working configuration in place.
 
 ## Troubleshooting
 
@@ -54,6 +52,6 @@ If you need to end a session, `feresectl request-logout` asks for confirmation a
 `feresectl exit` exits immediately, so save your work first. The [logs and recovery
 guide](installation.md#logout-and-recovery) helps when something stops responding.
 
-You can [report a problem](https://github.com/ferese-wm/ferese/issues) with the steps to
+To [report a problem](https://github.com/ferese-wm/ferese/issues), include the steps to
 reproduce it, relevant logs and whether you were using a nested preview or a direct
-session, or start with [Development](development.md) if you’d like to contribute.
+session. See [Development](development.md) to contribute.

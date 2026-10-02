@@ -10,9 +10,9 @@ portal and PipeWire dependencies.
 2. Select a monitor and click **Share**.
 3. Click the stop square to finish.
 
-Videos are saved as VP8 WebM files in your XDG Videos folder under `Ferese`.
-A notification shows the saved path. Audio and region recording are not supported
-by the built-in recorder; other recording apps can handle audio separately.
+The recorder saves VP8 WebM files under `Ferese` in your XDG Videos folder, then
+shows the path in a notification. The built-in recorder does not support audio or
+region recording; other recording apps can handle audio separately.
 If recording fails, a notification reports the error and any unfinished
 `.webm.part` file.
 
@@ -23,18 +23,19 @@ choose a display or window and click **Share**. Nothing is selected initially.
 Apps requesting multiple sources can select up to eight.
 
 A shared display includes everything visible on it, including notifications.
-A shared window includes only that app's content and subsurfaces, even when
-covered or on another workspace. Separate popups and compositor decorations are
-excluded. Resizing a shared window updates its video size; closing it ends sharing.
+Window sharing captures only the selected app's content and subsurfaces, even if
+the window is covered or on another workspace. It excludes separate popups and
+compositor decorations. The video size follows window resizes; closing the window
+ends sharing.
 
 The picker follows your shell colors, font, corners, opacity, and blur.
 
 ## Stop sharing
 
-Click **Stop sharing** in the sharing window, or close that window. The built-in
-recorder uses the top-bar stop button instead. Sharing also ends when the app
-closes or Ferese locks. Disconnecting a shared monitor or changing its capture
-size ends its stream; start sharing again afterward.
+Click **Stop sharing** or close the sharing window. For the built-in recorder,
+use the stop button in the top bar. Sharing also ends when the app closes or
+Ferese locks. If you disconnect a shared monitor or change its capture size,
+its stream ends and you need to start sharing again.
 
 ## Remember permissions
 
@@ -55,9 +56,9 @@ see the [package lists](installation.md#requirements).
 The installer supplies Ferese's portal backend and selects it for screen sharing.
 Log into a new Ferese session after installation.
 
-Streams run at up to 30 fps and support hidden or embedded cursors. Capture copies
-frames through CPU-accessible buffers, so large or multiple streams can use
-substantial CPU and memory bandwidth.
+Streams run at up to 30 fps with hidden or embedded cursors. Frames are copied
+through CPU-accessible buffers. Large streams or several simultaneous streams
+can therefore use substantial CPU and memory bandwidth.
 
 ## Troubleshooting
 
