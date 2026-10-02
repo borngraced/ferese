@@ -85,10 +85,11 @@ enum Message {
     ThemeChanged(Box<ferese_config::theme::Snapshot>),
     WallpaperLoaded(u64, Result<widget::image::Handle, String>),
     Event(Box<Event>),
-    Input(String),
+    Input(Zeroizing<String>),
     Submit,
     Authenticated(bool),
     Tick,
+    RetryReady,
 }
 
 // Never derive Debug for password-bearing messages.
@@ -203,7 +204,17 @@ impl cosmic::Application for Locker {
                 | Event::Keyboard(iced::keyboard::Event::ModifiersChanged(_)) => Some(Message::Event(Box::new(event))),
                 _ => None,
             }),
-            iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick),
+            if self.appearance.show_clock || self.appearance.show_date {
+                Subscription::run(runtime::minute_ticks).map(|_| Message::Tick)
+            } else {
+                Subscription::none()
+            },
+            match self.state {
+                AuthState::Rejected(at) => {
+                    Subscription::run_with(at, runtime::retry_deadline).map(|_| Message::RetryReady)
+                }
+                _ => Subscription::none(),
+            },
         ])
     }
 
@@ -260,18 +271,18 @@ impl cosmic::Application for Locker {
                 let now = jiff::Zoned::now();
                 self.clock = now.strftime(self.appearance.clock_format()).to_string();
                 self.date = now.strftime("%A, %B %-d").to_string();
-
+            }
+            Message::RetryReady => {
                 if matches!(self.state, AuthState::Rejected(at) if at.elapsed() >= Duration::from_secs(2)) {
                     self.state = AuthState::Ready;
                 }
             }
-            Message::Input(mut value) => {
+            Message::Input(value) => {
                 if self.state.may_submit() && value.len() <= 4096 {
                     self.password.zeroize();
-                    *self.password = std::mem::take(&mut value);
+                    self.password = value;
                     self.status = "Press Enter to unlock";
                 }
-                value.zeroize();
             }
             Message::Submit => {
                 if self.preview {
@@ -390,31 +401,34 @@ impl Locker {
 
     fn screen_content(&self, size: iced::Size) -> Element<'_, Message> {
         let avatar_size = (size.height * 0.08).clamp(56., 88.);
-        let clock_size = (size.height * 0.165)
-            .min(size.width * if self.appearance.twelve_hour { 0.075 } else { 0.12 })
-            .clamp(40., 180.) as u16;
+        let clock_size = (size.height * 0.06)
+            .min(size.width * if self.appearance.twelve_hour { 0.055 } else { 0.085 })
+            .clamp(32., 72.) as u16;
         let margin = if size.width < 640. { 24. } else { 36. };
         let top = (size.height * 0.09).max(24.);
         let a = &self.appearance;
         let mut input = widget::text_input("Password", self.password.as_str())
             .password()
-            .padding([6, 12])
+            .padding([4, 10])
+            .size(14)
             .style(ferese_theme::controls::lock_input(a.radius, a.accent, a.panel))
             .font(a.font)
             .id(widget::Id::new("password"));
 
         if self.state.may_submit() {
-            input = input.on_input(Message::Input).on_submit(|mut value| {
-                value.zeroize();
-                Message::Submit
-            });
+            input = input
+                .on_input(|value| Message::Input(Zeroizing::new(value)))
+                .on_submit(|value| {
+                    drop(Zeroizing::new(value));
+                    Message::Submit
+                });
         }
 
-        let submit = widget::button::custom(widget::icon::from_name("go-next-symbolic").size(20))
+        let submit = widget::button::custom(widget::icon::from_name("go-next-symbolic").size(16))
             .class(theme::Button::Icon)
-            .padding(6)
+            .padding(4)
             .on_press_maybe(self.state.may_submit().then_some(Message::Submit));
-        input = input.trailing_icon(container(submit).padding([0, 6]).into());
+        input = input.trailing_icon(container(submit).padding([0, 4]).into());
         let avatar: Element<'_, Message> = if let Some(photo) = &a.avatar {
             image(photo.clone())
                 .width(avatar_size)
@@ -457,8 +471,8 @@ impl Locker {
         .spacing(12)
         .align_x(iced::Alignment::Center)
         .width(
-            (size.height * 0.31)
-                .clamp(240., 320.)
+            (size.height * 0.23)
+                .clamp(200., 240.)
                 .min((size.width - margin * 2.).max(160.)),
         );
         let mut clock = column([]).spacing(0).align_x(iced::Alignment::Center);
@@ -559,6 +573,6 @@ mod tests {
     }
     #[test]
     fn password_messages_are_redacted() {
-        assert!(!format!("{:?}", Message::Input("secret".into())).contains("secret"));
+        assert!(!format!("{:?}", Message::Input(Zeroizing::new("secret".into()))).contains("secret"));
     }
 }

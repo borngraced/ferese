@@ -140,7 +140,7 @@ fn account_picture(user: &str) -> Option<image::Handle> {
         candidates.push(std::path::PathBuf::from(home).join(".face"));
     }
     candidates.into_iter().find_map(|path| {
-        let pixels = cosmic::iced::advanced::graphics::image::load(&image::Handle::from_path(path)).ok()?;
+        let pixels = decode_avatar(&path).ok()?;
         let side = pixels.width().min(pixels.height());
         if side == 0 {
             return None;
@@ -167,6 +167,50 @@ fn account_picture(user: &str) -> Option<image::Handle> {
             pixels.into_raw(),
         ))
     })
+}
+
+fn decode_avatar(path: &std::path::Path) -> Result<::image::RgbaImage, String> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    use ::image::ImageDecoder;
+
+    const ENCODED_LIMIT: u64 = 8 * 1024 * 1024;
+    const DECODED_LIMIT: u64 = 32 * 1024 * 1024;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    if !file.metadata().map_err(|error| error.to_string())?.is_file() {
+        return Err("Avatar is not a regular file".into());
+    }
+
+    let mut bytes = Vec::new();
+    file.take(ENCODED_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() as u64 > ENCODED_LIMIT {
+        return Err("Avatar exceeds the file limit".into());
+    }
+
+    let mut reader = ::image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|error| error.to_string())?;
+    let mut limits = ::image::Limits::default();
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    limits.max_alloc = Some(DECODED_LIMIT);
+    reader.limits(limits);
+    let decoder = reader.into_decoder().map_err(|error| error.to_string())?;
+    let (width, height) = decoder.dimensions();
+    if width == 0 || height == 0 || u64::from(width) * u64::from(height) * 4 > DECODED_LIMIT {
+        return Err("Avatar exceeds the decode limit".into());
+    }
+
+    ::image::DynamicImage::from_decoder(decoder)
+        .map(|image| image.into_rgba8())
+        .map_err(|error| error.to_string())
 }
 
 pub fn load_wallpaper(path: &std::path::Path, blur: f32) -> Result<image::Handle, String> {
@@ -201,6 +245,23 @@ pub fn load_wallpaper(path: &std::path::Path, blur: f32) -> Result<image::Handle
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn avatar_decoding_bounds_dimensions_and_encoded_size() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        ::image::RgbaImage::new(3, 2)
+            .save_with_format(file.path(), ::image::ImageFormat::Png)
+            .unwrap();
+        assert_eq!(decode_avatar(file.path()).unwrap().dimensions(), (3, 2));
+
+        ::image::RgbaImage::new(4097, 1)
+            .save_with_format(file.path(), ::image::ImageFormat::Png)
+            .unwrap();
+        assert!(decode_avatar(file.path()).is_err());
+
+        file.as_file().set_len(8 * 1024 * 1024 + 1).unwrap();
+        assert!(decode_avatar(file.path()).unwrap_err().contains("file limit"));
+    }
+
     #[test]
     fn portal_wallpaper_loads_without_a_filename_extension() {
         let file = tempfile::NamedTempFile::new().unwrap();

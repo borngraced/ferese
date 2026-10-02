@@ -53,8 +53,24 @@ instead of powering off the host display.
 ## Recovery and limits
 
 The lock covers all displays, including newly connected ones. If the lock UI
-crashes, the compositor keeps the session protected. Recovery may require ending
-that session from another TTY; see [Recovery](installation.md#logout-and-recovery).
+crashes, the compositor keeps the session protected and permits a replacement
+locker to take over. A running locker cannot be replaced. Launch `ferese-lock`
+with the affected session's Wayland environment to recover; ending the session
+from another TTY remains an option (see [Recovery](installation.md#logout-and-recovery)).
+
+Readiness is reported only after protocol confirmation: every connected output
+has presented protected content, or there are no outputs. The pinned Iced runtime
+also emits a synthetic `Locked` event when making the request. The locker retains
+its two-event guard until upstream distinguishes request initiation from protocol
+confirmation; dependency upgrades must re-audit this workaround.
+
+Password messages use zeroizing storage. Avatar files are limited to 8 MiB,
+4096 pixels per dimension, and a 32 MiB decoding budget. The clock updates at
+minute boundaries; authentication retry deadlines are independent.
+
+When restricted clients are introduced, their registry must omit
+`ext_session_lock_manager_v1`. This restriction is deferred until that client
+classification exists.
 
 The password interface does not support password changes or interactive
 multi-factor prompts. Update expired credentials outside the locker.

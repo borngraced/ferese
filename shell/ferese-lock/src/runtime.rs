@@ -93,3 +93,39 @@ mod tests {
         assert!(!c.observe());
     }
 }
+
+fn until_next_minute(since_epoch: Duration) -> Duration {
+    Duration::from_secs(60) - Duration::new(since_epoch.as_secs() % 60, since_epoch.subsec_nanos())
+}
+
+pub fn minute_ticks() -> impl cosmic::iced::futures::Stream<Item = ()> {
+    cosmic::iced::futures::stream::unfold((), |()| async {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        tokio::time::sleep(until_next_minute(now)).await;
+        Some(((), ()))
+    })
+}
+
+pub fn retry_deadline(at: &std::time::Instant) -> impl cosmic::iced::futures::Stream<Item = ()> + use<> {
+    let at = *at;
+    cosmic::iced::futures::stream::once(async move {
+        tokio::time::sleep(Duration::from_secs(2).saturating_sub(at.elapsed())).await;
+    })
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+
+    #[test]
+    fn minute_deadline_uses_the_wall_clock_boundary() {
+        assert_eq!(until_next_minute(Duration::ZERO), Duration::from_secs(60));
+        assert_eq!(
+            until_next_minute(Duration::from_millis(119_999)),
+            Duration::from_millis(1)
+        );
+        assert_eq!(until_next_minute(Duration::from_secs(125)), Duration::from_secs(55));
+    }
+}
