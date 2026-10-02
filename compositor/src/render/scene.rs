@@ -340,6 +340,7 @@ pub(crate) fn sampled_output_elements(
         }
         elements.push(previous.into());
     }
+    backdrop::update(&elements, scale);
     elements
 }
 

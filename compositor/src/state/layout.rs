@@ -238,7 +238,7 @@ impl Ferese {
             }
         }
 
-        let mut layout_changed = self.unmap_invisible_windows(&visible);
+        self.unmap_invisible_windows(&visible);
 
         let now = self.start_time.elapsed();
 
@@ -268,7 +268,6 @@ impl Ferese {
             } else {
                 PresentationMode::Normal
             };
-            layout_changed |= !had_geometry || geometry.logical != rect;
             let mut requested_size = geometry.set_presentation_mode(rect, mode, now);
             if !was_mapped && (had_geometry || is_fullscreen) {
                 geometry.settle_presentation();
@@ -403,10 +402,6 @@ impl Ferese {
                     );
                 }
             }
-        }
-
-        if layout_changed {
-            self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
         }
 
         self.sync_window_stacking();

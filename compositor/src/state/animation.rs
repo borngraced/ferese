@@ -468,9 +468,7 @@ impl Ferese {
         self.refresh_workspace_slide_offsets();
         self.sync_window_stacking();
 
-        if active_animation || dim_changed {
-            self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
-        }
+        active_animation |= dim_changed;
         active_animation
     }
 

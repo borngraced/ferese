@@ -565,7 +565,7 @@ impl Ferese {
             self.theme_settings = Config::resolved_theme_settings(&presented).expect("validated resolved theme");
             self.theme_engine.snapshot.presented = presented;
             self.theme_engine.publish();
-            self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
+
             if complete {
                 self.theme_engine.transition = None;
             }

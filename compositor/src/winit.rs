@@ -95,7 +95,6 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
             let mut backend = backend.borrow_mut();
             match event {
                 WinitEvent::Resized { size, scale_factor } => {
-                    state.backdrop_generation = state.backdrop_generation.wrapping_add(1);
                     let scale = normalized_scale(scale_factor);
                     let rate = backend
                         .window()

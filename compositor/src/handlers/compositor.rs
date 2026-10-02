@@ -14,29 +14,6 @@ use super::{layer_shell, xdg_shell};
 use crate::Ferese;
 use crate::state::ClientState;
 
-fn layer_affects_backdrop(layer: smithay::wayland::shell::wlr_layer::Layer) -> bool {
-    matches!(
-        layer,
-        smithay::wayland::shell::wlr_layer::Layer::Background | smithay::wayland::shell::wlr_layer::Layer::Bottom
-    )
-}
-
-impl Ferese {
-    fn surface_affects_backdrop(&self, surface: &WlSurface) -> bool {
-        let mut root = surface.clone();
-        while let Some(parent) = get_parent(&root) {
-            root = parent;
-        }
-        if matches!(&self.cursor_status, smithay::input::pointer::CursorImageStatus::Surface(cursor) if cursor == &root)
-        {
-            return false;
-        }
-        self.space
-            .layer_for_surface(&root, smithay::desktop::WindowSurfaceType::ALL)
-            .is_none_or(|layer| layer_affects_backdrop(layer.cached_state().layer))
-    }
-}
-
 impl CompositorHandler for Ferese {
     fn compositor_state(&mut self) -> &mut CompositorState {
         &mut self.compositor_state
@@ -60,9 +37,6 @@ impl CompositorHandler for Ferese {
     fn commit(&mut self, surface: &WlSurface) {
         self.update_surface_preferences(surface);
         self.capture_resize_before_commit(surface);
-        if self.surface_affects_backdrop(surface) {
-            self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
-        }
         on_commit_buffer_handler::<Self>(surface);
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
@@ -109,7 +83,7 @@ impl CompositorHandler for Ferese {
                 .retain(|_, lock| lock.wl_surface() != surface);
             self.focus_lock_surface();
         }
-        self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
+
         crate::backends::direct::render_surface(self, surface);
         if self.idle_inhibitors.remove(surface).is_some() {
             self.refresh_idle_inhibition();
@@ -140,19 +114,5 @@ impl DmabufHandler for Ferese {
 impl ShmHandler for Ferese {
     fn shm_state(&self) -> &ShmState {
         &self.shm_state
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use smithay::wayland::shell::wlr_layer::Layer;
-
-    use super::*;
-    #[test]
-    fn panel_commits_do_not_invalidate_their_own_backdrop() {
-        assert!(!layer_affects_backdrop(Layer::Top));
-        assert!(!layer_affects_backdrop(Layer::Overlay));
-        assert!(layer_affects_backdrop(Layer::Bottom));
-        assert!(layer_affects_backdrop(Layer::Background));
     }
 }

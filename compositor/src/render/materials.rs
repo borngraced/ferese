@@ -46,7 +46,8 @@ pub(super) fn append_material_surface(
         })
         .collect();
     if let Some(buffers) = state.render.surfaces.get_mut(surface) {
-        buffers.contexts.retain(|(_, index), _| *index < targets.len());
+        buffers.contexts.retain(|(_, _, index), _| *index < targets.len());
+        buffers.captures.retain(|(_, _, index), _| *index < targets.len());
     }
     let material = (!materials.is_empty() && regions.is_none()).then_some(());
     let clip = material.as_ref().and_then(|_| {
@@ -181,7 +182,6 @@ pub(super) fn material_element(
         presentation_alpha,
         background_opacity,
         blur: (blur * scale) as f32,
-        scene_generation: if blur > 0.0 { state.backdrop_generation } else { 0 },
         sample_geometry,
         sample_physical,
         sample_framebuffer: framebuffer_clip_rect(sample_physical, mode.size, transform),
@@ -202,11 +202,13 @@ pub(super) fn material_element(
         .flatten();
     let capture_rect = framebuffer_capture_rect(parameters.sample_framebuffer);
     let capture_size = Size::from((capture_rect[2], capture_rect[3]));
+    let output_id = state.output_id(output)?;
+    let capture_key = (context.clone(), output_id, index);
     let buffers = state.render.surfaces.entry(surface.clone()).or_default();
     let capture = if let Some(blur_program) = blur_program {
         if buffers
             .captures
-            .get(&context)
+            .get(&capture_key)
             .is_none_or(|c| c.geometry != sample_geometry || c.texture.size() != capture_size)
         {
             let texture = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, capture_size)
@@ -217,7 +219,7 @@ pub(super) fn material_element(
                 .ok();
             if let Some(texture) = texture {
                 buffers.captures.insert(
-                    context.clone(),
+                    capture_key.clone(),
                     BlurCapture {
                         texture,
                         dirty: Arc::new(AtomicBool::new(true)),
@@ -225,16 +227,16 @@ pub(super) fn material_element(
                     },
                 );
             } else {
-                buffers.captures.remove(&context);
+                buffers.captures.remove(&capture_key);
             }
         }
         buffers
             .captures
-            .get(&context)
+            .get(&capture_key)
             .cloned()
             .map(|capture| (capture, blur_program))
     } else {
-        buffers.captures.remove(&context);
+        buffers.captures.remove(&capture_key);
         None
     };
     if capture.is_some() {
@@ -261,7 +263,7 @@ pub(super) fn material_element(
     };
     let cached = buffers
         .contexts
-        .entry((context, index))
+        .entry((context, output_id, index))
         .or_insert_with(|| CachedMaterial {
             element: make_element(),
             parameters: parameters.clone(),
@@ -284,8 +286,15 @@ pub(super) fn material_element(
         cached.element = make_element();
     }
     if cached.parameters != parameters {
-        cached.shadow.resize(parameters.shadow_bounds, None);
-        cached.shadow.update_uniforms(decoration_uniforms(&parameters, 2.0));
+        if cached.parameters.shadow_rect != parameters.shadow_rect
+            || cached.parameters.shadow_values != parameters.shadow_values
+            || cached.parameters.shadow_bounds != parameters.shadow_bounds
+            || cached.parameters.radius != parameters.radius
+            || cached.parameters.visible_framebuffer != parameters.visible_framebuffer
+        {
+            cached.shadow.resize(parameters.shadow_bounds, None);
+            cached.shadow.update_uniforms(decoration_uniforms(&parameters, 2.0));
+        }
         match &mut cached.element {
             MaterialElement::Fill(element) => {
                 element.resize(

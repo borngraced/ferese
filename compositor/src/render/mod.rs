@@ -1,3 +1,4 @@
+mod backdrop;
 mod capture;
 mod decorations;
 mod materials;
@@ -130,7 +131,7 @@ struct BlurRenderElement {
     texture: GlesTexture,
     program: GlesTexProgram,
     id: Id,
-    commit: CommitCounter,
+    backdrop: Arc<std::sync::Mutex<backdrop::Backdrop>>,
     geometry: Rectangle<i32, Logical>,
     capture_rect: [i32; 4],
     uniforms: Arc<[Uniform<'static>]>,
@@ -148,7 +149,7 @@ impl BlurRenderElement {
             texture,
             program,
             id: Id::new(),
-            commit: CommitCounter::default(),
+            backdrop: Arc::default(),
             geometry: parameters.sample_geometry,
             capture_rect: framebuffer_capture_rect(parameters.sample_framebuffer),
             uniforms: blur_uniforms(parameters).into(),
@@ -156,11 +157,13 @@ impl BlurRenderElement {
     }
 
     fn update(&mut self, parameters: &MaterialParameters) {
-        self.capture_dirty.store(true, Ordering::Relaxed);
+        if self.capture_rect != framebuffer_capture_rect(parameters.sample_framebuffer) {
+            self.capture_dirty.store(true, Ordering::Relaxed);
+        }
         self.geometry = parameters.sample_geometry;
         self.capture_rect = framebuffer_capture_rect(parameters.sample_framebuffer);
         self.uniforms = blur_uniforms(parameters).into();
-        self.commit.increment();
+        self.backdrop.lock().unwrap().commit.increment();
     }
 }
 
@@ -170,7 +173,7 @@ impl Element for BlurRenderElement {
     }
 
     fn current_commit(&self) -> CommitCounter {
-        self.commit
+        self.backdrop.lock().unwrap().commit
     }
 
     fn src(&self) -> Rectangle<f64, Buffer> {
@@ -182,7 +185,7 @@ impl Element for BlurRenderElement {
     }
 
     fn damage_since(&self, scale: RenderScale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
-        blur_damage(self.geometry(scale).size, self.commit, commit)
+        blur_damage(self.geometry(scale).size, self.current_commit(), commit)
     }
 
     fn opaque_regions(&self, _scale: RenderScale<f64>) -> OpaqueRegions<i32, Physical> {
@@ -311,7 +314,6 @@ struct MaterialParameters {
     presentation_alpha: f32,
     background_opacity: f32,
     blur: f32,
-    scene_generation: u64,
     sample_geometry: Rectangle<i32, Logical>,
     sample_physical: Rectangle<i32, Physical>,
     sample_framebuffer: [f32; 4],
@@ -341,8 +343,8 @@ struct CachedMaterial {
 
 #[derive(Debug, Default)]
 pub(crate) struct MaterialBuffers {
-    contexts: HashMap<(ErasedContextId, usize), CachedMaterial>,
-    captures: HashMap<ErasedContextId, BlurCapture>,
+    contexts: HashMap<(ErasedContextId, ferese_core::OutputId, usize), CachedMaterial>,
+    captures: HashMap<(ErasedContextId, ferese_core::OutputId, usize), BlurCapture>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

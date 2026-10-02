@@ -346,7 +346,6 @@ pub struct Ferese {
     pub(crate) pending_logout: Option<u32>,
     pub(crate) logout_query: Option<u32>,
     pub(crate) logout_owner: Option<ObjectId>,
-    pub(crate) backdrop_generation: u64,
     viewport_animations: HashMap<WorkspaceId, AnimatedValue>,
     paused_workspaces: HashSet<WorkspaceId>,
     #[cfg(feature = "resize-metrics")]
@@ -576,7 +575,6 @@ impl Ferese {
             pending_logout: None,
             logout_query: None,
             logout_owner: None,
-            backdrop_generation: 0,
             viewport_animations: HashMap::new(),
             paused_workspaces: HashSet::new(),
             #[cfg(feature = "resize-metrics")]
@@ -761,7 +759,7 @@ impl Ferese {
 
         self.overview.set_font_family(config.overview_font_family);
         self.wallpaper.reload(config.wallpaper);
-        self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
+
         self.relayout();
         crate::backends::direct::render_all(self);
 

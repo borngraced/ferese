@@ -38,6 +38,10 @@ impl RenderResources {
 
     pub fn remove_output(&mut self, id: OutputId) {
         self.outputs.remove(&id);
+        for surface in self.surfaces.values_mut() {
+            surface.contexts.retain(|(_, output, _), _| *output != id);
+            surface.captures.retain(|(_, output, _), _| *output != id);
+        }
     }
 
     pub fn snapshot(&self, id: &WindowId) -> Option<&ResizeSnapshot> {
@@ -105,8 +109,8 @@ impl RenderResources {
         }
 
         for surface in self.surfaces.values_mut() {
-            surface.contexts.retain(|(id, _), _| id != context);
-            surface.captures.remove(context);
+            surface.contexts.retain(|(id, _, _), _| id != context);
+            surface.captures.retain(|(id, _, _), _| id != context);
         }
     }
 }

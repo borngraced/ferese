@@ -115,9 +115,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         // The decoder wakes the loop after publishing its result, including
         // when no output has a pending frame.
         let wallpaper_changed = state.wallpaper.poll();
-        if wallpaper_changed {
-            state.backdrop_generation = state.backdrop_generation.wrapping_add(1);
-        }
         // All input/Wayland callbacks have returned, releasing seat locks.
         if state.focus_cycle.is_some() && (state.session_lock.active || state.input_capture.captures(1)) {
             state.cancel_focus_cycle();

@@ -71,7 +71,7 @@ impl Ferese {
         if let Some(swipe) = &mut self.focus_swipe {
             swipe.progress = progress;
         }
-        self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
+
         if let Some(output) = self
             .focus_swipe
             .as_ref()
@@ -440,7 +440,7 @@ impl Ferese {
                 .expect("gesture output exists")
                 .held_progress = Some(progress);
             self.refresh_workspace_slide_offsets();
-            self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
+
             if let Some(output) = self.outputs_by_id.get(&output).cloned() {
                 self.defer_output_redraw(output);
             }
@@ -464,7 +464,7 @@ impl Ferese {
         slide.gesture = Some((from, to, direction));
         self.workspace_slides.insert(output, slide);
         self.swipe.mark_preview_started();
-        self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
+
         self.relayout();
     }
 
