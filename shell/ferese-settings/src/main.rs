@@ -1,5 +1,6 @@
 mod connections;
 mod form_controls;
+mod navigation;
 mod pages;
 mod theme_controls;
 
@@ -83,6 +84,8 @@ enum Message {
     ThemeChanged(Box<ferese_config::theme::Snapshot>),
     DragWindow,
     Page(Page),
+    PagePresented(Page),
+    RowVisibility(&'static str, usize, bool),
     Search(String),
     Change(Edit),
     SelectFont(String, String),
@@ -136,12 +139,18 @@ struct App {
     error: Option<String>,
     status: String,
     page: Page,
+    profile_pages: bool,
+    page_transition: Option<std::time::Instant>,
+    visible_rows: std::collections::HashSet<(&'static str, usize)>,
+    hidden_binding_rows: std::collections::HashSet<usize>,
     search: String,
     inputs: HashMap<String, String>,
     ranges: HashMap<String, f64>,
     new_command: String,
     font: cosmic::font::Font,
     native_palette: visuals::Palette,
+    family_ids: std::sync::Arc<Vec<String>>,
+    gallery_focus: Option<(String, Option<ferese_config::theme::Appearance>)>,
     resolved: ferese_config::theme::Snapshot,
     undo_revision: u64,
     auto_details: bool,
@@ -151,6 +160,19 @@ struct App {
     thumbnail_path: String,
     thumbnail_loading: bool,
     thumbnail_error: Option<String>,
+}
+
+fn initial_visible_rows() -> std::collections::HashSet<(&'static str, usize)> {
+    // Populate the first viewport before sensors report precise visibility.
+    // This avoids a blank first frame when a page opens.
+    (0..4)
+        .map(|index| ("bindings", index))
+        .chain(
+            ["theme", "theme-light", "theme-dark"]
+                .into_iter()
+                .flat_map(|list| (0..3).map(move |index| (list, index))),
+        )
+        .collect()
 }
 
 impl Drop for App {
@@ -219,12 +241,18 @@ impl cosmic::Application for App {
             } else {
                 Page::Appearance
             },
+            profile_pages: std::env::var_os("FERESE_PROFILE_SETTINGS").is_some(),
+            page_transition: None,
             search: String::new(),
+            visible_rows: initial_visible_rows(),
+            hidden_binding_rows: Default::default(),
             inputs: HashMap::new(),
             ranges: HashMap::new(),
             new_command: String::new(),
             font,
             native_palette,
+            gallery_focus: None,
+            family_ids: std::sync::Arc::new(resolved.families.iter().map(|family| family.id.clone()).collect()),
             resolved,
             undo_revision: 0,
             auto_details: false,
@@ -285,8 +313,17 @@ impl cosmic::Application for App {
                 return self.edit_many(displays::edits(&prefix, mode, automatic));
             }
             Message::ThemeChanged(snapshot) => {
+                let font_changed = self.resolved.presented.tokens.typography.font_family
+                    != snapshot.presented.tokens.typography.font_family;
+                if self.resolved.families != snapshot.families {
+                    self.family_ids =
+                        std::sync::Arc::new(snapshot.families.iter().map(|family| family.id.clone()).collect());
+                }
                 self.resolved = *snapshot;
-                self.font = ferese_theme::font(Some(&self.resolved.presented.tokens.typography.font_family));
+                if font_changed {
+                    self.font = ferese_theme::font(Some(&self.resolved.presented.tokens.typography.font_family));
+                }
+
                 return self.update_theme();
             }
             Message::NoteAction(id, action) => {
@@ -396,9 +433,21 @@ impl cosmic::Application for App {
                 self.error = Some(error);
             }
             Message::Page(page) => {
+                if self.page == page && self.search.is_empty() {
+                    return Task::none();
+                }
+
+                self.page_transition = self.profile_pages.then(std::time::Instant::now);
                 let leaving = self.page == Page::Connections && page != Page::Connections;
                 self.page = page;
                 self.search.clear();
+                self.visible_rows = initial_visible_rows();
+                self.hidden_binding_rows.clear();
+                self.gallery_focus = None;
+                let reset = cosmic::iced::widget::scrollable::snap_to(
+                    widget::Id::new("settings-content"),
+                    cosmic::iced::widget::scrollable::RelativeOffset::START.into(),
+                );
                 if leaving {
                     let cleanup = self.leave_connections();
                     let load = match page {
@@ -406,16 +455,62 @@ impl cosmic::Application for App {
                         Page::Wallpaper => self.load_thumbnail(),
                         _ => Task::none(),
                     };
-                    return Task::batch([cleanup, load]);
+                    return Task::batch([reset, cleanup, load]);
                 }
                 if page == Page::Connections {
-                    return self.refresh_connections();
+                    return Task::batch([reset, self.refresh_connections()]);
                 }
                 if page == Page::Displays {
-                    return self.load_displays();
+                    return Task::batch([reset, self.load_displays()]);
                 }
                 if page == Page::Wallpaper {
-                    return self.load_thumbnail();
+                    return Task::batch([reset, self.load_thumbnail()]);
+                }
+
+                return reset;
+            }
+            Message::PagePresented(page) => {
+                if self.page == page
+                    && let Some(started) = self.page_transition.take()
+                {
+                    eprintln!(
+                        "settings page={page:?} first_redraw_us={}",
+                        started.elapsed().as_micros()
+                    );
+                }
+            }
+            Message::RowVisibility(list, index, visible) => {
+                if visible {
+                    self.visible_rows.insert((list, index));
+                    if list == "bindings" {
+                        self.hidden_binding_rows.remove(&index);
+                    }
+                    if let Some((id, appearance)) = &self.gallery_focus
+                        && navigation::gallery_list(*appearance) == list
+                        && self
+                            .family_ids
+                            .iter()
+                            .position(|family| family == id)
+                            .is_some_and(|position| position / 3 == index)
+                    {
+                        let (id, appearance) = self.gallery_focus.take().unwrap();
+                        return cosmic::iced::advanced::widget::operate(
+                            cosmic::iced::advanced::widget::operation::focusable::focus(gallery_id(&id, appearance)),
+                        )
+                        .map(cosmic::Action::App);
+                    }
+                } else {
+                    let dirty = list == "bindings"
+                        && self
+                            .inputs
+                            .keys()
+                            .any(|path| path.starts_with(&format!("bindings.{index}.")));
+                    if dirty {
+                        // Retain the input widget until its pending edit commits.
+                        self.hidden_binding_rows.insert(index);
+                    } else {
+                        self.visible_rows.remove(&(list, index));
+                    }
                 }
             }
             Message::Search(query) => self.search = query,
@@ -437,6 +532,20 @@ impl cosmic::Application for App {
             }
             Message::Commit(field) => {
                 if let Some(value) = self.inputs.remove(&field.path) {
+                    if field.path.starts_with("bindings.")
+                        && let Some(index) = field
+                            .path
+                            .split('.')
+                            .nth(1)
+                            .and_then(|index| index.parse::<usize>().ok())
+                        && !self
+                            .inputs
+                            .keys()
+                            .any(|path| path.starts_with(&format!("bindings.{index}.")))
+                        && self.hidden_binding_rows.remove(&index)
+                    {
+                        self.visible_rows.remove(&("bindings", index));
+                    }
                     let edit = if matches!(field.kind, Kind::Text { argv: true, .. }) {
                         match shlex::split(&value).filter(|v| !v.is_empty()) {
                             Some(args) => set(
@@ -520,11 +629,29 @@ impl cosmic::Application for App {
                 }
             }
             Message::Family(id, appearance) => {
+                let reveal = if let Some(index) = self.family_ids.iter().position(|family| family == &id) {
+                    let list = navigation::gallery_list(appearance);
+                    if !self.visible_rows.insert((list, index / 3)) {
+                        self.gallery_focus = None;
+                    } else {
+                        // Focus after the sensor observes the newly mounted row.
+                        self.gallery_focus = Some((id.clone(), appearance));
+                    }
+                    cosmic::iced::advanced::widget::operate(navigation::RevealRow::new(list, index / 3))
+                        .map(cosmic::Action::App)
+                } else {
+                    Task::none()
+                };
                 let edits = visuals::choose_family(&id, appearance);
-                let focus = cosmic::iced::advanced::widget::operate(
-                    cosmic::iced::advanced::widget::operation::focusable::focus(gallery_id(&id, appearance)),
-                );
-                return Task::batch([self.edit_many(edits), focus.map(cosmic::Action::App)]);
+                let focus = if self.gallery_focus.is_none() {
+                    cosmic::iced::advanced::widget::operate(
+                        cosmic::iced::advanced::widget::operation::focusable::focus(gallery_id(&id, appearance)),
+                    )
+                    .map(cosmic::Action::App)
+                } else {
+                    Task::none()
+                };
+                return Task::batch([self.edit_many(edits), reveal, focus]);
             }
             Message::AutoDetails(enabled) => self.auto_details = enabled,
             Message::AdvancedTheme(enabled) => self.advanced_theme = enabled,
@@ -716,7 +843,9 @@ impl cosmic::Application for App {
 
 impl App {
     fn update_theme(&mut self) -> Task<Message> {
-        let palette = visuals::Palette::from_resolved(&self.resolved.presented);
+        // Widgets use presented colors directly; COSMIC's structural theme only
+        // changes when the resolved destination changes, not on every fade tick.
+        let palette = visuals::Palette::from_resolved(&self.resolved.theme);
         if palette == self.native_palette {
             return Task::none();
         }
@@ -899,6 +1028,106 @@ mod tests {
             ),
         )
         .0
+    }
+
+    fn shortcuts(count: usize) -> App {
+        let mut app = app();
+        app.page = Page::Shortcuts;
+        let source = (0..count)
+            .map(|index| format!("binding \"Super+F{index}\" \"none\"\n"))
+            .collect::<String>();
+        app.draft = Snapshot::parse(source).unwrap();
+        assert_eq!(app.draft.records("bindings"), count);
+        app
+    }
+
+    fn tree_nodes(tree: &cosmic::iced::advanced::widget::Tree) -> usize {
+        1 + tree.children.iter().map(tree_nodes).sum::<usize>()
+    }
+
+    #[test]
+    fn shortcuts_build_controls_only_for_mounted_rows() {
+        let mut app = shortcuts(100);
+        app.visible_rows.extend((0..4).map(|index| ("bindings", index)));
+        let visible = tree_nodes(&cosmic::iced::advanced::widget::Tree::new(app.page_view().as_widget()));
+        app.visible_rows.extend((0..100).map(|index| ("bindings", index)));
+        let eager = tree_nodes(&cosmic::iced::advanced::widget::Tree::new(app.page_view().as_widget()));
+        assert!(eager > visible + 96 * 10, "visible={visible}, eager={eager}");
+    }
+
+    #[test]
+    fn virtual_rows_keep_unsaved_text_mounted_until_unfocus() {
+        let mut app = shortcuts(10);
+        let _ = app.update(Message::RowVisibility("bindings", 5, true));
+        let _ = app.update(Message::Draft("bindings.5.argument".into(), "my command".into()));
+        let _ = app.update(Message::RowVisibility("bindings", 5, false));
+        assert!(app.visible_rows.contains(&("bindings", 5)));
+        assert_eq!(app.inputs["bindings.5.argument"], "my command");
+        let _ = app.update(Message::Commit(schema::text("bindings.5.argument", "Argument", "", "")));
+        assert!(!app.visible_rows.contains(&("bindings", 5)));
+        assert_eq!(app.draft.string("bindings.5.argument", ""), "my command");
+    }
+
+    #[test]
+    fn navigation_resets_scroll_but_reselecting_the_same_page_does_not() {
+        let mut app = app();
+        app.visible_rows.insert(("theme", 2));
+        let task = app.update(Message::Page(Page::Shortcuts));
+        assert!(task.units() > 0);
+        assert_eq!(app.visible_rows, initial_visible_rows());
+        assert_eq!(app.update(Message::Page(Page::Shortcuts)).units(), 0);
+    }
+
+    #[test]
+    fn offscreen_theme_selection_defers_focus_until_the_row_is_mounted() {
+        let mut app = app();
+        let id = app.family_ids.last().unwrap().clone();
+        let row = (app.family_ids.len() - 1) / 3;
+        app.visible_rows.remove(&("theme", row));
+        let _ = app.update(Message::Family(id.clone(), None));
+        assert_eq!(app.gallery_focus, Some((id, None)));
+        assert!(app.visible_rows.contains(&("theme", row)));
+        let task = app.update(Message::RowVisibility("theme", row, true));
+        assert!(task.units() > 0);
+        assert!(app.gallery_focus.is_none());
+    }
+
+    #[test]
+    fn animated_palette_does_not_rebuild_native_theme_or_family_navigation() {
+        let mut app = app();
+        app.native_palette = visuals::Palette::from_resolved(&app.resolved.theme);
+        let palette = app.native_palette;
+        let ids = app.family_ids.clone();
+        let mut snapshot = app.resolved.clone();
+        snapshot.presented.tokens.colors.surface_base = "#123456".into();
+        let task = app.update(Message::ThemeChanged(Box::new(snapshot)));
+        assert_eq!(task.units(), 0);
+        assert_eq!(app.native_palette, palette);
+        assert!(std::sync::Arc::ptr_eq(&ids, &app.family_ids));
+    }
+
+    #[test]
+    #[ignore = "release timing sample; run with --ignored --nocapture"]
+    fn profile_shortcuts_page_construction() {
+        for count in [50, 200, 500] {
+            let mut app = shortcuts(count);
+            for mounted in [4, count] {
+                app.visible_rows = (0..mounted).map(|index| ("bindings", index)).collect();
+                let mut samples = Vec::new();
+                for _ in 0..100 {
+                    let started = std::time::Instant::now();
+                    let view = app.page_view();
+                    std::hint::black_box(cosmic::iced::advanced::widget::Tree::new(view.as_widget()));
+                    samples.push(started.elapsed());
+                }
+                samples.sort_unstable();
+                eprintln!(
+                    "bindings={count} mounted={mounted} construction_median_us={} p95_us={}",
+                    samples[50].as_micros(),
+                    samples[95].as_micros()
+                );
+            }
+        }
     }
 
     #[test]

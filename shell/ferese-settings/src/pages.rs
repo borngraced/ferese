@@ -396,28 +396,44 @@ impl App {
                     body = body.push(gestures);
 
                     for index in 0..self.draft.records("bindings") {
-                        let prefix = format!("bindings.{index}");
-                        let group = column([])
-                            .spacing(1)
-                            .push(self.field(schema::text(
-                                format!("{prefix}.keys"),
-                                "Shortcut",
-                                "For example: Super+Return or Swipe3Up",
-                                "",
-                            )))
-                            .push(self.field(schema::text(
-                                format!("{prefix}.action"),
-                                "Action",
-                                "Action such as toggle-overview, spawn, focus, move, or none.",
-                                "",
-                            )))
-                            .push(self.field(schema::text(
-                                format!("{prefix}.argument"),
-                                "Argument",
-                                "Command name, direction, or action argument.",
-                                "",
-                            )));
-                        body = body.push(container(group).padding(4).class(visuals::surface(palette.card, 14.)));
+                        let content: Element<'static, Message> = if self.visible_rows.contains(&("bindings", index)) {
+                            let prefix = format!("bindings.{index}");
+                            let group = column([])
+                                .spacing(1)
+                                .push(self.field(schema::text(
+                                    format!("{prefix}.keys"),
+                                    "Shortcut",
+                                    "Keys or swipe, such as Super+Return",
+                                    "",
+                                )))
+                                .push(self.field(schema::text(
+                                    format!("{prefix}.action"),
+                                    "Action",
+                                    "Action name, such as spawn or focus",
+                                    "",
+                                )))
+                                .push(self.field(schema::text(
+                                    format!("{prefix}.argument"),
+                                    "Argument",
+                                    "Command, direction, or action argument",
+                                    "",
+                                )));
+                            container(group)
+                                .padding(4)
+                                .height(164)
+                                .class(visuals::surface(palette.card, 14.))
+                                .into()
+                        } else {
+                            widget::Space::new().height(164).width(Length::Fill).into()
+                        };
+
+                        body = body.push(
+                            cosmic::iced::widget::sensor(content)
+                                .key(("bindings", index))
+                                .anticipate(200)
+                                .on_show(move |_| Message::RowVisibility("bindings", index, true))
+                                .on_hide(Message::RowVisibility("bindings", index, false)),
+                        );
                     }
                     if self.draft.records("bindings") == 0 {
                         body = body.push(self.note("You are using the built-in shortcuts. Add custom bindings in config.kdl; they will appear here after Reload."));
@@ -445,7 +461,7 @@ impl App {
 
         content = content.push(
             scrollable(
-                container(body)
+                container(cosmic::iced::widget::keyed_column([(self.page as usize, body.into())]))
                     .padding(cosmic::iced::Padding {
                         top: 0.,
                         right: 12.,
@@ -507,7 +523,7 @@ impl App {
         } else {
             footer.into()
         };
-        row([])
+        let view: Element<'_, Message> = row([])
             .push(sidebar)
             .push(
                 container(
@@ -527,6 +543,15 @@ impl App {
                 .height(Length::Fill)
                 .class(visuals::surface(palette.background, 0.)),
             )
-            .into()
+            .into();
+        if self.profile_pages {
+            let page = self.page;
+            cosmic::iced::widget::sensor(view)
+                .key((page as usize, self.search.is_empty()))
+                .on_show(move |_| Message::PagePresented(page))
+                .into()
+        } else {
+            view
+        }
     }
 }

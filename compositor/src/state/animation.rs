@@ -309,10 +309,10 @@ impl Ferese {
         // Keep scheduling frames while waiting, so the deadline cannot stall.
         active_animation |= !blocked_workspaces.is_empty() || !resume_pauses.is_empty();
         for (workspace, viewport) in &mut self.viewport_animations {
-            if !self
+            if self
                 .output_workspaces
                 .output_for_workspace(*workspace)
-                .is_some_and(|output| self.output_workspaces.active_workspace(output) == Some(*workspace))
+                .is_none_or(|output| self.output_workspaces.active_workspace(output) != Some(*workspace))
             {
                 continue;
             }

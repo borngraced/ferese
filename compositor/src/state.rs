@@ -317,6 +317,8 @@ pub struct Ferese {
     pub(crate) session_lock: Lock,
     pub(crate) lock_idle: IdleSettings,
     pub(crate) config_source: Option<String>,
+    pub(crate) config_sections: Option<serde_json::Value>,
+    pub(crate) config_worker: Option<crate::reload::Worker>,
     pub(crate) theme_engine: crate::theme::Engine,
     pub start_time: Instant,
     pub socket_name: OsString,
@@ -434,6 +436,7 @@ pub struct Ferese {
     pub xdg_toplevel_icon_manager: XdgToplevelIconManager,
 }
 
+#[derive(Clone)]
 pub struct RuntimeConfig {
     pub(crate) lock_idle: IdleSettings,
     pub(crate) autostart: Vec<DaemonConfig>,
@@ -542,6 +545,8 @@ impl Ferese {
             session_lock: crate::session_lock::Lock::default(),
             lock_idle: config.lock_idle,
             config_source: None,
+            config_sections: None,
+            config_worker: None,
             theme_engine: Default::default(),
             start_time,
             socket_name,
@@ -659,6 +664,7 @@ impl Ferese {
             xdg_shell_state,
             xdg_toplevel_icon_manager,
         };
+        state.config_worker = Some(crate::reload::Worker::new(event_loop)?);
         let screenshot = crate::ipc::init(event_loop)?;
         state.screenshot_parts = Some(screenshot.parts);
         state.screenshot_worker = Some(screenshot.worker);
@@ -667,7 +673,23 @@ impl Ferese {
         Ok(state)
     }
 
-    pub(crate) fn apply_runtime_config(&mut self, config: RuntimeConfig) -> Result<(), String> {
+    pub(crate) fn apply_runtime_config(
+        &mut self,
+        config: RuntimeConfig,
+        sections: &serde_json::Value,
+    ) -> Result<(), String> {
+        let changed = |keys: &[&str]| {
+            self.config_sections
+                .as_ref()
+                .is_none_or(|previous| keys.iter().any(|key| previous.get(*key) != sections.get(*key)))
+        };
+        let layout_changed = changed(&["layout", "scrolling", "workspaces"]);
+        let bindings_changed = changed(&["bindings", "commands"]);
+        let input_changed = changed(&["input"]);
+        let daemons_changed = changed(&["autostart"]);
+        let lock_changed = changed(&["lock_screen"]);
+        let scene_changed = layout_changed || changed(&["animations", "appearance", "window_rules", "output_profiles"]);
+
         if self.output_profiles != config.output_profiles {
             crate::backends::direct::validate_live_outputs(self, &config.output_profiles)?;
         }
@@ -676,7 +698,7 @@ impl Ferese {
             || self.input_settings.xkb_variant != config.input_settings.xkb_variant
             || self.input_settings.xkb_options != config.input_settings.xkb_options;
 
-        if let Some(keyboard) = self.seat.get_keyboard() {
+        if input_changed && let Some(keyboard) = self.seat.get_keyboard() {
             if keyboard_changed {
                 self.input_capture.close_all();
                 if self.input_capture.restore_focus {
@@ -700,41 +722,51 @@ impl Ferese {
             keyboard.change_repeat_info(config.input_settings.repeat_rate, config.input_settings.repeat_delay_ms);
         }
 
-        self.lock_idle = config.lock_idle;
-        self.refresh_lock_idle_policy();
-        self.advance_animations(Instant::now());
+        if lock_changed {
+            self.lock_idle = config.lock_idle;
+            self.refresh_lock_idle_policy();
+        }
+        if scene_changed {
+            self.advance_animations(Instant::now());
+        }
 
         let touchpad_changed = self.input_settings.touchpad != config.input_settings.touchpad;
         let outputs_changed = self.output_profiles != config.output_profiles;
-        let bounds = self
-            .workspaces
-            .iter()
-            .map(|workspace| {
-                let output = self.output_workspaces.output_for_workspace(workspace.id);
-                let rect = self
-                    .output_ids
-                    .iter()
-                    .find(|(_, id)| Some(**id) == output)
-                    .and_then(|(output, _)| self.output_bounds_for(output))
-                    .or_else(|| self.output_bounds())
-                    .unwrap_or(Rect::new(0., 0., 1920., 1080.));
-                (workspace.id, rect)
-            })
-            .collect();
+        if layout_changed {
+            let bounds = self
+                .workspaces
+                .iter()
+                .map(|workspace| {
+                    let output = self.output_workspaces.output_for_workspace(workspace.id);
+                    let rect = self
+                        .output_ids
+                        .iter()
+                        .find(|(_, id)| Some(**id) == output)
+                        .and_then(|(output, _)| self.output_bounds_for(output))
+                        .or_else(|| self.output_bounds())
+                        .unwrap_or(Rect::new(0., 0., 1920., 1080.));
+                    (workspace.id, rect)
+                })
+                .collect();
 
-        self.workspaces
-            .reconfigure_live(
-                config.layout_mode,
-                config.default_column_width,
-                config.scrolling_focus_strategy,
-                &bounds,
-            )
-            .map_err(|error| error.to_string())?;
+            self.workspaces
+                .reconfigure_live(
+                    config.layout_mode,
+                    config.default_column_width,
+                    config.scrolling_focus_strategy,
+                    &bounds,
+                )
+                .map_err(|error| error.to_string())?;
+        }
         self.gap_config = config.gap_config;
         self.input_settings = config.input_settings;
-        self.bindings = config.bindings.into();
+        if bindings_changed {
+            self.bindings = config.bindings.into();
+        }
         self.workspace_auto_back_and_forth = config.workspace_auto_back_and_forth;
-        self.portal_shortcuts.reconcile(&self.bindings, &self.input_settings);
+        if bindings_changed || input_changed {
+            self.portal_shortcuts.reconcile(&self.bindings, &self.input_settings);
+        }
         let old_rules = std::mem::replace(&mut self.window_rules, config.window_rules);
         self.theme_settings = config.theme_settings;
         self.inactive_dim = config.inactive_dim;
@@ -749,7 +781,7 @@ impl Ferese {
         self.viewport_spring_config = config.viewport_spring_config;
         self.output_profiles = config.output_profiles;
         self.autostart = config.autostart;
-        if let Some(runner) = self.daemons.clone() {
+        if daemons_changed && let Some(runner) = self.daemons.clone() {
             crate::daemon::Runner::refresh(&runner, self);
         }
 
@@ -766,10 +798,14 @@ impl Ferese {
         }
 
         self.overview.set_font_family(config.overview_font_family);
-        self.wallpaper.reload(config.wallpaper);
+        if self.wallpaper.configuration() != &config.wallpaper {
+            self.wallpaper.reload(config.wallpaper);
+        }
 
-        self.relayout();
-        crate::backends::direct::render_all(self);
+        if scene_changed {
+            self.relayout();
+            crate::backends::direct::render_all(self);
+        }
 
         Ok(())
     }

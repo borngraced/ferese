@@ -11,7 +11,7 @@ impl Ferese {
                     && self.window_content_ready(window)
                     && self.windows.geometry(id).is_some()
                     && self.output_workspaces.focused_output().is_some()
-                    && !self.windows.record(*id).is_some_and(|record| record.closing.is_some()))
+                    && self.windows.record(*id).is_none_or(|record| record.closing.is_none()))
                 .then_some(*id)
             })
             .collect()

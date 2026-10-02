@@ -96,6 +96,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let display = Display::new()?;
     let mut state = Ferese::new(&mut event_loop, display, runtime)?;
     state.config_source = initial_source.filter(|source| source.len() <= 60 * 1024);
+    state.config_sections = state
+        .config_source
+        .as_deref()
+        .and_then(|source| ferese_config::Document::parse(source).ok())
+        .map(|document| {
+            let mut value = document.value().clone();
+            if let Some(object) = value.as_object_mut() {
+                object.remove("theme");
+            }
+            value
+        });
     theme::init(&mut event_loop, &mut state, candidate)?;
     resume::init(&mut event_loop)?;
     overview::init_font_loader(&mut event_loop, &mut state)?;

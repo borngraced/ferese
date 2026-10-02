@@ -392,6 +392,7 @@ impl Default for Snapshot {
     }
 }
 
+#[derive(Clone)]
 pub struct Candidate {
     pub policy: Policy,
     pub theme: ResolvedTheme,

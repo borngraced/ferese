@@ -25,7 +25,8 @@ fn visible(states: &RenderElementStates) -> HashSet<Id> {
     states
         .states
         .iter()
-        .filter_map(|(id, state)| is_visible(*state).then(|| id.clone()))
+        .filter(|&(_id, state)| is_visible(*state))
+        .map(|(id, _state)| id.clone())
         .collect()
 }
 

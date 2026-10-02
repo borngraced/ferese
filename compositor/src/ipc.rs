@@ -176,6 +176,20 @@ pub(crate) fn init(event_loop: &mut EventLoop<'static, Ferese>) -> Result<Screen
                         "Missing session revision",
                     ));
                 }
+            } else if call.request.command == "reload-config" {
+                if let Err(error) = validate_request(&call.request) {
+                    let _ = call
+                        .response
+                        .try_send(Response::error(call.request.id, error.code, error.message));
+                } else if state.session_lock.active() {
+                    let _ = call.response.try_send(Response::error(
+                        call.request.id,
+                        "session_locked",
+                        "IPC unavailable while session is locked",
+                    ));
+                } else if let Err(error) = state.queue_config_reload(false, Some((call.request.id, call.response))) {
+                    tracing::warn!(%error, "cannot queue configuration reload");
+                }
             } else if call.request.command == "screenshot-window" {
                 state.start_window_screenshot(call.request, call.response);
             } else if call.request.command == "screenshot" {

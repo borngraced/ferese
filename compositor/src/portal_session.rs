@@ -155,7 +155,7 @@ impl PortalSession {
     }
 
     pub(crate) fn validate_end(&self, token: u32, inhibitor_revision: u32, force: bool) -> Result<(), String> {
-        if !self.query_ready() || !self.query.as_ref().is_some_and(|query| query.token == token) {
+        if !self.query_ready() || self.query.as_ref().is_none_or(|query| query.token != token) {
             return Err("Session-ending confirmation expired or applications are still responding".into());
         }
         if self.inhibitor_revision != inhibitor_revision

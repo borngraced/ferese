@@ -257,11 +257,9 @@ impl State {
                         device.start_emulating(activation);
                     }
                 }
-                Some("deactivated" | "disabled" | "closed") => {
-                    if self.activation.take().is_some() {
-                        for device in [&self.keyboard, &self.pointer].into_iter().flatten() {
-                            device.stop_emulating();
-                        }
+                Some("deactivated" | "disabled" | "closed") if self.activation.take().is_some() => {
+                    for device in [&self.keyboard, &self.pointer].into_iter().flatten() {
+                        device.stop_emulating();
                     }
                 }
                 Some("keys") if self.activation.is_some() => {

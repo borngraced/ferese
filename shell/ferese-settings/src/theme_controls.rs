@@ -156,15 +156,9 @@ impl App {
             .into()
     }
 
-    pub(super) fn theme_gallery(
-        &self,
-        appearance: Option<ferese_config::theme::Appearance>,
-    ) -> Element<'static, Message> {
+    pub(super) fn theme_gallery(&self, appearance: Option<ferese_config::theme::Appearance>) -> Element<'_, Message> {
         use ferese_config::theme::Appearance::{Dark, Light};
-        let palette = visuals::Palette::from_resolved(&self.resolved.presented);
-        let selected_id = visuals::family_selection(&self.draft, appearance);
-        let choices = self.resolved.families.clone();
-        let ids: Vec<_> = choices.iter().map(|family| family.id.clone()).collect();
+        let choices = &self.resolved.families;
         let mut heading = row([]).align_y(Alignment::Center).spacing(6).push(
             self.label(
                 match appearance {
@@ -192,38 +186,30 @@ impl App {
             ));
         }
         let mut gallery = column([]).spacing(6).push(heading);
-        for (chunk, families) in choices.chunks(3).enumerate() {
-            let mut tiles = row([]).spacing(6);
-            for (offset, family) in families.iter().enumerate() {
-                let selected = family.id == selected_id;
-                let index = chunk * 3 + offset;
-                let id = family.id.clone();
-                let active = selected
-                    .then_some(self.resolved.theme.appearance)
-                    .filter(|a| appearance.is_none_or(|variant| variant == *a));
-                let ids = ids.clone();
-                let tile_id = gallery_id(&id, appearance);
-                tiles = tiles.push(gallery::tile(
-                    family,
-                    gallery::TileOptions {
-                        variant: appearance,
-                        active,
-                        selected,
-                        palette,
-                        font: self.font,
-                        id: tile_id,
-                    },
-                    Message::Family(id, appearance),
-                    move |key| {
-                        gallery::neighbor(index, ids.len(), key)
-                            .map(|index| Message::Family(ids[index].clone(), appearance))
-                    },
-                ));
-            }
-            for _ in families.len()..3 {
-                tiles = tiles.push(widget::Space::new().width(Length::Fill));
-            }
-            gallery = gallery.push(tiles);
+        let list = crate::navigation::gallery_list(appearance);
+        for chunk in 0..choices.len().div_ceil(3) {
+            let content = widget::responsive(move |size| {
+                // Three previews: 200:126 image, caption, and tile padding.
+                let height = ((size.width - 12.) / 3. - 16.).max(0.) * 126. / 200. + 34.;
+                let content: Element<'_, Message> = if self.visible_rows.contains(&(list, chunk)) {
+                    // Rebuild only mounted rows; responsive owns their actual layout width.
+                    self.theme_gallery_row(chunk, appearance)
+                } else {
+                    widget::Space::new().height(height).width(Length::Fill).into()
+                };
+                cosmic::iced::widget::sensor(
+                    container(content)
+                        .height(height)
+                        .id(crate::navigation::gallery_row_id(list, chunk)),
+                )
+                .key((list, chunk))
+                .anticipate(200)
+                .on_show(move |_| Message::RowVisibility(list, chunk, true))
+                .on_hide(Message::RowVisibility(list, chunk, false))
+                .into()
+            })
+            .height(Length::Shrink);
+            gallery = gallery.push(content);
         }
         gallery::group(
             container(gallery).width(Length::Fill),
@@ -234,6 +220,49 @@ impl App {
                 None => "Theme",
             },
         )
+    }
+
+    fn theme_gallery_row(
+        &self,
+        chunk: usize,
+        appearance: Option<ferese_config::theme::Appearance>,
+    ) -> Element<'static, Message> {
+        let palette = visuals::Palette::from_resolved(&self.resolved.presented);
+        let selected_id = visuals::family_selection(&self.draft, appearance);
+        let families = &self.resolved.families[chunk * 3..self.resolved.families.len().min(chunk * 3 + 3)];
+        let ids = &self.family_ids;
+        let mut tiles = row([]).spacing(6);
+        for (offset, family) in families.iter().enumerate() {
+            let selected = family.id == selected_id;
+            let index = chunk * 3 + offset;
+            let id = family.id.clone();
+            let active = selected
+                .then_some(self.resolved.theme.appearance)
+                .filter(|a| appearance.is_none_or(|variant| variant == *a));
+            let tile_id = gallery_id(&id, appearance);
+            let ids = ids.clone();
+            tiles = tiles.push(gallery::tile(
+                family,
+                gallery::TileOptions {
+                    variant: appearance,
+                    active,
+                    selected,
+                    palette,
+                    font: self.font,
+                    id: tile_id,
+                },
+                Message::Family(id, appearance),
+                move |key| {
+                    gallery::neighbor(index, ids.len(), key)
+                        .map(|index| Message::Family(ids[index].clone(), appearance))
+                },
+            ));
+        }
+        for _ in families.len()..3 {
+            tiles = tiles.push(widget::Space::new().width(Length::Fill));
+        }
+
+        tiles.into()
     }
 }
 

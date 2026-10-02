@@ -47,7 +47,14 @@ pub(crate) fn read_source(path: &Path) -> Result<String, String> {
 
 pub(crate) fn prepare(source: &str, directory: &Path) -> Result<(Config, RuntimeConfig, Candidate), String> {
     let document = Document::parse(source).map_err(|e| e.to_string())?;
-    let candidate = resolve_with_context(&document, directory, Timestamp::now(), &auto_context(), read_source)?;
+    prepare_document(&document, directory)
+}
+
+pub(crate) fn prepare_document(
+    document: &Document,
+    directory: &Path,
+) -> Result<(Config, RuntimeConfig, Candidate), String> {
+    let candidate = resolve_with_context(document, directory, Timestamp::now(), &auto_context(), read_source)?;
     let config: Config =
         serde_json::from_value(document.with_theme(&candidate.theme).value().clone()).map_err(|e| e.to_string())?;
     let runtime = config.runtime_config().map_err(|e| e.to_string())?;
@@ -131,6 +138,10 @@ pub(crate) struct Engine {
 }
 
 impl Engine {
+    pub(crate) fn matches_files(&self, files: &[PathBuf]) -> bool {
+        self.active_files == files
+    }
+
     pub(crate) fn watch(&mut self, owner: u64, id: u64, since: u64, response: mpsc::SyncSender<Response>) {
         if since != self.snapshot.revision {
             let _ = response.try_send(Response::success(id, self.value()));
@@ -163,7 +174,7 @@ impl Engine {
         }
     }
 
-    fn watch_files(&mut self, files: &[PathBuf]) {
+    pub(crate) fn watch_files(&mut self, files: &[PathBuf]) {
         let mut targets = HashSet::from([PathBuf::from("/etc/localtime")]);
         if let Some(path) = crate::config::config_path() {
             targets.insert(path);
@@ -213,7 +224,7 @@ impl Engine {
         self.watched_directories = directories;
     }
 
-    fn arm_clock(&self, next: Option<Timestamp>) -> io::Result<()> {
+    pub(crate) fn arm_clock(&self, next: Option<Timestamp>) -> io::Result<()> {
         let Some(fd) = &self.clock else { return Ok(()) };
         let mut timer: libc::itimerspec = unsafe { std::mem::zeroed() };
         if let Some(next) = next {
@@ -342,47 +353,7 @@ pub(crate) fn init(
 
 impl Ferese {
     pub(crate) fn refresh_theme(&mut self) {
-        let result = crate::config::config_path()
-            .map_or_else(
-                || {
-                    self.config_source
-                        .clone()
-                        .ok_or_else(|| "No configuration available".into())
-                },
-                |path| {
-                    if path.exists() {
-                        read_source(&path)
-                    } else {
-                        Ok(String::new())
-                    }
-                },
-            )
-            .and_then(|source| {
-                if let Ok(document) = Document::parse(&source)
-                    && let Some(value) = document.get("theme")
-                    && let Ok(policy) = serde_json::from_value::<ferese_config::theme::Policy>(value.clone())
-                {
-                    let directory = crate::config::config_path()
-                        .and_then(|path| path.parent().map(ToOwned::to_owned))
-                        .unwrap_or_else(|| PathBuf::from("."));
-                    let files: Vec<_> = [&policy.file, &policy.light.file, &policy.dark.file]
-                        .into_iter()
-                        .flatten()
-                        .filter(|path| !path.as_os_str().is_empty())
-                        .map(|path| ferese_config::theme::theme_path(&directory, path))
-                        .collect();
-                    let mut files = files;
-                    files.extend(
-                        policy
-                            .custom_themes
-                            .values()
-                            .map(|theme| ferese_config::theme::theme_path(&directory, &theme.file)),
-                    );
-                    self.theme_engine.watch_files(&files);
-                }
-                self.reload_config_source(source)
-            });
-        if let Err(error) = result {
+        if let Err(error) = self.queue_config_reload(true, None) {
             self.theme_engine.reject(error);
         }
     }

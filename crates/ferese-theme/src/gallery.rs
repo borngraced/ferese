@@ -90,15 +90,16 @@ pub fn preview(
     selected: bool,
 ) -> cosmic::widget::icon::Icon {
     use cosmic::widget::icon;
-    let key = format!("{family:?}/{variant:?}/{active:?}/{selected}");
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, icon::Handle>>> =
+    let key = format!("{}/{variant:?}/{active:?}/{selected}", family.id);
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (Family, icon::Handle)>>> =
         std::sync::OnceLock::new();
     let cache = CACHE.get_or_init(Default::default);
     let mut cache = cache.lock().unwrap();
-    let handle = cache
-        .entry(key)
-        .or_insert_with(|| icon::from_svg_bytes(svg(family, variant, active, selected).into_bytes()).symbolic(false))
-        .clone();
+    if cache.get(&key).is_none_or(|(cached, _)| cached != family) {
+        let handle = icon::from_svg_bytes(svg(family, variant, active, selected).into_bytes()).symbolic(false);
+        cache.insert(key.clone(), (family.clone(), handle));
+    }
+    let handle = cache[&key].1.clone();
     // Bound cached previews when users repeatedly edit imported palettes.
     if cache.len() > 128 {
         cache.clear();

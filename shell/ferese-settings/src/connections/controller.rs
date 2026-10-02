@@ -142,7 +142,7 @@ impl App {
                 }
             }
             Input::Answer(id, accepted) => {
-                if !self.connections.prompt.as_ref().is_some_and(|p| p.id == id) {
+                if self.connections.prompt.as_ref().is_none_or(|p| p.id != id) {
                     return Task::none();
                 }
                 if accepted

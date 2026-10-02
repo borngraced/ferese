@@ -758,13 +758,10 @@ impl Ferese {
         if !self.overview.is_active() {
             return None;
         }
-        self.space
-            .outputs()
-            .find(|output| {
-                self.output_bounds_for(output)
-                    .is_some_and(|bounds| contains(workspace_strip(bounds), point))
-            })
-            .cloned()
+        let output = self.space.output_under(point).next()?;
+        self.output_bounds_for(output)
+            .is_some_and(|bounds| contains(workspace_strip(bounds), point))
+            .then(|| output.clone())
     }
 
     pub(crate) fn click_overview_workspace(&mut self, point: Point<f64, Logical>) -> bool {

@@ -49,7 +49,7 @@ impl Ferese {
 
         surfaces
             .into_iter()
-            .filter(|surface| mapped_tree(surface))
+            .filter(mapped_tree)
             .filter_map(|surface| {
                 let id = Id::from(&surface);
                 let output = self

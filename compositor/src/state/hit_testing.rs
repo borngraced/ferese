@@ -17,6 +17,10 @@ impl Ferese {
             .map(|(_, surface, origin)| (surface, origin))
             .or_else(|| self.window_surface_under(position))
             .or_else(|| {
+                if self.overview.is_active() {
+                    return None;
+                }
+
                 self.layer_surface_under(position, &[Layer::Bottom, Layer::Background])
                     .map(|(_, surface, origin)| (surface, origin))
             })
@@ -32,7 +36,7 @@ impl Ferese {
         if let Some(layer) = self.layer_surface_under(position, &[Layer::Overlay, Layer::Top]) {
             return Some(layer);
         }
-        if self.window_surface_under(position).is_some() {
+        if self.overview.is_active() || self.window_surface_under(position).is_some() {
             return None;
         }
 

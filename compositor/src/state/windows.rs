@@ -664,7 +664,7 @@ impl Ferese {
     }
 
     pub(crate) fn close_managed_window(&mut self, id: WindowId) -> bool {
-        if !self.windows.window(id).is_some() {
+        if self.windows.window(id).is_none() {
             return false;
         }
 

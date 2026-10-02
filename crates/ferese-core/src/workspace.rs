@@ -1025,6 +1025,16 @@ fn finite_or_zero(value: f64) -> f64 {
     if value.is_finite() { value } else { 0.0 }
 }
 
+impl Workspace {
+    pub fn window_count(&self) -> usize {
+        self.layout.window_ids().count() + self.floating.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.layout.window_ids().next().is_none() && self.floating.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -1580,15 +1590,5 @@ mod tests {
             (random.rotate_left(21) % 900 + 1) as f64,
             (random.rotate_left(33) % 700 + 1) as f64,
         )
-    }
-}
-
-impl Workspace {
-    pub fn window_count(&self) -> usize {
-        self.layout.window_ids().count() + self.floating.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.layout.window_ids().next().is_none() && self.floating.is_empty()
     }
 }
