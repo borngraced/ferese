@@ -9,6 +9,7 @@ use surfaces::*;
 mod compositor_ipc;
 mod config;
 mod control;
+mod display_mode;
 mod keybinding_guide;
 mod motion;
 mod note_store;
@@ -177,6 +178,7 @@ struct FereseShell {
     theme_error: Option<String>,
     menu: Option<status_ui::OpenMenu>,
     system_modal: Option<system_modal::SystemModal>,
+    display_mode: display_mode::Model,
     guide_shown: bool,
     guide_load: keybinding_guide::LoadState,
     guide_attempts: u8,
@@ -262,6 +264,13 @@ enum Message {
         output: Option<String>,
         result: Result<Vec<keybinding_guide::Entry>, String>,
     },
+    OpenDisplays(Option<String>),
+    DisplaysLoaded(u64, Result<display_mode::Inventory, String>),
+    SelectDisplayMode(display_mode::Mode),
+    ApplyDisplayMode,
+    DisplayModeCompleted(u64, bool, Result<display_mode::Inventory, String>),
+    KeepDisplayMode,
+    RevertDisplayMode,
     SystemInhibitors(window::Id, Result<compositor_ipc::Approval, String>),
     ConfirmPower(status::Action),
     CancelPower,
@@ -303,6 +312,7 @@ impl cosmic::Application for FereseShell {
             theme_error: None,
             menu: None,
             system_modal: None,
+            display_mode: display_mode::Model::default(),
             guide_shown: false,
             guide_load: Default::default(),
             guide_attempts: 0,
@@ -358,7 +368,11 @@ impl cosmic::Application for FereseShell {
             self.notifications
                 .tick_subscription()
                 .map(|_| Message::NotificationTick),
-            event::listen_with(|event, _status, id| match &event {
+            event::listen_with(|event, status, id| match &event {
+                Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+                    key: cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::Enter),
+                    ..
+                }) if status == cosmic::iced::event::Status::Captured => None,
                 Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(..))) => EFFECT_FRAME_PENDING
                     .load(Ordering::Relaxed)
                     .then_some(Message::Event(event, id)),
@@ -691,6 +705,13 @@ impl cosmic::Application for FereseShell {
                 }
                 Task::none()
             }
+            Message::OpenDisplays(output) => self.open_display_modal(output.as_deref()),
+            Message::DisplaysLoaded(generation, result) => self.finish_display_inventory(generation, result),
+            Message::SelectDisplayMode(mode) => self.select_display_mode(mode, true),
+            Message::ApplyDisplayMode => self.apply_display_mode(),
+            Message::DisplayModeCompleted(serial, close, result) => self.finish_display_mode(serial, close, result),
+            Message::KeepDisplayMode => self.confirm_display_mode(true),
+            Message::RevertDisplayMode => self.confirm_display_mode(false),
             Message::ExecutePower => self.execute_system_modal(),
             Message::AnimatePower => self.animate_system_modal(),
             Message::PowerCompleted(id, result) => self.finish_power_action(id, result),
@@ -812,6 +833,8 @@ impl cosmic::Application for FereseShell {
                     }
                     for command in poll.commands {
                         let task = match command {
+                            control::ControlCommand::ToggleDisplays(output) => self.open_display_modal(Some(&output)),
+                            control::ControlCommand::MonitorsChanged => self.load_display_inventory(),
                             control::ControlCommand::ToggleGuide(output) => self.toggle_guide(output),
                             control::ControlCommand::CancelLogout(serial) => self.cancel_logout_modal(serial),
                             control::ControlCommand::Logout(serial, output) => {

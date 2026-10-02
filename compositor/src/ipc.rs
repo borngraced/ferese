@@ -660,6 +660,9 @@ impl Ferese {
             "toggle-maximized" => self.toggle_focused_maximized(),
             "toggle-layout" => self.toggle_layout_mode(),
             "toggle-overview" => self.toggle_overview(),
+            "toggle-display-mode" => {
+                self.toggle_display_mode();
+            }
             "toggle-keybinding-guide" => {
                 if !self.toggle_keybinding_guide() {
                     return Err(CommandError::new(
@@ -699,6 +702,7 @@ impl Ferese {
                 return Ok(json!({
                     "confirmation_pending": self.direct_backend.as_ref().is_some_and(|backend| backend.confirmation_pending()),
                     "manual_profile": self.direct_backend.as_ref().and_then(|backend| backend.manual_outputs.profile.as_ref()),
+                    "manual_layout": self.direct_backend.as_ref().and_then(|backend| backend.manual_outputs.layout),
                     "manual_internal": self.direct_backend.as_ref().and_then(|backend| backend.manual_outputs.internal),
                     "profiles": self.output_profiles.iter().map(|profile| json!({
                         "name": profile.name, "layout": profile.layout,
@@ -717,6 +721,13 @@ impl Ferese {
                     .as_str()
                     .ok_or_else(|| CommandError::new("invalid_arguments", "output-profile requires a name or auto"))?;
                 crate::backends::direct::set_output_profile(self, name)
+                    .map_err(|error| CommandError::new("output_configuration_failed", error))?;
+                return Ok(self.outputs_json());
+            }
+            "output-layout" => {
+                let layout = serde_json::from_value::<crate::config::OutputLayout>(args["layout"].clone())
+                    .map_err(|_| CommandError::new("invalid_arguments", "unknown display layout"))?;
+                crate::backends::direct::set_output_layout(self, layout)
                     .map_err(|error| CommandError::new("output_configuration_failed", error))?;
                 return Ok(self.outputs_json());
             }

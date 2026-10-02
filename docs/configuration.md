@@ -520,12 +520,19 @@ restores evacuated workspaces.
 ```sh
 feresectl outputs
 feresectl output-profiles
+feresectl toggle-display-mode
+feresectl output-layout extend
 feresectl output-profile presentation
 feresectl output-confirm
 feresectl output-profile auto
 feresectl output-internal off
 feresectl output-revert
 ```
+
+The display Fn key (`XF86Display`) and the bar’s display icon open the same
+display-mode chooser. The icon appears while an external monitor is connected.
+`output-layout` selects a layout without requiring a named profile and keeps
+the matching profile’s mode, scale and transform settings.
 
 A manual choice overrides automatic selection until the monitor set or lid
 state changes. Reload keeps it only if its profile still exists and matches.

@@ -10,7 +10,7 @@ use crate::private_client::ClientCapabilities;
 use crate::state::ClientState;
 
 pub(crate) fn init_global(display: &DisplayHandle) {
-    display.create_global::<Ferese, FereseShellManagerV1, _>(5, ());
+    display.create_global::<Ferese, FereseShellManagerV1, _>(6, ());
 }
 
 pub(crate) fn config_chunks(source: &str) -> Vec<&str> {
@@ -204,6 +204,34 @@ impl Ferese {
                 self.request_logout_confirmation();
             }
         }
+    }
+
+    pub(crate) fn notify_monitor_state(&self) {
+        for shell in self
+            .shell_resources
+            .iter()
+            .filter_map(|shell| shell.upgrade().ok())
+            .filter(|shell| shell.version() >= 6)
+        {
+            shell.monitor_state_changed();
+        }
+    }
+
+    pub(crate) fn toggle_display_mode(&mut self) -> bool {
+        if self.session_lock.active() {
+            return false;
+        }
+        let Some(shell) = self
+            .shell_resources
+            .iter()
+            .filter_map(|shell| shell.upgrade().ok())
+            .find(|shell| shell.version() >= 6)
+        else {
+            tracing::warn!("display mode chooser requires the updated Ferese shell");
+            return false;
+        };
+        shell.toggle_display_mode(self.focused_output().map_or_else(String::new, |output| output.name()));
+        true
     }
 
     pub(crate) fn toggle_keybinding_guide(&mut self) -> bool {

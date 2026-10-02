@@ -40,6 +40,7 @@ pub(crate) struct DesiredOutputConfiguration {
 pub(crate) struct ManualOverride {
     pub profile: Option<String>,
     pub internal: Option<bool>,
+    pub layout: Option<OutputLayout>,
     topology: Option<(BTreeSet<String>, bool)>,
 }
 
@@ -55,6 +56,7 @@ impl ManualOverride {
         if self.topology.as_ref().is_some_and(|old| old != &topology) {
             self.profile = None;
             self.internal = None;
+            self.layout = None;
         }
         if self.profile.as_ref().is_some_and(|name| {
             !profiles
@@ -134,7 +136,9 @@ pub(crate) fn select_profile(
                 })
                 .map(|(_, profile)| profile)
         });
-    let layout = selected.map_or(OutputLayout::Extend, |profile| profile.layout);
+    let layout = manual
+        .layout
+        .unwrap_or_else(|| selected.map_or(OutputLayout::Extend, |profile| profile.layout));
     let manage_lid = selected.is_none_or(|profile| profile.lid_policy == LidPolicy::DockOrSuspend);
     let external = monitors.iter().any(|monitor| monitor.usable && !monitor.internal);
     let mut outputs = monitors
@@ -149,6 +153,9 @@ pub(crate) fn select_profile(
                 })
                 .cloned()
                 .unwrap_or_else(|| defaults(monitor.identity.clone()));
+            if manual.layout.is_some() {
+                settings.enabled = true;
+            }
             settings.enabled &= monitor.usable;
             settings.enabled &= match layout {
                 OutputLayout::InternalOnly => monitor.internal,
@@ -462,6 +469,57 @@ mod tests {
             lid_policy: LidPolicy::DockOrSuspend,
             lid_closed: None,
             mirror_source: None,
+        }
+    }
+
+    #[test]
+    fn manual_layouts_reuse_profiles_and_expire_on_monitor_changes() {
+        let connected = [monitor("eDP-1", true), monitor("DP-1", false)];
+        let mut settings = defaults("DP-1".into());
+        settings.enabled = false;
+        settings.scale = 1.5;
+        let mut mobile = profile("mobile", &["eDP-1"], OutputLayout::InternalOnly);
+        mobile.outputs.push(settings);
+        let profiles = [mobile];
+        for layout in [
+            OutputLayout::InternalOnly,
+            OutputLayout::ExternalOnly,
+            OutputLayout::Extend,
+            OutputLayout::Mirror,
+        ] {
+            let mut manual = ManualOverride {
+                layout: Some(layout),
+                ..ManualOverride::default()
+            };
+            manual.observe(&connected, false, &profiles);
+            let desired = select_profile(&connected, false, &profiles, &manual);
+            assert_eq!(
+                desired.outputs[0].settings.enabled,
+                layout != OutputLayout::ExternalOnly
+            );
+            assert_eq!(
+                desired.outputs[1].settings.enabled,
+                layout != OutputLayout::InternalOnly
+            );
+            assert_eq!(
+                desired.outputs[1].settings.scale, 1.5,
+                "manual layout must preserve configured scale"
+            );
+            assert_eq!(
+                desired
+                    .outputs
+                    .iter()
+                    .filter(|output| output.mirror_source.is_some())
+                    .count(),
+                usize::from(layout == OutputLayout::Mirror)
+            );
+            manual.observe(&connected[..1], false, &profiles);
+            assert_eq!(manual.layout, None);
+            assert!(
+                select_profile(&connected[..1], false, &profiles, &manual).outputs[0]
+                    .settings
+                    .enabled
+            );
         }
     }
 

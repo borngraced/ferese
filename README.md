@@ -62,6 +62,7 @@ Shortcuts** whenever you want to change a shortcut or gesture.
 | Control | Action |
 | --- | --- |
 | Super + Enter | Open a terminal |
+| Display Fn key (`XF86Display`) | Choose the display mode |
 | Super + H / J / K / L | Focus left / down / up / right |
 | Super + Backspace | Return to the last focused window |
 | Super + Escape | Toggle between the last two visited workspaces on this monitor |

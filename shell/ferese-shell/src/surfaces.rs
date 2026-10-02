@@ -218,6 +218,40 @@ impl FereseShell {
             }
         }
         if let Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
+            key: cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::Enter),
+            ..
+        }) = &event
+            && self
+                .system_modal
+                .as_ref()
+                .is_some_and(|modal| modal.is_display_mode() && modal.contains(id))
+        {
+            return if self.display_mode.pending() {
+                self.confirm_display_mode(true)
+            } else {
+                self.apply_display_mode()
+            };
+        }
+
+        if let Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed { key, .. }) = &event
+            && self
+                .system_modal
+                .as_ref()
+                .is_some_and(|modal| modal.is_display_mode() && modal.contains(id))
+            && matches!(
+                key,
+                cosmic::iced::keyboard::Key::Character(_)
+                    | cosmic::iced::keyboard::Key::Named(
+                        cosmic::iced::keyboard::key::Named::ArrowLeft
+                            | cosmic::iced::keyboard::key::Named::ArrowRight
+                            | cosmic::iced::keyboard::key::Named::ArrowUp
+                            | cosmic::iced::keyboard::key::Named::ArrowDown
+                    )
+            )
+        {
+            return self.display_mode_key(key);
+        }
+        if let Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
             key: cosmic::iced::keyboard::Key::Named(cosmic::iced::keyboard::key::Named::Tab),
             modifiers,
             ..

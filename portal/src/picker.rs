@@ -86,7 +86,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (theme, font, background, palette) = appearance();
-    let height = 180. + prompt.source_list_height() + if prompt.persist_mode > 0 { 64. } else { 0. };
+    let height = 180. + prompt.source_list_height() + if prompt.persist_mode > 0 { 48. } else { 0. };
     cosmic::app::run::<Picker>(
         Settings::default()
             .size(cosmic::iced::Size::new(400., height))
@@ -243,7 +243,7 @@ impl cosmic::Application for Picker {
         } else {
             &self.prompt.app
         };
-        let mut content = column([]).width(Length::Fill).spacing(10).push(
+        let mut content = column([]).width(Length::Fill).height(Length::Fill).spacing(10).push(
             row![
                 glyph(ferese_theme::icons::DISPLAY, 24),
                 column![
@@ -299,16 +299,11 @@ impl cosmic::Application for Picker {
             }
             sources = sources.push(
                 button::custom(entry)
-                    .class(if selected {
-                        ferese_theme::accent_button()
-                    } else {
-                        ferese_theme::controls::notification_button(
-                            self.palette.text,
-                            self.palette.text.scale_alpha(0.06),
-                            self.palette.radius.min(9.),
-                            false,
-                        )
-                    })
+                    .class(ferese_theme::controls::material_button_style(
+                        self.palette,
+                        selected,
+                        self.background.a,
+                    ))
                     .padding(8)
                     .width(Length::Fill)
                     .on_press(Message::Select(index)),
@@ -332,39 +327,38 @@ impl cosmic::Application for Picker {
             } else {
                 "Allow this selection without asking again"
             };
+
             content = content.push(
-                button::custom(ferese_theme::menus::row(
-                    label,
-                    ferese_theme::menus::switch(self.remember, self.palette, 1.),
-                    self.font,
-                ))
-                .class(ferese_theme::controls::navigation_style(self.palette, false))
-                .width(Length::Fill)
-                .on_press_maybe(self.can_remember().then_some(Message::Remember)),
+                row![
+                    self.text(label).size(12).width(Length::Fill),
+                    ferese_theme::controls::switch(self.remember, self.palette)
+                        .on_press_maybe(self.can_remember().then_some(Message::Remember)),
+                ]
+                .align_y(Alignment::Center),
             );
         }
-        let mut share = button::custom(
-            row![
-                self.text(if self.prompt.window_capture { "Capture" } else { "Share" }),
-                glyph(ferese_theme::icons::ARROW, 16)
-            ]
-            .spacing(8)
-            .align_y(Alignment::Center),
+
+        let share = ferese_theme::controls::text_button(
+            if self.prompt.window_capture { "Capture" } else { "Share" },
+            self.font,
+            self.palette,
+            true,
         )
-        .class(ferese_theme::accent_button())
-        .padding([6, 16]);
-        if !self.selected.is_empty() {
-            share = share.on_press(Message::Share);
-        }
-        content = content.push(
-            row![
-                button::custom(self.text("Cancel"))
-                    .class(ferese_theme::controls::button_style(self.palette, false))
-                    .on_press(Message::Cancel),
-                share
-            ]
-            .spacing(8),
-        );
+        .on_press_maybe((!self.selected.is_empty()).then_some(Message::Share));
+        let cancel = ferese_theme::controls::text_button("Cancel", self.font, self.palette, false)
+            .class(ferese_theme::controls::material_button_style(
+                self.palette,
+                false,
+                self.background.a,
+            ))
+            .on_press(Message::Cancel);
+        content = content
+            .push(cosmic::iced::widget::Space::new().height(Length::Fill))
+            .push(
+                row![cosmic::iced::widget::Space::new().width(Length::Fill), cancel, share]
+                    .spacing(10)
+                    .align_y(Alignment::Center),
+            );
         container(content).padding(14).width(Length::Fill).into()
     }
 }

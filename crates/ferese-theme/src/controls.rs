@@ -9,7 +9,24 @@ pub fn surface(background: Color, radius: f32) -> theme::Container<'static> {
 }
 
 pub fn button_style(p: Palette, selected: bool) -> theme::Button {
-    styled_button(p, selected, false)
+    styled_button(p, selected, false, 1.0)
+}
+
+/// Selection cards share native button states while revealing the modal material.
+pub fn material_button_style(p: Palette, selected: bool, material_opacity: f32) -> theme::Button {
+    let opacity = if material_opacity.is_finite() {
+        material_opacity.clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+
+    let fill = if opacity < 1.0 {
+        opacity * if selected { 0.65 } else { 0.25 }
+    } else {
+        1.0
+    };
+
+    styled_button(p, selected, false, fill)
 }
 
 pub fn text_button<'a, M: Clone + 'a>(
@@ -65,7 +82,7 @@ pub(crate) fn switch_colors(palette: Palette, enabled: bool, hovered: bool) -> (
 }
 
 pub fn navigation_style(p: Palette, selected: bool) -> theme::Button {
-    styled_button(p, selected, true)
+    styled_button(p, selected, true, 1.0)
 }
 
 pub fn settings_input(p: Palette) -> theme::TextInput {
@@ -111,7 +128,7 @@ pub fn select<'a, M: 'a>(
     }))
 }
 
-fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button {
+fn styled_button(p: Palette, selected: bool, navigation: bool, opacity: f32) -> theme::Button {
     let style = move |hover: bool, focused: bool| {
         let background = if selected {
             mix(p.sidebar, p.accent, if hover { 0.24 } else { 0.17 })
@@ -130,6 +147,13 @@ fn styled_button(p: Palette, selected: bool, navigation: bool) -> theme::Button 
             crate::accent_pair(background, p.text)
         } else {
             (background, p.text)
+        };
+
+        let mut background = background;
+        background.a *= if hover && opacity < 1.0 {
+            (opacity + 0.12).min(1.0)
+        } else {
+            opacity
         };
 
         button::Style {

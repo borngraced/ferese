@@ -387,6 +387,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn display_key_has_a_default_binding_and_can_be_rebound() {
+        let bindings = parse("").runtime_config().unwrap().bindings;
+        assert!(bindings.iter().any(
+            |binding| binding.trigger == BindingTrigger::Keysym(keysyms::KEY_XF86Display)
+                && binding.action == BindingAction::ToggleDisplayMode
+        ));
+        let bindings = parse(
+            "binding keys=\"XF86Display\" disabled=#true\nbinding keys=\"Super+P\" action=\"toggle-display-mode\"\n",
+        )
+        .runtime_config()
+        .unwrap()
+        .bindings;
+        assert!(
+            !bindings
+                .iter()
+                .any(|binding| binding.trigger == BindingTrigger::Keysym(keysyms::KEY_XF86Display))
+        );
+        assert!(
+            bindings
+                .iter()
+                .any(|binding| binding.modifiers.logo && binding.action == BindingAction::ToggleDisplayMode)
+        );
+    }
+
+    #[test]
     fn shortcut_hint_has_a_default_binding_and_can_be_rebound() {
         let bindings = parse("").runtime_config().unwrap().bindings;
         assert!(bindings.iter().any(|binding| binding.modifiers.logo
@@ -925,7 +950,7 @@ mod tests {
         let input = config.input_settings().unwrap();
         let bindings = config.bindings(&input).unwrap();
 
-        assert_eq!(bindings.len(), 53);
+        assert_eq!(bindings.len(), 54);
         for (shift, action) in [
             (false, BindingAction::ToggleMaximized),
             (true, BindingAction::ToggleFullscreen),
@@ -969,7 +994,7 @@ mod tests {
 
         let input = replaced.input_settings().unwrap();
         let bindings = replaced.bindings(&input).unwrap();
-        assert_eq!(bindings.len(), 53);
+        assert_eq!(bindings.len(), 54);
         assert!(bindings.iter().any(|binding| {
             binding.action
                 == BindingAction::Spawn(vec!["foot".to_owned(), "--app-id".to_owned(), "work".to_owned()].into())
@@ -977,7 +1002,7 @@ mod tests {
 
         let input = unbound.input_settings().unwrap();
         let bindings = unbound.bindings(&input).unwrap();
-        assert_eq!(bindings.len(), 52);
+        assert_eq!(bindings.len(), 53);
         assert!(!bindings.iter().any(|binding| binding.action == BindingAction::Close));
     }
 

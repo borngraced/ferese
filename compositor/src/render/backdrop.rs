@@ -1,13 +1,13 @@
 use super::*;
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct Backdrop {
     pub commit: CommitCounter,
     sources: Vec<Source>,
     region: Option<Rectangle<i32, Physical>>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct Source {
     id: Id,
     commit: CommitCounter,
@@ -19,9 +19,9 @@ struct Source {
 }
 
 impl Backdrop {
-    fn update<E: Element>(
+    fn update<'a, E: Element + 'a>(
         &mut self,
-        elements: &[E],
+        elements: impl IntoIterator<Item = &'a E>,
         region: Rectangle<i32, Physical>,
         scale: RenderScale<f64>,
     ) -> bool {
@@ -90,15 +90,33 @@ impl Backdrop {
     }
 }
 
+fn update_shared<E: Element>(
+    shared: &std::sync::Mutex<Backdrop>,
+    elements: &[E],
+    owner: &Id,
+    region: Rectangle<i32, Physical>,
+    scale: RenderScale<f64>,
+) -> bool {
+    // Element queries can read this same backdrop's commit. Snapshot the state,
+    // release its lock, then inspect sources. Rendering is the sole writer.
+    let mut backdrop = shared.lock().unwrap().clone();
+    let sources = elements.iter().filter(|element| element.id() != owner);
+    let changed = backdrop.update(sources, region, scale);
+    *shared.lock().unwrap() = backdrop;
+    changed
+}
+
 pub(super) fn update(elements: &[AnimatedWindowRenderElement], scale: f64) {
     // Resolve lower blurs first so their damage propagates to higher materials.
     for (index, element) in elements.iter().enumerate().rev() {
         if let AnimatedWindowRenderElement::Blur(blur) = element {
-            let changed =
-                blur.backdrop
-                    .lock()
-                    .unwrap()
-                    .update(&elements[index + 1..], blur.geometry(scale.into()), scale.into());
+            let changed = update_shared(
+                &blur.backdrop,
+                &elements[index + 1..],
+                blur.id(),
+                blur.geometry(scale.into()),
+                scale.into(),
+            );
             if changed {
                 blur.capture_dirty.store(true, Ordering::Relaxed);
             }
@@ -115,6 +133,7 @@ mod tests {
         commit: CommitCounter,
         rect: Rectangle<i32, Physical>,
         damage: Vec<Rectangle<i32, Physical>>,
+        probe: Option<Arc<std::sync::Mutex<Backdrop>>>,
         opaque: bool,
         alpha: f32,
     }
@@ -126,6 +145,7 @@ mod tests {
                 commit: CommitCounter::default(),
                 rect,
                 damage: vec![],
+                probe: None,
                 opaque: false,
                 alpha: 1.0,
             }
@@ -142,6 +162,9 @@ mod tests {
             &self.id
         }
         fn current_commit(&self) -> CommitCounter {
+            if let Some(backdrop) = &self.probe {
+                let _guard = backdrop.try_lock().expect("backdrop lock held during an element query");
+            }
             self.commit
         }
         fn src(&self) -> Rectangle<f64, Buffer> {
@@ -171,6 +194,41 @@ mod tests {
 
     fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Physical> {
         Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn blurred_popup_open_update_close_releases_backdrop_before_element_queries() {
+        let region = rect(0, 0, 100, 100);
+        let backdrop = Arc::new(std::sync::Mutex::new(Backdrop::default()));
+        let owner = Id::new();
+        let mut panel = TestElement::new(region);
+        panel.probe = Some(backdrop.clone());
+        let mut popup_alias = TestElement::new(region);
+        popup_alias.id = owner.clone();
+        let mut elements = [popup_alias, panel];
+
+        // Open: ignore a repeated instance of the cached popup material, and
+        // allow dependencies to query backdrop state without a nested lock.
+        assert!(update_shared(&backdrop, &elements, &owner, region, 1.0.into()));
+        assert_eq!(backdrop.lock().unwrap().sources.len(), 1);
+        assert!(!update_shared(&backdrop, &elements, &owner, region, 1.0.into()));
+
+        // Update both content and bounds while the popup remains visible.
+        elements[1].repaint(vec![rect(10, 10, 5, 5)]);
+        assert!(update_shared(&backdrop, &elements, &owner, region, 1.0.into()));
+        assert!(update_shared(
+            &backdrop,
+            &elements,
+            &owner,
+            rect(5, 5, 90, 90),
+            1.0.into()
+        ));
+
+        // Close and reopen: dependencies disappear, then are tracked again.
+        assert!(update_shared::<TestElement>(&backdrop, &[], &owner, region, 1.0.into()));
+        assert!(backdrop.lock().unwrap().sources.is_empty());
+        assert!(update_shared(&backdrop, &elements, &owner, region, 1.0.into()));
+        assert!(!update_shared(&backdrop, &elements, &owner, region, 1.0.into()));
     }
 
     #[test]

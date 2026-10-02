@@ -351,6 +351,7 @@ pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
     sync_battery_timer(state);
     state.restore_output_focus();
     state.relayout();
+    state.notify_monitor_state();
     render_all(state);
     lid::apply_suspend_policy(state);
 }

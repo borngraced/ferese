@@ -87,10 +87,18 @@ by default. The action can also be bound as `workspace-back-and-forth` or run wi
 | Super + Shift + S | Select a screenshot area and open Satty |
 | Super + Shift + E | Ask to log out |
 | Super + F1 | Open or close the shortcut hint |
+| Display Fn key (`XF86Display`) | Open or close the display-mode chooser |
 
 Super + F1 works even when the guide at login is disabled. It opens on the
 focused monitor. Bind `toggle-keybinding-guide` to change the shortcut, or run
 `feresectl toggle-keybinding-guide`.
+
+The display icon appears in the bar when an external monitor is connected,
+including when that monitor is disabled or mirrored. Click it to choose Internal
+only, External only, Extend or Mirror. Arrow keys or 1–4 select a mode; Enter
+applies it. Tab moves between controls and Escape cancels. After applying, choose
+Keep before the confirmation timeout or Revert to restore the last confirmed
+configuration. Bind `toggle-display-mode` if your keyboard uses another key.
 
 In Satty, Enter saves the edited screenshot and copies it to the clipboard;
 Escape discards it. See [Configuration](configuration.md#commands-and-bindings)

@@ -59,6 +59,7 @@ struct ModalSurface {
 enum Content {
     Power(PowerAction),
     Guide(Vec<keybinding_guide::Entry>),
+    Displays,
 }
 
 pub(super) struct SystemModal {
@@ -75,6 +76,10 @@ impl SystemModal {
         matches!(self.content, Content::Guide(_))
     }
 
+    pub(super) fn is_display_mode(&self) -> bool {
+        matches!(self.content, Content::Displays)
+    }
+
     pub(super) fn contains(&self, id: window::Id) -> bool {
         self.surfaces.iter().any(|surface| surface.id == id)
     }
@@ -83,6 +88,20 @@ impl SystemModal {
 impl FereseShell {
     pub(super) fn open_system_modal(&mut self, action: PowerAction, output_name: Option<&str>) -> Task<Message> {
         self.open_modal(Content::Power(action), output_name)
+    }
+
+    pub(super) fn open_display_modal(&mut self, output: Option<&str>) -> Task<Message> {
+        if self
+            .system_modal
+            .as_ref()
+            .is_some_and(|modal| modal.is_display_mode() && !modal.motion.closing())
+        {
+            return self.close_system_modal();
+        }
+        self.display_mode.begin();
+        let open = self.open_modal(Content::Displays, output);
+        let load = self.load_display_inventory();
+        Task::batch([open, load])
     }
 
     pub(super) fn rebuild_system_modal(&mut self) -> Task<Message> {
@@ -95,6 +114,10 @@ impl FereseShell {
             _ => None,
         });
         let destroy = self.destroy_system_modal(true);
+        if self.display_mode.open {
+            let open = self.open_modal(Content::Displays, None);
+            return Task::batch([destroy, open]);
+        }
         if let Some(entries) = guide {
             if self.outputs.is_empty() {
                 self.guide_shown = false;
@@ -135,6 +158,9 @@ impl FereseShell {
             .is_some_and(|modal| modal.content == content && !modal.motion.closing())
         {
             return Task::none();
+        }
+        if content != Content::Displays {
+            self.display_mode.open = false;
         }
         let primary = output_name
             .and_then(|name| {
@@ -187,7 +213,7 @@ impl FereseShell {
             Content::Power(PowerAction::Suspend) => Some(compositor_ipc::Mode::Suspend),
             Content::Power(PowerAction::Logout(_)) => Some(compositor_ipc::Mode::Logout),
             Content::Power(_) => Some(compositor_ipc::Mode::Shutdown),
-            Content::Guide(_) => None,
+            Content::Guide(_) | Content::Displays => None,
         };
         if let Some(mode) = mode {
             let id = surfaces[0].id;
@@ -276,6 +302,16 @@ impl FereseShell {
     }
 
     pub(super) fn close_system_modal(&mut self) -> Task<Message> {
+        if self.system_modal.as_ref().is_some_and(SystemModal::is_display_mode) {
+            if self.display_mode.busy {
+                return Task::none();
+            }
+            if self.display_mode.pending() {
+                return self.confirm_display_mode(false);
+            }
+            self.display_mode.open = false;
+        }
+
         if let Some(modal) = &mut self.system_modal {
             if let Content::Power(PowerAction::Logout(serial)) = modal.content
                 && let Some(control) = &self.control
@@ -341,7 +377,9 @@ impl FereseShell {
 
     pub(super) fn focus_system_modal(&self, id: window::Id) -> Task<Message> {
         if self.system_modal.as_ref().is_some_and(|modal| {
-            !modal.motion.closing() && modal.surfaces.iter().any(|surface| surface.id == id && surface.primary)
+            !modal.is_display_mode()
+                && !modal.motion.closing()
+                && modal.surfaces.iter().any(|surface| surface.id == id && surface.primary)
         }) {
             button::focus("ferese-modal-cancel".into())
         } else {
@@ -487,6 +525,7 @@ impl FereseShell {
                         .id("ferese-system-modal-controls"),
                     )
                 }
+                Content::Displays => column![container(self.display_mode_rows()).id("ferese-system-modal-controls")],
                 Content::Guide(entries) => {
                     let mut bindings = column::with_capacity(entries.len()).spacing(12);
                     for entry in entries {
@@ -529,7 +568,11 @@ impl FereseShell {
             container(rows)
                 .id("ferese-blur-card")
                 .width(Length::Fill)
-                .max_width(if modal.is_guide() { 600 } else { 360 })
+                .max_width(if modal.is_display_mode() || modal.is_guide() {
+                    600
+                } else {
+                    360
+                })
                 .padding(if modal.is_guide() { 24 } else { 18 })
                 .class(theme::Container::custom(move |_| container::Style {
                     background: (!material)
@@ -608,9 +651,19 @@ mod tests {
         }
 
         let mut outside = Focus(true);
-        let mut cancel = Focus(true);
+        let mut cancel = Focus(false);
         let mut confirm = Focus(false);
-        for (backwards, expected_cancel) in [(false, false), (false, true), (true, false), (true, true)] {
+        assert!(
+            !cancel.0 && !confirm.0,
+            "opening the chooser leaves its buttons unfocused"
+        );
+        for (backwards, expected_cancel) in [
+            (false, true),
+            (false, false),
+            (false, true),
+            (true, false),
+            (true, true),
+        ] {
             let mut current: Box<dyn Operation<()>> = modal_focus_operation(backwards);
             loop {
                 current.focusable(Some(&Id::new("bar")), Rectangle::default(), &mut outside);

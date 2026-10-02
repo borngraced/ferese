@@ -22,7 +22,7 @@
     DEALINGS IN THE SOFTWARE.
   </copyright>
 
-  <interface name="ferese_shell_manager_v1" version="5">
+  <interface name="ferese_shell_manager_v1" version="6">
     <description summary="create a capability-scoped Ferese shell controller">
       This private global is visible only to clients granted the shell-control
       capability. It does not assign a Wayland surface role.
@@ -35,7 +35,7 @@
     <request name="destroy" type="destructor"/>
   </interface>
 
-  <interface name="ferese_shell_v1" version="5">
+  <interface name="ferese_shell_v1" version="6">
     <description summary="managed-window metadata and shell control">
       Window, workspace, and output identifiers are unsigned 64-bit values
       encoded as high and low 32-bit words. Each snapshot atomically replaces
@@ -170,6 +170,16 @@
         Explicit requests are independent of the guide-at-login preference.
       </description>
       <arg name="output_name" type="string"/>
+    </event>
+    <event name="toggle_display_mode" since="6">
+      <description summary="toggle the display mode chooser on the focused output"/>
+      <arg name="output_name" type="string"/>
+    </event>
+    <event name="monitor_state_changed" since="6">
+      <description summary="physical monitor configuration changed">
+        Query the output IPC inventory after reconciliation. This includes
+        disabled monitors and mirror targets without a logical wl_output.
+      </description>
     </event>
   </interface>
 </protocol>

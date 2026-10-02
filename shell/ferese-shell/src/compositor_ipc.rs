@@ -49,7 +49,7 @@ impl SessionConnection {
     }
 }
 
-fn request(command: &str, args: Value) -> Result<Value, String> {
+pub(super) fn request(command: &str, args: Value) -> Result<Value, String> {
     SessionConnection::connect()?.request(command, args)
 }
 

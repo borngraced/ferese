@@ -551,6 +551,7 @@ pub(crate) fn set_output_profile(state: &mut Ferese, name: &str) -> Result<(), S
     let known_good = backend.applied_outputs.clone();
     backend.manual_outputs.profile = (name != "auto").then(|| name.to_owned());
     backend.manual_outputs.internal = None;
+    backend.manual_outputs.layout = None;
     let desired = crate::output_policy::select_profile(
         &backend.monitors,
         backend.lid.closed(),
@@ -584,6 +585,47 @@ pub(crate) fn set_output_profile(state: &mut Ferese, name: &str) -> Result<(), S
         return Err("profile does not match the connected monitors/lid".into());
     }
     arm_output_confirmation(state, known_good, previous);
+    state.notify_monitor_state();
+    Ok(())
+}
+
+pub(crate) fn set_output_layout(state: &mut Ferese, layout: crate::config::OutputLayout) -> Result<(), String> {
+    let backend = state
+        .direct_backend
+        .as_mut()
+        .ok_or("display modes require the direct DRM backend")?;
+    if !backend.active || backend.lid.pending() {
+        return Err("output session is inactive or refreshing lid state".into());
+    }
+    let usable = backend
+        .monitors
+        .iter()
+        .filter(|monitor| monitor.usable)
+        .collect::<Vec<_>>();
+    let available = match layout {
+        crate::config::OutputLayout::InternalOnly => usable.iter().any(|monitor| monitor.internal),
+        crate::config::OutputLayout::ExternalOnly => usable.iter().any(|monitor| !monitor.internal),
+        crate::config::OutputLayout::Extend | crate::config::OutputLayout::Mirror => usable.len() >= 2,
+    };
+    if !available {
+        return Err("this display mode requires monitors that are not connected".into());
+    }
+    let previous = backend.manual_outputs.clone();
+    let known_good = backend.applied_outputs.clone();
+    backend.manual_outputs.profile = None;
+    backend.manual_outputs.internal = None;
+    backend.manual_outputs.layout = Some(layout);
+    if let Err(error) = validate_live_outputs(state, &state.output_profiles) {
+        state.direct_backend.as_mut().unwrap().manual_outputs = previous;
+        return Err(error);
+    }
+    reconcile_outputs(state, false);
+    if let Some(error) = state.direct_backend.as_ref().unwrap().output_error.clone() {
+        state.direct_backend.as_mut().unwrap().manual_outputs = previous;
+        return Err(error);
+    }
+    arm_output_confirmation(state, known_good, previous);
+    state.notify_monitor_state();
     Ok(())
 }
 
@@ -606,12 +648,14 @@ pub(crate) fn set_internal_output(state: &mut Ferese, enabled: bool) -> Result<(
     let previous = backend.manual_outputs.clone();
     let known_good = backend.applied_outputs.clone();
     backend.manual_outputs.internal = Some(enabled);
+    backend.manual_outputs.layout = None;
     reconcile_outputs(state, false);
     if let Some(error) = state.direct_backend.as_ref().unwrap().output_error.clone() {
         state.direct_backend.as_mut().unwrap().manual_outputs = previous;
         return Err(error);
     }
     arm_output_confirmation(state, known_good, previous);
+    state.notify_monitor_state();
     Ok(())
 }
 
@@ -672,6 +716,7 @@ pub(crate) fn confirm_output_configuration(state: &mut Ferese, confirm: bool) ->
             return Err(error);
         }
     }
+    state.notify_monitor_state();
     Ok(())
 }
 
@@ -2193,11 +2238,21 @@ fn refresh_monitor_policy(state: &mut Ferese) -> Result<(), String> {
             }
         }
     }
-    let previous_override = backend.manual_outputs.profile.clone();
+    let previous_override = (
+        backend.manual_outputs.profile.clone(),
+        backend.manual_outputs.internal,
+        backend.manual_outputs.layout,
+    );
     backend
         .manual_outputs
         .observe(&backend.monitors, backend.lid.closed(), &state.output_profiles);
-    if previous_override != backend.manual_outputs.profile {
+    if previous_override
+        != (
+            backend.manual_outputs.profile.clone(),
+            backend.manual_outputs.internal,
+            backend.manual_outputs.layout,
+        )
+    {
         backend.confirmation = None;
         if let Some(token) = backend.confirmation_timer.take() {
             state.loop_handle.remove(token);

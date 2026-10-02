@@ -75,6 +75,8 @@ pub(crate) enum ControlCommand {
     Logout(u32, String),
     CancelLogout(u32),
     ToggleGuide(String),
+    ToggleDisplays(String),
+    MonitorsChanged,
 }
 
 #[derive(Clone)]
@@ -116,6 +118,8 @@ enum ControlUpdate {
     Logout(u32, String),
     LogoutCancelled(u32),
     ToggleGuide(String),
+    ToggleDisplays(String),
+    MonitorsChanged,
 }
 
 impl ShellControl {
@@ -123,7 +127,7 @@ impl ShellControl {
         let connection = control_connection()?;
         let (globals, mut queue) = registry_queue_init::<ControlState>(&connection)?;
         let qh = queue.handle();
-        let manager = globals.bind::<FereseShellManagerV1, _, _>(&qh, 4..=5, ())?;
+        let manager = globals.bind::<FereseShellManagerV1, _, _>(&qh, 4..=6, ())?;
         let shell = manager.get_shell(&qh, ());
         let (sender, updates) = mpsc::channel();
         let wake = Wake(Arc::new(tokio::sync::Notify::new()));
@@ -165,6 +169,8 @@ impl ShellControl {
         loop {
             match self.updates.try_recv() {
                 Ok(ControlUpdate::Logout(serial, output)) => poll.commands.push(ControlCommand::Logout(serial, output)),
+                Ok(ControlUpdate::ToggleDisplays(output)) => poll.commands.push(ControlCommand::ToggleDisplays(output)),
+                Ok(ControlUpdate::MonitorsChanged) => poll.commands.push(ControlCommand::MonitorsChanged),
                 Ok(ControlUpdate::ToggleGuide(output)) => poll.commands.push(ControlCommand::ToggleGuide(output)),
                 Ok(ControlUpdate::LogoutCancelled(serial)) => poll.commands.push(ControlCommand::CancelLogout(serial)),
                 Ok(ControlUpdate::Config(source)) => poll.config = Some(source),
@@ -340,11 +346,20 @@ impl Dispatch<FereseShellV1, ()> for ControlState {
                     fullscreen,
                 });
             }
+            ferese_shell_v1::Event::Capabilities { .. } => {
+                let _ = state.sender.send(ControlUpdate::MonitorsChanged);
+            }
             ferese_shell_v1::Event::SnapshotEnd { serial } if state.serial.take() == Some(serial) => {
                 let _ = state.sender.send(ControlUpdate::Snapshot(state.pending.clone()));
             }
             ferese_shell_v1::Event::LogoutRequested { serial, output_name } => {
                 let _ = state.sender.send(ControlUpdate::Logout(serial, output_name));
+            }
+            ferese_shell_v1::Event::ToggleDisplayMode { output_name } => {
+                let _ = state.sender.send(ControlUpdate::ToggleDisplays(output_name));
+            }
+            ferese_shell_v1::Event::MonitorStateChanged => {
+                let _ = state.sender.send(ControlUpdate::MonitorsChanged);
             }
             ferese_shell_v1::Event::ToggleKeybindingGuide { output_name } => {
                 let _ = state.sender.send(ControlUpdate::ToggleGuide(output_name));

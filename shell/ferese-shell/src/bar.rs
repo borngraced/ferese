@@ -136,7 +136,7 @@ impl FereseShell {
         .height(bar.control_height)
         .align_y(alignment::Vertical::Center)
         .class(theme::Container::custom(move |_| bar_group_style(shell_theme)));
-        let right = row![
+        let mut right = row![
             self.view_status_bar().map(move |action| match action {
                 cosmic::Action::App(Message::OpenMenu(kind, anchor)) =>
                     cosmic::Action::App(Message::OpenMenuOn(id, kind, anchor)),
@@ -146,6 +146,23 @@ impl FereseShell {
         ]
         .spacing(8)
         .align_y(cosmic::iced::Alignment::Center);
+        if self.display_mode.external_connected() {
+            right = right.push(motion::button(
+                button::custom(bar_icon(ferese_theme::icons::DISPLAY, bar.icon_size, foreground))
+                    .name("Display mode")
+                    .height(bar.control_height)
+                    .padding([0, 7])
+                    .on_press(cosmic::Action::App(Message::OpenDisplays(
+                        self.outputs
+                            .iter()
+                            .find(|output| output.bar == id)
+                            .and_then(|output| output.name.clone()),
+                    ))),
+                foreground,
+                self.display_mode.open,
+                1.0,
+            ));
+        }
         let available = self
             .outputs
             .iter()

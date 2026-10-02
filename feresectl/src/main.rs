@@ -111,6 +111,13 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(String, Value),
     let command = args.next().ok_or_else(usage)?;
     let positional = args.collect::<Vec<_>>();
     let payload = match command.as_str() {
+        "output-layout" => {
+            exactly_one(&command, &positional, "internal-only, external-only, extend or mirror")?;
+            if !["internal-only", "external-only", "extend", "mirror"].contains(&positional[0].as_str()) {
+                return Err("unknown display layout".into());
+            }
+            json!({ "layout": positional[0] })
+        }
         "output-profile" => {
             exactly_one(&command, &positional, "profile name or auto")?;
             json!({ "name": positional[0] })
@@ -170,6 +177,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(String, Value),
         | "get-workspaces"
         | "get-outputs"
         | "outputs"
+        | "toggle-display-mode"
         | "output-profiles"
         | "output-confirm"
         | "output-revert"
@@ -208,12 +216,25 @@ fn socket_path() -> Result<PathBuf, io::Error> {
 }
 
 fn usage() -> String {
-    "usage: feresectl outputs\n       feresectl output-profiles\n       feresectl <output-confirm|output-revert>\n       feresectl output-profile <name|auto>\n       feresectl output-internal <on|off>\n       feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl screenshot-window <window-id>\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl workspace-back-and-forth\n       feresectl <focus-last-window|focus-mru-next|focus-mru-previous>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview|toggle-keybinding-guide>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
+    "usage: feresectl outputs\n       feresectl output-profiles\n       feresectl <output-confirm|output-revert>\n       feresectl output-layout <internal-only|external-only|extend|mirror>\n       feresectl toggle-display-mode\n       feresectl output-profile <name|auto>\n       feresectl output-internal <on|off>\n       feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl screenshot-window <window-id>\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl workspace-back-and-forth\n       feresectl <focus-last-window|focus-mru-next|focus-mru-previous>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview|toggle-keybinding-guide>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_mode_commands_validate_layouts() {
+        for layout in ["internal-only", "external-only", "extend", "mirror"] {
+            assert_eq!(
+                parse_args(["output-layout".into(), layout.into()]).unwrap().1,
+                json!({"layout":layout})
+            );
+        }
+        assert!(parse_args(["output-layout".into(), "docked".into()]).is_err());
+        assert!(parse_args(["output-layout".into()]).is_err());
+        assert!(parse_args(["toggle-display-mode".into()]).is_ok());
+    }
 
     #[test]
     fn shortcut_hint_command_rejects_extra_arguments() {

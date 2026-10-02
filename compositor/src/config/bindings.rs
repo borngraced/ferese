@@ -336,6 +336,10 @@ pub(super) fn parse_action(
             no_argument()?;
             Ok(BindingAction::ToggleOverview)
         }
+        "toggle-display-mode" => {
+            no_argument()?;
+            Ok(BindingAction::ToggleDisplayMode)
+        }
         "toggle-keybinding-guide" => {
             no_argument()?;
             Ok(BindingAction::ToggleKeybindingGuide)
@@ -380,6 +384,7 @@ pub(super) fn default_bindings() -> Vec<BindingConfig> {
         binding("Super+]", "expel", None),
         binding("Super+Shift+Space", "toggle-floating", None),
         binding("Super+Tab", "toggle-overview", None),
+        binding("XF86Display", "toggle-display-mode", None),
         binding("Super+F1", "toggle-keybinding-guide", None),
         binding("Super+Escape", "workspace-back-and-forth", None),
         binding("Super+BackSpace", "focus-last-window", None),
@@ -467,6 +472,7 @@ pub enum BindingAction {
     ToggleFloating,
     ToggleOverview,
     ToggleKeybindingGuide,
+    ToggleDisplayMode,
 }
 
 impl Binding {
@@ -576,6 +582,7 @@ impl Binding {
             BindingAction::Expel => "Move window out of column".into(),
             BindingAction::ToggleFloating => "Toggle floating window".into(),
             BindingAction::ToggleOverview => "Open or close overview".into(),
+            BindingAction::ToggleDisplayMode => "Open display mode chooser".into(),
             BindingAction::ToggleKeybindingGuide => "Open or close shortcut hint".into(),
         };
         let mut parts = Vec::new();
