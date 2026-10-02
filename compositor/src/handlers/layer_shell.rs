@@ -77,6 +77,41 @@ impl WlrLayerShellHandler for Ferese {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct LayoutState {
+    size: smithay::utils::Size<i32, smithay::utils::Logical>,
+    anchor: smithay::wayland::shell::wlr_layer::Anchor,
+    zone: smithay::wayland::shell::wlr_layer::ExclusiveZone,
+    margin: [i32; 4],
+    layer: Layer,
+    bounds: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+}
+
+impl LayoutState {
+    fn current(layer: &DesktopLayerSurface) -> Self {
+        Self::from_policy(layer.cached_state(), layer.bbox())
+    }
+
+    fn from_policy(
+        policy: smithay::wayland::shell::wlr_layer::LayerSurfaceCachedState,
+        bounds: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+    ) -> Self {
+        Self {
+            size: policy.size,
+            anchor: policy.anchor,
+            zone: policy.exclusive_zone,
+            margin: [
+                policy.margin.top,
+                policy.margin.right,
+                policy.margin.bottom,
+                policy.margin.left,
+            ],
+            layer: policy.layer,
+            bounds,
+        }
+    }
+}
+
 pub fn handle_commit(state: &mut Ferese, surface: &WlSurface) {
     let Some(layer) = state.space.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL) else {
         return;
@@ -88,20 +123,29 @@ pub fn handle_commit(state: &mut Ferese, surface: &WlSurface) {
         .cloned()
         .collect::<Vec<_>>();
 
-    for output in &outputs {
-        let mut map = layer_map_for_output(output);
-        if map.layer_geometry(&layer).is_some() {
-            map.arrange();
-            layer.layer_surface().send_pending_configure();
-            break;
-        }
+    let current = LayoutState::current(&layer);
+    let previous = layer
+        .user_data()
+        .get_or_insert_threadsafe(|| std::sync::Mutex::new(None::<LayoutState>));
+    let changed = {
+        let mut previous = previous.lock().unwrap();
+        let changed = previous.as_ref() != Some(&current);
+        *previous = Some(current);
+        changed
+    };
+
+    if changed {
+        state.relayout_on(&outputs);
     }
+    // Configure acknowledgement and keyboard policy are independent of layout.
+    layer.layer_surface().send_pending_configure();
 
     let policy = layer.cached_state();
     if !state.session_lock.active
         && !state.input_capture.captures(1)
         && policy.keyboard_interactivity == KeyboardInteractivity::Exclusive
         && matches!(policy.layer, Layer::Top | Layer::Overlay)
+        && !layer_has_keyboard_focus(state, &layer)
     {
         state.seat.get_keyboard().expect("seat has a keyboard").set_focus(
             state,
@@ -112,7 +156,6 @@ pub fn handle_commit(state: &mut Ferese, surface: &WlSurface) {
         state.restore_keyboard_focus();
     }
 
-    state.relayout_on(&outputs);
     if let Err(error) = state.display_handle.flush_clients() {
         tracing::debug!(%error, "failed to flush layer-surface configure");
     }
@@ -125,4 +168,41 @@ fn layer_has_keyboard_focus(state: &Ferese, layer: &DesktopLayerSurface) -> bool
         .and_then(|keyboard| keyboard.current_focus())
         .and_then(|surface| state.space.layer_for_surface(&surface, WindowSurfaceType::ALL))
         .is_some_and(|focused| focused == *layer)
+}
+
+#[cfg(test)]
+mod tests {
+    use smithay::utils::Rectangle;
+    use smithay::wayland::shell::wlr_layer::{Anchor, ExclusiveZone, LayerSurfaceCachedState};
+
+    use super::*;
+
+    #[test]
+    fn only_arrangement_and_mapping_changes_require_layout() {
+        let policy = LayerSurfaceCachedState::default();
+        let bounds = Rectangle::from_size((800, 32).into());
+        let original = LayoutState::from_policy(policy, bounds);
+        assert_eq!(original, LayoutState::from_policy(policy, bounds));
+
+        let mut keyboard = policy;
+        keyboard.keyboard_interactivity = KeyboardInteractivity::Exclusive;
+        assert_eq!(original, LayoutState::from_policy(keyboard, bounds));
+
+        for mutate in [
+            |p: &mut LayerSurfaceCachedState| p.size.w += 1,
+            |p: &mut LayerSurfaceCachedState| p.anchor = Anchor::TOP,
+            |p: &mut LayerSurfaceCachedState| p.exclusive_zone = ExclusiveZone::Exclusive(32),
+            |p: &mut LayerSurfaceCachedState| p.margin.left += 1,
+            |p: &mut LayerSurfaceCachedState| p.layer = Layer::Overlay,
+        ] {
+            let mut changed = policy;
+            mutate(&mut changed);
+            assert_ne!(original, LayoutState::from_policy(changed, bounds));
+        }
+        assert_ne!(
+            original,
+            LayoutState::from_policy(policy, Rectangle::from_size((800, 33).into()))
+        );
+        assert_ne!(original, LayoutState::from_policy(policy, Rectangle::default()));
+    }
 }
