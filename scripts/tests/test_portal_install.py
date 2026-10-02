@@ -1,161 +1,362 @@
-"""Exercise portal upgrade preflight against temporary installation files."""
+"""Run complete installer commands against disposable destination filesystems."""
+import fcntl
+import importlib.util
+import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 REPO = Path(__file__).resolve().parents[2]
-LEGACY = ('[D-BUS Service]\n'
-          'Name=org.freedesktop.impl.portal.desktop.ferese\n'
-          'Exec=/usr/local/lib/ferese/current/xdg-desktop-portal-ferese\n')
+HELPER = REPO / 'scripts/installer/install.py'
+spec = importlib.util.spec_from_file_location('ferese_install', HELPER)
+installer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(installer)
+PREFIX = installer.PREFIX.lstrip('/')
+PORTAL = 'usr/share/xdg-desktop-portal/ferese-portals.conf'
+UNIT = 'usr/local/lib/systemd/user/xdg-desktop-portal-ferese.service'
+DESKTOP = 'usr/share/wayland-sessions/ferese.desktop'
 
 
-class PortalInstallTest(unittest.TestCase):
-    def preflight(self, service=None, unit=None):
-        script = (REPO / 'scripts/install-session.sh').read_text()
-        start = script.index('service=/usr/local/share/dbus-1/services/')
-        helpers = script[:script.index('repo_dir=')]
-        script = helpers + script[start:script.index('session_target=', start)]
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            if service is not None:
-                (root / 'activation.service').write_text(service)
-            if unit is not None:
-                (root / 'portal.service').write_text(unit)
-            script = script.replace(
-                'service=/usr/local/share/dbus-1/services/org.freedesktop.impl.portal.desktop.ferese.service',
-                'service="$TEST_ROOT/activation.service"')
-            script = script.replace('$(basename "$service")',
-                                    'org.freedesktop.impl.portal.desktop.ferese.service')
-            script = script.replace(
-                'portal_unit=/usr/local/lib/systemd/user/xdg-desktop-portal-ferese.service',
-                'portal_unit="$TEST_ROOT/portal.service"')
-            return subprocess.run(['bash', '-eu', '-c', script],
-                                  env={'repo_dir': str(REPO), 'TEST_ROOT': directory, 'install_root': directory},
-                                  capture_output=True, text=True)
+class InstallerTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.shared = tempfile.TemporaryDirectory()
+        cls.source = Path(cls.shared.name) / 'source'
+        for rule in installer.INVENTORY['files']:
+            if rule['source'].startswith('target/release/'):
+                paths = [REPO / rule['source']]
+            else:
+                paths = sorted(REPO.glob(rule['source']))
 
-    def configuration_preflight(self, portal=None, preferences=None, previous=None, replace=False):
-        script = (REPO / 'scripts/install-session.sh').read_text()
-        helpers = script[:script.index('repo_dir=')]
-        start = script.index('for entry in ')
-        check = script[start:script.index('service=/usr/local/share/dbus-1/services/', start)]
-        check = check.replace('/usr/share/xdg-desktop-portal/', '$TEST_ROOT/config/')
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for relative, content in [('portals/ferese.portal', portal), ('ferese-portals.conf', preferences)]:
-                if content is not None:
-                    destination = root / 'config' / relative
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    destination.write_text(content)
-            if previous:
-                for relative, content in previous.items():
-                    destination = root / 'current/installer-files/portal' / relative
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    destination.write_text(content)
-            return subprocess.run(['bash', '-eu', '-c', helpers + check],
-                                  env={'repo_dir': str(REPO), 'TEST_ROOT': directory, 'install_root': directory,
-                                       'replace_portal_config': str(replace).lower()},
-                                  capture_output=True, text=True)
+            for path in paths:
+                target = cls.source / path.relative_to(REPO)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b'#!/bin/sh\nexit 0\n' if rule['source'].startswith('target/release/') else path.read_bytes())
+                target.chmod(int(rule['mode'], 8))
 
-    def user_override(self, content, backup=False):
-        script = (REPO / 'scripts/install.sh').read_text()
-        helpers = script[script.index('check_user_portal_override()'):script.index('fail() {')]
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            override = root / 'override.conf'
-            if content is not None:
-                override.write_text(content.replace('USER_HOME', directory))
-            command = 'backup_user_portal_override' if backup else 'check_user_portal_override'
-            result = subprocess.run(['bash', '-eu', '-c', helpers +
-                                     f'\n{command} "$TEST_ROOT/override.conf" "$TEST_ROOT" test-release'],
-                                    env={'TEST_ROOT': directory}, capture_output=True, text=True)
-            saved = root / 'override.conf.before-test-release'
-            return result, override.exists(), saved.read_text() if saved.exists() else None
+        cls.bundles = []
+        for name in ('first', 'second'):
+            for relative in ('portal/ferese-portals.conf', 'systemd/xdg-desktop-portal-ferese.service', 'ferese.desktop'):
+                with (cls.source / 'packaging' / relative).open('a') as stream:
+                    stream.write(f'\n# {name}\n')
 
-    def test_user_development_override_is_backed_up(self):
-        content = '[Service]\nExecStart=\nExecStart=USER_HOME/.local/libexec/ferese/xdg-desktop-portal-ferese\n'
-        result, exists, saved = self.user_override(content, backup=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(exists)
-        self.assertIn('/.local/libexec/ferese/xdg-desktop-portal-ferese', saved)
+            output = Path(cls.shared.name) / name
+            subprocess.run([sys.executable, str(HELPER), 'bundle', '--source-root', str(cls.source),
+                            '--output', str(output), '--release-id', name], check=True, capture_output=True)
+            cls.bundles.append(output)
 
-    def test_custom_user_override_is_preserved_and_reported(self):
-        result, exists, saved = self.user_override('[Service]\nExecStart=/custom/portal\n', backup=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertTrue(exists)
-        self.assertIsNone(saved)
-        self.assertIn('takes precedence', result.stderr)
+    @classmethod
+    def tearDownClass(cls):
+        cls.shared.cleanup()
 
-    def test_missing_user_override_needs_no_backup(self):
-        result, exists, saved = self.user_override(None, backup=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(exists)
-        self.assertIsNone(saved)
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / 'root'
+        pam = self.root / 'etc/pam.d/login'
+        pam.parent.mkdir(parents=True)
+        pam.write_text('test PAM stack\n')
+        self.base = self.root / PREFIX
 
-    def test_existing_development_install_requires_explicit_replacement(self):
-        portal = ('[portal]\nDBusName=org.freedesktop.impl.portal.desktop.ferese\n'
-                  'Interfaces=org.freedesktop.impl.portal.ScreenCast;\nUseIn=Ferese;\n')
-        preferences = '[preferred]\ndefault=gtk;\norg.freedesktop.impl.portal.ScreenCast=ferese;\n'
-        result = self.configuration_preflight(portal, preferences)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('--replace-portal-config', result.stderr)
-        result = self.configuration_preflight(portal, preferences, replace=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
+    def run_command(self, *args, success=True, fault=None, fault_after=4):
+        command = [sys.executable, str(HELPER)]
+        if fault:
+            # Inject failure at the filesystem boundary, without shipping production test hooks.
+            code = f'''import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location('installer', {str(HELPER)!r})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+original = m.Installation.write_state
+count = 0
+def write(self, *args, **kwargs):
+    global count
+    original(self, *args, **kwargs)
+    count += 1
+    if count == {fault_after}:
+        {fault}
+m.Installation.write_state = write
+m.main()
+'''
+            command = [sys.executable, '-c', code]
 
-    def test_previous_portal_configuration_is_backed_up(self):
-        script = (REPO / 'scripts/install-session.sh').read_text()
-        start = script.index('for relative in portals/ferese.portal')
-        backup = script[start:script.index('for relative in ', start + 1)]
-        backup = backup.replace('/usr/share/xdg-desktop-portal/', '$TEST_ROOT/config/')
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for relative in ('portals/ferese.portal', 'ferese-portals.conf'):
-                source = root / 'config' / relative
-                source.parent.mkdir(parents=True, exist_ok=True)
-                source.write_text('existing custom content\n')
-            result = subprocess.run(['bash', '-eu', '-c', backup],
-                                    env={'TEST_ROOT': directory, 'release_dir': str(root / 'release')},
-                                    capture_output=True, text=True)
+        result = subprocess.run([*command, *map(str, args), '--root', str(self.root)], capture_output=True, text=True)
+        if success:
             self.assertEqual(result.returncode, 0, result.stderr)
-            for relative in ('portals/ferese.portal', 'ferese-portals.conf'):
-                self.assertEqual((root / 'release/portal-config.previous' / relative).read_text(),
-                                 'existing custom content\n')
-                self.assertEqual((root / 'config' / relative).read_text(), 'existing custom content\n')
+        else:
+            self.assertNotEqual(result.returncode, 0, result.stdout)
 
-    def test_upgrades_recorded_previous_release(self):
-        old_portal = '[portal]\nInterfaces=org.freedesktop.impl.portal.Settings;\n'
-        old_preferences = '[preferred]\norg.freedesktop.impl.portal.Settings=ferese;\n'
-        result = self.configuration_preflight(old_portal, old_preferences,
-                                              {'ferese.portal': old_portal, 'ferese-portals.conf': old_preferences})
-        self.assertEqual(result.returncode, 0, result.stderr)
-        result = self.configuration_preflight(old_portal + 'UseIn=Custom;\n', old_preferences,
-                                              {'ferese.portal': old_portal, 'ferese-portals.conf': old_preferences})
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Unmanaged portal configuration', result.stderr)
+        return result
 
-    def test_preserves_custom_configuration(self):
-        portal = (REPO / 'packaging/portal/ferese.portal').read_text()
-        preferences = '[preferred]\ndefault=custom;\n'
-        result = self.configuration_preflight(portal, preferences)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Unmanaged portal configuration', result.stderr)
+    def install(self, index=0, **kwargs):
+        return self.run_command('install', self.bundles[index], **kwargs)
 
-    def test_accepts_fresh_install_and_previous_activation_file(self):
-        self.assertEqual(self.preflight().returncode, 0)
-        self.assertEqual(self.preflight(LEGACY).returncode, 0)
+    def snapshot(self):
+        result = {}
+        for path in self.root.rglob('*'):
+            if path.is_relative_to(self.base / 'transactions') or path.is_relative_to(self.base / 'releases'):
+                continue
+            if path.is_symlink():
+                result[str(path.relative_to(self.root))] = os.readlink(path)
+            elif path.is_file() and path.name != '.install.lock':
+                result[str(path.relative_to(self.root))] = path.read_bytes()
 
-    def test_accepts_current_managed_files(self):
-        service = (REPO / 'packaging/portal/org.freedesktop.impl.portal.desktop.ferese.service').read_text()
-        unit = (REPO / 'packaging/systemd/xdg-desktop-portal-ferese.service').read_text()
-        self.assertEqual(self.preflight(service, unit).returncode, 0)
+        return result
 
-    def test_preserves_modified_activation_and_systemd_files(self):
-        result = self.preflight(LEGACY.replace('/usr/local/lib/ferese/current/', '/custom/'))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Unmanaged portal service', result.stderr)
-        result = self.preflight(LEGACY, '[Service]\nExecStart=/custom/portal\n')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Unmanaged portal unit', result.stderr)
+    def test_fresh_upgrade_and_rollback_restore_all_integration(self):
+        self.install()
+        first = [(self.root / path).read_bytes() for path in (PORTAL, UNIT, DESKTOP)]
+        self.assertEqual(os.readlink(self.base / 'current'), 'releases/first')
+        self.assertEqual(os.readlink(self.root / 'usr/local/bin/ferese'), '/usr/local/lib/ferese/current/ferese')
+        self.install(1)
+        self.assertEqual(os.readlink(self.base / 'previous'), 'releases/first')
+        for path, old in zip((PORTAL, UNIT, DESKTOP), first):
+            self.assertNotEqual((self.root / path).read_bytes(), old)
+
+        self.run_command('rollback')
+        self.assertEqual(os.readlink(self.base / 'current'), 'releases/first')
+        self.assertEqual(os.readlink(self.base / 'previous'), 'releases/second')
+        self.assertEqual([(self.root / path).read_bytes() for path in (PORTAL, UNIT, DESKTOP)], first)
+
+    def test_upgrade_uses_previous_installer_ownership_receipts(self):
+        self.install()
+        release = self.base / 'releases/first'
+        (release / 'manifest.json').unlink()
+        for rule in installer.INVENTORY['files']:
+            if 'destination' in rule and ('portal/' in rule['source'] or 'systemd/' in rule['source']):
+                receipt = release / 'installer-files' / rule['source'].removeprefix('packaging/')
+                receipt.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(self.root / rule['destination'].lstrip('/'), receipt)
+
+        # The old installer saved no desktop receipt: only identical incoming files are safe.
+        (self.root / DESKTOP).write_bytes((self.bundles[1] / ('integration/' + DESKTOP)).read_bytes())
+        self.install(1)
+        result = self.run_command('rollback', success=False)
+        self.assertIn('predates verified bundles', result.stderr)
+        self.assertEqual(os.readlink(self.base / 'current'), 'releases/second')
+
+    def test_reinstall_is_idempotent_and_keeps_previous(self):
+        self.install()
+        self.install(1)
+        before = self.snapshot()
+        self.install(1)
+        self.assertEqual(before, self.snapshot())
+        self.assertEqual(len(list((self.base / 'transactions').iterdir())), 2)
+
+    def test_modified_configuration_is_preserved_on_upgrade_and_rollback(self):
+        self.install()
+        self.install(1)
+        (self.root / UNIT).write_text('administrator override\n')
+        before = self.snapshot()
+        self.run_command('rollback', success=False)
+        self.assertEqual(before, self.snapshot())
+        self.install(success=False)
+        self.assertEqual(before, self.snapshot())
+
+    def test_explicit_portal_replacement_keeps_backup(self):
+        self.install()
+        (self.root / PORTAL).write_text('administrator preferences\n')
+        self.install(1, success=False)
+        self.run_command('install', self.bundles[1], '--replace-portal-config')
+        backups = list((self.base / 'transactions').glob('*/backup/*'))
+        self.assertTrue(any(path.read_text() == 'administrator preferences\n' for path in backups))
+
+    def test_normal_failure_restores_previous_files_and_can_retry(self):
+        self.install()
+        before = self.snapshot()
+        self.install(1, success=False, fault="raise OSError('injected write failure')")
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse((self.base / '.transaction').exists())
+        self.install(1)
+
+    def test_killed_upgrade_recovers_before_next_install(self):
+        self.install()
+        self.install(1, success=False, fault='os._exit(91)')
+        self.assertTrue((self.base / '.transaction/journal.json').is_file())
+        result = self.install(1)
+        self.assertIn('Recovered interrupted', result.stdout)
+        self.assertFalse((self.base / '.transaction').exists())
+        self.assertEqual(os.readlink(self.base / 'current'), 'releases/second')
+
+    def test_failure_after_switching_current_restores_previous_release(self):
+        self.install()
+        before = self.snapshot()
+        self.install(1, success=False, fault="raise OSError('failure after current switch')", fault_after=5)
+        self.assertEqual(before, self.snapshot())
+
+    def test_killed_install_after_current_switch_is_recovered(self):
+        self.install()
+        before = self.snapshot()
+        self.install(1, success=False, fault='os._exit(91)', fault_after=5)
+        self.assertEqual(os.readlink(self.base / 'current'), 'releases/second')
+        self.run_command('recover')
+        self.assertEqual(before, self.snapshot())
+
+    def test_killed_fresh_install_recovers_absent_files(self):
+        before = self.snapshot()
+        self.install(success=False, fault='os._exit(91)')
+        self.run_command('recover')
+        self.assertEqual(before, self.snapshot())
+
+    def test_recovery_preserves_edits_made_after_interruption(self):
+        self.install()
+        self.install(1, success=False, fault='os._exit(91)')
+        (self.root / UNIT).write_text('edited after crash\n')
+        result = self.run_command('recover', success=False)
+        self.assertIn('Recovery conflict', result.stderr)
+        self.assertEqual((self.root / UNIT).read_text(), 'edited after crash\n')
+        self.assertTrue((self.base / '.transaction').exists())
+
+    def test_concurrent_install_is_rejected(self):
+        self.base.mkdir(parents=True)
+        with (self.base / '.install.lock').open('w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            result = self.install(success=False)
+
+        self.assertIn('in progress', result.stderr)
+        self.assertFalse((self.base / 'current').exists())
+
+    def test_dry_run_does_not_write(self):
+        before = self.snapshot()
+        self.run_command('install', self.bundles[0], '--dry-run')
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse(self.base.exists())
+
+    def test_custom_pam_is_preserved(self):
+        pam = self.root / 'etc/pam.d/ferese-lock'
+        pam.write_text('administrator authentication\n')
+        self.install()
+        self.install(1)
+        self.run_command('rollback')
+        self.assertEqual(pam.read_text(), 'administrator authentication\n')
+
+    def test_missing_pam_stack_fails_before_publication(self):
+        (self.root / 'etc/pam.d/login').unlink()
+        self.install(success=False)
+        self.assertFalse((self.base / 'current').exists())
+        self.assertFalse((self.root / UNIT).exists())
+
+    def test_symlinked_destination_parent_is_rejected(self):
+        outside = Path(self.temporary.name) / 'outside'
+        outside.mkdir()
+        (self.root / 'usr').symlink_to(outside)
+        self.install(success=False)
+        self.assertEqual(list(outside.iterdir()), [])
+
+    def test_uninstall_preserves_releases_pam_and_unrelated_files(self):
+        self.install()
+        unrelated = self.root / 'usr/local/bin/unrelated'
+        unrelated.write_text('keep\n')
+        self.run_command('uninstall')
+        self.assertFalse(os.path.lexists(self.base / 'current'))
+        self.assertFalse(os.path.lexists(self.root / 'usr/local/bin/ferese'))
+        self.assertFalse((self.root / PORTAL).exists())
+        self.assertTrue((self.base / 'releases/first/ferese').is_file())
+        self.assertTrue((self.root / 'etc/pam.d/ferese-lock').is_file())
+        self.assertEqual(unrelated.read_text(), 'keep\n')
+
+    def test_corrupt_incomplete_unlisted_or_symlink_bundle_is_rejected(self):
+        for mutation in ('checksum', 'missing', 'extra', 'symlink', 'mode', 'traversal'):
+            with self.subTest(mutation=mutation):
+                copy = Path(self.temporary.name) / mutation
+                shutil.copytree(self.bundles[0], copy)
+                binary = copy / 'ferese'
+                if mutation == 'checksum':
+                    binary.write_text('corrupt')
+                elif mutation == 'missing':
+                    binary.unlink()
+                elif mutation == 'extra':
+                    (copy / 'unexpected').write_text('extra')
+                elif mutation == 'symlink':
+                    binary.unlink()
+                    binary.symlink_to('/etc/passwd')
+                elif mutation == 'mode':
+                    binary.chmod(0o777)
+                else:
+                    manifest = json.loads((copy / 'manifest.json').read_text())
+                    manifest['files'][0]['target'] = '../../etc/passwd'
+                    (copy / 'manifest.json').write_text(json.dumps(manifest))
+
+                self.run_command('install', copy, success=False)
+                self.assertFalse((self.base / 'current').exists())
+
+    def test_release_id_collision_does_not_change_current(self):
+        self.install()
+        changed = Path(self.temporary.name) / 'changed'
+        shutil.copytree(self.bundles[0], changed)
+        manifest = json.loads((changed / 'manifest.json').read_text())
+        manifest['features'] = 'different-build'
+        (changed / 'manifest.json').write_text(json.dumps(manifest))
+        before = self.snapshot()
+        self.run_command('install', changed, success=False)
+        self.assertEqual(before, self.snapshot())
+
+
+class FrontendTest(unittest.TestCase):
+    def test_elevation_preserves_arguments_for_sudo_and_pkexec(self):
+        import shlex
+        for elevation in ('sudo', 'pkexec'):
+            with self.subTest(elevation=elevation), tempfile.TemporaryDirectory() as directory:
+                bin_dir = Path(directory)
+                for tool in ('python3', 'dirname', 'uname', 'date'):
+                    (bin_dir / tool).symlink_to(shutil.which(tool))
+                elevate = bin_dir / elevation
+                elevate.write_text('#!/bin/sh\nexit 99\n')
+                elevate.chmod(0o755)
+                result = subprocess.run(['/bin/bash', str(REPO / 'scripts/install.sh'), '--bundle',
+                                         '/tmp/bundle with spaces', '--replace-portal-config', '--dry-run'],
+                                        env=dict(os.environ, PATH=str(bin_dir)), capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                command = shlex.split(result.stdout.removeprefix('Install: '))
+                # Building is prohibited as root, but installing an existing bundle is allowed.
+                expected = ([] if os.geteuid() == 0 else [elevation]) + [
+                    '/usr/bin/bash', str(REPO / 'scripts/install-session.sh'), 'install',
+                    '/tmp/bundle with spaces', '--replace-portal-config']
+                self.assertEqual(command, expected)
+
+    def test_incompatible_or_missing_options_are_rejected(self):
+        for options in (['--bundle'], ['--release-id'], ['--bundle-only'],
+                        ['--bundle', '/tmp/bundle', '--offline'],
+                        ['--bundle', '/tmp/bundle', '--resize-metrics'],
+                        ['--bundle', '/tmp/bundle', '--release-id', 'another'],
+                        ['--skip-build']):
+            with self.subTest(options=options):
+                result = subprocess.run(['/bin/bash', str(REPO / 'scripts/install.sh'), *options],
+                                        capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+
+
+class UserSetupTest(unittest.TestCase):
+    def test_repeatable_migration_and_reload_after_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            override = home / '.config/systemd/user/xdg-desktop-portal-ferese.service.d/override.conf'
+            override.parent.mkdir(parents=True)
+            override.write_text(f'[Service]\nExecStart=\nExecStart={home}/.local/libexec/ferese/xdg-desktop-portal-ferese\n')
+            bin_dir = home / 'bin'
+            bin_dir.mkdir()
+            systemctl = bin_dir / 'systemctl'
+            systemctl.write_text('#!/bin/sh\nexit 1\n')
+            systemctl.chmod(0o755)
+            env = dict(os.environ, HOME=str(home), XDG_CONFIG_HOME=str(home / '.config'), PATH=str(bin_dir))
+            # User setup intentionally refuses root; emulate the user identity in root-run CI.
+            command = [sys.executable, '-c', f"import runpy, os; os.geteuid = lambda: 1000; runpy.run_path({str(HELPER)!r}, run_name='__main__')", 'user-setup']
+            result = subprocess.run(command, env=env, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(override.exists())
+            self.assertEqual(len(list(override.parent.glob('*.before-*'))), 1)
+            systemctl.write_text('#!/bin/sh\nexit 0\n')
+            for _ in range(2):
+                result = subprocess.run(command, env=env, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(len(list(override.parent.glob('*.before-*'))), 1)
+            override.write_text('custom configuration\n')
+            result = subprocess.run(command, env=env, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(override.read_text(), 'custom configuration\n')
 
 
 if __name__ == '__main__':

@@ -1,64 +1,48 @@
 #!/usr/bin/env bash
-# Build as the invoking user; elevate only the versioned system installation.
+# Build and prepare a complete release as the user; elevate only installation.
 set -euo pipefail
 
 usage() {
     cat <<'EOF'
 Usage: scripts/install.sh [options]
 
-Build and install Ferese's compositor, shell, CLI, and login-screen session.
-Run from any directory as your normal user. Existing user config is preserved.
+Build, bundle and install Ferese. Run as your normal user.
 
-  --release-id ID  Name the installed release (default: UTC timestamp + PID)
-  --skip-build     Install existing target/release binaries
-  --replace-portal-config  Back up and replace existing Ferese portal configuration
-  --offline        Build using only cached Cargo dependencies
-  --resize-metrics Build with resize-barrier measurements (reported on exit)
-  --dry-run        Print commands without building or installing
-  -h, --help       Show this help
+  --release-id ID          Release name (default: UTC timestamp + PID)
+  --bundle PATH            Install an existing verified bundle; do not build
+  --bundle-only PATH       Build a bundle at PATH without installing
+  --replace-portal-config  Back up and replace modified Ferese portal config
+  --offline               Build using cached Cargo dependencies
+  --resize-metrics        Build with resize-barrier measurements
+  --dry-run               Show commands without building or installing
+  -h, --help              Show this help
 
-The previous release remains available for rollback. Administrator
-authentication is requested only after a successful build.
+Recovery and rollback: scripts/install-session.sh --help
+Repeat user setup: python3 scripts/installer/install.py user-setup
 EOF
-}
-
-check_user_portal_override() {
-    local override=$1 user_home=$2
-    [[ -f $override ]] || return 0
-    if ! cmp -s -- <(printf '%s\n' '[Service]' 'ExecStart=' \
-        "ExecStart=$user_home/.local/libexec/ferese/xdg-desktop-portal-ferese") "$override"; then
-        echo "Custom portal override takes precedence over the installation: $override" >&2
-        echo 'Update its ExecStart to /usr/local/lib/ferese/current/xdg-desktop-portal-ferese before installing.' >&2
-        return 1
-    fi
-}
-
-backup_user_portal_override() {
-    local override=$1 user_home=$2 release=$3
-    [[ -f $override ]] || return 0
-    check_user_portal_override "$override" "$user_home" || return 1
-    local backup="$override.before-$release"
-    [[ ! -e $backup ]] || { echo "Portal override backup already exists: $backup" >&2; return 1; }
-    mv -- "$override" "$backup"
-    echo "Backed up old development portal override: $backup"
 }
 
 fail() { echo "ferese installer: $*" >&2; exit 1; }
 repo_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+helper=$repo_dir/scripts/installer/install.py
 release_id="$(date -u +%Y%m%d-%H%M%S)-$$"
-skip_build=false
+release_set=false
+bundle_path=
+bundle_only=
 replace_portal_config=false
 offline=false
 resize_metrics=false
 dry_run=false
 while (($#)); do
     case $1 in
-        --release-id)
-            (($# >= 2)) || fail '--release-id requires a value'
-            release_id=$2
-            shift 2
-            ;;
-        --skip-build) skip_build=true; shift ;;
+        --release-id|--bundle|--bundle-only)
+            (($# >= 2)) && [[ -n $2 && $2 != --* ]] || fail "$1 requires a value"
+            case $1 in
+                --release-id) release_id=$2; release_set=true ;;
+                --bundle) bundle_path=$2 ;;
+                --bundle-only) bundle_only=$2 ;;
+            esac
+            shift 2 ;;
         --replace-portal-config) replace_portal_config=true; shift ;;
         --offline) offline=true; shift ;;
         --resize-metrics) resize_metrics=true; shift ;;
@@ -68,56 +52,77 @@ while (($#)); do
     esac
 done
 [[ $release_id =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]] || fail 'invalid release ID'
-if $skip_build && $resize_metrics; then
-    fail '--resize-metrics requires a build; omit --skip-build'
-fi
-
 [[ $(uname -s) == Linux ]] || fail 'Ferese requires Linux'
-for tool in desktop-file-validate dbus-run-session; do
-    command -v "$tool" >/dev/null || fail "required command not found: $tool"
-done
-desktop-file-validate "$repo_dir/packaging/ferese.desktop"
-user_portal_override="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/xdg-desktop-portal-ferese.service.d/override.conf"
-if ((EUID != 0)); then
-    check_user_portal_override "$user_portal_override" "$HOME" || fail 'portal service override needs attention'
+command -v python3 >/dev/null || fail 'install Python 3 first'
+if [[ -n $bundle_path ]]; then
+    [[ -z $bundle_only ]] && ! $offline && ! $resize_metrics && ! $release_set ||
+        fail '--bundle cannot be combined with build options'
+else
+    ((EUID != 0)) || fail 'build as your normal user, without sudo'
+fi
+if [[ -n $bundle_only ]] && $replace_portal_config; then
+    fail '--replace-portal-config requires installation'
 fi
 
-build=(cargo build --manifest-path "$repo_dir/Cargo.toml"
-    --target-dir "$repo_dir/target" --release --locked
-    -p ferese -p ferese-shell -p ferese-settings -p feresectl -p ferese-lock -p ferese-polkit-agent -p xdg-desktop-portal-ferese)
+build=(cargo build --manifest-path "$repo_dir/Cargo.toml" --target-dir "$repo_dir/target" --release --locked)
+mapfile -t packages < <(python3 "$helper" packages)
+((${#packages[@]})) || fail 'could not read package inventory'
+for package in "${packages[@]}"; do build+=(-p "$package"); done
 if $offline; then build+=(--offline); fi
-if $resize_metrics; then build+=(--features ferese/resize-metrics); fi
-if ! $skip_build; then
-    ((EUID != 0)) || fail 'build as your normal user, without sudo (or use --skip-build)'
-    command -v cargo >/dev/null || fail 'install the Rust toolchain and Cargo first'
+features=default
+if $resize_metrics; then
+    build+=(--features ferese/resize-metrics)
+    features=ferese/resize-metrics
 fi
 
-installer=(bash "$repo_dir/scripts/install-session.sh" "$release_id")
+if [[ -z $bundle_path ]]; then
+    bundle_path=${bundle_only:-$repo_dir/target/bundles/$release_id}
+    prepare=(python3 "$helper" bundle --output "$bundle_path" --release-id "$release_id" --features "$features")
+fi
+installer=(/usr/bin/bash "$repo_dir/scripts/install-session.sh" install "$bundle_path")
 if $replace_portal_config; then installer+=(--replace-portal-config); fi
-if ((EUID != 0)); then
+if [[ -z $bundle_only ]] && ((EUID != 0)); then
     if command -v sudo >/dev/null; then
         installer=(sudo "${installer[@]}")
     elif command -v pkexec >/dev/null; then
-        installer=(pkexec /usr/bin/bash "$repo_dir/scripts/install-session.sh" "$release_id")
+        installer=(pkexec "${installer[@]}")
     else
         fail 'system installation requires sudo or pkexec'
     fi
 fi
 
 if $dry_run; then
-    if ! $skip_build; then printf 'Build: '; printf '%q ' "${build[@]}"; printf '\n'; fi
-    printf 'Install: '; printf '%q ' "${installer[@]}"; printf '\n'
+    if [[ ${prepare+x} ]]; then
+        printf 'Build: '; printf '%q ' "${build[@]}"; printf '\n'
+        printf 'Bundle: '; printf '%q ' "${prepare[@]}"; printf '\n'
+    fi
+    if [[ -z $bundle_only ]]; then printf 'Install: '; printf '%q ' "${installer[@]}"; printf '\n'; fi
     exit 0
 fi
 
-cd -- "$repo_dir"
-if ! $skip_build; then "${build[@]}"; fi
-for name in ferese ferese-shell ferese-settings feresectl ferese-lock ferese-polkit-agent xdg-desktop-portal-ferese ferese-record; do
-    [[ -x $repo_dir/target/release/$name ]] || fail "missing release binary: $name"
-done
-"${installer[@]}"
-if ((EUID != 0)) && [[ -f $user_portal_override ]]; then
-    backup_user_portal_override "$user_portal_override" "$HOME" "$release_id" || fail 'could not update portal override'
-    systemctl --user daemon-reload || fail 'could not reload the user portal service configuration'
+if [[ -z $bundle_only ]] && ((EUID != 0)); then
+    python3 "$helper" user-setup --check
 fi
-echo 'Installation complete. Log out and select Ferese at your login screen, or run ferese-session from a local TTY.'
+if [[ ${prepare+x} ]]; then
+    for tool in cargo desktop-file-validate dbus-run-session; do
+        command -v "$tool" >/dev/null || fail "required command not found: $tool"
+    done
+    desktop-file-validate "$repo_dir/packaging/ferese.desktop"
+    desktop-file-validate "$repo_dir/packaging/dev.ferese.Settings.desktop"
+    (cd -- "$repo_dir"; "${build[@]}")
+    "$repo_dir/target/release/ferese-polkit-agent" --check
+    "${prepare[@]}"
+fi
+[[ -z $bundle_only ]] || exit 0
+
+python3 "$helper" verify "$bundle_path"
+"${installer[@]}"
+if ((EUID != 0)); then
+    if ! python3 "$helper" user-setup; then
+        echo 'System installation succeeded; user setup is incomplete.' >&2
+        echo "Retry as your normal user: python3 '$helper' user-setup" >&2
+        exit 1
+    fi
+else
+    echo "System installation succeeded. As your normal user, run: python3 '$helper' user-setup"
+fi

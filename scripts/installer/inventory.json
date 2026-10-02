@@ -1,0 +1,187 @@
+{
+  "packages": [
+    "ferese",
+    "ferese-shell",
+    "ferese-settings",
+    "feresectl",
+    "ferese-lock",
+    "ferese-polkit-agent",
+    "xdg-desktop-portal-ferese"
+  ],
+  "files": [
+    {
+      "source": "target/release/ferese",
+      "target": "ferese",
+      "mode": "0755",
+      "link": true
+    },
+    {
+      "source": "target/release/ferese-shell",
+      "target": "ferese-shell",
+      "mode": "0755",
+      "link": true
+    },
+    {
+      "source": "target/release/ferese-settings",
+      "target": "ferese-settings",
+      "mode": "0755",
+      "link": true
+    },
+    {
+      "source": "target/release/feresectl",
+      "target": "feresectl",
+      "mode": "0755",
+      "link": true
+    },
+    {
+      "source": "target/release/ferese-lock",
+      "target": "ferese-lock",
+      "mode": "0755",
+      "link": true
+    },
+    {
+      "source": "target/release/ferese-polkit-agent",
+      "target": "ferese-polkit-agent",
+      "mode": "0755",
+      "link": true
+    },
+    {
+      "source": "target/release/xdg-desktop-portal-ferese",
+      "target": "xdg-desktop-portal-ferese",
+      "mode": "0755",
+      "link": true
+    },
+    {
+      "source": "target/release/ferese-record",
+      "target": "ferese-record",
+      "mode": "0755",
+      "link": true
+    },
+    {
+      "source": "packaging/ferese-session",
+      "target": "ferese-session",
+      "mode": "0755",
+      "link": true
+    },
+    {
+      "source": "packaging/ferese-session-shell",
+      "target": "ferese-session-shell",
+      "mode": "0755",
+      "link": false
+    },
+    {
+      "source": "packaging/ferese-screenshot",
+      "target": "ferese-screenshot",
+      "mode": "0755",
+      "link": true
+    },
+    {
+      "source": "packaging/config.kdl",
+      "target": "config.example.kdl",
+      "mode": "0644"
+    },
+    {
+      "source": "assets/fonts/Comfortaa-LICENSE.txt",
+      "target": "licenses/Comfortaa-LICENSE.txt",
+      "mode": "0644"
+    },
+    {
+      "source": "assets/fonts/Cantarell-LICENSE.txt",
+      "target": "licenses/Cantarell-LICENSE.txt",
+      "mode": "0644"
+    },
+    {
+      "source": "assets/themes/licenses/*.txt",
+      "target": "licenses/theme-{name}",
+      "mode": "0644"
+    },
+    {
+      "source": "assets/wallpapers/ferese.png",
+      "target": "wallpapers/ferese.png",
+      "mode": "0644"
+    },
+    {
+      "source": "assets/wallpapers/ferese.svg",
+      "target": "wallpapers/ferese.svg",
+      "mode": "0644"
+    },
+    {
+      "source": "packaging/ferese.desktop",
+      "target": "integration/usr/share/wayland-sessions/ferese.desktop",
+      "mode": "0644",
+      "destination": "/usr/share/wayland-sessions/ferese.desktop",
+      "policy": "managed"
+    },
+    {
+      "source": "packaging/dev.ferese.Settings.desktop",
+      "target": "integration/usr/local/share/applications/dev.ferese.Settings.desktop",
+      "mode": "0644",
+      "destination": "/usr/local/share/applications/dev.ferese.Settings.desktop",
+      "policy": "managed"
+    },
+    {
+      "source": "packaging/icons/ferese.svg",
+      "target": "integration/usr/local/share/icons/hicolor/scalable/apps/ferese.svg",
+      "mode": "0644",
+      "destination": "/usr/local/share/icons/hicolor/scalable/apps/ferese.svg",
+      "policy": "managed"
+    },
+    {
+      "source": "packaging/icons/ferese.svg",
+      "target": "integration/usr/local/share/icons/hicolor/scalable/apps/dev.ferese.Settings.svg",
+      "mode": "0644",
+      "destination": "/usr/local/share/icons/hicolor/scalable/apps/dev.ferese.Settings.svg",
+      "policy": "managed"
+    },
+    {
+      "source": "packaging/systemd/ferese-session.target",
+      "target": "integration/usr/local/lib/systemd/user/ferese-session.target",
+      "mode": "0644",
+      "destination": "/usr/local/lib/systemd/user/ferese-session.target",
+      "policy": "managed"
+    },
+    {
+      "source": "packaging/systemd/xdg-desktop-portal-ferese.service",
+      "target": "integration/usr/local/lib/systemd/user/xdg-desktop-portal-ferese.service",
+      "mode": "0644",
+      "destination": "/usr/local/lib/systemd/user/xdg-desktop-portal-ferese.service",
+      "policy": "managed"
+    },
+    {
+      "source": "packaging/portal/ferese.portal",
+      "target": "integration/usr/share/xdg-desktop-portal/portals/ferese.portal",
+      "mode": "0644",
+      "destination": "/usr/share/xdg-desktop-portal/portals/ferese.portal",
+      "policy": "portal"
+    },
+    {
+      "source": "packaging/portal/ferese-portals.conf",
+      "target": "integration/usr/share/xdg-desktop-portal/ferese-portals.conf",
+      "mode": "0644",
+      "destination": "/usr/share/xdg-desktop-portal/ferese-portals.conf",
+      "policy": "portal"
+    },
+    {
+      "source": "packaging/portal/org.freedesktop.impl.portal.desktop.ferese.service",
+      "target": "integration/usr/local/share/dbus-1/services/org.freedesktop.impl.portal.desktop.ferese.service",
+      "mode": "0644",
+      "destination": "/usr/local/share/dbus-1/services/org.freedesktop.impl.portal.desktop.ferese.service",
+      "policy": "managed"
+    },
+    {
+      "source": "packaging/pam.d/ferese-lock.fedora",
+      "target": "pam/fedora",
+      "mode": "0644"
+    },
+    {
+      "source": "packaging/pam.d/ferese-lock.debian",
+      "target": "pam/debian",
+      "mode": "0644"
+    },
+    {
+      "source": "packaging/pam.d/ferese-lock.generic",
+      "target": "pam/generic",
+      "mode": "0644"
+    }
+  ]
+}
