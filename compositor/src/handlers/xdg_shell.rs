@@ -112,7 +112,7 @@ impl XdgShellHandler for Ferese {
     }
 
     fn move_request(&mut self, surface: ToplevelSurface, seat: wl_seat::WlSeat, serial: Serial) {
-        if self.session_lock.active {
+        if self.session_lock.active() {
             return;
         }
         let Some(seat) = Seat::from_resource(&seat) else {
@@ -165,7 +165,7 @@ impl XdgShellHandler for Ferese {
         serial: Serial,
         edges: smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge,
     ) {
-        if self.session_lock.active {
+        if self.session_lock.active() {
             return;
         }
         let Some(seat) = Seat::from_resource(&seat) else {
@@ -240,7 +240,7 @@ impl XdgShellHandler for Ferese {
     }
 
     fn grab(&mut self, surface: PopupSurface, seat: wl_seat::WlSeat, serial: Serial) {
-        if self.session_lock.active || self.input_capture.active() {
+        if self.session_lock.active() || self.input_capture.active() {
             return;
         }
         let Some(seat) = Seat::from_resource(&seat) else {

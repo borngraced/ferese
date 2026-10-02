@@ -141,7 +141,7 @@ pub fn handle_commit(state: &mut Ferese, surface: &WlSurface) {
     layer.layer_surface().send_pending_configure();
 
     let policy = layer.cached_state();
-    if !state.session_lock.active
+    if !state.session_lock.active()
         && !state.input_capture.captures(1)
         && policy.keyboard_interactivity == KeyboardInteractivity::Exclusive
         && matches!(policy.layer, Layer::Top | Layer::Overlay)

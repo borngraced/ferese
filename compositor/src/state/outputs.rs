@@ -12,7 +12,7 @@ impl Ferese {
             self.reset_animation_clock();
         }
 
-        if self.session_lock.active {
+        if self.session_lock.active() {
             self.session_lock.output_added(output);
             self.lock_input_activity();
         }
@@ -77,6 +77,8 @@ impl Ferese {
         self.session_lock.surfaces.remove(output);
         self.session_lock.backgrounds.remove(output);
         self.session_lock.output_removed(output);
+        self.confirm_lock_if_ready();
+        self.refresh_lock_idle_policy();
 
         match self.output_workspaces.disconnect(output_id) {
             Ok(Some(target)) => {

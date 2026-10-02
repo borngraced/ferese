@@ -106,7 +106,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // when no output has a pending frame.
         let wallpaper_changed = state.wallpaper.poll();
         // All input/Wayland callbacks have returned, releasing seat locks.
-        if state.focus_cycle.is_some() && (state.session_lock.active || state.input_capture.captures(1)) {
+        if state.focus_cycle.is_some() && (state.session_lock.active() || state.input_capture.captures(1)) {
             state.cancel_focus_cycle();
         }
         // Coalesce cursor changes and redraw here, never inside cursor_image.

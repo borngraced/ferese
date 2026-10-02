@@ -7,7 +7,7 @@ impl Ferese {
 
     pub(super) fn focus_swipe_is_current(&self, swipe: &FocusSwipe) -> bool {
         self.animations_enabled
-            && !self.session_lock.active
+            && !self.session_lock.active()
             && !self.overview.is_presenting()
             && self.workspaces.active_id() == swipe.workspace
             && self.focused_window == Some(swipe.from)
@@ -552,7 +552,7 @@ impl Ferese {
         if self.input_capture.captures(1) {
             return;
         }
-        if self.session_lock.active {
+        if self.session_lock.active() {
             self.focus_lock_surface();
             return;
         }

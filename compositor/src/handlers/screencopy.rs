@@ -254,7 +254,7 @@ impl Ferese {
             return;
         }
         let mut used = data.used.lock().unwrap();
-        if self.session_lock.active {
+        if self.session_lock.active() {
             frame.failed();
             return;
         }

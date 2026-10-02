@@ -431,7 +431,7 @@ fn discard_undelivered_screenshot(response: &Response) {
 
 impl Ferese {
     fn handle_ipc_request(&mut self, owner: u64, request: Request) -> Response {
-        if self.session_lock.active
+        if self.session_lock.active()
             && !matches!(
                 request.command.as_str(),
                 "theme-get"
@@ -544,10 +544,10 @@ impl Ferese {
                 return Ok(json!({}));
             }
             "portal-shortcuts-poll" => {
-                return Ok(self.portal_shortcuts.poll(owner, self.session_lock.active));
+                return Ok(self.portal_shortcuts.poll(owner, self.session_lock.active()));
             }
             "input-capture-register" => {
-                if self.session_lock.active {
+                if self.session_lock.active() {
                     return Err(CommandError::new("session_locked", "Session is locked"));
                 }
                 let id = self
@@ -716,7 +716,7 @@ impl Ferese {
                 let _ = response.try_send(Response::error(request.id, $code, $message));
             };
         }
-        if self.session_lock.active {
+        if self.session_lock.active() {
             reject!("session_locked", "IPC unavailable while session is locked");
             return;
         }
@@ -813,7 +813,7 @@ impl Ferese {
         let reject = |message: String| {
             let _ = response.try_send(Response::error(request.id, "window_capture_failed", message));
         };
-        if self.session_lock.active || !screencopy::capture_allowed() {
+        if self.session_lock.active() || !screencopy::capture_allowed() {
             reject("Screen capture is unavailable".into());
             return;
         }

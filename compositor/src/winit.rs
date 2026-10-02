@@ -187,7 +187,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     state.display_presentation.presented(&output);
                     state.refresh_idle_inhibition();
 
-                    if state.session_lock.active {
+                    if state.session_lock.active() {
                         state.lock_frame_presented(&output);
                     }
                     let elapsed = render_started.elapsed();
@@ -226,7 +226,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
 
 fn send_nested_frame_callbacks(state: &mut Ferese, output: &Output) {
     let eligible = state.callback_outputs();
-    if state.session_lock.active {
+    if state.session_lock.active() {
         state.lock_frame_callbacks(output);
         return;
     }

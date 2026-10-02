@@ -54,6 +54,11 @@ class NativeLockTest(unittest.TestCase):
             result=capture(root/'after-crash.png')
             assert result.returncode != 0, 'Capture unexpectedly succeeded after locker crash'
             print('Capture remains denied after locker crash',flush=True)
+            locker=subprocess.Popen(['bwrap','--bind','/','/','--dev-bind','/dev','/dev','--ro-bind',str(pam),'/etc/pam.d','--unshare-user','--',str(binary_dir / 'ferese-lock')],env=childenv,stdout=subprocess.DEVNULL,stderr=locker_log,start_new_session=True)
+            assert locker.wait(timeout=20) == 0, (root/'locker.log').read_text()
+            result=capture(root/'replacement.png')
+            assert result.returncode != 0, 'Capture unexpectedly succeeded after locker takeover'
+            print('Replacement locker confirmed; capture remains denied',flush=True)
         finally:
             if locker is not None:
                 try: os.killpg(locker.pid, signal.SIGKILL)

@@ -20,7 +20,7 @@ impl XdgActivationHandler for Ferese {
     }
 
     fn request_activation(&mut self, token: XdgActivationToken, data: XdgActivationTokenData, surface: WlSurface) {
-        if self.session_lock.active || self.input_capture.captures(1) {
+        if self.session_lock.active() || self.input_capture.captures(1) {
             return;
         }
         let valid = data.serial.is_some() && data.timestamp.elapsed() <= TOKEN_MAX_AGE;

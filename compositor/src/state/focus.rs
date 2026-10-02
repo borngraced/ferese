@@ -28,7 +28,7 @@ impl Ferese {
     }
 
     pub(crate) fn focus_last_window(&mut self) {
-        if self.session_lock.active || self.input_capture.captures(1) {
+        if self.session_lock.active() || self.input_capture.captures(1) {
             return;
         }
         self.cancel_focus_cycle();
@@ -43,7 +43,7 @@ impl Ferese {
     }
 
     pub(crate) fn cycle_focus(&mut self, reverse: bool, preview: bool) {
-        if self.session_lock.active || self.input_capture.captures(1) {
+        if self.session_lock.active() || self.input_capture.captures(1) {
             return;
         }
         let available = self.focus_candidates();
@@ -85,7 +85,7 @@ impl Ferese {
         let Some(mut cycle) = self.focus_cycle.take() else {
             return;
         };
-        if !self.session_lock.active
+        if !self.session_lock.active()
             && !self.input_capture.captures(1)
             && let Some(id) = cycle.reconcile(&self.focus_candidates())
         {

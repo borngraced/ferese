@@ -157,7 +157,7 @@ fn finish_conversion(state: &Ferese, result: Conversion) {
     if !frame.is_alive() || *data.used.lock().unwrap() {
         return;
     }
-    if state.session_lock.active
+    if state.session_lock.active()
         || !super::screencopy::capture_allowed()
         || !state.windows.ids().values().any(|id| *id == snapshot.id)
     {
@@ -263,7 +263,7 @@ impl Ferese {
         budget: &Arc<Mutex<Budget>>,
         busy: &mut bool,
     ) -> Option<Snapshot> {
-        if self.session_lock.active || !super::screencopy::capture_allowed() {
+        if self.session_lock.active() || !super::screencopy::capture_allowed() {
             return None;
         }
         let window = self
@@ -363,7 +363,7 @@ pub(super) fn copy_snapshot(state: &Ferese, resource: &ZwlrScreencopyFrameV1, da
         resource.failed();
         return;
     };
-    if state.session_lock.active
+    if state.session_lock.active()
         || !super::screencopy::capture_allowed()
         || !state.windows.ids().values().any(|id| *id == snapshot.id)
     {

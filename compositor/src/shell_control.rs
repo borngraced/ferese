@@ -94,7 +94,7 @@ impl Dispatch<FereseShellV1, ()> for Ferese {
         _display: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
-        if state.session_lock.active {
+        if state.session_lock.active() {
             return;
         }
         match request {
@@ -207,7 +207,7 @@ impl Ferese {
     }
 
     pub(crate) fn toggle_keybinding_guide(&mut self) -> bool {
-        if self.session_lock.active {
+        if self.session_lock.active() {
             return false;
         }
         let Some(shell) = self
@@ -225,7 +225,7 @@ impl Ferese {
     }
 
     pub(crate) fn request_logout_confirmation(&mut self) {
-        if self.session_lock.active {
+        if self.session_lock.active() {
             return;
         }
         let shells = self

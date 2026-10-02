@@ -2,7 +2,7 @@ use super::*;
 
 impl Ferese {
     pub fn surface_under(&self, position: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
-        if self.session_lock.active {
+        if self.session_lock.active() {
             return self.lock_surface_under(position);
         }
         if self.input_capture.active() {
@@ -18,7 +18,7 @@ impl Ferese {
     }
 
     pub fn layer_under(&self, position: Point<f64, Logical>) -> Option<(LayerSurface, WlSurface, Point<f64, Logical>)> {
-        if self.session_lock.active {
+        if self.session_lock.active() {
             return None;
         }
         if let Some(layer) = self.layer_surface_under(position, &[Layer::Overlay, Layer::Top]) {

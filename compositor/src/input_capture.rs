@@ -449,7 +449,7 @@ impl crate::Ferese {
     pub(crate) fn restore_input_capture_focus(&mut self) {
         self.input_capture.restore_focus = false;
         self.cursor_redraw_pending = true;
-        if !self.session_lock.active {
+        if !self.session_lock.active() {
             self.restore_keyboard_focus();
             if let Some(pointer) = self.seat.get_pointer() {
                 let location = pointer.current_location();
@@ -475,7 +475,7 @@ impl crate::Ferese {
     ) -> bool {
         let pointer = self.seat.get_pointer().expect("seat has pointer");
         let active = self.input_capture.active();
-        let allowed = !self.session_lock.active
+        let allowed = !self.session_lock.active()
             && !self.overview.is_presenting()
             && !pointer.is_grabbed()
             && !self.swipe.active()

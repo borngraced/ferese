@@ -702,7 +702,7 @@ fn open_primary_device(
 }
 
 pub(crate) fn sleep_locked_outputs(state: &mut Ferese) {
-    if !state.session_lock.active || !state.session_lock.sleeping {
+    if !state.session_lock.active() || !state.session_lock.sleeping {
         return;
     }
 
@@ -972,7 +972,7 @@ fn render_output(
     crtc: crtc::Handle,
     plan: crate::frame_scheduler::FramePlan,
 ) -> bool {
-    if state.session_lock.active && state.session_lock.sleeping {
+    if state.session_lock.active() && state.session_lock.sleeping {
         sleep_locked_outputs(state);
         let asleep = state
             .direct_backend
@@ -1025,7 +1025,7 @@ fn render_output(
             let flags = planes::frame_flags(
                 state.output_has_fullscreen_for_frame(&output.output, frame.overview.is_presenting()),
                 frame.animating,
-                state.session_lock.active,
+                state.session_lock.active(),
             );
             let result =
                 output
@@ -1096,7 +1096,7 @@ fn render_output(
                 .render_metrics
                 .record_frame(render_started.elapsed(), &damage, missed_deadlines, effects);
             output.frame_pending = true;
-            output.lock_frame_pending = state.session_lock.active;
+            output.lock_frame_pending = state.session_lock.active();
             Ok(true)
         })()
     };
@@ -1633,7 +1633,7 @@ fn deliver_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle
 
 fn send_frame_callbacks(state: &mut Ferese, output: &Output) {
     let eligible = state.callback_outputs();
-    if state.session_lock.active {
+    if state.session_lock.active() {
         state.lock_frame_callbacks(output);
         return;
     }

@@ -84,7 +84,7 @@ impl Ferese {
         self.refresh_input_capture_zones();
         let visible_workspaces = self.visible_workspace_ids();
         self.reconcile_workspaces(&visible_workspaces);
-        if self.session_lock.active {
+        if self.session_lock.active() {
             self.configure_lock_surfaces();
         }
         // Consume idle time before setting new targets; it must not become a

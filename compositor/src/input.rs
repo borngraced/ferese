@@ -70,7 +70,7 @@ impl Ferese {
         let Some(hint) = self.locked_pointer_hint.take() else {
             return;
         };
-        if !hint.surface.is_alive() || self.session_lock.active || self.input_capture.active() {
+        if !hint.surface.is_alive() || self.session_lock.active() || self.input_capture.active() {
             return;
         }
         let Some(pointer) = self.seat.get_pointer() else {
@@ -120,7 +120,7 @@ impl Ferese {
             self.lock_input_activity();
         }
 
-        if self.session_lock.active {
+        if self.session_lock.active() {
             // An already-bound IME or drag client may install a grab after the
             // lock request. Never let that grab receive subsequent lock input.
             if let Some(keyboard) = seat.get_keyboard() {
@@ -276,7 +276,7 @@ impl Ferese {
                     event.time_msec(),
                     |data, modifiers, keysym| {
                         if data.focus_cycle.is_some() {
-                            if data.session_lock.active || data.input_capture.captures(1) {
+                            if data.session_lock.active() || data.input_capture.captures(1) {
                                 data.cancel_focus_cycle();
                             } else if !modifiers.alt {
                                 data.finish_focus_cycle();
@@ -288,7 +288,7 @@ impl Ferese {
                                 return FilterResult::Intercept(());
                             }
                         }
-                        if data.session_lock.active {
+                        if data.session_lock.active() {
                             return FilterResult::Forward;
                         }
                         let symbol = keysym.modified_sym().raw();
@@ -695,7 +695,7 @@ impl Ferese {
     }
 
     fn start_floating_pointer_grab(&mut self, pointer: &PointerHandle<Self>, button: u32, serial: Serial) -> bool {
-        if self.session_lock.active
+        if self.session_lock.active()
             || pointer.is_grabbed()
             || !matches!(button, BTN_LEFT | BTN_RIGHT)
             || !self
@@ -767,7 +767,7 @@ impl Ferese {
     }
 
     fn swipe_navigation_blocked(&self) -> bool {
-        self.session_lock.active
+        self.session_lock.active()
             || self.active_shortcuts_inhibitor.is_some()
             || self.seat.get_pointer().is_some_and(|pointer| pointer.is_grabbed())
             || self.seat.get_keyboard().is_some_and(|keyboard| keyboard.is_grabbed())
@@ -801,7 +801,7 @@ impl Ferese {
         if self.input_capture.captures(1) {
             return;
         }
-        if self.session_lock.active {
+        if self.session_lock.active() {
             self.focus_output_at(position);
             self.focus_lock_surface();
             return;
@@ -908,7 +908,7 @@ impl Ferese {
     }
 
     fn focus_window_under_pointer(&mut self, pointer: &PointerHandle<Self>, position: Point<f64, Logical>) {
-        if self.session_lock.active {
+        if self.session_lock.active() {
             return;
         }
         if self.overview.is_active() {
@@ -963,7 +963,7 @@ impl Ferese {
         pointer: &PointerHandle<Self>,
         requested: Point<f64, Logical>,
     ) -> Point<f64, Logical> {
-        if self.session_lock.active {
+        if self.session_lock.active() {
             return requested;
         }
         let current = pointer.current_location();
@@ -1003,7 +1003,7 @@ impl Ferese {
     }
 
     pub fn activate_focused_pointer_constraint(&self, pointer: &PointerHandle<Self>) {
-        if self.session_lock.active {
+        if self.session_lock.active() {
             return;
         }
         let position = pointer.current_location();

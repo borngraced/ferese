@@ -79,14 +79,34 @@ impl IdleSettings {
 }
 
 #[derive(Default)]
+enum Lifecycle {
+    #[default]
+    Unlocked,
+    Acquiring(SessionLocker),
+    Locked(ExtSessionLockV1),
+    Orphaned,
+}
+
+impl Lifecycle {
+    fn owner(&self) -> Option<&ExtSessionLockV1> {
+        match self {
+            Self::Acquiring(confirmation) => Some(confirmation.ext_session_lock()),
+            Self::Locked(owner) => Some(owner),
+            Self::Unlocked | Self::Orphaned => None,
+        }
+    }
+
+    fn can_acquire(&self) -> bool {
+        self.owner().is_none_or(|owner| !owner.is_alive())
+    }
+}
+
+#[derive(Default)]
 pub(crate) struct Lock {
-    pub active: bool,
-    owner: Option<ExtSessionLockV1>,
-    confirmation: Option<SessionLocker>,
+    lifecycle: Lifecycle,
     pub surfaces: HashMap<Output, LockSurface>,
     pub backgrounds: HashMap<Output, smithay::backend::renderer::element::solid::SolidColorBuffer>,
     presented: HashSet<Output>,
-    confirmed: bool,
     idle_since: Option<Instant>,
     pub(crate) idle_opacity: f32,
     pub(crate) sleeping: bool,
@@ -95,8 +115,12 @@ pub(crate) struct Lock {
 }
 
 impl Lock {
+    pub(crate) fn active(&self) -> bool {
+        !matches!(self.lifecycle, Lifecycle::Unlocked)
+    }
+
     fn ready_for_idle<'a>(&self, outputs: impl Iterator<Item = &'a Output>) -> bool {
-        self.active && outputs.into_iter().all(|output| self.presented.contains(output))
+        self.active() && outputs.into_iter().all(|output| self.presented.contains(output))
     }
 
     pub(crate) fn output_added(&mut self, output: &Output) {
@@ -109,7 +133,7 @@ impl Lock {
     }
 
     fn activity(&mut self, now: Instant) -> bool {
-        if !self.active {
+        if !self.active() {
             return false;
         }
         let changed = self.idle_opacity != 0.0 || self.sleeping;
@@ -220,23 +244,36 @@ impl Ferese {
     }
 
     pub(crate) fn lock_frame_presented(&mut self, output: &Output) {
-        if !self.session_lock.active {
+        if !self.session_lock.active() {
             return;
         }
         let newly_presented = self.session_lock.presented.insert(output.clone());
-        if self
-            .space
-            .outputs()
-            .all(|output| self.session_lock.presented.contains(output))
-            && let Some(confirmation) = self.session_lock.confirmation.take()
-            && confirmation.ext_session_lock().is_alive()
-        {
-            confirmation.lock();
-            self.session_lock.confirmed = true;
-            tracing::info!("session lock confirmed after safe output frames");
-        }
+        self.confirm_lock_if_ready();
         if newly_presented {
             self.refresh_lock_idle_policy();
+        }
+    }
+
+    pub(crate) fn confirm_lock_if_ready(&mut self) {
+        // With no outputs there is no visible content to protect. Re-evaluate
+        // here after acquisition and output removal as well as presentation.
+        if !self.session_lock.ready_for_idle(self.space.outputs()) {
+            return;
+        }
+
+        if matches!(self.session_lock.lifecycle, Lifecycle::Acquiring(_)) {
+            let Lifecycle::Acquiring(confirmation) =
+                std::mem::replace(&mut self.session_lock.lifecycle, Lifecycle::Orphaned)
+            else {
+                unreachable!()
+            };
+
+            let owner = confirmation.ext_session_lock().clone();
+            if owner.is_alive() {
+                confirmation.lock();
+                self.session_lock.lifecycle = Lifecycle::Locked(owner);
+                tracing::info!("session lock confirmed after safe output frames");
+            }
         }
     }
 
@@ -272,17 +309,19 @@ impl SessionLockHandler for Ferese {
     }
 
     fn lock(&mut self, confirmation: SessionLocker) {
-        if self.session_lock.active {
+        if !self.session_lock.lifecycle.can_acquire() {
             return;
         }
+
+        // Replacing an orphan never passes through Unlocked. Existing protected
+        // presentation facts remain valid, but old surfaces must not own input.
+        self.session_lock.lifecycle = Lifecycle::Acquiring(confirmation);
+        self.session_lock.surfaces.clear();
         self.cancel_logout_confirmation();
-        self.session_lock.active = true;
         self.refresh_idle_inhibition();
         self.session_lock.idle_since = Some(Instant::now());
         self.input_capture.disable_all();
         self.portal_session.set_locked(true);
-        self.session_lock.owner = Some(confirmation.ext_session_lock().clone());
-        self.session_lock.confirmation = Some(confirmation);
         for capture in self.pending_screencopies.drain(..) {
             capture.fail();
         }
@@ -315,6 +354,8 @@ impl SessionLockHandler for Ferese {
         keyboard.unset_grab(self);
         keyboard.set_focus(self, None, serial);
         self.intercepted_keys.clear();
+        self.lock_input_activity();
+        self.confirm_lock_if_ready();
         crate::backends::direct::render_all(self);
     }
 
@@ -359,9 +400,9 @@ impl Dispatch<ExtSessionLockV1, SessionLockState> for Ferese {
         display: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
-        let owner = state.session_lock.owner.as_ref() == Some(lock);
+        let owner = state.session_lock.lifecycle.owner() == Some(lock);
         if matches!(request, ext_session_lock_v1::Request::UnlockAndDestroy)
-            && (!owner || !state.session_lock.confirmed)
+            && (!owner || !matches!(state.session_lock.lifecycle, Lifecycle::Locked(_)))
         {
             lock.post_error(
                 ext_session_lock_v1::Error::InvalidUnlock,
@@ -377,6 +418,20 @@ impl Dispatch<ExtSessionLockV1, SessionLockState> for Ferese {
             state, client, lock, request, data, display, data_init,
         );
     }
+
+    fn destroyed(
+        state: &mut Self,
+        _: smithay::reexports::wayland_server::backend::ClientId,
+        lock: &ExtSessionLockV1,
+        _: &SessionLockState,
+    ) {
+        if state.session_lock.lifecycle.owner() == Some(lock) {
+            state.session_lock.lifecycle = Lifecycle::Orphaned;
+            state.session_lock.surfaces.clear();
+            state.focus_lock_surface();
+            crate::backends::direct::render_all(state);
+        }
+    }
 }
 smithay::reexports::wayland_server::delegate_global_dispatch!(Ferese: [ExtSessionLockManagerV1: smithay::wayland::session_lock::SessionLockManagerGlobalData] => SessionLockManagerState);
 smithay::reexports::wayland_server::delegate_dispatch!(Ferese: [ExtSessionLockManagerV1: ()] => SessionLockManagerState);
@@ -385,6 +440,129 @@ smithay::reexports::wayland_server::delegate_dispatch!(Ferese: [ExtSessionLockSu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "requires a private XDG_RUNTIME_DIR and permission to bind test sockets"]
+    fn zero_outputs_confirm_and_dead_owner_can_be_replaced_without_unlocking() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixStream;
+        use std::sync::Arc;
+
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let runtime = std::path::PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").unwrap());
+        assert!(runtime.starts_with(std::env::temp_dir()));
+        let mut event_loop = EventLoop::try_new().unwrap();
+        let config = crate::config::Config::default().runtime_config().unwrap();
+        let mut state = Ferese::new(&mut event_loop, Display::new().unwrap(), config).unwrap();
+
+        let acquire = |state: &mut Ferese| {
+            let (server, mut wire) = UnixStream::pair().unwrap();
+            let client = state
+                .display_handle
+                .insert_client(server, Arc::new(crate::state::ClientState::default()))
+                .unwrap();
+            let manager = client
+                .create_resource::<ExtSessionLockManagerV1, (), Ferese>(&state.display_handle, 1, ())
+                .unwrap();
+            // ext_session_lock_manager_v1.lock(new_id=2).
+            for word in [manager.id().protocol_id(), (12u32 << 16) | 1, 2] {
+                wire.write_all(&word.to_ne_bytes()).unwrap();
+            }
+            wire
+        };
+        let dispatch = |event_loop: &mut EventLoop<'static, Ferese>, state: &mut Ferese| {
+            event_loop.dispatch(Duration::from_millis(20), state).unwrap();
+            state.display_handle.flush_clients().unwrap();
+        };
+
+        let mut first = acquire(&mut state);
+        dispatch(&mut event_loop, &mut state);
+        assert!(
+            matches!(state.session_lock.lifecycle, Lifecycle::Locked(_)),
+            "no outputs must confirm immediately"
+        );
+        first.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let mut event = [0u8; 8];
+        first.read_exact(&mut event).unwrap();
+        assert_eq!(u32::from_ne_bytes(event[..4].try_into().unwrap()), 2);
+        assert_eq!(
+            u32::from_ne_bytes(event[4..].try_into().unwrap()),
+            8u32 << 16,
+            "protocol locked event"
+        );
+
+        let owner = state.session_lock.lifecycle.owner().cloned();
+
+        let mut competitor = acquire(&mut state);
+        dispatch(&mut event_loop, &mut state);
+        assert_eq!(
+            state.session_lock.lifecycle.owner(),
+            owner.as_ref(),
+            "a live owner cannot be replaced"
+        );
+        // A rejected client must not unlock the confirmed owner.
+        for word in [2u32, (8u32 << 16) | 2] {
+            competitor.write_all(&word.to_ne_bytes()).unwrap();
+        }
+        dispatch(&mut event_loop, &mut state);
+        assert_eq!(state.session_lock.lifecycle.owner(), owner.as_ref());
+
+        drop(competitor);
+        drop(first);
+        dispatch(&mut event_loop, &mut state);
+        assert!(matches!(state.session_lock.lifecycle, Lifecycle::Orphaned));
+        assert!(state.session_lock.active());
+
+        let replacement = acquire(&mut state);
+        dispatch(&mut event_loop, &mut state);
+        assert!(matches!(state.session_lock.lifecycle, Lifecycle::Locked(_)));
+        assert_ne!(state.session_lock.lifecycle.owner(), owner.as_ref());
+        drop(replacement);
+        dispatch(&mut event_loop, &mut state);
+        assert!(state.session_lock.active());
+
+        let output = Output::new(
+            "last-output".into(),
+            smithay::output::PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: smithay::output::Subpixel::Unknown,
+                make: "test".into(),
+                model: "test".into(),
+            },
+        );
+        output.change_current_state(
+            Some(smithay::output::Mode {
+                size: (800, 600).into(),
+                refresh: 60_000,
+            }),
+            None,
+            None,
+            None,
+        );
+        state.space.map_output(&output, (0, 0));
+        state.register_output(&output, "last-output".into());
+
+        let pending = acquire(&mut state);
+        dispatch(&mut event_loop, &mut state);
+        assert!(
+            matches!(state.session_lock.lifecycle, Lifecycle::Acquiring(_)),
+            "a newly added output requires a protected frame"
+        );
+        drop(pending);
+        dispatch(&mut event_loop, &mut state);
+        assert!(matches!(state.session_lock.lifecycle, Lifecycle::Orphaned));
+
+        let _replacement = acquire(&mut state);
+        dispatch(&mut event_loop, &mut state);
+        assert!(matches!(state.session_lock.lifecycle, Lifecycle::Acquiring(_)));
+        state.unregister_output(&output);
+        assert!(
+            matches!(state.session_lock.lifecycle, Lifecycle::Locked(_)),
+            "removing the last pending output must confirm"
+        );
+    }
 
     #[test]
     fn dim_fade_respects_speed_without_changing_idle_deadlines() {
@@ -463,30 +641,29 @@ mod tests {
             },
         );
         let mut lock = Lock {
-            active: true,
+            lifecycle: Lifecycle::Orphaned,
             ..Lock::default()
         };
         assert!(!lock.ready_for_idle(std::iter::once(&output)));
         lock.presented.insert(output.clone());
         assert!(lock.ready_for_idle(std::iter::once(&output)));
-        assert!(!lock.confirmed);
+        assert!(matches!(lock.lifecycle, Lifecycle::Orphaned));
         lock.output_added(&output);
         assert!(!lock.ready_for_idle(std::iter::once(&output)));
-        assert!(!lock.confirmed);
+        assert!(matches!(lock.lifecycle, Lifecycle::Orphaned));
     }
 
     #[test]
-    fn input_wakes_a_sleeping_lock_without_unlocking_or_losing_confirmation() {
+    fn input_wakes_a_sleeping_orphan_without_unlocking() {
         let mut lock = Lock {
-            active: true,
-            confirmed: true,
+            lifecycle: Lifecycle::Orphaned,
             sleeping: true,
             idle_opacity: 1.0,
             ..Lock::default()
         };
         let now = Instant::now();
         assert!(lock.activity(now));
-        assert!(lock.active && lock.confirmed);
+        assert!(lock.active() && matches!(lock.lifecycle, Lifecycle::Orphaned));
         assert!(!lock.sleeping);
         assert_eq!(lock.idle_opacity, 0.0);
         assert_eq!(lock.idle_since, Some(now));

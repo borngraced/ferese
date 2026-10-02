@@ -27,7 +27,7 @@ fn mapped_tree(surface: &WlSurface) -> bool {
 impl Ferese {
     pub(crate) fn callback_outputs(&self) -> HashMap<Id, Output> {
         let mut surfaces = Vec::new();
-        if self.session_lock.active {
+        if self.session_lock.active() {
             for lock in self.session_lock.surfaces.values() {
                 smithay::desktop::utils::with_surfaces_surface_tree(lock.wl_surface(), |surface, _| {
                     surfaces.push(surface.clone());

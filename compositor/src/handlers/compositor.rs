@@ -79,7 +79,7 @@ impl CompositorHandler for Ferese {
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
-        if self.session_lock.active {
+        if self.session_lock.active() {
             self.session_lock
                 .surfaces
                 .retain(|_, lock| lock.wl_surface() != surface);

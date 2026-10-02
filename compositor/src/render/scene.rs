@@ -32,7 +32,7 @@ pub(crate) fn sampled_output_elements(
     include_cursor: bool,
     frame: &crate::state::FrameScene,
 ) -> Vec<AnimatedWindowRenderElement> {
-    if state.session_lock.active {
+    if state.session_lock.active() {
         let Some(geometry) = state.space.output_geometry(output) else {
             return Vec::new();
         };
