@@ -57,6 +57,7 @@ pub struct DirectBackendState {
     input_devices: Vec<LibinputDevice>,
     presentation: HashMap<(DrmNode, crtc::Handle), PresentationClock>,
     pub(crate) connected_outputs: Vec<ConnectedOutputInfo>,
+    battery_timer: Option<RegistrationToken>,
     power_retry: Option<RegistrationToken>,
     animation_timer: Option<RegistrationToken>,
     animation_deadline: Option<Instant>,
@@ -237,6 +238,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         input_devices: Vec::new(),
         presentation: HashMap::new(),
         connected_outputs: Vec::new(),
+        battery_timer: None,
         power_retry: None,
         animation_timer: None,
         animation_deadline: None,
@@ -244,12 +246,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
     });
 
     open_primary_device(event_loop, state, &primary_path)?;
-    event_loop
-        .handle()
-        .insert_source(Timer::from_duration(Duration::from_secs(5)), |_, _, state| {
-            update_power_policy(state);
-            TimeoutAction::ToDuration(Duration::from_secs(5))
-        })?;
+    sync_battery_timer(state);
 
     event_loop
         .handle()
@@ -276,6 +273,9 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                 let handle = state.loop_handle.clone();
                 if let Some(backend) = state.direct_backend.as_mut() {
                     backend.active = false;
+                    if let Some(token) = backend.battery_timer.take() {
+                        handle.remove(token);
+                    }
                     if let Some(token) = backend.power_retry.take() {
                         handle.remove(token);
                     }
@@ -327,6 +327,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                 }
 
                 update_power_policy(state);
+                sync_battery_timer(state);
                 state.reset_animation_clock();
                 tracing::info!("direct session activated");
                 state.lock_input_activity();
@@ -396,12 +397,45 @@ pub(crate) fn reload_input_devices(state: &mut Ferese) {
     }
 }
 
+fn automatic_refresh_active(backend: &DirectBackendState) -> bool {
+    backend.active
+        && backend
+            .devices
+            .values()
+            .any(|device| device.outputs.values().any(|output| output.settings.auto_refresh))
+}
+
+fn sync_battery_timer(state: &mut Ferese) {
+    let Some(backend) = state.direct_backend.as_mut() else {
+        return;
+    };
+    if !automatic_refresh_active(backend) {
+        if let Some(token) = backend.battery_timer.take() {
+            state.loop_handle.remove(token);
+        }
+        return;
+    }
+    if backend.battery_timer.is_some() {
+        return;
+    }
+
+    match state
+        .loop_handle
+        .insert_source(Timer::from_duration(Duration::from_secs(5)), |_, _, state| {
+            if let Some(backend) = state.direct_backend.as_mut() {
+                backend.battery_timer = None;
+            }
+            update_power_policy(state);
+            sync_battery_timer(state);
+            TimeoutAction::Drop
+        }) {
+        Ok(token) => backend.battery_timer = Some(token),
+        Err(error) => tracing::warn!(%error, "could not arm automatic refresh battery timer"),
+    }
+}
+
 fn update_power_policy(state: &mut Ferese) {
-    if !state
-        .output_profiles
-        .iter()
-        .any(|profile| profile.outputs.iter().any(|output| output.auto_refresh))
-    {
+    if !state.direct_backend.as_ref().is_some_and(automatic_refresh_active) {
         return;
     }
     let Some(backend) = state.direct_backend.as_mut() else {
@@ -1336,6 +1370,8 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
     }
 
     restore_device(state, node, device);
+    sync_battery_timer(state);
+    update_power_policy(state);
     state.restore_output_focus();
     state.relayout();
     render_all(state);
@@ -1366,6 +1402,7 @@ fn remove_device(state: &mut Ferese, node: DrmNode) {
         backend.connected_outputs.clear();
     }
 
+    sync_battery_timer(state);
     arm_animation_timer(state);
     tracing::info!(?node, "removed DRM device");
 }
