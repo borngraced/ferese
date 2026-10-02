@@ -392,6 +392,8 @@ impl Center {
     }
 
     pub fn hover(&mut self, id: u32, hovered: bool) {
+        self.tick();
+
         if hovered {
             self.hovered = Some(id);
         } else if self.hovered == Some(id) {
@@ -535,8 +537,30 @@ impl Center {
         cosmic::iced::Subscription::run_with(self.service.events.clone(), Events::stream)
     }
 
-    pub fn has_toasts(&self) -> bool {
-        !self.toasts.is_empty()
+    fn expiry_deadline(&self) -> Option<Instant> {
+        self.toasts
+            .iter()
+            .filter(|toast| !toast.hovered && toast.closing.is_none())
+            .filter_map(|toast| toast.remaining.map(|remaining| self.last_tick + remaining))
+            .min()
+    }
+
+    pub fn tick_subscription(&self) -> cosmic::iced::Subscription<()> {
+        if self.animating() {
+            return cosmic::iced::time::every(Duration::from_millis(16)).map(|_| ());
+        }
+
+        fn deadline_stream(deadline: &Instant) -> impl cosmic::iced::futures::Stream<Item = ()> + use<> {
+            let deadline = *deadline;
+            cosmic::iced::futures::stream::once(async move {
+                tokio::time::sleep(deadline.saturating_duration_since(Instant::now())).await;
+            })
+        }
+
+        self.expiry_deadline()
+            .map_or_else(cosmic::iced::Subscription::none, |deadline| {
+                cosmic::iced::Subscription::run_with(deadline, deadline_stream)
+            })
     }
 
     pub fn handle_event(&mut self, event: Event) {
@@ -708,6 +732,25 @@ mod tests {
         assert_eq!(groups.iter().map(|g| g.0.id).collect::<Vec<_>>(), [4, 3, 2]);
         assert!(!center.entries[0].live);
         assert_eq!(center.entries.len(), 4);
+    }
+
+    #[test]
+    fn expiry_deadlines_skip_hovered_and_persistent_toasts() {
+        let (mut center, _) = fixture();
+        assert!(center.expiry_deadline().is_none());
+        center.receive(notice(1));
+        assert_eq!(
+            center.expiry_deadline(),
+            Some(center.last_tick + Duration::from_secs(6))
+        );
+
+        center.hover(1, true);
+        assert!(center.expiry_deadline().is_none());
+        center.hover(1, false);
+        assert!(center.expiry_deadline().is_some());
+
+        center.toasts[0].remaining = None;
+        assert!(center.expiry_deadline().is_none());
     }
 
     #[test]

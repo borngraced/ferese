@@ -2,13 +2,14 @@
 mod audio_cache;
 mod bluetooth;
 mod dbus_cache;
+mod hardware;
 mod network;
 
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Condvar, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{env, fs, thread};
 
 #[derive(Clone, Debug, Default)]
@@ -130,7 +131,7 @@ impl Updates {
     }
 }
 
-type PollState = (Mutex<(u64, bool, Option<ActionError>, bool)>, Condvar);
+type PollState = (Mutex<(u64, bool, Option<ActionError>, bool, u64)>, Condvar);
 
 fn wait_for_poll(shared: &PollState) -> Option<u64> {
     let state = shared
@@ -138,6 +139,12 @@ fn wait_for_poll(shared: &PollState) -> Option<u64> {
         .wait_while(shared.0.lock().unwrap(), |state| state.1 && !state.3)
         .unwrap();
     (!state.3).then_some(state.0)
+}
+
+fn wake_status(shared: &PollState) {
+    let mut state = shared.0.lock().unwrap_or_else(|error| error.into_inner());
+    state.4 = state.4.wrapping_add(1);
+    shared.1.notify_one();
 }
 
 impl Service {
@@ -148,21 +155,46 @@ impl Service {
         let (updates, rx) = tokio::sync::watch::channel(None);
         // Polling and writes have separate workers: a missing D-Bus service must
         // never hold up volume/brightness changes. Publish only coherent polls.
-        let shared = Arc::new((Mutex::new((0u64, false, None::<ActionError>, false)), Condvar::new()));
+        let shared = Arc::new((Mutex::new((0u64, false, None::<ActionError>, false, 0)), Condvar::new()));
         let polling = shared.clone();
 
         thread::spawn(move || {
-            let mut system_bus = StatusBus::new(true);
-            let mut session_bus = StatusBus::new(false);
-            let mut network = dbus_cache::Cache::new("org.freedesktop.NetworkManager");
-            let mut bluetooth = dbus_cache::Cache::new("org.bluez");
+            let mut network = dbus_cache::Cache::with_wake("org.freedesktop.NetworkManager", polling.clone());
+            let mut bluetooth = dbus_cache::Cache::with_wake("org.bluez", polling.clone());
+            let mut battery_cache = dbus_cache::Cache::with_wake("org.freedesktop.UPower", polling.clone());
+            let mut profiles = dbus_cache::Cache::with_wake("org.freedesktop.UPower.PowerProfiles", polling.clone());
+            let mut legacy_profiles = dbus_cache::Cache::with_wake("net.hadess.PowerProfiles", polling.clone());
+            let mut login = dbus_cache::Cache::with_wake("org.freedesktop.login1", polling.clone());
             let mut audio = audio_cache::Cache::new(polling.clone());
+            let mut hardware = hardware::Monitor::start(polling.clone()).ok();
 
-            // A poll overlapping a write is discarded below. Wait for the
-            // write to finish before retrying instead of launching commands
-            // repeatedly while a slow control operation is still running.
             while let Some(before) = wait_for_poll(&polling) {
-                let mut snapshot = poll(&mut system_bus, &mut session_bus);
+                let revision = polling.0.lock().unwrap().4;
+                if hardware.as_ref().is_none_or(|monitor| !monitor.alive()) {
+                    hardware = hardware::Monitor::start(polling.clone()).ok();
+                }
+                let capabilities = login.read(before, read_capabilities).unwrap_or_default();
+                let primary_profiles = profiles.read(before, |connection| {
+                    read_power_profiles(
+                        connection,
+                        "org.freedesktop.UPower.PowerProfiles",
+                        "/org/freedesktop/UPower/PowerProfiles",
+                    )
+                    .map(Some)
+                });
+                let fallback_profiles = legacy_profiles.read(before, |connection| {
+                    read_power_profiles(connection, "net.hadess.PowerProfiles", "/net/hadess/PowerProfiles").map(Some)
+                });
+
+                let mut snapshot = Snapshot {
+                    battery: battery_cache.read(before, read_battery).or_else(battery),
+                    power_profiles: primary_profiles.or(fallback_profiles),
+                    brightness: brightness(),
+                    poweroff: capabilities.0,
+                    reboot: capabilities.1,
+                    suspend: capabilities.2,
+                    ..Snapshot::default()
+                };
                 snapshot.audio = audio.read(before);
                 snapshot.network = network.read(before, network::read);
                 snapshot.bluetooth = bluetooth.read(before, bluetooth::read);
@@ -178,8 +210,35 @@ impl Service {
                         generation: state.0,
                         error: state.2.clone(),
                     }));
+                    let retry = [
+                        network.next_retry(),
+                        bluetooth.next_retry(),
+                        battery_cache.next_retry(),
+                        profiles.next_retry(),
+                        legacy_profiles.next_retry(),
+                        login.next_retry(),
+                        audio.next_retry(),
+                        hardware
+                            .as_ref()
+                            .is_none_or(|monitor| !monitor.alive())
+                            .then(|| Instant::now() + Duration::from_secs(5)),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .min();
+                    let unchanged = |state: &mut (u64, bool, Option<ActionError>, bool, u64)| {
+                        !state.3 && state.0 == before && state.4 == revision
+                    };
                     if !audio.changed() {
-                        let _ = polling.1.wait_timeout(state, Duration::from_secs(2));
+                        if let Some(deadline) = retry {
+                            let _ = polling.1.wait_timeout_while(
+                                state,
+                                deadline.saturating_duration_since(Instant::now()),
+                                unchanged,
+                            );
+                        } else {
+                            drop(polling.1.wait_while(state, unchanged));
+                        }
                     }
                 }
             }
@@ -207,6 +266,7 @@ impl Service {
                     let mut state = shared.0.lock().unwrap();
                     state.1 = false;
                     state.2 = error;
+                    state.4 = state.4.wrapping_add(1);
                     shared.1.notify_one();
                 }
             }
@@ -329,6 +389,7 @@ impl StatusBus {
         }
     }
 
+    #[cfg(test)]
     fn can_power(&mut self, method: &str) -> bool {
         self.query(|connection| {
             connection
@@ -345,6 +406,7 @@ impl StatusBus {
         .is_some_and(|value| value == "yes" || value == "challenge")
     }
 
+    #[cfg(test)]
     fn notification_service_owned(&mut self) -> bool {
         self.query(|connection| {
             connection
@@ -362,19 +424,49 @@ impl StatusBus {
     }
 }
 
-fn poll(system_bus: &mut StatusBus, session_bus: &mut StatusBus) -> Snapshot {
-    Snapshot {
-        network: None,
-        bluetooth: None,
-        audio: None,
-        battery: battery(),
-        power_profiles: power_profiles(system_bus),
-        brightness: brightness(),
-        notifications: notifications(session_bus),
-        poweroff: system_bus.can_power("CanPowerOff"),
-        reboot: system_bus.can_power("CanReboot"),
-        suspend: system_bus.can_power("CanSuspend"),
+fn read_capabilities(connection: &zbus::blocking::Connection) -> zbus::Result<Option<(bool, bool, bool)>> {
+    let can = |method| -> zbus::Result<bool> {
+        let value: String = connection
+            .call_method(
+                Some("org.freedesktop.login1"),
+                "/org/freedesktop/login1",
+                Some("org.freedesktop.login1.Manager"),
+                method,
+                &(),
+            )?
+            .body()
+            .deserialize()?;
+
+        Ok(value == "yes" || value == "challenge")
+    };
+
+    Ok(Some((can("CanPowerOff")?, can("CanReboot")?, can("CanSuspend")?)))
+}
+
+fn read_battery(connection: &zbus::blocking::Connection) -> zbus::Result<Option<Battery>> {
+    let proxy = zbus::blocking::Proxy::new(
+        connection,
+        "org.freedesktop.UPower",
+        "/org/freedesktop/UPower/devices/DisplayDevice",
+        "org.freedesktop.UPower.Device",
+    )?;
+    if !proxy.get_property::<bool>("IsPresent")? {
+        return Ok(None);
     }
+    let percent = proxy.get_property::<f64>("Percentage")?;
+    let status = match proxy.get_property::<u32>("State")? {
+        1 => "Charging",
+        2 => "Discharging",
+        3 => "Empty",
+        4 => "Full",
+        5 => "Pending charge",
+        6 => "Pending discharge",
+        _ => "Unknown",
+    };
+    Ok(Some(Battery {
+        percent: percent.round().clamp(0., 100.) as u8,
+        status: status.into(),
+    }))
 }
 
 pub fn parse_audio(value: &str) -> Option<(u8, bool)> {
@@ -429,6 +521,7 @@ fn battery() -> Option<Battery> {
     })
 }
 
+#[cfg(test)]
 fn power_profiles(bus: &mut StatusBus) -> Option<PowerProfiles> {
     bus.query(|connection| {
         read_power_profiles(
@@ -462,36 +555,22 @@ fn read_power_profiles(
 }
 
 fn brightness() -> Option<u8> {
-    parse_brightness(&run("brightnessctl", &["--class=backlight", "--machine-readable", "info"]).ok()?)
+    let mut devices = fs::read_dir("/sys/class/backlight")
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    devices.sort();
+    devices.iter().find_map(|path| {
+        let current = read(path, "brightness")?.parse::<f64>().ok()?;
+        let max = read(path, "max_brightness")?.parse::<f64>().ok()?;
+        brightness_percent(current, max)
+    })
 }
 
-fn parse_brightness(value: &str) -> Option<u8> {
-    // device,class,current,percentage,max. Compute the ratio ourselves to
-    // preserve the previous rounding rather than using the CLI's percentage.
-    let mut fields = value.trim().split(',');
-    let _device = fields.next()?;
-    if fields.next()? != "backlight" {
-        return None;
-    }
-    let current = fields.next()?.parse::<f64>().ok()?;
-    let _percentage = fields.next()?;
-    let max = fields.next()?.parse::<f64>().ok()?;
-    (fields.next().is_none() && max.is_finite() && max > 0.0 && current.is_finite() && current >= 0.0)
+fn brightness_percent(current: f64, max: f64) -> Option<u8> {
+    (max.is_finite() && max > 0.0 && current.is_finite() && current >= 0.0)
         .then(|| (100.0 * current / max).round().clamp(0.0, 100.0) as u8)
-}
-
-fn notifications(bus: &mut StatusBus) -> Option<Notifications> {
-    // Check service ownership first: swaync-client otherwise waits indefinitely.
-    if !bus.notification_service_owned() {
-        return None;
-    }
-    let count = run("swaync-client", &["--count"]).ok()?.parse().ok()?;
-    let dnd = match run("swaync-client", &["--get-dnd"]).ok()?.as_str() {
-        "true" => true,
-        "false" => false,
-        _ => return None,
-    };
-    Some(Notifications { count, dnd })
 }
 
 pub(super) fn execute_power(action: Action, force: bool) -> Result<(), String> {
@@ -531,8 +610,7 @@ fn execute(action: &Action, settings: Option<&[String]>) -> Result<(), String> {
             "brightnessctl",
             &["--class=backlight", "set", &format!("{}%", value.clamp(&1, &100))],
         ),
-        Action::Dnd(on) => run("swaync-client", &[if *on { "--dnd-on" } else { "--dnd-off" }]),
-        Action::Notifications => run("swaync-client", &["--open-panel"]),
+        Action::Dnd(_) | Action::Notifications => return Err("Native notifications are unavailable".into()),
         Action::PowerProfile(profile) if matches!(*profile, "power-saver" | "balanced" | "performance") => {
             run("powerprofilesctl", &["set", profile])
         }
@@ -721,20 +799,13 @@ mod tests {
     }
 
     #[test]
-    fn brightness_info_preserves_ratio_rounding_and_rejects_bad_devices() {
-        assert_eq!(parse_brightness("intel,backlight,72,18%,400"), Some(18));
-        assert_eq!(parse_brightness("panel,backlight,2,66%,3\n"), Some(67));
-        assert_eq!(parse_brightness("panel,backlight,0,0%,400"), Some(0));
-        for value in [
-            "",
-            "panel,leds,1,1%,100",
-            "panel,backlight,1,0%,0",
-            "panel,backlight,NaN,0%,100",
-            "panel,backlight,1,0%,inf",
-            "panel,backlight,-1,0%,100",
-            "panel,backlight,1,0%,100,extra",
-        ] {
-            assert_eq!(parse_brightness(value), None, "{value}");
+    fn brightness_ratio_rounds_and_rejects_invalid_values() {
+        assert_eq!(brightness_percent(72.0, 400.0), Some(18));
+        assert_eq!(brightness_percent(2.0, 3.0), Some(67));
+        assert_eq!(brightness_percent(0.0, 400.0), Some(0));
+
+        for (current, max) in [(1.0, 0.0), (-1.0, 100.0), (f64::NAN, 100.0), (1.0, f64::INFINITY)] {
+            assert_eq!(brightness_percent(current, max), None);
         }
     }
 
@@ -802,7 +873,7 @@ mod tests {
 
     #[test]
     fn polling_waits_for_a_write_and_uses_the_completed_generation() {
-        let shared = Arc::new((Mutex::new((7, true, None, false)), Condvar::new()));
+        let shared = Arc::new((Mutex::new((7, true, None, false, 0)), Condvar::new()));
         let worker_state = shared.clone();
         let (sender, receiver) = mpsc::channel();
         let worker = thread::spawn(move || {
@@ -824,7 +895,7 @@ mod tests {
 
     #[test]
     fn shutdown_unblocks_polling_even_during_a_write() {
-        let shared = Arc::new((Mutex::new((7, true, None, false)), Condvar::new()));
+        let shared = Arc::new((Mutex::new((7, true, None, false, 0)), Condvar::new()));
         let worker_state = shared.clone();
         let (sender, receiver) = mpsc::channel();
         let worker = thread::spawn(move || {

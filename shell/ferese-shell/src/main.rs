@@ -355,16 +355,9 @@ impl cosmic::Application for FereseShell {
                 Subscription::none()
             },
             self.notifications.subscription().map(Message::NotificationEvent),
-            if self.notifications.has_toasts() {
-                cosmic::iced::time::every(Duration::from_millis(if self.notifications.animating() {
-                    16
-                } else {
-                    250
-                }))
-                .map(|_| Message::NotificationTick)
-            } else {
-                Subscription::none()
-            },
+            self.notifications
+                .tick_subscription()
+                .map(|_| Message::NotificationTick),
             event::listen_with(|event, _status, id| match &event {
                 Event::PlatformSpecific(PlatformSpecific::Wayland(wayland::Event::Frame(..))) => EFFECT_FRAME_PENDING
                     .load(Ordering::Relaxed)

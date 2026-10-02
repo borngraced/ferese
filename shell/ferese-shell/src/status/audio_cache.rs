@@ -49,6 +49,10 @@ impl Cache {
         self.value.clone()
     }
 
+    pub(super) fn next_retry(&self) -> Option<Instant> {
+        (!self.signals.alive() || self.value.is_none()).then_some(self.retry_at)
+    }
+
     pub(super) fn changed(&self) -> bool {
         self.signals.revision() != self.revision
     }
@@ -62,7 +66,7 @@ mod tests {
 
     fn cache() -> Cache {
         Cache {
-            signals: Signals::test(Arc::new((Mutex::new((0, false, None, false)), Condvar::new()))),
+            signals: Signals::test(Arc::new((Mutex::new((0, false, None, false, 0)), Condvar::new()))),
             revision: 0,
             action: u64::MAX,
             value: None,

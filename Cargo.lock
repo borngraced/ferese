@@ -1787,6 +1787,7 @@ dependencies = [
  "ferese-theme",
  "iced_accessibility",
  "jiff",
+ "libc",
  "libcosmic",
  "pipewire",
  "serde",

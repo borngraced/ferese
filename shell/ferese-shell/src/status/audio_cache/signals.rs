@@ -23,8 +23,7 @@ impl State {
     pub(super) fn changed(&self) {
         self.revision.fetch_add(1, Ordering::AcqRel);
         // Synchronize with the poller's predicate check and condvar wait.
-        let _guard = self.wake.0.lock().unwrap_or_else(|error| error.into_inner());
-        self.wake.1.notify_one();
+        super::super::wake_status(&self.wake);
     }
 
     pub(super) fn set_alive(&self, alive: bool) {
@@ -324,7 +323,7 @@ context.objects = [
             .stderr(Stdio::null());
         let mut server = Server(command.spawn().unwrap());
         wait_for(|| root.path().join("pipewire-0").exists());
-        let wake = Arc::new((Mutex::new((0, false, None, false)), Condvar::new()));
+        let wake = Arc::new((Mutex::new((0, false, None, false, 0)), Condvar::new()));
         let signals = Signals::start_remote(wake, Some(root.path().join("pipewire-0").to_str().unwrap().into()));
         wait_for(|| signals.alive());
         std::thread::sleep(Duration::from_millis(500));

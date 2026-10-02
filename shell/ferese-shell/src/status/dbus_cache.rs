@@ -7,7 +7,7 @@ use cosmic::iced::futures::channel::oneshot;
 use cosmic::iced::futures::{FutureExt, StreamExt};
 use zbus::blocking::{Connection, MessageIterator};
 
-use super::StatusBus;
+use super::{PollState, StatusBus, wake_status};
 
 struct Signals {
     revision: Arc<AtomicU64>,
@@ -16,7 +16,7 @@ struct Signals {
 }
 
 impl Signals {
-    fn new(connection: &Connection, service: &str) -> zbus::Result<Self> {
+    fn new(connection: &Connection, service: &str, wake: Option<Arc<PollState>>) -> zbus::Result<Self> {
         // Install both rules before the snapshot, including when the service is
         // currently absent. Owner changes invalidate paths after a restart.
         let changes = MessageIterator::for_match_rule(
@@ -51,6 +51,7 @@ impl Signals {
                 // this before entering our async runtime.
                 let changes = changes.into_inner();
                 let owners = owners.into_inner();
+                let event_wake = wake.clone();
                 runtime.block_on(async move {
                     let mut events = cosmic::iced::futures::stream::select(changes, owners);
                     let mut stopped = stopped.fuse();
@@ -59,6 +60,7 @@ impl Signals {
                             _ = stopped => break,
                             event = events.next() => {
                                 changed.fetch_add(1, Ordering::Release);
+                                if let Some(wake) = &event_wake { wake_status(wake); }
                                 if !matches!(event, Some(Ok(_))) { break; }
                             }
                         }
@@ -69,6 +71,9 @@ impl Signals {
                 });
             }
             running.store(false, Ordering::Release);
+            if let Some(wake) = &wake {
+                wake_status(wake);
+            }
         });
         Ok(Self {
             revision,
@@ -86,6 +91,8 @@ pub(super) struct Cache<T> {
     action: u64,
     value: Option<T>,
     retry_at: Instant,
+    retry: bool,
+    wake: Option<Arc<PollState>>,
 }
 
 impl<T: Clone> Cache<T> {
@@ -98,7 +105,19 @@ impl<T: Clone> Cache<T> {
             action: u64::MAX,
             value: None,
             retry_at: Instant::now(),
+            retry: false,
+            wake: None,
         }
+    }
+
+    pub(super) fn with_wake(service: &'static str, wake: Arc<PollState>) -> Self {
+        let mut cache = Self::new(service);
+        cache.wake = Some(wake);
+        cache
+    }
+
+    pub(super) fn next_retry(&self) -> Option<Instant> {
+        (self.action != u64::MAX && (self.signals.is_none() || self.retry)).then_some(self.retry_at)
     }
 
     pub(super) fn read(&mut self, action: u64, read: fn(&Connection) -> zbus::Result<Option<T>>) -> Option<T> {
@@ -106,25 +125,39 @@ impl<T: Clone> Cache<T> {
             self.signals = None;
             self.bus.connection = None;
             self.value = None;
+            self.retry_at = Instant::now();
         }
-        if self.signals.is_none() {
-            self.signals = self.bus.query(|connection| Signals::new(connection, self.service));
+        if self.signals.is_none() && Instant::now() >= self.retry_at {
+            self.signals = self
+                .bus
+                .query(|connection| Signals::new(connection, self.service, self.wake.clone()));
             self.revision = 0;
         }
         // If subscription setup fails, read fresh rather than trusting a cache
-        // with no invalidation. Retry setup on the next regular status poll.
+        // with no invalidation. Retry setup at the bounded recovery deadline.
         let revision = self.signals.as_ref().map(|s| s.revision.load(Ordering::Acquire));
-        if revision.is_none()
-            || revision != Some(self.revision)
+        if (revision.is_none() && Instant::now() >= self.retry_at)
+            || revision.is_some_and(|revision| revision != self.revision)
             || action != self.action
-            || (self.value.is_none() && Instant::now() >= self.retry_at)
+            || (self.retry && Instant::now() >= self.retry_at)
         {
             // Keep signal subscriptions across service errors. A dead bus is
             // detected by the listener; a transient query failure retries later.
-            self.value = self
-                .bus
-                .query(|connection| Ok(connection.clone()))
-                .and_then(|connection| read(&connection).ok().flatten());
+            let result = self.bus.query(|connection| {
+                let owned = connection
+                    .call_method(
+                        Some("org.freedesktop.DBus"),
+                        "/org/freedesktop/DBus",
+                        Some("org.freedesktop.DBus"),
+                        "NameHasOwner",
+                        &(self.service,),
+                    )?
+                    .body()
+                    .deserialize::<bool>()?;
+                if owned { read(connection) } else { Ok(None) }
+            });
+            self.retry = result.is_none();
+            self.value = result.flatten();
             self.retry_at = Instant::now() + Duration::from_secs(5);
             self.action = action;
             self.revision = revision.unwrap_or(0);
@@ -178,6 +211,7 @@ mod tests {
             assert_eq!(cache.read(0, read_counter), Some(1));
         }
         assert_eq!(count.load(Ordering::Relaxed), 1);
+        assert!(cache.next_retry().is_none(), "healthy subscriptions must not poll");
         assert_eq!(cache.read(1, read_counter), Some(2));
         server
             .emit_signal(None::<&str>, "/test", "org.ferese.StatusCounter", "Changed", &())
@@ -193,6 +227,7 @@ mod tests {
             assert!(Instant::now() < deadline, "owner loss kept stale data");
             std::thread::sleep(Duration::from_millis(1));
         }
+        assert!(cache.next_retry().is_none(), "absent services wait for owner changes");
         server.request_name("org.ferese.StatusCounter").unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
         while cache.read(1, read_counter).is_none() {
@@ -207,6 +242,9 @@ mod tests {
                 .is_none()
         );
         assert!(cache.read(2, read_counter).is_none());
+        // The production cache reconnects to the system bus after an error;
+        // keep this recovery attempt on the isolated test bus instead.
+        cache.bus.connection = Some(bus.connect());
         cache.retry_at = Instant::now();
         assert!(cache.read(2, read_counter).is_some());
     }
@@ -218,7 +256,11 @@ mod tests {
         let client = bus.connect();
         let server = bus.connect();
         server.request_name("org.ferese.StatusTest").unwrap();
-        let signals = Signals::new(&client, "org.ferese.StatusTest").unwrap();
+        let wake = Arc::new((
+            std::sync::Mutex::new((0, false, None, false, 0)),
+            std::sync::Condvar::new(),
+        ));
+        let signals = Signals::new(&client, "org.ferese.StatusTest", Some(wake.clone())).unwrap();
         let wait = |before| {
             let deadline = Instant::now() + Duration::from_secs(2);
             while signals.revision.load(Ordering::Acquire) == before && Instant::now() < deadline {
@@ -230,6 +272,13 @@ mod tests {
         server
             .emit_signal(None::<&str>, "/test", "org.ferese.StatusTest", "Changed", &())
             .unwrap();
+        let (state, timeout) = wake
+            .1
+            .wait_timeout_while(wake.0.lock().unwrap(), Duration::from_secs(2), |state| state.4 == 0)
+            .unwrap();
+        assert!(!timeout.timed_out(), "service signal must wake the status worker");
+        assert!(state.4 > 0);
+        drop(state);
         wait(before);
         let before = signals.revision.load(Ordering::Acquire);
         server.release_name("org.ferese.StatusTest").unwrap();
