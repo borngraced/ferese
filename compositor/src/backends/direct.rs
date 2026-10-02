@@ -10,6 +10,7 @@ mod output_power;
 mod planes;
 mod redraw;
 mod scheduling;
+mod topology;
 use output_power::{OutputPower, Power};
 use redraw::{AnimationFallback, SchedulingMetrics};
 use scheduling::*;
@@ -26,7 +27,7 @@ use smithay::backend::renderer::utils::CommitCounter;
 use smithay::backend::renderer::{ImportDma, ImportMemWl, Renderer};
 use smithay::backend::session::libseat::LibSeatSession;
 use smithay::backend::session::{Event as SessionEvent, Session};
-use smithay::backend::udev::{UdevBackend, UdevEvent, primary_gpu};
+use smithay::backend::udev::{UdevBackend, UdevEvent, all_gpus, primary_gpu};
 use smithay::desktop::layer_map_for_output;
 use smithay::desktop::utils::OutputPresentationFeedback;
 use smithay::output::{Mode as OutputMode, Output, OutputModeSource, PhysicalProperties, Scale, Subpixel};
@@ -42,6 +43,7 @@ use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::utils::{DeviceFd, Monotonic, Time, Transform};
 use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
 use smithay::wayland::presentation::Refresh;
+use topology::{Topology, reconcile_outputs};
 
 use crate::Ferese;
 use crate::config::{OutputModeRequest, OutputProfile, OutputSettings, OutputTransform};
@@ -52,6 +54,7 @@ pub struct DirectBackendState {
     pub session: LibSeatSession,
     pub active: bool,
     lid_closed: bool,
+    topology: Topology,
     pub(crate) low_power: bool,
     devices: HashMap<DrmNode, DirectDevice>,
     input_devices: Vec<LibinputDevice>,
@@ -65,6 +68,10 @@ pub struct DirectBackendState {
 }
 
 impl DirectBackendState {
+    fn can_render(&self) -> bool {
+        self.active && !self.topology.reconciling
+    }
+
     pub(crate) fn dump_scheduling_metrics(&self) {
         self.scheduling_metrics.dump();
     }
@@ -171,6 +178,9 @@ type OutputCompositor = DrmCompositor<
 >;
 
 struct DirectDevice {
+    notifier: RegistrationToken,
+    dmabuf_global: smithay::wayland::dmabuf::DmabufGlobal,
+    connected_outputs: Vec<ConnectedOutputInfo>,
     drm: DrmDevice,
     gbm: GbmDevice<DrmDeviceFd>,
     renderer: GlesRenderer,
@@ -233,6 +243,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         session,
         active: session_active,
         lid_closed: initial_lid_closed(),
+        topology: Topology::default(),
         low_power: super::power::low_power(false, super::power::battery_percent()),
         devices: HashMap::new(),
         input_devices: Vec::new(),
@@ -245,7 +256,14 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         scheduling_metrics: SchedulingMetrics::new(),
     });
 
-    open_primary_device(event_loop, state, &primary_path)?;
+    state
+        .direct_backend
+        .as_mut()
+        .unwrap()
+        .topology
+        .devices
+        .insert(primary_path, Default::default());
+    reconcile_outputs(state, false);
     sync_battery_timer(state);
 
     event_loop
@@ -273,6 +291,10 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                 let handle = state.loop_handle.clone();
                 if let Some(backend) = state.direct_backend.as_mut() {
                     backend.active = false;
+                    backend.topology.dirty = true;
+                    if let Some(token) = backend.topology.retry_timer.take() {
+                        handle.remove(token);
+                    }
                     if let Some(token) = backend.battery_timer.take() {
                         handle.remove(token);
                     }
@@ -310,23 +332,11 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
 
                 if let Some(backend) = state.direct_backend.as_mut() {
                     backend.active = true;
-                    for device in backend.devices.values_mut() {
-                        if let Err(error) = device.drm.activate(true) {
-                            tracing::error!(%error, "failed to reactivate DRM device");
-                            continue;
-                        }
-
-                        for output in device.outputs.values_mut() {
-                            // A suspended page flip may never arrive. Clear the old
-                            // pending frame before accepting a fresh submission.
-                            if let Err(error) = output.surface.clear().and_then(|()| output.surface.reset_state()) {
-                                tracing::error!(%error, "failed to reset DRM output after activation");
-                            }
-                        }
-                    }
                 }
 
-                update_power_policy(state);
+                let seat = state.seat.clone();
+                state.idle_notifier_state.notify_activity(&seat);
+                reconcile_outputs(state, true);
                 sync_battery_timer(state);
                 state.reset_animation_clock();
                 tracing::info!("direct session activated");
@@ -334,29 +344,18 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                 render_all(state);
             }
         })?;
-    event_loop
-        .handle()
-        .insert_source(udev_backend, |event, _, state| match event {
-            UdevEvent::Added { device_id, path } => {
-                if let Some(node) = direct_node_for_device(state, device_id) {
-                    rescan_device(state, node);
-                } else {
-                    tracing::info!(?device_id, ?path, "additional DRM device discovered");
-                }
-            }
+    event_loop.handle().insert_source(udev_backend, |event, _, state| {
+        if let UdevEvent::Removed { device_id } = event
+            && let Some(node) = direct_node_for_device(state, device_id)
+            && let Some(backend) = state.direct_backend.as_mut()
+        {
+            // A remove/re-add may reuse the same dev_t. Retire the old fd
+            // even if fresh enumeration already sees its replacement.
+            backend.topology.invalidated.insert(node);
+        }
 
-            UdevEvent::Changed { device_id } => {
-                if let Some(node) = direct_node_for_device(state, device_id) {
-                    rescan_device(state, node);
-                }
-            }
-
-            UdevEvent::Removed { device_id } => {
-                if let Some(node) = direct_node_for_device(state, device_id) {
-                    remove_device(state, node);
-                }
-            }
-        })?;
+        reconcile_outputs(state, false);
+    })?;
 
     tracing::info!(seat = %seat_name, "initialized direct session input and device discovery");
     Ok(())
@@ -455,27 +454,17 @@ fn update_power_policy(state: &mut Ferese) {
 }
 
 pub(crate) fn reload_outputs(state: &mut Ferese) {
-    if let Some(backend) = state.direct_backend.as_mut() {
-        let enabled = state
-            .output_profiles
-            .iter()
-            .any(|profile| profile.outputs.iter().any(|output| output.auto_refresh));
-        backend.low_power = enabled && super::power::low_power(backend.low_power, super::power::battery_percent());
-    }
-    let nodes = state
-        .direct_backend
-        .as_ref()
-        .map(|backend| backend.devices.keys().copied().collect::<Vec<_>>())
-        .unwrap_or_default();
-    for node in nodes {
-        rescan_device(state, node);
-    }
+    reconcile_outputs(state, false);
 }
 
 pub(crate) fn validate_live_outputs(state: &Ferese, profiles: &[OutputProfile]) -> Result<(), String> {
     let Some(backend) = state.direct_backend.as_ref() else {
         return Ok(());
     };
+    if !backend.can_render() || backend.devices.is_empty() {
+        // Syntax/config validation still runs; live probing waits for ownership.
+        return Ok(());
+    }
     let mut usable = 0;
     for device in backend.devices.values() {
         let mut scan = select_outputs(&device.drm, profiles, backend.low_power).map_err(|e| e.to_string())?;
@@ -488,11 +477,7 @@ pub(crate) fn validate_live_outputs(state: &Ferese, profiles: &[OutputProfile]) 
     Ok(())
 }
 
-fn open_primary_device(
-    event_loop: &mut EventLoop<Ferese>,
-    state: &mut Ferese,
-    path: &Path,
-) -> Result<(), Box<dyn Error>> {
+fn open_device(state: &mut Ferese, path: &Path) -> Result<DrmNode, Box<dyn Error>> {
     let mut session = state
         .direct_backend
         .as_ref()
@@ -502,7 +487,7 @@ fn open_primary_device(
     let node = DrmNode::from_path(path)?;
     let fd = session.open(path, OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK)?;
     let fd = DrmDeviceFd::new(DeviceFd::from(fd));
-    let (mut drm, notifier) = DrmDevice::new(fd.clone(), true)?;
+    let (drm, notifier) = DrmDevice::new(fd.clone(), true)?;
     let gbm = GbmDevice::new(fd)?;
     // SAFETY: GBM owns a valid DRM descriptor for the lifetime of the EGL display.
     let egl_display = unsafe { EGLDisplay::new(gbm.clone())? };
@@ -520,49 +505,11 @@ fn open_primary_device(
         .and_then(Result::ok)
         .unwrap_or(node);
     let feedback = DmabufFeedbackBuilder::new(render_node.dev_id(), dmabuf_formats).build()?;
-    state
+    let dmabuf_global = state
         .dmabuf_state
         .create_global_with_default_feedback::<Ferese>(&display_handle, &feedback);
-    let mut scan = select_outputs(
-        &drm,
-        &state.output_profiles,
-        state.direct_backend.as_ref().is_some_and(|backend| backend.low_power),
-    )?;
-    apply_lid_policy(
-        &mut scan,
-        state.direct_backend.as_ref().is_some_and(|backend| backend.lid_closed),
-    );
-    if scan.selections.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "no connected enabled DRM output with a usable CRTC",
-        )
-        .into());
-    }
-
-    state
-        .direct_backend
-        .as_mut()
-        .expect("direct backend state remains initialized")
-        .connected_outputs = scan.connected_outputs;
-    let mut outputs = HashMap::new();
-    for selection in scan.selections {
-        let crtc = selection.crtc;
-        let mode = selection.mode;
-        let output = create_direct_output(state, &mut drm, &gbm, &renderer, selection)?;
-        state
-            .direct_backend
-            .as_mut()
-            .expect("direct backend state remains initialized")
-            .presentation
-            .entry((node, crtc))
-            .or_default()
-            .set_refresh(OutputMode::from(mode).refresh);
-        outputs.insert(crtc, output);
-    }
-
-    event_loop
-        .handle()
+    let registration = state
+        .loop_handle
         .insert_source(notifier, move |event, metadata, state| match event {
             DrmEvent::VBlank(crtc) => {
                 if let Some(metadata) = metadata {
@@ -655,7 +602,10 @@ fn open_primary_device(
 
                     state.record_drm_presentation(node, crtc, metadata.time, metadata.sequence);
                     tracing::trace!(?node, ?crtc, sequence = metadata.sequence, "page flip");
-                    let active = state.direct_backend.as_ref().is_some_and(|backend| backend.active);
+                    let active = state
+                        .direct_backend
+                        .as_ref()
+                        .is_some_and(|backend| backend.can_render());
                     if active && retired {
                         schedule_frame_callbacks(state, node, crtc, monotonic_now());
                         let identity = state
@@ -692,13 +642,14 @@ fn open_primary_device(
                 gbm,
                 renderer,
                 render_node,
-                outputs,
+                outputs: HashMap::new(),
+                notifier: registration,
+                dmabuf_global,
+                connected_outputs: Vec::new(),
             },
         );
-    state.relayout();
-    render_all(state);
-    tracing::info!(?node, ?path, "initialized DRM/GBM device outputs");
-    Ok(())
+    tracing::info!(?node, ?path, "initialized DRM/GBM device");
+    Ok(node)
 }
 
 pub(crate) fn sleep_locked_outputs(state: &mut Ferese) {
@@ -718,7 +669,7 @@ pub(crate) fn sleep_locked_outputs(state: &mut Ferese) {
 
 // Apply runtime requests without changing output globals or workspace ownership.
 fn apply_output_power(state: &mut Ferese) {
-    let Some(backend) = state.direct_backend.as_mut() else {
+    let Some(backend) = state.direct_backend.as_mut().filter(|backend| backend.can_render()) else {
         return;
     };
 
@@ -850,7 +801,11 @@ pub(crate) fn render_surface(
 }
 
 fn redraw(state: &mut Ferese, selected: Option<&[Output]>, source: &'static std::panic::Location<'static>) {
-    if state.direct_backend.as_ref().is_none_or(|backend| !backend.active) {
+    if state
+        .direct_backend
+        .as_ref()
+        .is_none_or(|backend| !backend.can_render())
+    {
         return;
     }
 
@@ -914,10 +869,7 @@ pub(crate) fn set_lid_closed(state: &mut Ferese, closed: bool) {
     }
     backend.lid_closed = closed;
     tracing::info!(closed, "laptop lid state changed");
-    let nodes = backend.devices.keys().copied().collect::<Vec<_>>();
-    for node in nodes {
-        rescan_device(state, node);
-    }
+    reconcile_outputs(state, false);
 }
 
 fn initial_lid_closed() -> bool {
@@ -1145,13 +1097,16 @@ fn direct_node_for_device(state: &Ferese, device_id: libc::dev_t) -> Option<DrmN
         .find(|node| node.dev_id() == device_id)
 }
 
-fn rescan_device(state: &mut Ferese, node: DrmNode) {
+fn rescan_device(state: &mut Ferese, node: DrmNode) -> Result<bool, ()> {
+    if state.direct_backend.as_ref().is_none_or(|backend| !backend.active) {
+        return Err(());
+    }
     let Some(mut device) = state
         .direct_backend
         .as_mut()
         .and_then(|backend| backend.devices.remove(&node))
     else {
-        return;
+        return Err(());
     };
 
     let mut scan = match select_outputs(
@@ -1163,15 +1118,14 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
         Err(error) => {
             tracing::error!(?node, %error, "failed to scan DRM connectors");
             restore_device(state, node, device);
-            return;
+            return Err(());
         }
     };
 
     let lid_closed = state.direct_backend.as_ref().is_some_and(|backend| backend.lid_closed);
     apply_lid_policy(&mut scan, lid_closed);
-    if let Some(backend) = state.direct_backend.as_mut() {
-        backend.connected_outputs = scan.connected_outputs;
-    }
+    device.connected_outputs = scan.connected_outputs;
+    let mut complete = true;
 
     let mut selections = scan
         .selections
@@ -1253,6 +1207,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
                 }
 
                 Err(error) => {
+                    complete = false;
                     tracing::warn!(?crtc, %error, "display change failed; retaining current output")
                 }
             }
@@ -1310,27 +1265,27 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
                 device.outputs.insert(crtc, output);
             }
 
-            Err(error) => tracing::error!(?node, ?crtc, %error, "failed to add DRM output"),
+            Err(error) => {
+                complete = false;
+                tracing::error!(?node, ?crtc, %error, "failed to add DRM output");
+            }
         }
     }
 
     for crtc in deferred_removals {
         let keep_internal = device.outputs.get(&crtc).is_some_and(|output| output.internal)
             && lid_closed
-            && state.direct_backend.as_ref().is_some_and(|backend| {
-                device.outputs.get(&crtc).is_some_and(|output| {
-                    backend
-                        .connected_outputs
-                        .iter()
-                        .any(|info| info.connector == output.output.name())
-                })
+            && device.outputs.get(&crtc).is_some_and(|output| {
+                device
+                    .connected_outputs
+                    .iter()
+                    .any(|info| info.connector == output.output.name())
             })
             && !device.outputs.values().any(|output| !output.internal);
         if keep_internal {
             tracing::warn!(?crtc, "keeping laptop panel enabled: external output activation failed");
             if let Some(output) = device.outputs.get(&crtc)
-                && let Some(backend) = state.direct_backend.as_mut()
-                && let Some(info) = backend
+                && let Some(info) = device
                     .connected_outputs
                     .iter_mut()
                     .find(|info| info.connector == output.output.name())
@@ -1352,9 +1307,9 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
         }
     }
 
-    if let Some(backend) = state.direct_backend.as_mut() {
+    {
         for output in device.outputs.values() {
-            if let Some(info) = backend
+            if let Some(info) = device
                 .connected_outputs
                 .iter_mut()
                 .find(|info| info.connector == output.output.name())
@@ -1370,11 +1325,7 @@ fn rescan_device(state: &mut Ferese, node: DrmNode) {
     }
 
     restore_device(state, node, device);
-    sync_battery_timer(state);
-    update_power_policy(state);
-    state.restore_output_focus();
-    state.relayout();
-    render_all(state);
+    Ok(complete)
 }
 
 fn remove_device(state: &mut Ferese, node: DrmNode) {
@@ -1386,6 +1337,10 @@ fn remove_device(state: &mut Ferese, node: DrmNode) {
         return;
     };
 
+    state.loop_handle.remove(device.notifier);
+    state
+        .dmabuf_state
+        .disable_global::<Ferese>(&state.display_handle, &device.dmabuf_global);
     let context = device.renderer.context_id().erased();
     state.wallpaper.forget_context(&context);
     state.render.forget_context(&context);
@@ -1398,12 +1353,6 @@ fn remove_device(state: &mut Ferese, node: DrmNode) {
         }
     }
 
-    if let Some(backend) = state.direct_backend.as_mut() {
-        backend.connected_outputs.clear();
-    }
-
-    sync_battery_timer(state);
-    arm_animation_timer(state);
     tracing::info!(?node, "removed DRM device");
 }
 
@@ -1441,7 +1390,10 @@ fn animation_fallbacks(state: &mut Ferese) -> Vec<(DrmNode, crtc::Handle, Instan
     for (node, crtc, identity, device_active) in outputs {
         let enabled = device_active
             && !state.session_lock.sleeping
-            && state.direct_backend.as_ref().is_some_and(|backend| backend.active);
+            && state
+                .direct_backend
+                .as_ref()
+                .is_some_and(|backend| backend.can_render());
         let animating = enabled && state.output_has_animations(&identity);
         let backend = state.direct_backend.as_mut().unwrap();
         let output = backend.devices.get_mut(&node).unwrap().outputs.get_mut(&crtc).unwrap();
@@ -1546,7 +1498,7 @@ fn schedule_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handl
     let Some(output) = state
         .direct_backend
         .as_ref()
-        .filter(|backend| backend.active)
+        .filter(|backend| backend.can_render())
         .and_then(|backend| backend.devices.get(&node))
         .filter(|device| device.drm.is_active())
         .and_then(|device| device.outputs.get(&crtc))
@@ -1609,6 +1561,7 @@ fn deliver_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle
 
     output.callback_timer = None;
     if !backend.active
+        || backend.topology.reconciling
         || !device.drm.is_active()
         || !output.power.can_render()
         || state.session_lock.sleeping

@@ -31,7 +31,7 @@ pub(super) fn request_frame(state: &mut Ferese, node: DrmNode, crtc: crtc::Handl
     let Some(output) = state
         .direct_backend
         .as_mut()
-        .filter(|backend| backend.active)
+        .filter(|backend| backend.can_render())
         .and_then(|backend| backend.devices.get_mut(&node))
         .filter(|device| device.drm.is_active())
         .and_then(|device| device.outputs.get_mut(&crtc))
@@ -55,7 +55,7 @@ pub(super) fn arm_frame(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle) {
     let Some(output) = state
         .direct_backend
         .as_mut()
-        .filter(|backend| backend.active)
+        .filter(|backend| backend.can_render())
         .and_then(|backend| backend.devices.get_mut(&node))
         .filter(|device| device.drm.is_active())
         .and_then(|device| device.outputs.get_mut(&crtc))
@@ -104,7 +104,7 @@ fn dispatch_frame(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, identit
     let Some(output) = state
         .direct_backend
         .as_mut()
-        .filter(|backend| backend.active)
+        .filter(|backend| backend.can_render())
         .and_then(|backend| backend.devices.get_mut(&node))
         .filter(|device| device.drm.is_active())
         .and_then(|device| device.outputs.get_mut(&crtc))
