@@ -8,6 +8,11 @@ impl Ferese {
         if self.input_capture.active() {
             return None;
         }
+        // The workspace strip is compositor UI, including its live miniatures.
+        // Surfaces behind it must not acquire pointer focus or receive clicks.
+        if self.overview_strip_at(position).is_some() {
+            return None;
+        }
         self.layer_surface_under(position, &[Layer::Overlay, Layer::Top])
             .map(|(_, surface, origin)| (surface, origin))
             .or_else(|| self.window_surface_under(position))
@@ -19,6 +24,9 @@ impl Ferese {
 
     pub fn layer_under(&self, position: Point<f64, Logical>) -> Option<(LayerSurface, WlSurface, Point<f64, Logical>)> {
         if self.session_lock.active() {
+            return None;
+        }
+        if self.overview_strip_at(position).is_some() {
             return None;
         }
         if let Some(layer) = self.layer_surface_under(position, &[Layer::Overlay, Layer::Top]) {
