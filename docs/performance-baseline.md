@@ -70,6 +70,63 @@ These are deterministic scheduling counts, not live DRM CPU, latency or battery
 measurements. Verify those separately with the same hardware workload before
 making claims about power savings.
 
+## Settled overview damage
+
+On 2026-10-02, a release-build comparison against `6f2951c` used four parked
+foot terminals in a private nested desktop: 1418 × 1692 pixels, 2× scale, 60 Hz,
+Intel Core Ultra 7 258V and Mesa 26.2.3. Ten-second process samples measured
+5.9% CPU before and 1.9% after stabilizing caption/thumbnail drawing order and
+removing forced full damage from unchanged rounded thumbnails.
+
+A settled five-second interval changed from 300 damaged frames to zero.
+The nested backend still makes about 300 no-damage render attempts per interval;
+this change avoids unchanged submissions rather than changing nested scheduling.
+These short samples exclude host compositor CPU and do not measure battery
+discharge or direct DRM performance.
+
+The opt-in regression checks a full settled interval, a real client content
+commit, and settling again. It fails against the original release.
+
+```sh
+FERESE_TEST_OVERVIEW_DAMAGE=1 FERESE_TEST_BINARY=target/release/ferese \
+  FERESE_TEST_CTL=target/release/feresectl \
+  python3 scripts/tests/test_overview_damage_isolated.py
+```
+
+## Idle shell audio polling
+
+On 2026-10-02, the installed release shell was compared with the audio-event
+cache in private nested desktops on the same machine. Each release had ten
+seconds to settle, followed by three twenty-second samples without `perf`.
+CPU includes waited child processes; one core is 100%.
+
+| Measurement | Periodic audio queries | Persistent audio watcher |
+| --- | --- | --- |
+| Combined CPU, sample range | 2.25–3.15% | 0.90% |
+| Combined CPU, median | 3.10% | 0.90% |
+| Shell CPU, median | 0.75% | 0.75% |
+| Child-process CPU, median | 2.35% | 0.15% |
+| Shell RSS | 32.3–32.4 MiB | 34.9 MiB |
+
+A separate twenty-second `perf` sample recorded twenty `wpctl` executions before
+and zero afterward. The new connection observes sink properties, device routes,
+and default-sink metadata. Relevant events and control actions invalidate the
+cached reading; the existing `wpctl` reader preserves volume and device semantics.
+Disconnected subscriptions retain bounded polling, and missing sinks retry.
+Brightness and other status polling remain unchanged.
+
+These are short nested observations, exclude the host compositor, and do not
+measure battery discharge. Raw measurements and profiles were saved locally in
+`/tmp/ferese-shell-profile-20261002`.
+
+The subscription regression starts its own PipeWire server, changes default
+metadata, mute and volume, removes a sink, restarts the server, and checks shutdown.
+It does not change the desktop's audio server.
+
+```sh
+cargo test --release --locked -p ferese-shell native_subscription -- --ignored
+```
+
 ## Historical results
 
 On 2026-09-27 at `08a5866`, two nested runs used a 1422 × 1696 output at 2× scale,

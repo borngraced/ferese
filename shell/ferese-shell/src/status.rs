@@ -1,4 +1,5 @@
 //! Bounded, off-UI-thread adapters. A missing service is `None`, never a fake state.
+mod audio_cache;
 mod bluetooth;
 mod dbus_cache;
 mod network;
@@ -155,12 +156,14 @@ impl Service {
             let mut session_bus = StatusBus::new(false);
             let mut network = dbus_cache::Cache::new("org.freedesktop.NetworkManager");
             let mut bluetooth = dbus_cache::Cache::new("org.bluez");
+            let mut audio = audio_cache::Cache::new(polling.clone());
 
             // A poll overlapping a write is discarded below. Wait for the
             // write to finish before retrying instead of launching commands
             // repeatedly while a slow control operation is still running.
             while let Some(before) = wait_for_poll(&polling) {
                 let mut snapshot = poll(&mut system_bus, &mut session_bus);
+                snapshot.audio = audio.read(before);
                 snapshot.network = network.read(before, network::read);
                 snapshot.bluetooth = bluetooth.read(before, bluetooth::read);
                 let state = polling.0.lock().unwrap();
@@ -175,7 +178,9 @@ impl Service {
                         generation: state.0,
                         error: state.2.clone(),
                     }));
-                    let _ = polling.1.wait_timeout(state, Duration::from_secs(2));
+                    if !audio.changed() {
+                        let _ = polling.1.wait_timeout(state, Duration::from_secs(2));
+                    }
                 }
             }
         });
@@ -361,7 +366,7 @@ fn poll(system_bus: &mut StatusBus, session_bus: &mut StatusBus) -> Snapshot {
     Snapshot {
         network: None,
         bluetooth: None,
-        audio: audio(),
+        audio: None,
         battery: battery(),
         power_profiles: power_profiles(system_bus),
         brightness: brightness(),

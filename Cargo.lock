@@ -1788,6 +1788,7 @@ dependencies = [
  "iced_accessibility",
  "jiff",
  "libcosmic",
+ "pipewire",
  "serde",
  "serde_json",
  "tempfile",

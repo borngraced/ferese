@@ -740,7 +740,7 @@ impl Ferese {
                     (rect.width - 12.0).max(1.0),
                     (rect.height - 26.0).max(1.0),
                 );
-                let windows = preview_layout(preview_bounds, &windows, 4.0, 4.0).into_iter().collect();
+                let windows = preview_layout(preview_bounds, &windows, 4.0, 4.0);
                 WorkspaceCard {
                     workspace: workspace.id,
                     index: view.index,
@@ -889,11 +889,15 @@ impl Ferese {
 
 fn overview_layout(bounds: Rect, windows: &[(WindowId, Rect)]) -> HashMap<WindowId, Rect> {
     preview_layout(bounds, windows, OVERVIEW_MARGIN, OVERVIEW_GAP)
+        .into_iter()
+        .collect()
 }
 
-fn preview_layout(bounds: Rect, windows: &[(WindowId, Rect)], margin: f64, gap: f64) -> HashMap<WindowId, Rect> {
+// Preserve input order for rendering: the damage tracker includes each
+// instance's z index, even when neighboring previews do not overlap.
+fn preview_layout(bounds: Rect, windows: &[(WindowId, Rect)], margin: f64, gap: f64) -> Vec<(WindowId, Rect)> {
     if windows.is_empty() {
-        return HashMap::new();
+        return Vec::new();
     }
 
     let margin = margin.min(bounds.width * 0.1).min(bounds.height * 0.1);
@@ -1242,7 +1246,12 @@ mod tests {
             .map(|id| (WindowId(id), Rect::new(0.0, 0.0, 1000.0, 800.0)))
             .collect::<Vec<_>>();
         let layout = preview_layout(bounds, &windows, 4.0, 4.0);
-        for rect in layout.values() {
+        assert_eq!(
+            layout.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            windows.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+        );
+
+        for (_, rect) in layout {
             assert!((rect.width / rect.height - 1.25).abs() < 0.001);
             assert!(rect.y + rect.height <= bounds.y + bounds.height);
             assert!(rect.x + rect.width <= bounds.x + bounds.width);

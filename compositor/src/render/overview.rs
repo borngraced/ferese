@@ -136,14 +136,17 @@ pub(super) fn overview_strip_elements(
     }
     // Cached title textures are independent of window content and stay readable
     // when thumbnails are small. Their pills use the shell's material and radius.
-    for id in frame.windows.keys() {
-        if !state.window_belongs_to_output(*id, output) {
+    // Match the grid's stable front-to-back order. A sampled frame's HashMap
+    // has a fresh seed; iterating it changes z indices and damages still captions.
+    let caption_ids = state.windows.ordered_ids().rev().collect::<Vec<_>>();
+    for id in caption_ids {
+        if !state.window_belongs_to_output(id, output) {
             continue;
         }
-        let Some(rect) = frame.windows.get(id).map(|sample| sample.rect) else {
+        let Some(rect) = frame.windows.get(&id).map(|sample| sample.rect) else {
             continue;
         };
-        let Some((buffer, size)) = state.overview_window_label(*id, scale, rect.width) else {
+        let Some((buffer, size)) = state.overview_window_label(id, scale, rect.width) else {
             continue;
         };
         let width = (f64::from(size.w) / scale + 16.0).min(rect.width);
@@ -227,7 +230,10 @@ pub(super) fn overview_strip_elements(
                         RoundedRect::new(*rect, output_geometry.loc, scale, 4.0),
                         scale,
                         alpha,
-                        true,
+                        // The damage tracker tracks each miniature's crop,
+                        // scale, alpha and geometry. Its corner radius is fixed,
+                        // so an unchanged clip needs no extra full damage.
+                        false,
                         output,
                         programs.clone(),
                         ConstrainScaleBehavior::Stretch,
