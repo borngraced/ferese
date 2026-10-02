@@ -440,7 +440,7 @@ impl Ferese {
                 pointer.frame(self);
                 self.focus_window_under_pointer(&pointer, position);
                 self.activate_focused_pointer_constraint(&pointer);
-                crate::backends::direct::render_all(self);
+                crate::backends::direct::render_cursor(self);
             }
             InputEvent::PointerMotion { event, .. } => {
                 self.last_pointer_time = event.time_msec();
@@ -484,7 +484,7 @@ impl Ferese {
                 pointer.frame(self);
                 self.focus_window_under_pointer(&pointer, location);
                 self.activate_focused_pointer_constraint(&pointer);
-                crate::backends::direct::render_all(self);
+                crate::backends::direct::render_cursor(self);
             }
             InputEvent::PointerButton { event, .. } => {
                 self.last_pointer_time = event.time_msec();
@@ -511,11 +511,14 @@ impl Ferese {
                     && crate::effects::begin_surface_dismiss(&surface)
                 {
                     let opacity = crate::effects::surface_opacity(&surface);
-                    self.dismissing_popups
-                        .push((root, popup, crate::dimming::DimAnimation::new(f64::from(opacity))));
+                    self.dismissing_popups.push((
+                        root.clone(),
+                        popup,
+                        crate::dimming::DimAnimation::new(f64::from(opacity)),
+                    ));
                     pointer.unset_grab(self, serial, event.time_msec());
                     self.focus_window_at(pointer.current_location(), serial, true);
-                    crate::backends::direct::render_all(self);
+                    crate::backends::direct::render_surface(self, &root);
                 }
 
                 if self.overview.is_active() {
@@ -871,11 +874,36 @@ impl Ferese {
         }
 
         if raise {
-            self.relayout();
+            let outputs = self
+                .space
+                .outputs()
+                .filter(|output| {
+                    self.space
+                        .output_geometry(output)
+                        .is_some_and(|bounds| bounds.to_f64().contains(position))
+                        || previous
+                            .into_iter()
+                            .chain(self.focused_window)
+                            .any(|id| self.window_belongs_to_output(id, output))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            self.relayout_on(&outputs);
         } else {
             // Focus, dimming and the bar title update without moving the layout.
             self.send_shell_snapshots();
-            crate::backends::direct::render_all(self);
+            let outputs = self
+                .space
+                .outputs()
+                .filter(|output| {
+                    previous
+                        .into_iter()
+                        .chain(self.focused_window)
+                        .any(|id| self.window_belongs_to_output(id, output))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            crate::backends::direct::render_on(self, &outputs);
         }
     }
 

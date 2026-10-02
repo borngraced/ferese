@@ -32,8 +32,7 @@ impl WlrLayerShellHandler for Ferese {
 
         tracing::debug!(%namespace, output = %output.name(), "mapped layer surface");
         super::set_surface_tree_output(layer.wl_surface(), &output);
-        self.relayout();
-        crate::backends::direct::render_all(self);
+        self.relayout_on(&[output]);
     }
 
     fn new_popup(&mut self, parent: LayerSurface, popup: PopupSurface) {
@@ -59,17 +58,22 @@ impl WlrLayerShellHandler for Ferese {
             return;
         };
         let restore_focus = layer_has_keyboard_focus(self, &layer);
-        let outputs = self.space.outputs().cloned().collect::<Vec<_>>();
+        let outputs = self
+            .space
+            .outputs()
+            .filter(|output| layer_map_for_output(output).layer_geometry(&layer).is_some())
+            .cloned()
+            .collect::<Vec<_>>();
 
-        for output in outputs {
-            layer_map_for_output(&output).unmap_layer(&layer);
+        for output in &outputs {
+            layer_map_for_output(output).unmap_layer(&layer);
         }
 
-        self.relayout();
+        self.relayout_on(&outputs);
         if restore_focus {
             self.restore_keyboard_focus();
         }
-        crate::backends::direct::render_all(self);
+        crate::backends::direct::render_on(self, &outputs);
     }
 }
 
@@ -77,10 +81,15 @@ pub fn handle_commit(state: &mut Ferese, surface: &WlSurface) {
     let Some(layer) = state.space.layer_for_surface(surface, WindowSurfaceType::TOPLEVEL) else {
         return;
     };
-    let outputs = state.space.outputs().cloned().collect::<Vec<_>>();
+    let outputs = state
+        .space
+        .outputs()
+        .filter(|output| layer_map_for_output(output).layer_geometry(&layer).is_some())
+        .cloned()
+        .collect::<Vec<_>>();
 
-    for output in outputs {
-        let mut map = layer_map_for_output(&output);
+    for output in &outputs {
+        let mut map = layer_map_for_output(output);
         if map.layer_geometry(&layer).is_some() {
             map.arrange();
             layer.layer_surface().send_pending_configure();
@@ -103,7 +112,7 @@ pub fn handle_commit(state: &mut Ferese, surface: &WlSurface) {
         state.restore_keyboard_focus();
     }
 
-    state.relayout();
+    state.relayout_on(&outputs);
     if let Err(error) = state.display_handle.flush_clients() {
         tracing::debug!(%error, "failed to flush layer-surface configure");
     }

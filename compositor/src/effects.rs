@@ -145,7 +145,7 @@ impl Dispatch<FereseMaterialManagerV1, ()> for Ferese {
                 let material = data_init.init(id, SurfaceEffectsUserData::new(surface.clone()));
                 set_surface_role(&surface, Some(SemanticRole::Modal));
                 material.ready();
-                crate::backends::direct::render_all(state);
+                crate::backends::direct::render_surface(state, &surface);
             }
             ferese_material_manager_v1::Request::Destroy => {}
             _ => unreachable!(),
@@ -167,7 +167,7 @@ impl Dispatch<FereseSurfaceMaterialV1, SurfaceEffectsUserData> for Ferese {
             && let Some(surface) = data.surface()
             && detach(&surface)
         {
-            crate::backends::direct::render_all(state);
+            crate::backends::direct::render_surface(state, &surface);
         }
     }
 
@@ -321,7 +321,7 @@ impl Dispatch<FereseSurfaceEffectsV1, SurfaceEffectsUserData> for Ferese {
                     true
                 });
                 if changed {
-                    crate::backends::direct::render_all(state);
+                    crate::backends::direct::render_surface(state, &surface);
                 }
             }
             ferese_surface_effects_v1::Request::SetRole { role } => {
@@ -336,7 +336,7 @@ impl Dispatch<FereseSurfaceEffectsV1, SurfaceEffectsUserData> for Ferese {
                     WEnum::Unknown(_) | WEnum::Value(_) => return,
                 };
                 if set_surface_role(&surface, Some(role)) {
-                    crate::backends::direct::render_all(state);
+                    crate::backends::direct::render_surface(state, &surface);
                 }
             }
             ferese_surface_effects_v1::Request::SetRegions { regions } => {
@@ -356,17 +356,17 @@ impl Dispatch<FereseSurfaceEffectsV1, SurfaceEffectsUserData> for Ferese {
                     true
                 });
                 if changed {
-                    crate::backends::direct::render_all(state);
+                    crate::backends::direct::render_surface(state, &surface);
                 }
             }
             ferese_surface_effects_v1::Request::ClearRole => {
                 if set_surface_role(&surface, None) {
-                    crate::backends::direct::render_all(state);
+                    crate::backends::direct::render_surface(state, &surface);
                 }
             }
             ferese_surface_effects_v1::Request::Destroy => {
                 if detach(&surface) {
-                    crate::backends::direct::render_all(state);
+                    crate::backends::direct::render_surface(state, &surface);
                 }
             }
             _ => unreachable!(),

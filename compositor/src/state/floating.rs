@@ -45,7 +45,7 @@ impl Ferese {
             return;
         }
 
-        self.relayout();
+        self.relayout_window(window);
     }
 
     pub fn toggle_focused_fullscreen(&mut self) {
@@ -58,7 +58,7 @@ impl Ferese {
             return;
         }
 
-        self.relayout();
+        self.relayout_window(window);
     }
 
     pub fn toggle_focused_maximized(&mut self) {
@@ -106,7 +106,7 @@ impl Ferese {
                 }
             }
         }
-        self.relayout();
+        self.relayout_window(window);
     }
 
     pub(crate) fn output_has_fullscreen(&self, output: &Output) -> bool {
@@ -124,7 +124,7 @@ impl Ferese {
 
     pub fn set_window_fullscreen(&mut self, window: WindowId, enabled: bool) {
         match self.workspaces.set_fullscreen(window, enabled) {
-            Ok(true) => self.relayout(),
+            Ok(true) => self.relayout_window(window),
             Ok(false) => {}
             Err(error) => {
                 tracing::error!(%error, ?window, enabled, "failed to set fullscreen window")
@@ -195,6 +195,16 @@ impl Ferese {
         // Move/resize/cancel callbacks run with Smithay's pointer mutex held.
         // Cursor rendering reads current_location(), which would lock it again.
         // The event-loop epilogue coalesces this redraw after the grab returns.
+        let outputs = self
+            .space
+            .outputs()
+            .filter(|output| self.window_belongs_to_output(id, output))
+            .cloned()
+            .collect::<Vec<_>>();
+        for output in outputs {
+            self.defer_output_redraw(output);
+        }
+
         self.cursor_redraw_pending = true;
     }
 

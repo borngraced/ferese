@@ -99,7 +99,7 @@ impl CompositorHandler for Ferese {
         }
         layer_shell::handle_commit(self, surface);
         xdg_shell::handle_commit(&mut self.popups, &mut self.space, surface);
-        crate::backends::direct::render_all(self);
+        crate::backends::direct::render_surface(self, surface);
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
@@ -110,14 +110,14 @@ impl CompositorHandler for Ferese {
             self.focus_lock_surface();
         }
         self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
-        crate::backends::direct::render_all(self);
+        crate::backends::direct::render_surface(self, surface);
         if self.idle_inhibitors.remove(surface).is_some() {
             self.refresh_idle_inhibition();
         }
         if matches!(&self.cursor_status, smithay::input::pointer::CursorImageStatus::Surface(cursor) if cursor == surface)
         {
             self.cursor_status = smithay::input::pointer::CursorImageStatus::default_named();
-            crate::backends::direct::render_all(self);
+            crate::backends::direct::render_cursor(self);
         }
     }
 }

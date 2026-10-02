@@ -282,12 +282,12 @@ impl Ferese {
                 frame: frame.clone(),
                 buffer,
             },
-            output,
+            output: output.clone(),
             region: data.region,
             overlay_cursor: data.overlay_cursor,
             with_damage,
         });
-        crate::backends::direct::render_all(self);
+        crate::backends::direct::render_on(self, &[output]);
     }
 
     pub(crate) fn process_screencopies<R>(

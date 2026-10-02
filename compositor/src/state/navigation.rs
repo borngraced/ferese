@@ -72,7 +72,15 @@ impl Ferese {
             swipe.progress = progress;
         }
         self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
-        self.cursor_redraw_pending = true;
+        if let Some(output) = self
+            .focus_swipe
+            .as_ref()
+            .and_then(|swipe| self.output_workspaces.output_for_workspace(swipe.workspace))
+            .and_then(|id| self.outputs_by_id.get(&id))
+            .cloned()
+        {
+            self.defer_output_redraw(output);
+        }
     }
 
     pub(crate) fn finish_focus_swipe(&mut self, direction: Option<SwipeDirection>) -> bool {
@@ -433,7 +441,9 @@ impl Ferese {
                 .held_progress = Some(progress);
             self.refresh_workspace_slide_offsets();
             self.backdrop_generation = self.backdrop_generation.wrapping_add(1);
-            self.cursor_redraw_pending = true;
+            if let Some(output) = self.outputs_by_id.get(&output).cloned() {
+                self.defer_output_redraw(output);
+            }
             return;
         }
         if self.swipe.preview_started() {

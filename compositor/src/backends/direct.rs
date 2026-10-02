@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 
 mod capture;
 mod planes;
+mod redraw;
 mod scheduling;
+use redraw::{AnimationFallback, SchedulingMetrics};
 use scheduling::*;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
@@ -54,10 +56,15 @@ pub struct DirectBackendState {
     presentation: HashMap<(DrmNode, crtc::Handle), PresentationClock>,
     pub(crate) connected_outputs: Vec<ConnectedOutputInfo>,
     animation_timer: Option<RegistrationToken>,
-    animation_active: bool,
+    animation_deadline: Option<Instant>,
+    scheduling_metrics: SchedulingMetrics,
 }
 
 impl DirectBackendState {
+    pub(crate) fn dump_scheduling_metrics(&self) {
+        self.scheduling_metrics.dump();
+    }
+
     pub(crate) fn capture_resize_snapshot(
         &mut self,
         window: &smithay::desktop::Window,
@@ -179,6 +186,8 @@ struct DirectOutput {
     capture_texture: Option<GlesTexture>,
     render_metrics: RenderMetrics,
     frame_pending: bool,
+    animation_fallback: AnimationFallback,
+    cursor_visible: bool,
     scheduler: crate::frame_scheduler::FrameScheduler,
     render_timer: Option<RegistrationToken>,
     power_off: bool,
@@ -226,7 +235,8 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         presentation: HashMap::new(),
         connected_outputs: Vec::new(),
         animation_timer: None,
-        animation_active: false,
+        animation_deadline: None,
+        scheduling_metrics: SchedulingMetrics::new(),
     });
 
     open_primary_device(event_loop, state, &primary_path)?;
@@ -600,6 +610,8 @@ fn open_primary_device(
                         } else {
                             arm_frame(state, node, crtc);
                         }
+
+                        arm_animation_timer(state);
                     }
                 }
             }
@@ -673,35 +685,110 @@ pub(crate) fn wake_locked_outputs(state: &mut Ferese) {
     render_all(state);
 }
 
+#[track_caller]
 pub fn render_all(state: &mut Ferese) {
+    redraw(state, None, std::panic::Location::caller());
+}
+
+#[track_caller]
+pub(crate) fn render_on(state: &mut Ferese, outputs: &[Output]) {
+    redraw(state, Some(outputs), std::panic::Location::caller());
+}
+
+#[track_caller]
+pub(crate) fn render_cursor(state: &mut Ferese) {
+    let outputs = cursor_affected_outputs(state);
+    redraw(state, Some(&outputs), std::panic::Location::caller());
+}
+
+fn cursor_affected_outputs(state: &Ferese) -> Vec<Output> {
+    state
+        .direct_backend
+        .as_ref()
+        .into_iter()
+        .flat_map(|backend| backend.devices.values())
+        .flat_map(|device| device.outputs.values())
+        .filter(|output| output.cursor_visible || redraw::cursor_on_output(state, &output.output))
+        .map(|output| output.output.clone())
+        .collect()
+}
+
+#[track_caller]
+pub(crate) fn render_window(state: &mut Ferese, window: ferese_layout::WindowId) {
+    let outputs = state
+        .space
+        .outputs()
+        .filter(|output| state.window_belongs_to_output(window, output))
+        .cloned()
+        .collect::<Vec<_>>();
+    render_on(state, &outputs);
+}
+
+#[track_caller]
+pub(crate) fn render_surface(
+    state: &mut Ferese,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) {
+    use smithay::input::pointer::CursorImageStatus;
+    use smithay::wayland::compositor::get_parent;
+    let mut root = surface.clone();
+    while let Some(parent) = get_parent(&root) {
+        root = parent;
+    }
+
+    if matches!(&state.cursor_status, CursorImageStatus::Surface(cursor) if cursor == &root) {
+        render_cursor(state);
+        return;
+    }
+
+    let outputs = state.surface_outputs(&root);
+    render_on(state, &outputs);
+}
+
+fn redraw(state: &mut Ferese, selected: Option<&[Output]>, source: &'static std::panic::Location<'static>) {
     if state.direct_backend.as_ref().is_none_or(|backend| !backend.active) {
         return;
     }
-    let animating = state.advance_animations(Instant::now());
-    render_outputs(state, animating);
-}
 
-fn render_outputs(state: &mut Ferese, animating: bool) {
-    if let Some(backend) = state.direct_backend.as_mut() {
-        backend.animation_active = animating && !state.session_lock.sleeping;
-    }
-
-    arm_animation_timer(state);
     let outputs = state
         .direct_backend
         .as_ref()
-        .map(|backend| {
-            backend
-                .devices
+        .unwrap()
+        .devices
+        .iter()
+        .flat_map(|(node, device)| {
+            device
+                .outputs
                 .iter()
-                .flat_map(|(node, device)| device.outputs.keys().map(|crtc| (*node, *crtc)))
-                .collect::<Vec<_>>()
+                .map(|(crtc, output)| (*node, *crtc, output.output.clone()))
         })
-        .unwrap_or_default();
-
-    for (node, crtc) in outputs {
-        request_frame(state, node, crtc);
+        .collect::<Vec<_>>();
+    // Include animations before advancing, so their final settled frame is
+    // drawn too. Advancing shared state must not leave another output stale.
+    let affected = outputs
+        .iter()
+        .map(|(_, _, output)| {
+            selected.is_none_or(|selected| selected.contains(output))
+                || state.output_has_animations(output)
+                || state.output_has_pending_visual_changes(output)
+        })
+        .collect::<Vec<_>>();
+    state.advance_animations(Instant::now());
+    let mut requested = 0;
+    for ((node, crtc, output), affected) in outputs.iter().zip(affected) {
+        if affected || state.output_has_animations(output) {
+            request_frame(state, *node, *crtc);
+            requested += 1;
+        }
     }
+
+    state.direct_backend.as_mut().unwrap().scheduling_metrics.redraw(
+        source,
+        selected.is_none(),
+        requested,
+        outputs.len(),
+    );
+    arm_animation_timer(state);
 }
 
 pub fn switch_vt(state: &mut Ferese, vt: i32) {
@@ -907,6 +994,12 @@ fn render_output(
             Ok(true)
         })()
     };
+
+    // Keep the footprint of the last successful scene, including queued
+    // cursor planes. Requests do not read the pointer while a grab holds it.
+    if rendered.is_ok() {
+        output.cursor_visible = redraw::cursor_on_output(state, &output.output);
+    }
 
     let submitted = rendered.as_ref().is_ok_and(|submitted| *submitted);
     record_frame_schedule(&mut output, plan, render_started.elapsed(), submitted);
@@ -1201,6 +1294,7 @@ fn remove_device(state: &mut Ferese, node: DrmNode) {
         backend.connected_outputs.clear();
     }
 
+    arm_animation_timer(state);
     tracing::info!(?node, "removed DRM device");
 }
 
@@ -1220,82 +1314,115 @@ fn refresh_duration_from_mode(mode: DrmMode) -> Duration {
     Duration::from_nanos(1_000_000_000_000 / OutputMode::from(mode).refresh.max(1) as u64)
 }
 
-fn animation_interval(state: &Ferese) -> Duration {
-    state
+fn animation_fallbacks(state: &mut Ferese) -> Vec<(DrmNode, crtc::Handle, Instant)> {
+    let now = Instant::now();
+    let outputs = state
         .direct_backend
         .as_ref()
         .into_iter()
-        .flat_map(|backend| backend.devices.values())
-        .flat_map(|device| device.outputs.values())
-        .filter_map(|output| output.output.current_mode())
-        .filter(|mode| mode.refresh > 0)
-        .map(|mode| Duration::from_nanos(1_000_000_000_000 / mode.refresh as u64))
-        .min()
-        .unwrap_or(Duration::from_millis(16))
+        .flat_map(|backend| backend.devices.iter())
+        .flat_map(|(node, device)| {
+            device
+                .outputs
+                .iter()
+                .map(move |(crtc, output)| (*node, *crtc, output.output.clone(), device.drm.is_active()))
+        })
+        .collect::<Vec<_>>();
+    let mut fallbacks = Vec::new();
+    for (node, crtc, identity, device_active) in outputs {
+        let enabled = device_active
+            && !state.session_lock.sleeping
+            && state.direct_backend.as_ref().is_some_and(|backend| backend.active);
+        let animating = enabled && state.output_has_animations(&identity);
+        let backend = state.direct_backend.as_mut().unwrap();
+        let output = backend.devices.get_mut(&node).unwrap().outputs.get_mut(&crtc).unwrap();
+        // Preserve recovery of a requested final frame if another output
+        // advances this animation to rest before the watchdog is dispatched.
+        let active = enabled
+            && (animating || (output.animation_fallback.waiting_for_frame() && output.scheduler.has_pending_request()));
+        let chained = output.render_timer.is_some() || output.frame_pending;
+        if active && chained {
+            backend.scheduling_metrics.chained_animation_observations += 1;
+        }
+
+        if let Some(deadline) = output.animation_fallback.deadline(
+            now,
+            refresh_duration_from_mode(output.mode),
+            active && !output.power_off,
+            chained,
+        ) {
+            fallbacks.push((node, crtc, deadline));
+        }
+    }
+
+    fallbacks
 }
 
 fn arm_animation_timer(state: &mut Ferese) {
-    let needed = state
-        .direct_backend
-        .as_ref()
-        .is_some_and(|backend| backend.animation_active && backend.animation_timer.is_none());
-    if !needed {
+    let deadline = animation_fallbacks(state)
+        .iter()
+        .map(|(_, _, deadline)| *deadline)
+        .min();
+    let Some(backend) = state.direct_backend.as_mut() else {
+        return;
+    };
+    if backend.animation_deadline == deadline {
         return;
     }
 
-    let deadline = state.animation_fallback_deadline(animation_interval(state));
+    if let Some(token) = backend.animation_timer.take() {
+        state.loop_handle.remove(token);
+        backend.scheduling_metrics.fallback_cancels += 1;
+    }
+
+    backend.animation_deadline = None;
+    let Some(deadline) = deadline else {
+        return;
+    };
     match state
         .loop_handle
         .insert_source(Timer::from_deadline(deadline), |_, _, state| {
-            let active = state
-                .direct_backend
-                .as_ref()
-                .is_some_and(|backend| backend.active && backend.animation_active && !state.session_lock.sleeping);
-            if active {
-                let deadline = state.animation_fallback_deadline(animation_interval(state));
-                if Instant::now() < deadline {
-                    return TimeoutAction::ToInstant(deadline);
-                }
-
-                let animating = state.advance_animations(Instant::now());
-                if let Some(backend) = state.direct_backend.as_mut() {
-                    backend.animation_active = animating;
-                }
-
-                let outputs = state
-                    .direct_backend
-                    .as_ref()
-                    .into_iter()
-                    .flat_map(|backend| backend.devices.iter())
-                    .flat_map(|(node, device)| {
-                        device
-                            .outputs
-                            .iter()
-                            .map(|(crtc, output)| (*node, *crtc, output.output.clone()))
-                    })
-                    .collect::<Vec<_>>();
-                for (node, crtc, output) in outputs {
-                    if state.output_has_animations(&output) {
-                        request_frame(state, node, crtc);
-                    }
-                }
-
-                if state
-                    .direct_backend
-                    .as_ref()
-                    .is_some_and(|backend| backend.animation_active)
-                {
-                    return TimeoutAction::ToInstant(state.animation_fallback_deadline(animation_interval(state)));
-                }
-            }
-
             if let Some(backend) = state.direct_backend.as_mut() {
                 backend.animation_timer = None;
+                backend.animation_deadline = None;
+                backend.scheduling_metrics.fallback_wakes += 1;
             }
 
+            // Revalidate identities, power state, activity and normal frame chains
+            // at dispatch. Disconnected/replaced outputs never get a stale request.
+            for (node, crtc, deadline) in animation_fallbacks(state) {
+                if deadline <= Instant::now() {
+                    state
+                        .direct_backend
+                        .as_mut()
+                        .unwrap()
+                        .scheduling_metrics
+                        .fallback_recoveries += 1;
+                    state
+                        .direct_backend
+                        .as_mut()
+                        .unwrap()
+                        .devices
+                        .get_mut(&node)
+                        .unwrap()
+                        .outputs
+                        .get_mut(&crtc)
+                        .unwrap()
+                        .animation_fallback = AnimationFallback::default();
+                    request_frame(state, node, crtc);
+                }
+            }
+
+            arm_animation_timer(state);
             TimeoutAction::Drop
         }) {
-        Ok(token) => state.direct_backend.as_mut().unwrap().animation_timer = Some(token),
+        Ok(token) => {
+            let backend = state.direct_backend.as_mut().unwrap();
+            backend.animation_timer = Some(token);
+            backend.animation_deadline = Some(deadline);
+            backend.scheduling_metrics.fallback_arms += 1;
+        }
+
         Err(error) => tracing::warn!(%error, "could not schedule DRM animation fallback"),
     }
 }
@@ -1656,6 +1783,8 @@ fn create_direct_output(
         capture_texture: None,
         render_metrics,
         frame_pending: false,
+        animation_fallback: AnimationFallback::default(),
+        cursor_visible: false,
         power_off: false,
         scheduler: crate::frame_scheduler::FrameScheduler::new(refresh_duration_from_mode(mode)),
         render_timer: None,

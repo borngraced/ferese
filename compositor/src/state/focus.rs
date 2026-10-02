@@ -73,8 +73,9 @@ impl Ferese {
             .as_mut()
             .and_then(|cycle| cycle.advance(reverse, &available))
         {
+            let previous = self.overview.selection_state();
             self.overview.select_window(id);
-            crate::backends::direct::render_all(self);
+            self.redraw_overview_selection(previous);
         } else {
             self.cancel_focus_cycle();
         }

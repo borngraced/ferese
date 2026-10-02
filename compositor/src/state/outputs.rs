@@ -1,6 +1,12 @@
 use super::*;
 
 impl Ferese {
+    pub(crate) fn defer_output_redraw(&mut self, output: Output) {
+        if !self.output_redraw_pending.contains(&output) {
+            self.output_redraw_pending.push(output);
+        }
+    }
+
     pub fn register_output(&mut self, output: &Output, identity: String) {
         if self.output_ids.is_empty() {
             self.reset_animation_clock();
@@ -51,6 +57,7 @@ impl Ferese {
             return;
         };
 
+        self.output_redraw_pending.retain(|pending| pending != output);
         self.outputs_by_id.remove(&output_id);
         self.output_names.remove(&output_id);
         self.workspace_slides.remove(&output_id);

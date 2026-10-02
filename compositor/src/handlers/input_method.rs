@@ -10,16 +10,17 @@ impl InputMethodHandler for Ferese {
         if let Err(error) = self.popups.track_popup(PopupKind::InputMethod(surface.clone())) {
             tracing::warn!(?error, "failed to track input method popup");
         }
-        crate::backends::direct::render_all(self);
+        crate::backends::direct::render_surface(self, surface.wl_surface());
     }
 
-    fn dismiss_popup(&mut self, _surface: PopupSurface) {
+    fn dismiss_popup(&mut self, surface: PopupSurface) {
+        let outputs = self.surface_outputs(surface.wl_surface());
         self.popups.cleanup();
-        crate::backends::direct::render_all(self);
+        crate::backends::direct::render_on(self, &outputs);
     }
 
-    fn popup_repositioned(&mut self, _surface: PopupSurface) {
-        crate::backends::direct::render_all(self);
+    fn popup_repositioned(&mut self, surface: PopupSurface) {
+        crate::backends::direct::render_surface(self, surface.wl_surface());
     }
 
     fn parent_geometry(&self, parent: &WlSurface) -> Rectangle<i32, Logical> {

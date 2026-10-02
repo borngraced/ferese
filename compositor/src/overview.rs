@@ -310,6 +310,10 @@ impl OverviewState {
             .or_else(|| windows.iter().copied().filter(visible).min_by_key(|id| id.0));
     }
 
+    pub(crate) fn selection_state(&self) -> (Option<WindowId>, Option<WorkspaceId>) {
+        (self.selected, self.selection_workspace)
+    }
+
     pub(crate) fn selected(&self) -> Option<WindowId> {
         self.selected
     }
@@ -455,10 +459,32 @@ impl Ferese {
             .and_then(|w| self.windows.ids().get(&w).copied());
 
         if selected.is_some() && self.overview.selected != selected {
+            let previous = self.overview.selection_state();
             self.overview.selection_workspace = None;
             self.overview.selected = selected;
-            crate::backends::direct::render_all(self);
+            self.redraw_overview_selection(previous);
         }
+    }
+
+    pub(crate) fn redraw_overview_selection(&mut self, previous: (Option<WindowId>, Option<WorkspaceId>)) {
+        let outputs = self
+            .space
+            .outputs()
+            .filter(|output| {
+                [previous.0, self.overview.selected]
+                    .into_iter()
+                    .flatten()
+                    .any(|id| self.window_belongs_to_output(id, output))
+                    || [previous.1, self.overview.selection_workspace]
+                        .into_iter()
+                        .flatten()
+                        .any(|workspace| {
+                            self.output_workspaces.output_for_workspace(workspace) == self.output_id(output)
+                        })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        crate::backends::direct::render_on(self, &outputs);
     }
 
     pub(crate) fn retain_overview_labels(&mut self) {
@@ -554,8 +580,9 @@ impl Ferese {
             return false;
         }
 
+        let previous = self.overview.selection_state();
         if self.overview.select_direction(direction) {
-            crate::backends::direct::render_all(self);
+            self.redraw_overview_selection(previous);
         }
 
         true
@@ -797,7 +824,7 @@ impl Ferese {
         self.overview
             .strip_offsets
             .insert(output_id, next.min(ordered.len().saturating_sub(capacity)));
-        crate::backends::direct::render_all(self);
+        crate::backends::direct::render_on(self, &[output]);
         true
     }
 

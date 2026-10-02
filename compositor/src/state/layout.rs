@@ -50,6 +50,35 @@ impl Ferese {
     }
 
     pub fn relayout(&mut self) {
+        self.relayout_outputs(None);
+    }
+
+    pub(crate) fn relayout_window(&mut self, id: WindowId) {
+        let outputs = self
+            .space
+            .outputs()
+            .filter(|output| self.window_belongs_to_output(id, output))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.relayout_on(&outputs);
+    }
+
+    pub(crate) fn relayout_on(&mut self, outputs: &[Output]) {
+        self.relayout_outputs(Some(outputs.to_vec()));
+    }
+
+    fn relayout_outputs(&mut self, mut redraw_outputs: Option<Vec<Output>>) {
+        if let Some(outputs) = redraw_outputs.as_mut() {
+            outputs.extend(
+                self.space
+                    .outputs()
+                    .filter(|output| {
+                        self.output_has_animations(output) || self.output_has_pending_visual_changes(output)
+                    })
+                    .cloned(),
+            );
+        }
+
         self.refresh_input_capture_zones();
         let visible_workspaces = self.visible_workspace_ids();
         self.reconcile_workspaces(&visible_workspaces);
@@ -384,7 +413,11 @@ impl Ferese {
         self.retarget_overview();
         self.send_shell_snapshots();
 
-        crate::backends::direct::render_all(self);
+        if let Some(outputs) = redraw_outputs {
+            crate::backends::direct::render_on(self, &outputs);
+        } else {
+            crate::backends::direct::render_all(self);
+        }
     }
 
     pub(crate) fn raise_window(&mut self, window: &Window, activate: bool) {

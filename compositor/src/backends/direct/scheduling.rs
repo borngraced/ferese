@@ -43,6 +43,9 @@ pub(super) fn request_frame(state: &mut Ferese, node: DrmNode, crtc: crtc::Handl
         return;
     }
 
+    output
+        .render_metrics
+        .record_request(output.render_timer.is_some(), output.frame_pending);
     output.scheduler.request(now);
     arm_frame(state, node, crtc);
 }
@@ -115,10 +118,7 @@ fn dispatch_frame(state: &mut Ferese, node: DrmNode, crtc: crtc::Handle, identit
         return;
     };
 
-    let animating = state.advance_animations(Instant::now());
-    if let Some(backend) = state.direct_backend.as_mut() {
-        backend.animation_active = animating;
-    }
+    state.advance_animations(Instant::now());
 
     let output_animating = render_output(state, node, crtc, plan);
 

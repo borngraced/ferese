@@ -128,8 +128,18 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         state.apply_unlocked_pointer_hint();
         let wallpaper_retry = state.wallpaper.take_retry_wakeup();
-        if std::mem::take(&mut state.cursor_redraw_pending) || wallpaper_changed || wallpaper_retry {
+        let cursor_changed = std::mem::take(&mut state.cursor_redraw_pending);
+        let output_redraws = std::mem::take(&mut state.output_redraw_pending);
+        if wallpaper_changed || wallpaper_retry {
             backends::direct::render_all(state);
+        } else {
+            if cursor_changed {
+                backends::direct::render_cursor(state);
+            }
+
+            if !output_redraws.is_empty() {
+                backends::direct::render_on(state, &output_redraws);
+            }
         }
         if let Err(error) = state
             .wallpaper
@@ -144,6 +154,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             tracing::warn!(%error, "failed to flush Wayland clients");
         }
     });
+
+    if let Some(backend) = state.direct_backend.as_ref() {
+        backend.dump_scheduling_metrics();
+    }
 
     #[cfg(feature = "resize-metrics")]
     state.resize_metrics.dump();

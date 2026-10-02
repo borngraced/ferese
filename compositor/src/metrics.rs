@@ -14,6 +14,9 @@ pub(crate) struct RenderMetrics {
     output: String,
     interval_started: Instant,
     rendered_frames: u64,
+    redraw_requests: u64,
+    requests_scheduled: u64,
+    requests_in_flight: u64,
     no_damage_frames: u64,
     no_damage_render_time: Duration,
     damaged_pixels: u64,
@@ -37,6 +40,9 @@ impl RenderMetrics {
             output: output.into(),
             interval_started: now,
             rendered_frames: 0,
+            redraw_requests: 0,
+            requests_scheduled: 0,
+            requests_in_flight: 0,
             no_damage_frames: 0,
             no_damage_render_time: Duration::ZERO,
             damaged_pixels: 0,
@@ -44,6 +50,16 @@ impl RenderMetrics {
             longest_render_time: Duration::ZERO,
             frame_times: VecDeque::new(),
         }
+    }
+
+    pub(crate) fn record_request(&mut self, scheduled: bool, in_flight: bool) {
+        if !self.enabled {
+            return;
+        }
+
+        self.redraw_requests += 1;
+        self.requests_scheduled += u64::from(scheduled);
+        self.requests_in_flight += u64::from(in_flight);
     }
 
     pub(crate) fn record_frame(
@@ -100,6 +116,9 @@ impl RenderMetrics {
             output = %self.output,
             interval_ms = elapsed.as_millis(),
             frames = self.rendered_frames,
+            redraw_requests = self.redraw_requests,
+            requests_scheduled = self.requests_scheduled,
+            requests_in_flight = self.requests_in_flight,
             no_damage_frames = self.no_damage_frames,
             no_damage_render_us = self.no_damage_render_time.as_micros(),
             damaged_pixels = self.damaged_pixels,
@@ -113,6 +132,9 @@ impl RenderMetrics {
 
         self.interval_started = now;
         self.rendered_frames = 0;
+        self.redraw_requests = 0;
+        self.requests_scheduled = 0;
+        self.requests_in_flight = 0;
         self.no_damage_frames = 0;
         self.no_damage_render_time = Duration::ZERO;
         self.damaged_pixels = 0;
@@ -146,6 +168,22 @@ mod tests {
         assert_eq!(metrics.damaged_pixels, 0);
         assert_eq!(metrics.no_damage_frames, 0);
         assert_eq!(metrics.no_damage_render_time, Duration::ZERO);
+    }
+
+    #[test]
+    fn redraw_requests_distinguish_scheduled_and_in_flight_coalescing() {
+        let mut metrics = RenderMetrics::new("test", true, Instant::now());
+        metrics.record_request(false, false);
+        metrics.record_request(true, false);
+        metrics.record_request(false, true);
+        assert_eq!(metrics.redraw_requests, 3);
+        assert_eq!(metrics.requests_scheduled, 1);
+        assert_eq!(metrics.requests_in_flight, 1);
+        assert_eq!(metrics.rendered_frames, 0);
+
+        let mut disabled = RenderMetrics::new("test", false, Instant::now());
+        disabled.record_request(true, true);
+        assert_eq!(disabled.redraw_requests, 0);
     }
 
     #[test]

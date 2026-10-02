@@ -56,6 +56,10 @@ impl FrameScheduler {
         self.requested_at.get_or_insert(now);
     }
 
+    pub fn has_pending_request(&self) -> bool {
+        self.requested_at.is_some() || self.scheduled.is_some()
+    }
+
     fn budget(&self, now: Duration) -> Duration {
         let idle = self
             .last_presented

@@ -72,10 +72,6 @@ impl Ferese {
         }
     }
 
-    pub(crate) fn animation_fallback_deadline(&self, interval: std::time::Duration) -> Instant {
-        self.last_animation_tick + interval.saturating_mul(2)
-    }
-
     pub(crate) fn reset_animation_clock(&mut self) {
         self.last_animation_tick = Instant::now();
         #[cfg(feature = "resize-metrics")]

@@ -36,14 +36,18 @@ impl XdgShellHandler for Ferese {
     fn title_changed(&mut self, surface: ToplevelSurface) {
         if self.windows.refresh_metadata(surface.wl_surface()) {
             self.send_shell_snapshots();
-            self.cursor_redraw_pending = true;
+            for output in self.surface_outputs(surface.wl_surface()) {
+                self.defer_output_redraw(output);
+            }
         }
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
         if self.windows.refresh_metadata(surface.wl_surface()) {
             self.send_shell_snapshots();
-            self.cursor_redraw_pending = true;
+            for output in self.surface_outputs(surface.wl_surface()) {
+                self.defer_output_redraw(output);
+            }
         }
     }
 

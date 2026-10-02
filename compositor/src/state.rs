@@ -375,6 +375,7 @@ pub struct Ferese {
     // Cursor callbacks may run with Smithay's pointer mutex held. Rendering
     // reads the pointer position, so defer it until event dispatch returns.
     pub(crate) cursor_redraw_pending: bool,
+    pub(crate) output_redraw_pending: Vec<Output>,
     pub(crate) locked_pointer_hint: Option<LockedPointerHint>,
     pub(crate) last_pointer_time: u32,
     pub(crate) cursor_theme: xcursor::CursorTheme,
@@ -602,6 +603,7 @@ impl Ferese {
             autostart: config.autostart,
             cursor_status: CursorImageStatus::default_named(),
             cursor_redraw_pending: false,
+            output_redraw_pending: Vec::new(),
             locked_pointer_hint: None,
             last_pointer_time: 0,
             cursor_theme,

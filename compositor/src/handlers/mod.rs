@@ -132,6 +132,38 @@ impl KeyboardShortcutsInhibitHandler for Ferese {
 }
 
 impl Ferese {
+    pub(crate) fn surface_outputs(&self, surface: &WlSurface) -> Vec<smithay::output::Output> {
+        use smithay::desktop::{WindowSurfaceType, find_popup_root_surface};
+        use smithay::wayland::compositor::get_parent;
+        let mut root = surface.clone();
+        while let Some(parent) = get_parent(&root) {
+            root = parent;
+        }
+
+        if let Some(popup) = self.popups.find_popup(&root)
+            && let Ok(parent) = find_popup_root_surface(&popup)
+        {
+            root = parent;
+        }
+
+        let window = self.windows.id_for_surface(&root);
+        self.space
+            .outputs()
+            .filter(|output| {
+                window.is_some_and(|id| self.window_belongs_to_output(id, output))
+                    || layer_map_for_output(output)
+                        .layer_for_surface(&root, WindowSurfaceType::ALL)
+                        .is_some()
+                    || self
+                        .session_lock
+                        .surfaces
+                        .get(output)
+                        .is_some_and(|lock| lock.wl_surface() == &root)
+            })
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn update_surface_preferences(&self, surface: &WlSurface) {
         use smithay::desktop::{WindowSurfaceType, find_popup_root_surface};
         use smithay::wayland::compositor::get_parent;

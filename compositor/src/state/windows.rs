@@ -660,7 +660,7 @@ impl Ferese {
         self.windows.update(focused, |record| {
             record.closing.get_or_insert_default();
         });
-        crate::backends::direct::render_all(self);
+        crate::backends::direct::render_window(self, focused);
     }
 
     pub(crate) fn close_managed_window(&mut self, id: WindowId) -> bool {
@@ -672,7 +672,7 @@ impl Ferese {
             self.windows.update(id, |record| {
                 record.closing.get_or_insert_default();
             });
-            crate::backends::direct::render_all(self);
+            crate::backends::direct::render_window(self, id);
         } else {
             self.send_window_close(id);
         }

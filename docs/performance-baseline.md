@@ -42,6 +42,34 @@ asynchronous GPU work is covered conservatively by feedback-driven margins.
 Check sustained animation, idle wakeup, callback-only clients, and mixed-refresh
 outputs separately. Nested sessions do not exercise the DRM scheduler.
 
+## Redraw and animation fallback counters
+
+With the same environment variables, direct sessions report `redraw requests`
+by source file and line, with call counts, requested outputs and connected outputs.
+`render performance` adds per-output redraw requests and counts requests made
+while a render timer was scheduled or a frame was in flight. Compare these with
+`frames`, `no_damage_frames`, render time and missed deadlines; requests can
+coalesce and are not themselves rendered frames.
+
+`animation fallback scheduling` reports watchdog arms, cancellations, wakeups,
+recovery requests and observations of animations with an intact normal frame
+chain. Summaries are emitted during redraw activity every five seconds and on
+normal exit. The fallback counters reset with each summary. An orphaned animation
+gets a watchdog deadline two refresh intervals after its own output loses its
+frame chain. Recovery also retains a requested final frame if another output
+settles that animation while scheduling is unavailable. Idle, powered-off and
+disconnected outputs do not set that deadline.
+An already scheduled render or pending page flip suppresses the watchdog; this
+policy does not replace DRM error recovery or diagnose a permanently lost flip.
+
+The regression replays use a 60 Hz animation beside an idle 240 Hz output.
+The old fallback rule produces 60 unnecessary wakes in one simulated second;
+the new rule produces zero while the normal chain remains intact. Three cursor
+moves within one output require three output requests rather than the old six.
+These are deterministic scheduling counts, not live DRM CPU, latency or battery
+measurements. Verify those separately with the same hardware workload before
+making claims about power savings.
+
 ## Historical results
 
 On 2026-09-27 at `08a5866`, two nested runs used a 1422 × 1696 output at 2× scale,

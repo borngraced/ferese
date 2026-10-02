@@ -14,6 +14,7 @@ const DEFAULT_CURSOR_SIZE: u32 = 24;
 pub(crate) struct NamedCursor {
     pub buffer: MemoryRenderBuffer,
     pub hotspot: Point<i32, Buffer>,
+    pub size: Size<i32, Buffer>,
 }
 
 pub(crate) fn cursor_theme() -> CursorTheme {
@@ -74,6 +75,7 @@ fn cursor_from_image(image: Image) -> NamedCursor {
     NamedCursor {
         buffer,
         hotspot: Point::from((image.xhot as i32, image.yhot as i32)),
+        size,
     }
 }
 
@@ -103,6 +105,7 @@ fn fallback_cursor() -> NamedCursor {
             None,
         ),
         hotspot: Point::default(),
+        size: (WIDTH as i32, HEIGHT as i32).into(),
     }
 }
 

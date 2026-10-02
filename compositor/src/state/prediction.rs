@@ -44,8 +44,36 @@ impl Ferese {
             })
     }
 
+    pub(crate) fn output_has_pending_visual_changes(&self, output: &Output) -> bool {
+        let selected = if self.overview.is_active() {
+            self.overview.selected()
+        } else {
+            self.focused_window
+        };
+        self.output_window_records(output, false).any(|(id, record, _)| {
+            self.window_belongs_to_output(id, output)
+                && (record
+                    .focus
+                    .as_ref()
+                    .is_some_and(|focus| focus.needs_update(if selected == Some(id) { 1.0 } else { 0.0 }))
+                    || record.dimming.as_ref().is_some_and(|dim| {
+                        dim.needs_update(crate::dimming::target(
+                            self.inactive_dim,
+                            self.focused_window,
+                            id,
+                            self.overview.is_presenting(),
+                        ))
+                    }))
+        })
+    }
+
     pub(crate) fn output_has_animations(&self, output: &Output) -> bool {
-        if self.overview.is_animating(self.spring_config) || !self.dismissing_popups.is_empty() {
+        if self.overview.is_animating(self.spring_config)
+            || self
+                .dismissing_popups
+                .iter()
+                .any(|(root, _, _)| self.surface_outputs(root).contains(output))
+        {
             return true;
         }
 
@@ -421,6 +449,26 @@ mod tests {
         state.animations_enabled = true;
         assert!(!state.sample_frame(&output, Duration::ZERO).animating);
         assert!(state.sample_frame(&other, Duration::ZERO).animating);
+        // Target changes with animations disabled still need their final frame
+        // on both displays, even though no spring/fade remains active afterward.
+        state.focused_window = Some(id);
+        state
+            .windows
+            .update(id, |record| record.focus = Some(crate::dimming::DimAnimation::new(1.0)));
+        state.focused_window = Some(other_id);
+        assert!(state.output_has_pending_visual_changes(&output));
+        state.animations_enabled = false;
+        state.advance_animations(Instant::now());
+        assert!(!state.output_has_pending_visual_changes(&output));
+        state.animations_enabled = true;
+        state.windows.set_geometry(id, geometry);
+        assert!(state.output_has_animations(&output));
+        state.unregister_output(&other);
+        assert!(!state.output_has_animations(&other));
+        assert!(
+            state.output_has_animations(&output),
+            "remaining output keeps its active animation"
+        );
     }
 
     #[test]
