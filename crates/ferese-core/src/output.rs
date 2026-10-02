@@ -32,6 +32,7 @@ impl OutputGeometry {
 pub enum OutputError {
     AlreadyConnected(OutputId),
     UnknownOutput(OutputId),
+    InvalidGeometry(OutputId),
     WorkspaceAlreadyAssigned { workspace: WorkspaceId, output: OutputId },
 }
 
@@ -40,6 +41,7 @@ impl fmt::Display for OutputError {
         match self {
             Self::AlreadyConnected(output) => write!(formatter, "output {output:?} is connected"),
             Self::UnknownOutput(output) => write!(formatter, "unknown output {output:?}"),
+            Self::InvalidGeometry(output) => write!(formatter, "invalid geometry for output {output:?}"),
             Self::WorkspaceAlreadyAssigned { workspace, output } => {
                 write!(formatter, "workspace {workspace:?} is assigned to {output:?}")
             }
@@ -55,7 +57,7 @@ pub enum WorkspaceSwitch {
     FocusedExisting(OutputId),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct OutputState {
     geometry: OutputGeometry,
     active: WorkspaceId,
@@ -72,20 +74,20 @@ impl OutputState {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct EvacuatedWorkspace {
     workspace: WorkspaceId,
     target: Option<OutputId>,
     revision: u64,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct EvacuationRecord {
     active: WorkspaceId,
     workspaces: Vec<EvacuatedWorkspace>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OutputWorkspaceMap {
     outputs: BTreeMap<OutputId, OutputState>,
     assignments: HashMap<WorkspaceId, OutputId>,
@@ -96,7 +98,110 @@ pub struct OutputWorkspaceMap {
     orphaned_focus: Option<WorkspaceId>,
 }
 
+/// A staged ownership decision. No windows, renderers or protocol resources are copied.
+#[derive(Debug)]
+pub struct DesktopPlan {
+    pub outputs: OutputWorkspaceMap,
+    pub created_workspaces: Vec<WorkspaceId>,
+    pub affected_outputs: BTreeSet<OutputId>,
+    pub focus_changed: bool,
+}
+
 impl OutputWorkspaceMap {
+    /// Plan against the final usable inventory, never a per-device intermediate.
+    /// An empty inventory is a valid headless desktop after physical loss.
+    pub fn plan_desktop(
+        &self,
+        usable: &[(OutputId, OutputGeometry)],
+        workspaces: &[WorkspaceId],
+        mut next_workspace: WorkspaceId,
+    ) -> Result<DesktopPlan, OutputError> {
+        let mut desired = BTreeMap::new();
+        for &(id, geometry) in usable {
+            if geometry.width <= 0
+                || geometry.height <= 0
+                || geometry.x.checked_add(geometry.width).is_none()
+                || geometry.y.checked_add(geometry.height).is_none()
+            {
+                return Err(OutputError::InvalidGeometry(id));
+            }
+            if desired.insert(id, geometry).is_some() {
+                return Err(OutputError::AlreadyConnected(id));
+            }
+        }
+        let returning = desired
+            .keys()
+            .filter(|id| !self.outputs.contains_key(id))
+            .filter_map(|id| self.evacuations.get(id).map(|record| (*id, record.clone())))
+            .collect::<Vec<_>>();
+        let mut outputs = self.clone();
+        let mut created_workspaces = Vec::new();
+        // New destinations exist before evacuation. Temporary removals must
+        // never become migration destinations, even when several GPUs disappear.
+        for (&id, &geometry) in &desired {
+            if outputs.outputs.contains_key(&id) {
+                outputs.update_geometry(id, geometry);
+                continue;
+            }
+            let fallback = workspaces
+                .iter()
+                .copied()
+                .filter(|workspace| {
+                    outputs.output_for_workspace(*workspace).is_none()
+                        && outputs.home_output(*workspace).is_none_or(|home| home == id)
+                })
+                .min()
+                .unwrap_or_else(|| {
+                    let workspace = next_workspace;
+                    next_workspace.0 = next_workspace.0.checked_add(1).expect("workspace IDs exhausted");
+                    created_workspaces.push(workspace);
+                    workspace
+                });
+            outputs.connect(id, geometry, fallback)?;
+        }
+        let mut removed = self
+            .connected_outputs()
+            .filter(|id| !desired.contains_key(id))
+            .map(|id| (id, outputs.outputs.remove(&id).unwrap()))
+            .collect::<Vec<_>>();
+        // Preserve the original focused workspace when several outputs vanish.
+        removed.sort_by_key(|(id, _)| (Some(*id) == self.focused, *id));
+        for (id, state) in removed {
+            outputs.evacuate(id, state);
+        }
+        // A returning output may initially be unable to reclaim the only
+        // workspace of a donor that is itself retiring. Retry the same policy
+        // against the final inventory, where that donor no longer needs it.
+        for (id, record) in returning {
+            let reclaimed = outputs.reclaim(id, &record);
+            let state = outputs.outputs.get_mut(&id).unwrap();
+            state.workspaces.extend(reclaimed.iter().copied());
+            if reclaimed.contains(&record.active) {
+                state.activate(record.active);
+            }
+        }
+        debug_assert!(outputs.validate());
+        let mut affected_outputs = BTreeSet::new();
+        for id in self.connected_outputs().chain(outputs.connected_outputs()) {
+            if self.outputs.get(&id) != outputs.outputs.get(&id) {
+                affected_outputs.insert(id);
+            }
+        }
+        let focus_changed = self.focused != outputs.focused
+            || self.focused.and_then(|id| self.active_workspace(id))
+                != outputs.focused.and_then(|id| outputs.active_workspace(id));
+        if focus_changed {
+            affected_outputs.extend(self.focused);
+            affected_outputs.extend(outputs.focused);
+        }
+        Ok(DesktopPlan {
+            outputs,
+            created_workspaces,
+            affected_outputs,
+            focus_changed,
+        })
+    }
+
     pub fn assigned_workspaces(&self, output: OutputId) -> impl DoubleEndedIterator<Item = WorkspaceId> + '_ {
         self.outputs
             .get(&output)
@@ -170,6 +275,56 @@ impl OutputWorkspaceMap {
         }
     }
 
+    fn reclaim(&mut self, output: OutputId, record: &EvacuationRecord) -> Vec<WorkspaceId> {
+        let mut reclaimed = Vec::new();
+        for evacuated in &record.workspaces {
+            let target = self
+                .assignments
+                .get(&evacuated.workspace)
+                .copied()
+                .or_else(|| evacuated.target.filter(|target| self.outputs.contains_key(target)));
+            let assignment_matches = self.homes.get(&evacuated.workspace) == Some(&output);
+            let revision_matches = self.revision(evacuated.workspace) == evacuated.revision;
+
+            if assignment_matches && revision_matches {
+                if target == Some(output) {
+                    reclaimed.push(evacuated.workspace);
+                    continue;
+                }
+                // Cleanup may have removed every other workspace while this
+                // monitor was disconnected. Never strand the donor output;
+                // the reconnecting monitor can use its fresh fallback.
+                if target
+                    .and_then(|target| self.outputs.get(&target))
+                    .is_some_and(|state| state.workspaces.len() == 1 && state.workspaces.contains(&evacuated.workspace))
+                {
+                    continue;
+                }
+
+                if let Some(target) = target
+                    && let Some(target_state) = self.outputs.get_mut(&target)
+                {
+                    target_state.workspaces.remove(&evacuated.workspace);
+                    if target_state.previous == Some(evacuated.workspace) {
+                        target_state.previous = None;
+                    }
+                    if target_state.active == evacuated.workspace
+                        && let Some(active) = target_state
+                            .workspaces
+                            .iter()
+                            .copied()
+                            .min_by_key(|workspace| workspace.0)
+                    {
+                        target_state.activate(active);
+                    }
+                }
+                self.assignments.insert(evacuated.workspace, output);
+                reclaimed.push(evacuated.workspace);
+            }
+        }
+        reclaimed
+    }
+
     pub fn connect(
         &mut self,
         output: OutputId,
@@ -181,52 +336,10 @@ impl OutputWorkspaceMap {
         }
 
         let record = self.evacuations.remove(&output);
-        let mut reclaimed = Vec::new();
-        if let Some(record) = &record {
-            for evacuated in &record.workspaces {
-                let target = self
-                    .assignments
-                    .get(&evacuated.workspace)
-                    .copied()
-                    .or_else(|| evacuated.target.filter(|target| self.outputs.contains_key(target)));
-                let assignment_matches = self.homes.get(&evacuated.workspace) == Some(&output);
-                let revision_matches = self.revision(evacuated.workspace) == evacuated.revision;
-
-                if assignment_matches && revision_matches {
-                    // Cleanup may have removed every other workspace while this
-                    // monitor was disconnected. Never strand the donor output;
-                    // the reconnecting monitor can use its fresh fallback.
-                    if target
-                        .and_then(|target| self.outputs.get(&target))
-                        .is_some_and(|state| {
-                            state.workspaces.len() == 1 && state.workspaces.contains(&evacuated.workspace)
-                        })
-                    {
-                        continue;
-                    }
-
-                    if let Some(target) = target
-                        && let Some(target_state) = self.outputs.get_mut(&target)
-                    {
-                        target_state.workspaces.remove(&evacuated.workspace);
-                        if target_state.previous == Some(evacuated.workspace) {
-                            target_state.previous = None;
-                        }
-                        if target_state.active == evacuated.workspace
-                            && let Some(active) = target_state
-                                .workspaces
-                                .iter()
-                                .copied()
-                                .min_by_key(|workspace| workspace.0)
-                        {
-                            target_state.activate(active);
-                        }
-                    }
-                    self.assignments.insert(evacuated.workspace, output);
-                    reclaimed.push(evacuated.workspace);
-                }
-            }
-        }
+        let mut reclaimed = record
+            .as_ref()
+            .map(|record| self.reclaim(output, record))
+            .unwrap_or_default();
 
         let active = record
             .as_ref()
@@ -286,6 +399,12 @@ impl OutputWorkspaceMap {
 
     pub fn disconnect(&mut self, output: OutputId) -> Result<Option<OutputId>, OutputError> {
         let removed = self.outputs.remove(&output).ok_or(OutputError::UnknownOutput(output))?;
+        let target = self.evacuate(output, removed);
+        debug_assert!(self.validate());
+        Ok(target)
+    }
+
+    fn evacuate(&mut self, output: OutputId, removed: OutputState) -> Option<OutputId> {
         let target = self.migration_target(output, removed.geometry);
         let removed_had_focus = self.focused == Some(output);
         let mut evacuated = removed.workspaces.into_iter().collect::<Vec<_>>();
@@ -332,8 +451,7 @@ impl OutputWorkspaceMap {
             },
         );
 
-        debug_assert!(self.validate());
-        Ok(target)
+        target
     }
 
     pub fn focus_output(&mut self, output: OutputId) -> Result<(), OutputError> {
@@ -445,6 +563,9 @@ impl OutputWorkspaceMap {
             }
             if donor.active == workspace {
                 donor.active = *donor.workspaces.first().expect("donor retains a workspace");
+                if donor.previous == Some(donor.active) {
+                    donor.previous = None;
+                }
             }
         }
         self.assignments.insert(workspace, output);
@@ -516,6 +637,199 @@ impl OutputWorkspaceMap {
 
 #[cfg(test)]
 mod tests {
+    fn plan(map: &OutputWorkspaceMap, ids: &[u64]) -> DesktopPlan {
+        map.plan_desktop(
+            &ids.iter()
+                .map(|id| (OutputId(*id), geometry(*id as i32 * 1920)))
+                .collect::<Vec<_>>(),
+            &(1..=32).map(WorkspaceId).collect::<Vec<_>>(),
+            WorkspaceId(33),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn staged_add_remove_and_noop_leave_the_source_unchanged() {
+        let original = OutputWorkspaceMap::default();
+        let first = plan(&original, &[1]);
+        assert_eq!(original, OutputWorkspaceMap::default());
+        let second = plan(&first.outputs, &[1, 2]);
+        assert_eq!(first.outputs.connected_outputs().count(), 1);
+        assert_eq!(second.outputs.connected_outputs().count(), 2);
+        let unchanged = plan(&second.outputs, &[2, 1]);
+        assert_eq!(unchanged.outputs, second.outputs);
+        assert!(unchanged.affected_outputs.is_empty());
+        assert!(!unchanged.focus_changed);
+        let removed = plan(&second.outputs, &[1]);
+        assert_eq!(removed.outputs.focused_output(), Some(OutputId(1)));
+        assert_eq!(removed.outputs.active_workspace(OutputId(1)), Some(WorkspaceId(1)));
+        assert_eq!(removed.outputs.output_for_workspace(WorkspaceId(2)), Some(OutputId(1)));
+    }
+
+    #[test]
+    fn simultaneous_removals_migrate_directly_to_final_outputs_and_preserve_focus() {
+        let mut before = plan(&OutputWorkspaceMap::default(), &[1, 2, 3]).outputs;
+        before.focus_output(OutputId(2)).unwrap();
+        let after = plan(&before, &[4]);
+        assert_eq!(after.outputs.focused_output(), Some(OutputId(4)));
+        assert_eq!(after.outputs.active_workspace(OutputId(4)), Some(WorkspaceId(2)));
+        for workspace in 1..=3 {
+            assert_eq!(
+                after.outputs.output_for_workspace(WorkspaceId(workspace)),
+                Some(OutputId(4))
+            );
+        }
+        for evacuation in after.outputs.evacuations.values() {
+            assert!(
+                evacuation
+                    .workspaces
+                    .iter()
+                    .all(|workspace| workspace.target == Some(OutputId(4)))
+            );
+        }
+        assert_eq!(before.connected_outputs().count(), 3);
+    }
+
+    #[test]
+    fn staged_reconnect_respects_explicit_reassignment() {
+        let before = plan(&OutputWorkspaceMap::default(), &[1, 2]).outputs;
+        let mut evacuated = plan(&before, &[1]).outputs;
+        let restored = plan(&evacuated, &[1, 2]);
+        assert_eq!(restored.outputs.output_for_workspace(WorkspaceId(2)), Some(OutputId(2)));
+        evacuated
+            .reassign_workspace(OutputId(1), WorkspaceId(2), WorkspaceId(9))
+            .unwrap();
+        let reassigned = plan(&evacuated, &[1, 2]);
+        assert_eq!(
+            reassigned.outputs.output_for_workspace(WorkspaceId(2)),
+            Some(OutputId(1))
+        );
+    }
+
+    #[test]
+    fn returning_home_reclaims_from_a_donor_retired_in_the_same_plan() {
+        let mut before = plan(&OutputWorkspaceMap::default(), &[1, 2, 3]).outputs;
+        before.focus_output(OutputId(2)).unwrap();
+        before.disconnect(OutputId(1)).unwrap();
+        before.switch_workspace(OutputId(2), WorkspaceId(1)).unwrap();
+        assert!(before.forget_workspace(WorkspaceId(2)));
+        before.focus_output(OutputId(3)).unwrap();
+        let after = plan(&before, &[1, 3]).outputs;
+        assert_eq!(after.output_for_workspace(WorkspaceId(1)), Some(OutputId(1)));
+        assert_eq!(after.active_workspace(OutputId(1)), Some(WorkspaceId(1)));
+        assert_eq!(after.focused_output(), Some(OutputId(3)));
+    }
+
+    #[test]
+    fn invalid_inventory_cannot_mutate_the_published_map() {
+        let before = plan(&OutputWorkspaceMap::default(), &[1, 2]).outputs;
+        let saved = before.clone();
+        assert!(
+            before
+                .plan_desktop(
+                    &[(OutputId(1), geometry(0)), (OutputId(1), geometry(1))],
+                    &[],
+                    WorkspaceId(3)
+                )
+                .is_err()
+        );
+        assert!(
+            before
+                .plan_desktop(&[(OutputId(3), OutputGeometry::new(0, 0, 0, 800))], &[], WorkspaceId(3))
+                .is_err()
+        );
+        assert_eq!(before, saved);
+    }
+
+    #[test]
+    fn physical_loss_can_publish_headless_and_recover_all_workspaces() {
+        let mut before = plan(&OutputWorkspaceMap::default(), &[1, 2]).outputs;
+        before.focus_output(OutputId(2)).unwrap();
+        let headless = plan(&before, &[]).outputs;
+        assert_eq!(headless.focused_output(), None);
+        assert!(headless.assignments.is_empty());
+        let recovered = plan(&headless, &[3]).outputs;
+        assert_eq!(recovered.active_workspace(OutputId(3)), Some(WorkspaceId(2)));
+        for id in [1, 2] {
+            assert_eq!(recovered.output_for_workspace(WorkspaceId(id)), Some(OutputId(3)));
+        }
+    }
+
+    #[test]
+    fn deterministic_topology_sequence_is_coherent_and_idempotent() {
+        let mut map = OutputWorkspaceMap::default();
+        let mut seed = 0x5eed_u64;
+        for step in 0..512 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let ids = (1..=4).filter(|id| seed & (1 << id) != 0).collect::<Vec<_>>();
+            let next = plan(&map, &ids);
+            assert!(next.outputs.validate(), "step {step}");
+            assert_eq!(plan(&next.outputs, &ids).outputs, next.outputs);
+            map = next.outputs;
+            if let Some(&id) = ids.first() {
+                map.focus_output(OutputId(id)).unwrap();
+                let workspace = WorkspaceId(16 + step % 8);
+                map.switch_workspace(OutputId(id), workspace).unwrap();
+                if step % 3 == 0 {
+                    map.reassign_workspace(OutputId(id), workspace, WorkspaceId(31))
+                        .unwrap();
+                }
+            }
+            assert!(map.validate());
+        }
+    }
+
+    #[test]
+    fn deterministic_desktop_sequence_preserves_every_window() {
+        use crate::WorkspaceSet;
+        use ferese_layout::{Axis, WindowId};
+        let mut workspaces = WorkspaceSet::default();
+        let mut outputs = OutputWorkspaceMap::default();
+        let mut seed = 42u64;
+        let mut windows = std::collections::HashSet::new();
+        for step in 1..=256 {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let inventory = (1..=3)
+                .filter(|id| seed & (1 << id) != 0)
+                .map(|id| (OutputId(id), geometry(id as i32 * 800)))
+                .collect::<Vec<_>>();
+            let ids = workspaces.iter().map(|workspace| workspace.id).collect::<Vec<_>>();
+            let plan = outputs
+                .plan_desktop(&inventory, &ids, workspaces.next_workspace_id())
+                .unwrap();
+            for id in plan.created_workspaces {
+                assert_eq!(workspaces.create_workspace(), id);
+            }
+            outputs = plan.outputs;
+            outputs.reconcile_workspaces(&mut workspaces, &Default::default());
+            let window = WindowId(step);
+            workspaces.insert_window(window, Axis::Horizontal, 0.5).unwrap();
+            windows.insert(window);
+            if let Some((output, _)) = inventory.last() {
+                outputs.focus_output(*output).unwrap();
+                let target = outputs.active_workspace(*output).unwrap();
+                workspaces
+                    .move_window_to_workspace(window, target, Axis::Horizontal, 0.5)
+                    .unwrap();
+                workspaces.activate(target).unwrap();
+            }
+            assert!(outputs.validate());
+            workspaces.validate().unwrap();
+            let actual = workspaces
+                .iter()
+                .flat_map(|workspace| workspace.layout.window_ids().chain(workspace.floating.iter().copied()))
+                .collect::<Vec<_>>();
+            assert_eq!(actual.len(), windows.len(), "duplicate or lost window at {step}");
+            assert_eq!(actual.into_iter().collect::<std::collections::HashSet<_>>(), windows);
+            for workspace in workspaces.iter().filter(|workspace| !workspace.is_empty()) {
+                assert_eq!(
+                    outputs.output_for_workspace(workspace.id).is_some(),
+                    !inventory.is_empty()
+                );
+            }
+        }
+    }
+
     #[test]
     fn reconnect_cannot_reclaim_the_donor_monitors_only_workspace() {
         let mut outputs = OutputWorkspaceMap::default();

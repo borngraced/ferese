@@ -14,6 +14,8 @@ Keep another desktop available for direct-session recovery.
 
 ## Test guides
 
+- [Desktop reconciliation](desktop-reconciliation.md): topology publication, hardware failure and presentation ownership.
+
 - [Output management tests](output-management-testing.md): profiles, hotplug, mirroring, lid handling and failed DRM commits.
 - [Nested resize checks](nested-resize-testing.md): wallpaper and bar responsiveness.
 - [Client soak testing](native-soak-testing.md): repeated client lifecycle and resource growth.

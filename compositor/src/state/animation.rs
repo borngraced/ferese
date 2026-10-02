@@ -128,7 +128,7 @@ impl Ferese {
     }
 
     // The production caller supplies monotonic wall time; tests supply a fake clock.
-    fn advance_animations_at(&mut self, delta: Duration, now: Duration) -> bool {
+    pub(super) fn advance_animations_at(&mut self, delta: Duration, now: Duration) -> bool {
         if !self.animations_need_tick() {
             self.sync_window_stacking();
             return false;

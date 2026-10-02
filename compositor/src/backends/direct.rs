@@ -528,11 +528,14 @@ fn update_power_policy(state: &mut Ferese) {
     };
     if let Some(next) = super::power::policy_change(backend.active, backend.low_power, battery) {
         backend.low_power = next;
-        reload_outputs(state);
+        reload_outputs(state, false);
     }
 }
 
-pub(crate) fn reload_outputs(state: &mut Ferese) {
+pub(crate) fn reload_outputs(state: &mut Ferese, layout_dirty: bool) {
+    if let Some(backend) = state.direct_backend.as_mut() {
+        backend.topology.layout_dirty |= layout_dirty;
+    }
     reconcile_outputs(state, false);
 }
 
@@ -1088,6 +1091,14 @@ pub(crate) fn render_surface(
 }
 
 fn redraw(state: &mut Ferese, selected: Option<&[Output]>, source: &'static std::panic::Location<'static>) {
+    if let Some(transition) = state.desktop_transition.as_mut() {
+        transition.redraw.extend(
+            selected
+                .map(|outputs| outputs.to_vec())
+                .unwrap_or_else(|| state.space.outputs().cloned().collect()),
+        );
+        return;
+    }
     if state
         .direct_backend
         .as_ref()
@@ -1448,6 +1459,11 @@ fn refresh_connected_info(state: &mut Ferese) {
 
 fn remember_applied_configuration(state: &mut Ferese) {
     let backend = state.direct_backend.as_mut().unwrap();
+    if backend.topology.reconciling {
+        // Applied positions are read only after the coherent logical publish.
+        backend.topology.remember_applied = true;
+        return;
+    }
     let mut applied = backend.desired_outputs.clone();
     for desired in &mut applied.outputs {
         let monitor = backend.monitors.iter().find(|monitor| monitor.key == desired.key);

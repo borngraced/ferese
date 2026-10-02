@@ -52,7 +52,7 @@ impl Ferese {
     }
 
     pub fn relayout(&mut self) {
-        self.relayout_outputs(None);
+        self.relayout_outputs(None, true);
     }
 
     pub(crate) fn relayout_window(&mut self, id: WindowId) {
@@ -66,10 +66,21 @@ impl Ferese {
     }
 
     pub(crate) fn relayout_on(&mut self, outputs: &[Output]) {
-        self.relayout_outputs(Some(outputs.to_vec()));
+        self.relayout_outputs(Some(outputs.to_vec()), true);
     }
 
-    fn relayout_outputs(&mut self, mut redraw_outputs: Option<Vec<Output>>) {
+    pub(super) fn relayout_desktop(&mut self) {
+        self.relayout_outputs(None, false);
+    }
+
+    fn relayout_outputs(&mut self, mut redraw_outputs: Option<Vec<Output>>, finalize: bool) {
+        if self
+            .desktop_transition
+            .as_ref()
+            .is_some_and(|transition| !transition.publishing)
+        {
+            return;
+        }
         if self
             .direct_backend
             .as_ref()
@@ -416,6 +427,9 @@ impl Ferese {
 
         self.sync_window_stacking();
         self.retarget_overview();
+        if !finalize {
+            return;
+        }
         self.send_shell_snapshots();
 
         if let Some(outputs) = redraw_outputs {

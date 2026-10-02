@@ -77,6 +77,8 @@ pub(super) struct Topology {
     pub invalidated: HashSet<DrmNode>,
     pub reconciling: bool,
     pub dirty: bool,
+    pub layout_dirty: bool,
+    pub remember_applied: bool,
     pub retry_timer: Option<RegistrationToken>,
     pub settle_timer: Option<RegistrationToken>,
     pub coalescer: crate::output_policy::Debouncer,
@@ -165,6 +167,7 @@ pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
     }
     paths.sort();
     let mut ready = Vec::new();
+    state.begin_desktop_transition();
 
     for node in invalidated {
         remove_device(state, node);
@@ -227,7 +230,14 @@ pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
                     output.frame_pending = false;
                     output.lock_frame_pending = false;
                     output.power.suspended();
+                    state.session_lock.output_added(&output.output);
                     state.display_presentation.remove_output(&output.output);
+                    state
+                        .desktop_transition
+                        .as_mut()
+                        .unwrap()
+                        .redraw
+                        .insert(output.output.clone());
 
                     if let Err(error) = output.surface.clear().and_then(|()| output.surface.reset_state()) {
                         tracing::warn!(%error, ?node, ?crtc, "output reset failed; recreating output");
@@ -327,10 +337,19 @@ pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
     }
 
     transaction::recover_last_output(state);
-    refresh_connected_info(state);
+    let mut desktop_changes = publish_runtime_desktop(state);
+    if std::mem::take(&mut state.direct_backend.as_mut().unwrap().topology.layout_dirty) {
+        desktop_changes.layout = true;
+        desktop_changes.shell = true;
+        desktop_changes.outputs.extend(state.space.outputs().cloned());
+    }
     let backend = state.direct_backend.as_mut().unwrap();
     backend.topology.reconciling = false;
     let retry = backend.topology.retry_deadline(backend.active);
+    if std::mem::take(&mut backend.topology.remember_applied) {
+        remember_applied_configuration(state);
+    }
+    refresh_connected_info(state);
     if let Some(deadline) = retry {
         match state
             .loop_handle
@@ -346,14 +365,79 @@ pub(super) fn reconcile_outputs(state: &mut Ferese, reactivate: bool) {
         }
     }
 
-    state.refresh_lock_outputs();
-    state.refresh_idle_inhibition();
     sync_battery_timer(state);
-    state.restore_output_focus();
-    state.relayout();
+    state.finish_desktop_transition(desktop_changes);
     state.notify_monitor_state();
-    render_all(state);
     lid::apply_suspend_policy(state);
+}
+
+/// Publish only hardware present after application, compensation and recovery.
+fn publish_runtime_desktop(state: &mut Ferese) -> crate::state::DesktopChanges {
+    let mut outputs = state
+        .direct_backend
+        .as_ref()
+        .unwrap()
+        .devices
+        .values()
+        .flat_map(|device| device.outputs.values())
+        .filter(|output| output.mirror_source.is_none())
+        .map(|output| {
+            (
+                output.identity.clone(),
+                output.output.clone(),
+                output.mode,
+                output.settings.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    outputs.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut right_edge = 0;
+    let runtime = outputs
+        .into_iter()
+        .map(|(identity, output, mode, settings)| {
+            let position = settings.position.unwrap_or_else(|| {
+                state
+                    .space
+                    .output_geometry(&output)
+                    .map(|geometry| [geometry.loc.x, geometry.loc.y])
+                    .unwrap_or([right_edge, 0])
+            });
+            let mode = OutputMode::from(mode);
+            let transform = output_transform(settings.transform);
+            let width = (transform.transform_size(mode.size).w as f64 / settings.scale).ceil() as i32;
+            right_edge = right_edge.max(position[0].saturating_add(width));
+            crate::state::DesktopOutput {
+                output,
+                identity,
+                mode,
+                transform,
+                scale: Scale::Fractional(settings.scale),
+                position: (position[0], position[1]).into(),
+            }
+        })
+        .collect();
+    let changes = state
+        .publish_desktop(runtime)
+        .expect("validated usable output inventory");
+    for device in state.direct_backend.as_mut().unwrap().devices.values_mut() {
+        for output in device.outputs.values_mut() {
+            if output.mirror_source.is_none() {
+                if output.global.is_none() {
+                    output.global = Some(output.output.create_global::<Ferese>(&state.display_handle));
+                }
+            } else {
+                // Mirrors are physical scanouts, not workspace-owning outputs.
+                output.output.change_current_state(
+                    Some(OutputMode::from(output.mode)),
+                    Some(output_transform(output.settings.transform)),
+                    Some(Scale::Fractional(output.settings.scale)),
+                    None,
+                );
+            }
+            output.surface.set_output_mode_source((&output.output).into());
+        }
+    }
+    changes
 }
 
 const SETTLE: Duration = Duration::from_millis(150);

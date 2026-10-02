@@ -291,6 +291,10 @@ impl Ferese {
     }
 
     pub(crate) fn send_shell_snapshots(&mut self) {
+        if let Some(transition) = self.desktop_transition.as_mut() {
+            transition.shell_pending = true;
+            return;
+        }
         if self
             .direct_backend
             .as_ref()
@@ -390,6 +394,11 @@ impl Ferese {
     }
 
     fn send_shell_snapshot(&mut self, shell: &FereseShellV1) {
+        if let Some(transition) = self.desktop_transition.as_mut() {
+            transition.shell_pending = true;
+            self.last_shell_snapshot = None;
+            return;
+        }
         // New subscribers always receive a complete snapshot. Do not update the
         // broadcast cache here: existing subscribers may still need this state.
         self.shell_snapshot_serial = self.shell_snapshot_serial.wrapping_add(1);

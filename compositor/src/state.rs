@@ -5,6 +5,8 @@ mod hit_testing;
 mod layout;
 mod navigation;
 mod outputs;
+mod reconciliation;
+pub(crate) use reconciliation::{DesktopChanges, DesktopOutput, DesktopTransition};
 mod prediction;
 pub(crate) use prediction::FrameScene;
 mod window_registry;
@@ -330,6 +332,7 @@ pub struct Ferese {
     pub space: Space<Window>,
     pub workspaces: WorkspaceSet,
     pub output_workspaces: OutputWorkspaceMap,
+    pub(crate) desktop_transition: Option<DesktopTransition>,
     pub(crate) output_ids: HashMap<Output, OutputId>,
     outputs_by_id: HashMap<OutputId, Output>,
     pub(crate) output_names: HashMap<OutputId, String>,
@@ -562,6 +565,7 @@ impl Ferese {
                 config.scrolling_focus_strategy,
             ),
             output_workspaces: OutputWorkspaceMap::default(),
+            desktop_transition: None,
             output_ids: HashMap::new(),
             outputs_by_id: HashMap::new(),
             output_names: HashMap::new(),
@@ -688,7 +692,8 @@ impl Ferese {
         let input_changed = changed(&["input"]);
         let daemons_changed = changed(&["autostart"]);
         let lock_changed = changed(&["lock_screen"]);
-        let scene_changed = layout_changed || changed(&["animations", "appearance", "window_rules", "output_profiles"]);
+        let non_output_scene_changed = layout_changed || changed(&["animations", "appearance", "window_rules"]);
+        let scene_changed = non_output_scene_changed || changed(&["output_profiles"]);
 
         if self.output_profiles != config.output_profiles {
             crate::backends::direct::validate_live_outputs(self, &config.output_profiles)?;
@@ -789,10 +794,6 @@ impl Ferese {
             crate::backends::direct::reload_input_devices(self);
         }
 
-        if outputs_changed {
-            crate::backends::direct::reload_outputs(self);
-        }
-
         if old_rules != self.window_rules {
             self.reapply_window_rules(&old_rules);
         }
@@ -802,9 +803,11 @@ impl Ferese {
             self.wallpaper.reload(config.wallpaper);
         }
 
-        if scene_changed {
+        if outputs_changed && self.direct_backend.is_some() {
+            // Output publication also finalizes any accompanying scene changes.
+            crate::backends::direct::reload_outputs(self, non_output_scene_changed);
+        } else if scene_changed {
             self.relayout();
-            crate::backends::direct::render_all(self);
         }
 
         Ok(())

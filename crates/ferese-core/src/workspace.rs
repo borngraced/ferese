@@ -672,6 +672,11 @@ impl WorkspaceSet {
             .ok_or(WorkspaceError::UnknownWorkspace(id))
     }
 
+    /// Reserve workspace identities in a pure topology plan without creating them.
+    pub fn next_workspace_id(&self) -> WorkspaceId {
+        WorkspaceId(self.next_id)
+    }
+
     /// Creates an identity; display positions are assigned by the output owner.
     pub fn create_workspace(&mut self) -> WorkspaceId {
         let id = WorkspaceId(self.next_id);

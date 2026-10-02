@@ -103,14 +103,13 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                         .unwrap_or(60_000) as i32;
                     refresh.set(Duration::from_nanos(1_000_000_000_000 / rate.max(1) as u64));
 
-                    output.change_current_state(
-                        Some(Mode { size, refresh: rate }),
-                        None,
-                        Some(Scale::Fractional(scale)),
-                        None,
-                    );
-
-                    state.relayout();
+                    let mut runtime = state.current_desktop_outputs();
+                    let resized = runtime.iter_mut().find(|entry| entry.output == output).unwrap();
+                    resized.mode = Mode { size, refresh: rate };
+                    resized.scale = Scale::Fractional(scale);
+                    state.begin_desktop_transition();
+                    let changes = state.publish_desktop(runtime).expect("valid nested output geometry");
+                    state.finish_desktop_transition(changes);
                     if let Err(error) = state.display_handle.flush_clients() {
                         tracing::debug!(%error, "failed to flush output-resize configure");
                     }

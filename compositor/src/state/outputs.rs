@@ -26,104 +26,82 @@ impl Ferese {
     }
 
     pub fn register_output(&mut self, output: &Output, identity: String) {
-        if self.output_ids.is_empty() {
-            self.reset_animation_clock();
-        }
-
-        if self.session_lock.active() {
-            self.session_lock.output_added(output);
-            self.lock_input_activity();
-        }
+        assert!(
+            self.desktop_transition.is_none(),
+            "backend must publish its complete inventory"
+        );
         let Some(geometry) = self.space.output_geometry(output) else {
             tracing::error!(output = %output.name(), "cannot register an unmapped output");
             return;
         };
-        let output_id = self.ensure_output_identity(&identity);
-        let fallback_workspace = self
-            .workspaces
+        let mut runtime = self.current_desktop_outputs();
+        runtime.retain(|entry| entry.output != *output);
+        runtime.push(DesktopOutput {
+            output: output.clone(),
+            identity,
+            mode: output.current_mode().expect("mapped output has a mode"),
+            transform: output.current_transform(),
+            scale: output.current_scale(),
+            position: geometry.loc,
+        });
+        self.begin_desktop_transition();
+        let changes = self
+            .publish_desktop(runtime)
+            .expect("valid registered output inventory");
+        self.finish_desktop_transition(changes);
+    }
+
+    pub(crate) fn current_desktop_outputs(&self) -> Vec<DesktopOutput> {
+        self.output_ids
             .iter()
-            .filter(|workspace| {
-                self.output_workspaces.output_for_workspace(workspace.id).is_none()
-                    && self
-                        .output_workspaces
-                        .home_output(workspace.id)
-                        .is_none_or(|home| home == output_id)
+            .filter_map(|(output, id)| {
+                Some(DesktopOutput {
+                    output: output.clone(),
+                    identity: self
+                        .output_identity_ids
+                        .iter()
+                        .find(|(_, candidate)| *candidate == id)?
+                        .0
+                        .clone(),
+                    mode: output.current_mode()?,
+                    transform: output.current_transform(),
+                    scale: output.current_scale(),
+                    position: self.space.output_geometry(output)?.loc,
+                })
             })
-            .map(|workspace| workspace.id)
-            .min_by_key(|id| id.0)
-            .unwrap_or_else(|| self.workspaces.create_workspace());
-        let geometry = OutputGeometry::new(geometry.loc.x, geometry.loc.y, geometry.size.w, geometry.size.h);
+            .collect()
+    }
 
-        let returning_floats = self
-            .windows
-            .ids()
-            .values()
-            .filter_map(|id| {
-                let workspace = self.workspaces.workspace_for_window(*id)?;
-                if self.output_workspaces.home_output(workspace) != Some(output_id) {
-                    return None;
-                }
-                let owner = self.output_workspaces.output_for_workspace(workspace)?;
-                let old = self.output_workspaces.geometry(owner)?;
-                let WindowPlacement::Floating { rect } = self.workspaces.placement(*id)? else {
-                    return None;
-                };
-                Some((*id, workspace, rect, old))
-            })
-            .collect::<Vec<_>>();
-
-        let registration = self.output_workspaces.connect(output_id, geometry, fallback_workspace);
-
-        match registration {
-            Ok(_) => {
-                self.output_ids.insert(output.clone(), output_id);
-                self.outputs_by_id.insert(output_id, output.clone());
-                self.output_names.insert(output_id, output.name());
-                for (id, workspace, rect, old) in returning_floats {
-                    if self.output_workspaces.output_for_workspace(workspace) == Some(output_id) {
-                        let old = Rect::new(old.x as f64, old.y as f64, old.width as f64, old.height as f64);
-                        let new = Rect::new(
-                            geometry.x as f64,
-                            geometry.y as f64,
-                            geometry.width as f64,
-                            geometry.height as f64,
-                        );
-                        let _ = self
-                            .workspaces
-                            .set_floating_rect(id, moved_floating_rect(rect, old, new));
-                    }
-                }
-                if self
-                    .direct_backend
-                    .as_ref()
-                    .is_some_and(|backend| backend.reconciling())
-                {
-                    return;
-                }
-                self.restore_output_focus();
-                let visible = self.visible_workspace_ids();
-                self.reconcile_workspaces(&visible);
-                self.send_shell_snapshots();
-            }
-            Err(error) => {
-                tracing::error!(%error, output = %output.name(), "failed to register output");
-            }
+    /// Resource invalidation is immediate; ownership and focus wait for the
+    /// complete usable inventory, including when the final output disappears.
+    pub fn unregister_output(&mut self, output: &Output) {
+        let standalone = self.desktop_transition.is_none();
+        if standalone {
+            self.begin_desktop_transition();
+        }
+        self.retire_output_resources(output);
+        if standalone {
+            let runtime = self
+                .current_desktop_outputs()
+                .into_iter()
+                .filter(|entry| entry.output != *output)
+                .collect();
+            let changes = self.publish_desktop(runtime).expect("valid surviving output inventory");
+            self.finish_desktop_transition(changes);
         }
     }
 
-    pub fn unregister_output(&mut self, output: &Output) {
-        self.display_presentation.remove_output(output);
-        self.refresh_idle_inhibition();
-
-        let Some(output_id) = self.output_ids.remove(output) else {
+    pub(super) fn retire_output_resources(&mut self, output: &Output) {
+        if let Some(transition) = self.desktop_transition.as_mut()
+            && !transition.retired.insert(output.clone())
+        {
             return;
-        };
-
+        }
+        self.display_presentation.remove_output(output);
         self.output_redraw_pending.retain(|pending| pending != output);
-        self.outputs_by_id.remove(&output_id);
-        self.output_names.remove(&output_id);
-        self.workspace_slides.remove(&output_id);
-        self.render.remove_output(output_id);
+        if let Some(id) = self.output_ids.get(output) {
+            self.render.remove_output(*id);
+        }
         self.pending_screencopies.retain(|capture| {
             if capture.output == *output {
                 capture.fail();
@@ -132,76 +110,9 @@ impl Ferese {
                 true
             }
         });
-        self.space.unmap_output(output);
         self.session_lock.surfaces.remove(output);
         self.session_lock.backgrounds.remove(output);
         self.session_lock.output_removed(output);
-        self.refresh_lock_outputs();
-
-        let old_geometry = self.output_workspaces.geometry(output_id);
-        let evacuated = self
-            .output_workspaces
-            .assigned_workspaces(output_id)
-            .collect::<Vec<_>>();
-        match self.output_workspaces.disconnect(output_id) {
-            Ok(Some(target)) => {
-                if let (Some(old), Some(new)) = (old_geometry, self.output_workspaces.geometry(target)) {
-                    let old = Rect::new(old.x as f64, old.y as f64, old.width as f64, old.height as f64);
-                    let new = Rect::new(new.x as f64, new.y as f64, new.width as f64, new.height as f64);
-                    let floats = self
-                        .windows
-                        .ids()
-                        .values()
-                        .filter_map(|id| {
-                            let workspace = self.workspaces.workspace_for_window(*id)?;
-                            if !evacuated.contains(&workspace) {
-                                return None;
-                            }
-                            match self.workspaces.placement(*id)? {
-                                WindowPlacement::Floating { rect } => Some((*id, moved_floating_rect(rect, old, new))),
-                                _ => None,
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    for (id, rect) in floats {
-                        let _ = self.workspaces.set_floating_rect(id, rect);
-                    }
-                }
-                if let Some(workspace) = self.output_workspaces.active_workspace(target) {
-                    self.activate_output_workspace(target, workspace);
-                }
-            }
-            Ok(None) => {
-                self.focused_window = None;
-                self.restore_keyboard_focus();
-            }
-            Err(error) => {
-                tracing::error!(%error, output = %output.name(), "failed to unregister output")
-            }
-        }
-
-        self.relayout();
-    }
-
-    pub(crate) fn reposition_output_floats(&mut self, output: OutputId, old: Rect, new: Rect) {
-        let floats = self
-            .windows
-            .ids()
-            .values()
-            .filter_map(|id| {
-                let workspace = self.workspaces.workspace_for_window(*id)?;
-                if self.output_workspaces.output_for_workspace(workspace) != Some(output) {
-                    return None;
-                }
-                match self.workspaces.placement(*id)? {
-                    WindowPlacement::Floating { rect } => Some((*id, moved_floating_rect(rect, old, new))),
-                    _ => None,
-                }
-            })
-            .collect::<Vec<_>>();
-        for (id, rect) in floats {
-            let _ = self.workspaces.set_floating_rect(id, rect);
-        }
     }
 
     pub(super) fn activate_output_workspace(&mut self, output: OutputId, workspace: ferese_core::WorkspaceId) {

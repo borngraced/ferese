@@ -146,4 +146,51 @@ mod tests {
         assert_eq!(failure.unavailable, vec![1]);
         assert!(!fake.active.contains(&1));
     }
+    #[test]
+    fn desktop_publication_uses_survivors_after_apply_and_rollback_failures() {
+        use ferese_core::{OutputGeometry, OutputId, OutputWorkspaceMap, WorkspaceId};
+        let inventory = |active: &BTreeSet<u8>| {
+            active
+                .iter()
+                .map(|id| (OutputId(*id as u64), OutputGeometry::new(*id as i32 * 800, 0, 800, 600)))
+                .collect::<Vec<_>>()
+        };
+        for rollback_fails in [false, true] {
+            let mut hardware = Fake::new();
+            hardware.active.insert(2);
+            hardware.previous = hardware.active.clone();
+            let published = OutputWorkspaceMap::default()
+                .plan_desktop(
+                    &inventory(&hardware.active),
+                    &[WorkspaceId(1), WorkspaceId(2)],
+                    WorkspaceId(3),
+                )
+                .unwrap()
+                .outputs;
+            hardware.fail = Some(("commit", 1));
+            hardware.restore_fails = rollback_fails;
+            let result = apply(&mut hardware, &[1, 3], &[]);
+            assert!(result.is_err());
+            // Neither attempted commits nor recovery mutate the published map.
+            assert_eq!(
+                published.connected_outputs().collect::<Vec<_>>(),
+                vec![OutputId(1), OutputId(2)]
+            );
+            let plan = published
+                .plan_desktop(
+                    &inventory(&hardware.active),
+                    &[WorkspaceId(1), WorkspaceId(2)],
+                    WorkspaceId(3),
+                )
+                .unwrap();
+            if rollback_fails {
+                assert_eq!(plan.outputs.connected_outputs().collect::<Vec<_>>(), vec![OutputId(2)]);
+                assert_eq!(plan.outputs.output_for_workspace(WorkspaceId(1)), Some(OutputId(2)));
+            } else {
+                assert_eq!(plan.outputs, published);
+                assert!(plan.affected_outputs.is_empty());
+            }
+            assert_eq!(plan.outputs.output_for_workspace(WorkspaceId(3)), None);
+        }
+    }
 }

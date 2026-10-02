@@ -365,6 +365,13 @@ impl crate::output_transaction::HardwareTransaction for DeviceTransaction<'_> {
             })
             .and_then(|()| output.surface.commit_frame().map_err(|error| error.to_string()));
         self.state.session_lock.output_added(&output.output);
+        self.state.display_presentation.remove_output(&output.output);
+        self.state
+            .desktop_transition
+            .as_mut()
+            .unwrap()
+            .redraw
+            .insert(output.output.clone());
         output.lock_frame_pending = false;
         output.surface.set_output_mode_source((&output.output).into());
         cancel_output_timers(&self.state.loop_handle, output);
@@ -373,8 +380,8 @@ impl crate::output_transaction::HardwareTransaction for DeviceTransaction<'_> {
     }
 }
 
-/// All allocations/tests precede commits. Logical publication follows every
-/// successful commit on this device; other devices are separately rollbackable.
+/// All allocations/tests precede commits. Logical publication waits for the
+/// final usable inventory; devices are independently applied and restored.
 pub(super) fn apply_device(
     state: &mut Ferese,
     node: DrmNode,
@@ -436,8 +443,6 @@ pub(super) fn apply_device(
     for crtc in &changed {
         let selection = &selections[crtc];
         let mut output = staged.remove(crtc).or_else(|| device.outputs.remove(crtc)).unwrap();
-        let old_geometry = state.space.output_geometry(&output.output);
-        let old_id = state.output_id(&output.output);
         if output.connector != selection.connector.handle() || output.identity != selection.identity {
             retire(state, &mut output, node, *crtc);
             let (handle, _) = create_output(
@@ -459,65 +464,18 @@ pub(super) fn apply_device(
         output.settings = selection.settings.clone();
         output.mode = selection.mode;
         output.mirror_source = selection.mirror_source.clone();
-        let position = selection.settings.position.unwrap_or_else(|| {
-            old_geometry
-                .map(|geometry| [geometry.loc.x, geometry.loc.y])
-                .unwrap_or_else(|| {
-                    [
-                        state
-                            .space
-                            .outputs()
-                            .filter_map(|output| state.space.output_geometry(output))
-                            .map(|geometry| geometry.loc.x + geometry.size.w)
-                            .max()
-                            .unwrap_or(0),
-                        0,
-                    ]
-                })
-        });
-        output.output.change_current_state(
-            Some(OutputMode::from(output.mode)),
-            Some(output_transform(output.settings.transform)),
-            Some(Scale::Fractional(output.settings.scale)),
-            Some((position[0], position[1]).into()),
-        );
-        if output.mirror_source.is_none() {
-            if output.global.is_none() {
-                output.global = Some(output.output.create_global::<Ferese>(&state.display_handle));
-            }
-            state.space.map_output(&output.output, (position[0], position[1]));
-            if state.output_id(&output.output).is_none() {
-                state.register_output(&output.output, output.identity.clone());
-            }
-            if let Some(id) = state.output_id(&output.output)
-                && let Some(geometry) = state.space.output_geometry(&output.output)
-            {
-                state.output_workspaces.update_geometry(
-                    id,
-                    ferese_core::OutputGeometry::new(geometry.loc.x, geometry.loc.y, geometry.size.w, geometry.size.h),
-                );
-                if old_id == Some(id)
-                    && let Some(old) = old_geometry
-                {
-                    state.reposition_output_floats(
-                        id,
-                        ferese_layout::Rect::new(
-                            old.loc.x as f64,
-                            old.loc.y as f64,
-                            old.size.w as f64,
-                            old.size.h as f64,
-                        ),
-                        ferese_layout::Rect::new(
-                            geometry.loc.x as f64,
-                            geometry.loc.y as f64,
-                            geometry.size.w as f64,
-                            geometry.size.h as f64,
-                        ),
-                    );
-                }
-            }
-        }
+        // Resource metadata describes applied hardware. Wayland output state,
+        // workspace ownership and floating positions publish once after all GPUs.
+        state
+            .desktop_transition
+            .as_mut()
+            .expect("output reconciliation boundary")
+            .redraw
+            .insert(output.output.clone());
         state.session_lock.output_added(&output.output);
+        if hardware_changes.contains(crtc) {
+            state.display_presentation.remove_output(&output.output);
+        }
         output.lock_frame_pending = false;
         output.surface.set_output_mode_source((&output.output).into());
         cancel_output_timers(&state.loop_handle, &mut output);
@@ -536,7 +494,7 @@ pub(super) fn apply_device(
         clock.reset_timing();
         device.outputs.insert(*crtc, output);
     }
-    // Add/register destinations before removing former owners, reusing evacuation.
+    // Retire resources now; the final inventory determines evacuation once.
     for crtc in removals {
         let mut output = device.outputs.remove(&crtc).unwrap();
         retire(state, &mut output, node, crtc);
@@ -605,7 +563,7 @@ pub(super) fn recover_last_output(state: &mut Ferese) {
         .unwrap()
         .devices
         .values()
-        .any(|device| device.outputs.values().any(|output| output.global.is_some()))
+        .any(|device| device.outputs.values().any(|output| output.mirror_source.is_none()))
     {
         return;
     }
@@ -654,7 +612,7 @@ pub(super) fn recover_last_output(state: &mut Ferese) {
                 .unwrap()
                 .devices
                 .values()
-                .any(|device| device.outputs.values().any(|output| output.global.is_some()))
+                .any(|device| device.outputs.values().any(|output| output.mirror_source.is_none()))
             {
                 remember_applied_configuration(state);
                 state.direct_backend.as_mut().unwrap().output_error = original_error;
