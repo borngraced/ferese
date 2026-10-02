@@ -1701,7 +1701,7 @@ dependencies = [
 name = "ferese-ipc"
 version = "0.1.0"
 dependencies = [
- "ferese-config",
+ "ferese-theme-model",
  "serde",
  "serde_json",
 ]
@@ -1734,6 +1734,7 @@ name = "ferese-polkit-agent"
 version = "0.1.0"
 dependencies = [
  "ferese-config",
+ "ferese-ipc",
  "ferese-theme",
  "glib",
  "libc",
@@ -1823,6 +1824,7 @@ dependencies = [
 name = "feresectl"
 version = "0.1.0"
 dependencies = [
+ "ferese-config",
  "ferese-ipc",
  "libc",
  "serde_json",

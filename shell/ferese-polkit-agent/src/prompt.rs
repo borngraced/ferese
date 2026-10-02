@@ -72,7 +72,7 @@ impl Appearance {
 
 #[derive(Clone)]
 enum Message {
-    ThemeChanged(Box<ferese_config::theme::Snapshot>),
+    ThemeChanged(Box<ferese_ipc::theme::Snapshot>),
     WindowOpened(cosmic::iced::window::Id),
     MaterialAttached(Result<ferese_theme::material::ModalMaterial, String>),
     Tick,

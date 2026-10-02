@@ -52,7 +52,7 @@ pub(crate) struct Selection {
 
 #[derive(Clone, Debug)]
 enum Message {
-    ThemeChanged(Box<ferese_config::theme::Snapshot>),
+    ThemeChanged(Box<ferese_ipc::theme::Snapshot>),
     WindowOpened(cosmic::iced::window::Id),
     Attached(crate::parent::Attachment),
     Select(usize),

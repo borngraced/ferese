@@ -122,7 +122,7 @@ mod tests {
             for high_contrast in [false, true] {
                 let mut resolved = ferese_config::theme::ResolvedTheme {
                     appearance,
-                    ..Default::default()
+                    ..ferese_config::theme::default_theme()
                 };
                 resolved.accessibility.increase_contrast = high_contrast;
                 let palette = Palette::from_resolved(&resolved);
@@ -138,7 +138,7 @@ mod tests {
             let mut resolved = ferese_config::theme::ResolvedTheme {
                 appearance: preset.appearance,
                 tokens: ferese_config::theme::preset(preset.id, preset.appearance).unwrap(),
-                ..Default::default()
+                ..ferese_config::theme::default_theme()
             };
             resolved.tokens.material.style = "translucent".into();
             resolved.tokens.material.opacity = 0.25;

@@ -1,8 +1,27 @@
 use cosmic::iced::futures::SinkExt;
-use ferese_config::theme::Snapshot;
+use ferese_ipc::theme::Snapshot;
 
 pub fn current() -> Snapshot {
-    ferese_ipc::theme::current()
+    ferese_ipc::theme::Connection::connect()
+        .ok()
+        .and_then(|mut connection| connection.get(ferese_config::families::builtins).ok())
+        .unwrap_or_else(fallback)
+}
+
+/// Standalone appearance; it does not represent compositor acceptance.
+pub fn fallback() -> Snapshot {
+    let theme = ferese_config::theme::default_theme();
+    Snapshot {
+        version: ferese_ipc::theme::SCHEMA_VERSION,
+        revision: 0,
+        mode: ferese_config::theme::Mode::Dark,
+        presented: theme.clone(),
+        theme,
+        warnings: Vec::new(),
+        error: None,
+        families: ferese_config::families::builtins(),
+        fallback_note: None,
+    }
 }
 
 pub fn opacity(theme: &ferese_config::theme::ResolvedTheme) -> f32 {
@@ -30,13 +49,15 @@ fn stream() -> impl cosmic::iced::futures::Stream<Item = Snapshot> {
             };
             let (send, mut receive) = tokio::sync::watch::channel(None);
             tokio::task::spawn_blocking(move || {
-                let Ok(mut snapshot) = connection.get() else { return };
+                let Ok(mut snapshot) = connection.get(ferese_config::families::builtins) else {
+                    return;
+                };
                 loop {
                     let revision = snapshot.revision;
                     if send.send(Some(snapshot)).is_err() {
                         return;
                     }
-                    match connection.watch(revision) {
+                    match connection.watch(revision, ferese_config::families::builtins) {
                         Ok(next) => snapshot = next,
                         Err(_) => return,
                     }

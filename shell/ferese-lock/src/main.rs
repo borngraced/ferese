@@ -80,7 +80,7 @@ fn main() -> iced::Result {
 
 #[derive(Clone)]
 enum Message {
-    ThemeChanged(Box<ferese_config::theme::Snapshot>),
+    ThemeChanged(Box<ferese_ipc::theme::Snapshot>),
     WallpaperLoaded(u64, Result<widget::image::Handle, String>),
     Event(Box<Event>),
     Input(Zeroizing<String>),

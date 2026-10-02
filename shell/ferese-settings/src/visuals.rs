@@ -297,7 +297,7 @@ mod tests {
             let theme = ferese_config::theme::ResolvedTheme {
                 appearance: preset.appearance,
                 tokens,
-                ..Default::default()
+                ..ferese_config::theme::default_theme()
             };
             let palette = Palette::from_resolved(&theme);
             for background in [palette.background, palette.sidebar, palette.card] {
@@ -348,7 +348,7 @@ mod tests {
             let resolved = ferese_config::theme::ResolvedTheme {
                 appearance: item.appearance,
                 tokens: ferese_config::theme::preset(item.id, item.appearance).unwrap(),
-                ..Default::default()
+                ..ferese_config::theme::default_theme()
             };
             assert_eq!(
                 Palette::from_resolved(&resolved).native_theme().cosmic().is_dark,

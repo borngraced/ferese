@@ -10,7 +10,6 @@ use serde_json::{Value, json};
 use crate::Document;
 pub use ferese_theme_model::*;
 
-pub const SCHEMA_VERSION: u32 = 2;
 pub const TRANSITION_MS: u64 = 250;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -226,37 +225,6 @@ pub fn default_theme() -> ResolvedTheme {
         tokens: default_tokens(),
         accessibility: Accessibility::default(),
         reduced_motion: false,
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-pub struct Snapshot {
-    pub version: u32,
-    pub revision: u64,
-    pub mode: Mode,
-    pub theme: ResolvedTheme,
-    pub presented: ResolvedTheme,
-    pub warnings: Vec<String>,
-    pub error: Option<String>,
-    #[serde(default = "crate::families::builtins")]
-    pub families: Vec<crate::families::Family>,
-    #[serde(default)]
-    pub fallback_note: Option<String>,
-}
-
-impl Default for Snapshot {
-    fn default() -> Self {
-        Self {
-            version: SCHEMA_VERSION,
-            revision: 0,
-            mode: Mode::Dark,
-            theme: default_theme(),
-            presented: default_theme(),
-            warnings: vec![],
-            error: None,
-            families: crate::families::builtins(),
-            fallback_note: None,
-        }
     }
 }
 

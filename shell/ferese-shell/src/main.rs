@@ -223,7 +223,7 @@ struct OutputSurfaces {
 
 #[derive(Clone, Debug)]
 enum Message {
-    ThemeChanged(Box<ferese_config::theme::Snapshot>),
+    ThemeChanged(Box<ferese_ipc::theme::Snapshot>),
     ThemeMode(ferese_config::theme::Mode),
     ThemeModeSet(Result<(), String>),
     BeginNoteEdit(String),

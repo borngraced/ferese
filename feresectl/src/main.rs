@@ -50,13 +50,16 @@ fn theme_command(args: Vec<String>) -> Result<(), Box<dyn Error>> {
     let mut connection = ferese_ipc::theme::Connection::connect()?;
     match args.as_slice() {
         [command] if command == "get" || command == "status" => {
-            println!("{}", serde_json::to_string_pretty(&connection.get()?)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&connection.get(ferese_config::families::builtins)?)?
+            );
         }
         [command] if command == "subscribe" => {
-            let mut snapshot = connection.get()?;
+            let mut snapshot = connection.get(ferese_config::families::builtins)?;
             loop {
                 println!("{}", serde_json::to_string(&snapshot)?);
-                snapshot = connection.watch(snapshot.revision)?;
+                snapshot = connection.watch(snapshot.revision, ferese_config::families::builtins)?;
             }
         }
         [command, mode] if command == "mode" && matches!(mode.as_str(), "light" | "dark" | "auto") => {

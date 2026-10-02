@@ -391,7 +391,7 @@ mod tests {
             let resolved = ferese_config::theme::ResolvedTheme {
                 appearance: preset.appearance,
                 tokens: ferese_config::theme::preset(preset.id, preset.appearance).unwrap(),
-                ..Default::default()
+                ..ferese_config::theme::default_theme()
             };
             let palette = Palette::from_resolved(&resolved);
             for enabled in [false, true] {

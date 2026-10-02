@@ -29,7 +29,7 @@ pub(crate) struct ShortcutField {
 
 #[derive(Clone, Debug)]
 enum Message {
-    ThemeChanged(Box<ferese_config::theme::Snapshot>),
+    ThemeChanged(Box<ferese_ipc::theme::Snapshot>),
     Opened(cosmic::iced::window::Id),
     Attached(crate::parent::Attachment),
     Accept,

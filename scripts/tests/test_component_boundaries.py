@@ -40,6 +40,9 @@ class ComponentBoundaries(unittest.TestCase):
             "libcosmic", "wayland-client", "tokio", "kdl", "jiff",
         }), dependencies)
 
+    def test_ipc_does_not_depend_on_configuration(self):
+        self.assertNotIn("ferese-config", reachable(dependency_graph(), "ferese-ipc"))
+
     def test_transitive_dependencies_are_checked(self):
         self.assertIn("core", reachable({"shell": {"helper"}, "helper": {"core"}}, "shell"))
 

@@ -9,8 +9,11 @@ use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{Interest, Mode as PollMode, PostAction};
 use ferese_config::Document;
-use ferese_config::theme::{Candidate, Mode, Snapshot, TRANSITION_MS, resolve_with_context};
-use ferese_ipc::Response;
+use ferese_config::theme::{Candidate, Mode, TRANSITION_MS, resolve_with_context};
+use ferese_ipc::{
+    Response,
+    theme::{SCHEMA_VERSION, Snapshot},
+};
 use jiff::Timestamp;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::{Value, json};
@@ -120,9 +123,35 @@ struct Transition {
     previous_wallpaper: Option<WallpaperState>,
 }
 
+pub(crate) struct LiveTheme {
+    pub(crate) mode: Mode,
+    pub(crate) theme: ferese_config::theme::ResolvedTheme,
+    pub(crate) presented: ferese_config::theme::ResolvedTheme,
+    pub(crate) warnings: Vec<String>,
+    pub(crate) error: Option<String>,
+    pub(crate) families: Vec<ferese_config::families::Family>,
+    pub(crate) fallback_note: Option<String>,
+}
+
+impl Default for LiveTheme {
+    fn default() -> Self {
+        let theme = ferese_config::theme::default_theme();
+        Self {
+            mode: Mode::Dark,
+            presented: theme.clone(),
+            theme,
+            warnings: Vec::new(),
+            error: None,
+            families: ferese_config::families::builtins(),
+            fallback_note: None,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct Engine {
-    pub(crate) snapshot: Snapshot,
+    pub(crate) live: LiveTheme,
+    pub(crate) revision: u64,
     waiters: HashMap<u64, (u64, mpsc::SyncSender<Response>)>,
     watcher: Option<RecommendedWatcher>,
     watched_directories: HashSet<PathBuf>,
@@ -143,7 +172,7 @@ impl Engine {
     }
 
     pub(crate) fn watch(&mut self, owner: u64, id: u64, since: u64, response: mpsc::SyncSender<Response>) {
-        if since != self.snapshot.revision {
+        if since != self.revision {
             let _ = response.try_send(Response::success(id, self.value()));
         } else {
             self.waiters.insert(owner, (id, response));
@@ -155,11 +184,22 @@ impl Engine {
     }
 
     pub(crate) fn value(&self) -> Value {
-        serde_json::to_value(&self.snapshot).expect("serializable theme snapshot")
+        let snapshot = Snapshot {
+            version: SCHEMA_VERSION,
+            revision: self.revision,
+            mode: self.live.mode,
+            theme: self.live.theme.clone(),
+            presented: self.live.presented.clone(),
+            warnings: self.live.warnings.clone(),
+            error: self.live.error.clone(),
+            families: self.live.families.clone(),
+            fallback_note: self.live.fallback_note.clone(),
+        };
+        serde_json::to_value(snapshot).expect("serializable theme snapshot")
     }
 
     fn publish(&mut self) {
-        self.snapshot.revision = self.snapshot.revision.wrapping_add(1);
+        self.revision = self.revision.wrapping_add(1);
         let value = self.value();
         for (_, (id, response)) in self.waiters.drain() {
             let _ = response.try_send(Response::success(id, value.clone()));
@@ -167,9 +207,9 @@ impl Engine {
     }
 
     pub(crate) fn reject(&mut self, error: String) {
-        if self.snapshot.error.as_ref() != Some(&error) {
+        if self.live.error.as_ref() != Some(&error) {
             tracing::warn!(%error, "theme reload rejected; retaining active theme");
-            self.snapshot.error = Some(error);
+            self.live.error = Some(error);
             self.publish();
         }
     }
@@ -341,12 +381,12 @@ pub(crate) fn init(
     state.theme_engine.active_files = candidate.files.clone();
     state.theme_engine.watch_files(&candidate.files);
     state.theme_engine.arm_clock(candidate.next_transition)?;
-    state.theme_engine.snapshot.families = candidate.families;
-    state.theme_engine.snapshot.fallback_note = candidate.fallback_note;
-    state.theme_engine.snapshot.mode = candidate.policy.mode;
-    state.theme_engine.snapshot.theme = candidate.theme.clone();
-    state.theme_engine.snapshot.presented = candidate.theme;
-    state.theme_engine.snapshot.warnings = candidate.warnings;
+    state.theme_engine.live.families = candidate.families;
+    state.theme_engine.live.fallback_note = candidate.fallback_note;
+    state.theme_engine.live.mode = candidate.policy.mode;
+    state.theme_engine.live.theme = candidate.theme.clone();
+    state.theme_engine.live.presented = candidate.theme;
+    state.theme_engine.live.warnings = candidate.warnings;
     state.theme_engine.publish();
     Ok(())
 }
@@ -364,17 +404,17 @@ impl Ferese {
         if let Err(error) = self.theme_engine.arm_clock(candidate.next_transition) {
             tracing::warn!(%error, "cannot arm appearance schedule");
         }
-        if candidate.theme == self.theme_engine.snapshot.theme && self.theme_engine.pending.is_none() {
-            let changed = self.theme_engine.snapshot.mode != candidate.policy.mode
-                || self.theme_engine.snapshot.warnings != candidate.warnings
-                || self.theme_engine.snapshot.error.is_some()
-                || self.theme_engine.snapshot.families != candidate.families
-                || self.theme_engine.snapshot.fallback_note != candidate.fallback_note;
-            self.theme_engine.snapshot.families = candidate.families;
-            self.theme_engine.snapshot.fallback_note = candidate.fallback_note;
-            self.theme_engine.snapshot.mode = candidate.policy.mode;
-            self.theme_engine.snapshot.warnings = candidate.warnings;
-            self.theme_engine.snapshot.error = None;
+        if candidate.theme == self.theme_engine.live.theme && self.theme_engine.pending.is_none() {
+            let changed = self.theme_engine.live.mode != candidate.policy.mode
+                || self.theme_engine.live.warnings != candidate.warnings
+                || self.theme_engine.live.error.is_some()
+                || self.theme_engine.live.families != candidate.families
+                || self.theme_engine.live.fallback_note != candidate.fallback_note;
+            self.theme_engine.live.families = candidate.families;
+            self.theme_engine.live.fallback_note = candidate.fallback_note;
+            self.theme_engine.live.mode = candidate.policy.mode;
+            self.theme_engine.live.warnings = candidate.warnings;
+            self.theme_engine.live.error = None;
             if changed {
                 self.theme_engine.publish();
             }
@@ -432,7 +472,7 @@ impl Ferese {
     }
 
     fn theme_transition_duration(&self) -> Duration {
-        if self.theme_engine.snapshot.theme.reduced_motion {
+        if self.theme_engine.live.theme.reduced_motion {
             Duration::ZERO
         } else {
             self.animation_duration(Duration::from_millis(TRANSITION_MS))
@@ -473,16 +513,16 @@ impl Ferese {
         }
         if start {
             let pending = self.theme_engine.pending.take().unwrap();
-            let from = self.theme_engine.snapshot.presented.clone();
+            let from = self.theme_engine.live.presented.clone();
             let previous_wallpaper = pending
                 .wallpaper
                 .map(|next| std::mem::replace(&mut self.wallpaper, next));
-            self.theme_engine.snapshot.families = pending.candidate.families;
-            self.theme_engine.snapshot.fallback_note = pending.candidate.fallback_note;
-            self.theme_engine.snapshot.mode = pending.candidate.policy.mode;
-            self.theme_engine.snapshot.theme = pending.candidate.theme;
-            self.theme_engine.snapshot.warnings = pending.candidate.warnings;
-            self.theme_engine.snapshot.error = None;
+            self.theme_engine.live.families = pending.candidate.families;
+            self.theme_engine.live.fallback_note = pending.candidate.fallback_note;
+            self.theme_engine.live.mode = pending.candidate.policy.mode;
+            self.theme_engine.live.theme = pending.candidate.theme;
+            self.theme_engine.live.warnings = pending.candidate.warnings;
+            self.theme_engine.live.error = None;
             self.theme_engine.transition = Some(Transition {
                 from,
                 started: now,
@@ -500,7 +540,7 @@ impl Ferese {
         if frame_due && let Some(transition) = &self.theme_engine.transition {
             self.theme_engine.last_frame = Some(now);
             let progress = transition_progress(now.saturating_duration_since(transition.started), duration);
-            let target = &self.theme_engine.snapshot.theme;
+            let target = &self.theme_engine.live.theme;
             let complete = progress >= 1.;
             let presented = if complete {
                 target.clone()
@@ -508,7 +548,7 @@ impl Ferese {
                 transition.from.transition(target, progress)
             };
             self.theme_settings = Config::resolved_theme_settings(&presented).expect("validated resolved theme");
-            self.theme_engine.snapshot.presented = presented;
+            self.theme_engine.live.presented = presented;
             self.theme_engine.publish();
 
             if complete {
@@ -581,6 +621,39 @@ impl Ferese {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publication_projects_live_values_and_preserves_revision_semantics() {
+        let mut engine = Engine::default();
+        let original = engine.value();
+        engine.live.mode = Mode::Light;
+        engine.live.theme = ferese_config::theme::resolve(
+            &Document::parse("theme { mode \"light\"; }\n").unwrap(),
+            Path::new("/unused"),
+            "2026-10-02T12:00:00Z".parse().unwrap(),
+            |_| unreachable!(),
+        )
+        .unwrap()
+        .theme;
+        // The target can advance while presented pixels still describe the old theme.
+        let (send, receive) = mpsc::sync_channel(1);
+        engine.watch(1, 42, 0, send);
+        assert!(receive.try_recv().is_err());
+        engine.publish();
+        let response = receive.try_recv().unwrap();
+        assert_eq!(response.id, 42);
+        let value = response.result.unwrap();
+        assert_eq!(value["version"], SCHEMA_VERSION);
+        assert_eq!(value["revision"], 1);
+        assert_eq!(value["mode"], "light");
+        assert_eq!(value["theme"]["appearance"], "light");
+        assert_eq!(value["presented"], original["presented"]);
+        engine.reject("invalid configuration".into());
+        assert_eq!(engine.revision, 2);
+        assert_eq!(engine.value()["theme"], value["theme"]);
+        engine.reject("invalid configuration".into());
+        assert_eq!(engine.revision, 2);
+    }
 
     #[test]
     fn theme_and_wallpaper_share_scaled_progress_and_instant_completion() {

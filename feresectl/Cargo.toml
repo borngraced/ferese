@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ferese-config = { path = "../crates/ferese-config" }
 ferese-ipc = { path = "../crates/ferese-ipc" }
 serde_json.workspace = true
 libc.workspace = true

@@ -55,7 +55,7 @@ impl Settings {
     pub(crate) fn new() -> Self {
         let theme = ferese_ipc::theme::Connection::connect()
             .ok()
-            .and_then(|mut connection| connection.get().ok())
+            .and_then(|mut connection| connection.get(ferese_config::families::builtins).ok())
             .map(|snapshot| snapshot.theme);
         Self(Arc::new(RwLock::new(initial_appearance(theme.as_ref(), load_config))))
     }
@@ -84,13 +84,15 @@ impl Settings {
             {
                 let (send, mut receive) = tokio::sync::mpsc::channel(1);
                 tokio::task::spawn_blocking(move || {
-                    let Ok(mut snapshot) = connection.get() else { return };
+                    let Ok(mut snapshot) = connection.get(ferese_config::families::builtins) else {
+                        return;
+                    };
                     loop {
                         let revision = snapshot.revision;
                         if send.blocking_send(snapshot).is_err() {
                             return;
                         }
-                        match connection.watch(revision) {
+                        match connection.watch(revision, ferese_config::families::builtins) {
                             Ok(next) => snapshot = next,
                             Err(_) => return,
                         }
@@ -236,7 +238,7 @@ mod tests {
     fn ipc_appearance_has_priority_over_disk_fallback() {
         let theme = ResolvedTheme {
             appearance: ThemeAppearance::Light,
-            ..Default::default()
+            ..ferese_config::theme::default_theme()
         };
         assert_eq!(
             initial_appearance(Some(&theme), || panic!("disk fallback read with live IPC")),
@@ -284,7 +286,7 @@ mod tests {
     fn reports_ferese_theme_and_reduced_motion() {
         let mut resolved = ResolvedTheme {
             appearance: ThemeAppearance::Light,
-            ..Default::default()
+            ..ferese_config::theme::default_theme()
         };
         resolved.tokens.colors.accent = "#ff8000".into();
         resolved.reduced_motion = true;
