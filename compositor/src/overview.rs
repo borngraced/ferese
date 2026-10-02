@@ -15,6 +15,8 @@ use crate::Ferese;
 
 const OVERVIEW_MARGIN: f64 = 48.0;
 const OVERVIEW_GAP: f64 = 40.0;
+// Applied after the configured animation speed, in both live and predicted motion.
+const OVERVIEW_MOTION_SPEED: f64 = 0.6;
 const EXIT_DURATION: f64 = 0.18;
 const WORKSPACE_CARD_GAP: f64 = 8.0;
 const MAX_PREVIEW_SCALE: f64 = 0.82;
@@ -1026,6 +1028,8 @@ impl OverviewMotion {
     }
 
     pub(crate) fn advance(&mut self, delta: Duration, spring: SpringConfig, animations_enabled: bool) -> bool {
+        let delta = delta.mul_f64(OVERVIEW_MOTION_SPEED);
+
         if let Some((elapsed, initial_opacity)) = self.exit_transition {
             let elapsed = if animations_enabled {
                 elapsed + delta.as_secs_f64()
@@ -1192,11 +1196,11 @@ mod tests {
         let thumbnail = Rect::new(100., 100., 200., 150.);
         overview.enter(HashMap::from([(id, (normal, thumbnail))]), Some(id), false);
         overview.exit(HashMap::from([(id, normal)]), true);
-        overview.advance(Duration::from_millis(170), SpringConfig::default(), true);
+        overview.advance(Duration::from_millis(280), SpringConfig::default(), true);
         let before = overview.presented_rect(id, normal);
         let opacity = overview.opacity();
 
-        let finished = overview.sample(Duration::from_millis(16), SpringConfig::default());
+        let finished = overview.sample(Duration::from_millis(24), SpringConfig::default());
         let earlier = overview.sample(Duration::from_millis(4), SpringConfig::default());
 
         assert!(!finished.is_presenting());
@@ -1230,12 +1234,43 @@ mod tests {
     }
 
     #[test]
+    fn overview_entry_uses_sixty_percent_speed_for_live_and_predicted_geometry() {
+        let id = WindowId(1);
+        let normal = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let thumbnail = Rect::new(100.0, 100.0, 200.0, 150.0);
+        let spring = SpringConfig::default();
+        let mut overview = OverviewState::default();
+        overview.enter(HashMap::from([(id, (normal, thumbnail))]), Some(id), true);
+
+        let predicted = overview.sample(Duration::from_millis(100), spring);
+        assert_eq!(overview.presented_rect(id, normal), normal);
+
+        let mut reference = AnimatedRect::new(normal);
+        reference.set_target(thumbnail);
+        reference.advance_with_policy(Duration::from_millis(60), spring, CrossingPolicy::NoCrossing);
+        assert_eq!(predicted.presented_rect(id, normal), reference.current);
+
+        overview.advance(Duration::from_millis(100), spring, true);
+        assert_eq!(
+            overview.presented_rect(id, normal),
+            predicted.presented_rect(id, normal)
+        );
+        assert_eq!(overview.opacity(), predicted.opacity());
+    }
+
+    #[test]
     fn reduced_motion_snaps_overview_chrome() {
         let mut overview = OverviewState::default();
-        overview.enter(HashMap::new(), None, false);
+        let id = WindowId(1);
+        let normal = Rect::new(0.0, 0.0, 800.0, 600.0);
+        let thumbnail = Rect::new(100.0, 100.0, 200.0, 150.0);
+        overview.enter(HashMap::from([(id, (normal, thumbnail))]), Some(id), false);
         assert_eq!(overview.opacity(), 1.0);
-        overview.exit(HashMap::new(), false);
+        assert_eq!(overview.presented_rect(id, normal), thumbnail);
+
+        overview.exit(HashMap::from([(id, normal)]), false);
         assert_eq!(overview.opacity(), 0.0);
+        assert_eq!(overview.presented_rect(id, normal), normal);
         assert!(!overview.is_presenting());
     }
 
@@ -1319,7 +1354,7 @@ mod tests {
     }
 
     #[test]
-    fn exiting_overview_tracks_a_moving_layout_and_finishes_in_180ms() {
+    fn exiting_overview_tracks_a_moving_layout_and_finishes_in_300ms() {
         let id = WindowId(1);
         let initial = Rect::new(-400.0, 0.0, 800.0, 600.0);
         let preview = Rect::new(100.0, 100.0, 400.0, 300.0);
@@ -1327,10 +1362,10 @@ mod tests {
         let mut overview = OverviewState::default();
         overview.enter(HashMap::from([(id, (initial, preview))]), Some(id), false);
         overview.exit(HashMap::from([(id, initial)]), true);
-        overview.advance(Duration::from_millis(90), SpringConfig::default(), true);
+        overview.advance(Duration::from_millis(150), SpringConfig::default(), true);
         let shown = overview.presented_rect(id, moved);
         assert!((shown.x - 187.5).abs() < 0.001);
-        overview.advance(Duration::from_millis(90), SpringConfig::default(), true);
+        overview.advance(Duration::from_millis(150), SpringConfig::default(), true);
         assert!(!overview.is_presenting());
         assert_eq!(overview.presented_rect(id, moved), moved);
     }
