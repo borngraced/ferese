@@ -289,6 +289,9 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     });
                 }
 
+                state.display_presentation.clear();
+                state.refresh_idle_inhibition();
+
                 libinput_context.suspend();
                 tracing::info!("direct session paused");
             }
@@ -594,6 +597,18 @@ fn open_primary_device(
                         }
                     }
 
+                    if retired {
+                        if let Some(output) = state
+                            .direct_backend
+                            .as_ref()
+                            .and_then(|backend| backend.devices.get(&node))
+                            .and_then(|device| device.outputs.get(&crtc))
+                        {
+                            state.display_presentation.presented(&output.output);
+                        }
+                        state.refresh_idle_inhibition();
+                    }
+
                     state.record_drm_presentation(node, crtc, metadata.time, metadata.sequence);
                     tracing::trace!(?node, ?crtc, sequence = metadata.sequence, "page flip");
                     let active = state.direct_backend.as_ref().is_some_and(|backend| backend.active);
@@ -661,6 +676,7 @@ pub(crate) fn sleep_locked_outputs(state: &mut Ferese) {
                 Ok(()) => {
                     cancel_output_timers(&state.loop_handle, output);
                     output.power_off = true;
+                    state.display_presentation.remove_output(&output.output);
                 }
 
                 Err(error) => {
@@ -669,6 +685,7 @@ pub(crate) fn sleep_locked_outputs(state: &mut Ferese) {
             }
         }
     }
+    state.refresh_idle_inhibition();
 }
 
 pub(crate) fn wake_locked_outputs(state: &mut Ferese) {
@@ -983,8 +1000,10 @@ fn render_output(
                 &result.states,
                 Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
             );
+            let visibility = result.states.clone();
             drop(result);
             output.surface.queue_frame(presentation)?;
+            state.display_presentation.queued(&output.output, &visibility);
             output.primary_commit = primary_commit;
             output
                 .render_metrics

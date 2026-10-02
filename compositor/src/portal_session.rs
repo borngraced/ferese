@@ -235,8 +235,12 @@ impl PortalSession {
 
 impl crate::Ferese {
     pub(crate) fn refresh_idle_inhibition(&mut self) {
-        self.idle_notifier_state
-            .set_is_inhibited(!self.idle_inhibitors.is_empty() || self.portal_session.idle_inhibited());
+        self.idle_notifier_state.set_is_inhibited(
+            self.idle_inhibitors
+                .keys()
+                .any(|surface| self.display_presentation.visible(&surface.into()))
+                || self.portal_session.idle_inhibited(),
+        );
     }
 
     pub(crate) fn end_portal_session(&mut self) {

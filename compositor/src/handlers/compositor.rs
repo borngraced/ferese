@@ -71,12 +71,31 @@ impl CompositorHandler for Ferese {
                 self.record_client_commit(&window);
             }
         }
+        if !is_sync_subsurface(surface) {
+            let mut surfaces = Vec::new();
+            smithay::desktop::utils::with_surfaces_surface_tree(surface, |surface, _| surfaces.push(surface.clone()));
+            for surface in surfaces {
+                let mapped = smithay::backend::renderer::utils::with_renderer_surface_state(&surface, |state| {
+                    state.buffer().is_some()
+                })
+                .unwrap_or(false);
+                if !mapped {
+                    smithay::desktop::utils::with_surfaces_surface_tree(&surface, |child, _| {
+                        self.display_presentation.remove_surface(&child.into());
+                    });
+                }
+            }
+            self.refresh_idle_inhibition();
+        }
+
         layer_shell::handle_commit(self, surface);
         xdg_shell::handle_commit(&mut self.popups, &mut self.space, surface);
         crate::backends::direct::render_surface(self, surface);
     }
 
     fn destroyed(&mut self, surface: &WlSurface) {
+        self.display_presentation.remove_surface(&surface.into());
+
         if self.session_lock.active {
             self.session_lock
                 .surfaces

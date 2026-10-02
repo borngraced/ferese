@@ -5,6 +5,7 @@ mod config;
 mod cursor;
 mod daemon;
 mod dimming;
+mod display_presentation;
 mod effects;
 mod floating;
 mod frame_scheduler;

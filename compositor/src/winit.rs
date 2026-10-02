@@ -183,6 +183,10 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                         state.loop_signal.stop();
                         return;
                     }
+                    state.display_presentation.queued(&output, &rendered_states);
+                    state.display_presentation.presented(&output);
+                    state.refresh_idle_inhibition();
+
                     if state.session_lock.active {
                         state.lock_frame_presented(&output);
                     }

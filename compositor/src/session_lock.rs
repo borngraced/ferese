@@ -236,6 +236,8 @@ impl SessionLockHandler for Ferese {
         }
         self.cancel_logout_confirmation();
         self.session_lock.active = true;
+        self.display_presentation.clear();
+        self.refresh_idle_inhibition();
         self.session_lock.idle_since = Some(Instant::now());
         match self
             .loop_handle
@@ -302,6 +304,8 @@ impl SessionLockHandler for Ferese {
         }
         let sleeping = self.session_lock.sleeping;
         self.session_lock = Lock::default();
+        self.display_presentation.clear();
+        self.refresh_idle_inhibition();
         if sleeping {
             crate::backends::direct::wake_locked_outputs(self);
         }

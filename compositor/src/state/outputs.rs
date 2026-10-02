@@ -53,6 +53,9 @@ impl Ferese {
     }
 
     pub fn unregister_output(&mut self, output: &Output) {
+        self.display_presentation.remove_output(output);
+        self.refresh_idle_inhibition();
+
         let Some(output_id) = self.output_ids.remove(output) else {
             return;
         };

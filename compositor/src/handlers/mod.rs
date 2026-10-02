@@ -96,7 +96,7 @@ impl IdleInhibitHandler for Ferese {
     fn inhibit(&mut self, surface: WlSurface) {
         let count = self.idle_inhibitors.entry(surface).or_default();
         *count = count.saturating_add(1);
-        self.idle_notifier_state.set_is_inhibited(true);
+        self.refresh_idle_inhibition();
     }
 
     fn uninhibit(&mut self, surface: WlSurface) {
