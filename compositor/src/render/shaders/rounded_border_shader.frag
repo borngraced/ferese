@@ -24,10 +24,16 @@ void main() {
     float signed_distance = rounded_rect_distance(gl_FragCoord.xy, clip_rect, radius);
     float outer_coverage = edge_coverage(signed_distance);
 
+#ifdef CONTINUOUS_WINDOW_CORNERS
+    // Inset the outer distance field along its normals, rather than shrinking
+    // the quartic's bounding box/radius and changing border thickness.
+    float inner_coverage = edge_coverage(signed_distance + border_width);
+#else
     vec2 inner_size = max(clip_rect.zw - vec2(2.0 * border_width), vec2(0.0));
     vec4 inner_rect = vec4(clip_rect.xy + (clip_rect.zw - inner_size) * 0.5, inner_size);
     float inner_radius = max(radius - border_width, 0.0);
     float inner_coverage = edge_coverage(rounded_rect_distance(gl_FragCoord.xy, inner_rect, inner_radius));
+#endif
     float coverage = max(outer_coverage - inner_coverage, 0.0);
     float progress = clamp(dot(gl_FragCoord.xy - gradient_line.xy, gradient_line.zw), 0.0, 1.0);
     // Interpolate premultiplied endpoints: a transparent endpoint must not

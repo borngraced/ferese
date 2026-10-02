@@ -1,5 +1,7 @@
 mod backdrop;
 mod capture;
+#[cfg(test)]
+mod corner_tests;
 mod decorations;
 mod materials;
 mod overview;
@@ -51,7 +53,9 @@ use smithay::wayland::shell::wlr_layer::Layer;
 
 use crate::Ferese;
 use crate::metrics::FrameEffectMetrics;
-use crate::presentation::{NativeTextureElement, PhysicalShaderElement, RoundedRect, clamp_radius, physical_rect};
+use crate::presentation::{
+    CornerShape, NativeTextureElement, PhysicalShaderElement, RoundedRect, clamp_radius, corner_extent, physical_rect,
+};
 
 type SurfaceRenderElement =
     CropRenderElement<RelocateRenderElement<RescaleRenderElement<WaylandSurfaceRenderElement<GlesRenderer>>>>;
@@ -112,7 +116,39 @@ const MATERIAL_SHADER: &str = include_str!("shaders/material_shader.frag");
 const BLUR_SHADER: &str = include_str!("shaders/blur_shader.frag");
 
 fn corner_shader(source: &str) -> String {
-    source.replace("//_CORNERS_", include_str!("shaders/corners.glsl"))
+    corner_shader_for(source, CornerShape::Circular)
+}
+
+fn corner_shader_for(source: &str, shape: CornerShape) -> String {
+    match shape {
+        CornerShape::Circular => source.replace("//_CORNERS_", include_str!("shaders/corners.glsl")),
+        CornerShape::Continuous => source
+            .replace(
+                "//_CORNERS_",
+                &format!(
+                    "#define CONTINUOUS_WINDOW_CORNERS\n{}",
+                    include_str!("shaders/window_corners.glsl")
+                ),
+            )
+            .replace("precision mediump float;", "precision highp float;"),
+    }
+}
+
+fn window_corner_shape(window: &smithay::desktop::Window) -> CornerShape {
+    // Semantic shell surfaces keep their client-matching circular outlines.
+    corner_shape_for_role(
+        window
+            .toplevel()
+            .and_then(|toplevel| crate::effects::surface_role(toplevel.wl_surface()).map(|(role, _)| role)),
+    )
+}
+
+fn corner_shape_for_role(role: Option<crate::effects::SemanticRole>) -> CornerShape {
+    if role.is_some() {
+        CornerShape::Circular
+    } else {
+        CornerShape::Continuous
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -287,6 +323,7 @@ impl RenderElement<GlesRenderer> for BlurRenderElement {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RoundedClipPrograms {
+    shape: CornerShape,
     solid: GlesPixelProgram,
     texture: GlesTexProgram,
     border: GlesPixelProgram,
@@ -436,6 +473,18 @@ fn rounded_opaque_regions(
         .collect()
 }
 
+fn clipped_surface_damage(
+    size: Size<i32, Physical>,
+    clip_changed: bool,
+    client_damage: impl FnOnce() -> DamageSet<i32, Physical>,
+) -> DamageSet<i32, Physical> {
+    if clip_changed {
+        DamageSet::from_slice(&[Rectangle::from_size(size)])
+    } else {
+        client_damage()
+    }
+}
+
 impl Element for RoundedSurfaceRenderElement {
     fn id(&self) -> &Id {
         self.inner.id()
@@ -458,10 +507,9 @@ impl Element for RoundedSurfaceRenderElement {
     }
 
     fn damage_since(&self, scale: RenderScale<f64>, commit: Option<CommitCounter>) -> DamageSet<i32, Physical> {
-        if self.clip_changed {
-            return DamageSet::from_slice(&[Rectangle::from_size(self.inner.geometry(scale).size)]);
-        }
-        self.inner.damage_since(scale, commit)
+        clipped_surface_damage(self.inner.geometry(scale).size, self.clip_changed, || {
+            self.inner.damage_since(scale, commit)
+        })
     }
 
     fn opaque_regions(&self, scale: RenderScale<f64>) -> OpaqueRegions<i32, Physical> {
@@ -479,7 +527,7 @@ impl Element for RoundedSurfaceRenderElement {
             &self.inner.opaque_regions(scale),
             self.inner.geometry(scale).loc,
             clip,
-            self.radius,
+            corner_extent(self.radius, clip.size, self.programs.shape),
         )
     }
 
@@ -804,6 +852,7 @@ mod tests {
         id: Id,
         geometry: Rectangle<i32, Logical>,
         commit: CommitCounter,
+        clip_changed: bool,
     }
 
     impl DamageElement {
@@ -812,6 +861,7 @@ mod tests {
                 id: Id::new(),
                 geometry,
                 commit: CommitCounter::default(),
+                clip_changed: false,
             }
         }
     }
@@ -838,14 +888,51 @@ mod tests {
             scale: Scale<f64>,
             commit: Option<CommitCounter>,
         ) -> smithay::backend::renderer::utils::DamageSet<i32, Physical> {
-            if commit == Some(self.current_commit()) {
-                smithay::backend::renderer::utils::DamageSet::default()
-            } else {
-                smithay::backend::renderer::utils::DamageSet::from_slice(&[Rectangle::from_size(
-                    self.geometry(scale).size,
-                )])
-            }
+            super::clipped_surface_damage(self.geometry(scale).size, self.clip_changed, || {
+                if commit == Some(self.current_commit()) {
+                    smithay::backend::renderer::utils::DamageSet::default()
+                } else {
+                    smithay::backend::renderer::utils::DamageSet::from_slice(&[Rectangle::from_size(
+                        self.geometry(scale).size,
+                    )])
+                }
+            })
         }
+    }
+
+    #[test]
+    fn overview_role_changes_damage_unchanged_client_buffers_then_settle() {
+        use ferese_core::OutputId;
+        use ferese_layout::WindowId;
+
+        use super::CornerShape::{Circular, Continuous};
+
+        let mut resources = super::RenderResources::default();
+        let mut element = DamageElement::new(Rectangle::new((100, 100).into(), (200, 160).into()));
+        let client_commit = element.commit;
+        let mut tracker = OutputDamageTracker::new((640, 480), Scale::from(1.0), Transform::Normal);
+        let window = WindowId(1);
+        let output = OutputId(1);
+        tracker.damage_output(0, &[&element]).unwrap();
+
+        for shape in [Continuous, Circular, Continuous] {
+            // The main scene and thumbnail have independent clip histories.
+            resources.prepare_window_corners(window, shape);
+            element.clip_changed = resources.thumbnail_corner_changed(window, output, shape);
+            assert_eq!(element.commit, client_commit);
+            assert!(element.clip_changed);
+            let damage = tracker.damage_output(1, &[&element]).unwrap().0.cloned().unwrap();
+            assert!(damage.iter().any(|rect| rect.contains((100, 100))));
+            assert!(damage.iter().any(|rect| rect.contains((299, 259))));
+            element.clip_changed = resources.thumbnail_corner_changed(window, output, shape);
+            assert!(!element.clip_changed);
+            assert!(tracker.damage_output(1, &[&element]).unwrap().0.is_none());
+        }
+
+        assert!(resources.thumbnail_corner_changed(window, OutputId(2), Continuous));
+        assert!(!resources.thumbnail_corner_changed(window, output, Continuous));
+        resources.remove_output(output);
+        assert!(resources.thumbnail_corner_changed(window, output, Continuous));
     }
 
     #[test]

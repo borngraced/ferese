@@ -4,12 +4,19 @@ pub(super) fn rounded_clip_program(
     resources: &mut RenderResources,
     renderer: &mut GlesRenderer,
 ) -> Option<RoundedClipPrograms> {
+    corner_program(resources, renderer, CornerShape::Circular)
+}
+
+pub(super) fn corner_program(
+    resources: &mut RenderResources,
+    renderer: &mut GlesRenderer,
+    shape: CornerShape,
+) -> Option<RoundedClipPrograms> {
     let context = renderer.context_id().erased();
-    if let Some(program) = resources
-        .contexts
-        .get(&context)
-        .and_then(|programs| programs.rounded.as_ref())
-    {
+    if let Some(program) = resources.contexts.get(&context).and_then(|programs| match shape {
+        CornerShape::Circular => programs.rounded.as_ref(),
+        CornerShape::Continuous => programs.continuous.as_ref(),
+    }) {
         return Some(program.clone());
     }
 
@@ -36,11 +43,13 @@ pub(super) fn rounded_clip_program(
         UniformName::new("opacity", UniformType::_1f),
         UniformName::new("shadow_color", UniformType::_4f),
     ];
-    let texture = renderer.compile_custom_texture_shader(corner_shader(ROUNDED_TEXTURE_SHADER), &texture_uniforms);
-    let border = renderer.compile_custom_pixel_shader(corner_shader(ROUNDED_BORDER_SHADER), &border_uniforms);
-    let shadow = renderer.compile_custom_pixel_shader(corner_shader(WINDOW_SHADOW_SHADER), &shadow_uniforms);
+    let texture =
+        renderer.compile_custom_texture_shader(corner_shader_for(ROUNDED_TEXTURE_SHADER, shape), &texture_uniforms);
+    let border =
+        renderer.compile_custom_pixel_shader(corner_shader_for(ROUNDED_BORDER_SHADER, shape), &border_uniforms);
+    let shadow = renderer.compile_custom_pixel_shader(corner_shader_for(WINDOW_SHADOW_SHADER, shape), &shadow_uniforms);
     let solid = renderer.compile_custom_pixel_shader(
-        corner_shader(ROUNDED_SOLID_SHADER),
+        corner_shader_for(ROUNDED_SOLID_SHADER, shape),
         &[
             UniformName::new("clip_rect", UniformType::_4f),
             UniformName::new("radius", UniformType::_1f),
@@ -53,16 +62,27 @@ pub(super) fn rounded_clip_program(
     match compiled {
         Ok((texture, border, shadow, solid)) => {
             let programs = RoundedClipPrograms {
+                shape,
                 texture,
                 solid,
                 border,
                 shadow,
             };
-            resources.contexts.entry(context).or_default().rounded = Some(programs.clone());
+            let context = resources.contexts.entry(context).or_default();
+            match shape {
+                CornerShape::Circular => context.rounded = Some(programs.clone()),
+                CornerShape::Continuous => context.continuous = Some(programs.clone()),
+            }
             Some(programs)
         }
         Err(error) => {
-            if !std::mem::replace(&mut resources.contexts.entry(context).or_default().rounded_warned, true) {
+            let context = resources.contexts.entry(context).or_default();
+            let warned = match shape {
+                CornerShape::Circular => &mut context.rounded_warned,
+                CornerShape::Continuous => &mut context.continuous_warned,
+            };
+
+            if !std::mem::replace(warned, true) {
                 tracing::warn!(%error, "rounded-window shader unavailable; falling back to unrounded rendering");
             }
             None
@@ -197,7 +217,7 @@ pub(super) fn window_tint_element(
         return None;
     }
     let mode = output.current_mode()?;
-    let program = material_program(resources, renderer)?;
+    let program = material_program_for_corners(resources, renderer, corners.shape)?;
     let parameters = BorderParameters {
         geometry,
         clip_rect: framebuffer_clip_rect(corners.rect, mode.size, output.current_transform().invert()),

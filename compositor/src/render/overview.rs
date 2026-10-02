@@ -118,7 +118,6 @@ pub(super) fn overview_strip_elements(
     )
     .opacity;
     let mut elements = Vec::new();
-    let programs = rounded_clip_program(&mut state.render, renderer);
     state.retain_overview_labels();
 
     let card_ids = cards
@@ -221,19 +220,24 @@ pub(super) fn overview_strip_elements(
                 elements.push(border.into());
             }
         }
-        if let Some(programs) = &programs {
-            for (id, rect) in &card.windows {
-                if let Some(window) = state.windows.window(*id) {
+        for (id, rect) in &card.windows {
+            if let Some(window) = state.windows.window(*id) {
+                let shape = window_corner_shape(window);
+
+                if let Some(programs) = corner_program(&mut state.render, renderer, shape) {
+                    let clip_changed = state
+                        .output_id(output)
+                        .is_some_and(|output| state.render.thumbnail_corner_changed(*id, output, shape));
                     elements.extend(rounded_window_elements(
                         renderer,
                         window,
-                        RoundedRect::new(*rect, output_geometry.loc, scale, 4.0),
+                        RoundedRect::new(*rect, output_geometry.loc, scale, 4.0).with_shape(shape),
                         scale,
                         alpha,
-                        // The damage tracker tracks each miniature's crop,
-                        // scale, alpha and geometry. Its corner radius is fixed,
-                        // so an unchanged clip needs no extra full damage.
-                        false,
+                        // Crop/scale/alpha/geometry already track their own
+                        // damage. Role changes also alter the corner shader,
+                        // even when the client buffer itself is unchanged.
+                        clip_changed,
                         output,
                         programs.clone(),
                         ConstrainScaleBehavior::Stretch,

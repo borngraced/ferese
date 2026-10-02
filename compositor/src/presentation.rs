@@ -79,19 +79,42 @@ pub(crate) fn physical_rect(
     )
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CornerShape {
+    #[default]
+    Circular,
+    Continuous,
+}
+
+/// Conservative extent of the corner shoulders, in physical pixels.
+pub(crate) fn corner_extent(radius: f32, size: smithay::utils::Size<i32, Physical>, shape: CornerShape) -> f32 {
+    if shape == CornerShape::Circular {
+        return radius;
+    }
+
+    (radius * 1.528_665).min(size.w.min(size.h) as f32 * 0.5)
+}
+
 /// A single physical outline shared by content and all of its decorations.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RoundedRect {
     pub rect: Rectangle<i32, Physical>,
     pub radius: f32,
+    pub shape: CornerShape,
 }
 
 impl RoundedRect {
+    pub(crate) fn with_shape(mut self, shape: CornerShape) -> Self {
+        self.shape = shape;
+        self
+    }
+
     pub(crate) fn new(rect: ferese_layout::Rect, origin: Point<i32, Logical>, scale: f64, radius: f64) -> Self {
         let rect = physical_rect(rect, origin, scale);
         Self {
             radius: clamp_radius(radius * scale, rect.size),
             rect,
+            shape: CornerShape::Circular,
         }
     }
 

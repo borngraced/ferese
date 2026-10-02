@@ -88,7 +88,6 @@ pub(crate) fn sampled_output_elements(
         return Vec::new();
     };
     let scale = output.current_scale().fractional_scale();
-    let rounded_clip_program = rounded_clip_program(&mut state.render, renderer);
 
     let mut elements = if include_cursor {
         cursor_elements(state, renderer, output_geometry, scale)
@@ -160,7 +159,10 @@ pub(crate) fn sampled_output_elements(
         } else {
             state.theme_settings.window_radius
         } * decoration_progress;
-        let corners = RoundedRect::new(visual, output_geometry.loc, scale, window_radius);
+        let shape = window_corner_shape(&window);
+        let corners = RoundedRect::new(visual, output_geometry.loc, scale, window_radius).with_shape(shape);
+        let corner_shape_changed = state.render.prepare_window_corners(id, shape);
+        let rounded_clip_program = corner_program(&mut state.render, renderer, shape);
         let pixels = corners.rect;
         // Only overview/close intentionally scale the complete application.
         let scale_content = frame.overview.is_presenting() || sample.close_scale != 1.0;
@@ -262,7 +264,7 @@ pub(crate) fn sampled_output_elements(
                 corners,
                 scale,
                 close_alpha,
-                sample.geometry.presentation_changed,
+                sample.geometry.presentation_changed || corner_shape_changed,
                 output,
                 programs.clone(),
                 behavior,

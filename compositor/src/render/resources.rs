@@ -20,6 +20,8 @@ pub(super) struct WindowBuffers {
     pub dim: WindowBorderBuffers,
     pub resize_fill: WindowBorderBuffers,
     pub shadow: WindowShadowBuffers,
+    corner_shape: Option<CornerShape>,
+    thumbnail_shapes: HashMap<OutputId, CornerShape>,
     snapshot: Option<ResizeSnapshot>,
 }
 
@@ -27,17 +29,54 @@ pub(super) struct WindowBuffers {
 pub(super) struct ContextPrograms {
     pub rounded: Option<RoundedClipPrograms>,
     pub rounded_warned: bool,
+    pub continuous: Option<RoundedClipPrograms>,
+    pub continuous_warned: bool,
+    pub window_material: Option<MaterialProgram>,
     pub material: Option<MaterialProgram>,
     pub blur: Option<BlurProgram>,
 }
 
 impl RenderResources {
+    pub(super) fn prepare_window_corners(&mut self, id: WindowId, shape: CornerShape) -> bool {
+        let buffers = self.windows.entry(id).or_default();
+
+        let changed = buffers.corner_shape.is_some_and(|old| old != shape);
+
+        if changed {
+            buffers.borders.contexts.clear();
+            buffers.dim.contexts.clear();
+            buffers.resize_fill.contexts.clear();
+            buffers.shadow.contexts.clear();
+
+            if let Some(snapshot) = &mut buffers.snapshot {
+                snapshot.commit.increment();
+            }
+        }
+
+        buffers.corner_shape = Some(shape);
+        changed
+    }
+
+    pub(super) fn thumbnail_corner_changed(&mut self, id: WindowId, output: OutputId, shape: CornerShape) -> bool {
+        self.windows
+            .entry(id)
+            .or_default()
+            .thumbnail_shapes
+            .insert(output, shape)
+            .is_none_or(|previous| previous != shape)
+    }
+
     pub fn remove_window(&mut self, id: WindowId) {
         self.windows.remove(&id);
     }
 
     pub fn remove_output(&mut self, id: OutputId) {
         self.outputs.remove(&id);
+
+        for window in self.windows.values_mut() {
+            window.thumbnail_shapes.remove(&id);
+        }
+
         for surface in self.surfaces.values_mut() {
             surface.contexts.retain(|(_, output, _), _| *output != id);
             surface.captures.retain(|(_, output, _), _| *output != id);

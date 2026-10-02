@@ -400,12 +400,19 @@ pub(super) fn material_program(
     resources: &mut RenderResources,
     renderer: &mut GlesRenderer,
 ) -> Option<MaterialProgram> {
+    material_program_for_corners(resources, renderer, CornerShape::Circular)
+}
+
+pub(super) fn material_program_for_corners(
+    resources: &mut RenderResources,
+    renderer: &mut GlesRenderer,
+    shape: CornerShape,
+) -> Option<MaterialProgram> {
     let context = renderer.context_id().erased();
-    if let Some(program) = resources
-        .contexts
-        .get(&context)
-        .and_then(|programs| programs.material.as_ref())
-    {
+    if let Some(program) = resources.contexts.get(&context).and_then(|programs| match shape {
+        CornerShape::Circular => programs.material.as_ref(),
+        CornerShape::Continuous => programs.window_material.as_ref(),
+    }) {
         return Some(program.clone());
     }
 
@@ -417,10 +424,14 @@ pub(super) fn material_program(
         UniformName::new("shadow_rect", UniformType::_4f),
         UniformName::new("shadow_values", UniformType::_2f),
     ];
-    match renderer.compile_custom_pixel_shader(corner_shader(MATERIAL_SHADER), &uniforms) {
+    match renderer.compile_custom_pixel_shader(corner_shader_for(MATERIAL_SHADER, shape), &uniforms) {
         Ok(program) => {
             let program = MaterialProgram(program);
-            resources.contexts.entry(context).or_default().material = Some(program.clone());
+            let context = resources.contexts.entry(context).or_default();
+            match shape {
+                CornerShape::Circular => context.material = Some(program.clone()),
+                CornerShape::Continuous => context.window_material = Some(program.clone()),
+            }
             Some(program)
         }
         Err(error) => {
