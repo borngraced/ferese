@@ -354,7 +354,7 @@ impl cosmic::Application for FereseShell {
             self.control.as_ref().map_or_else(Subscription::none, |control| {
                 control.subscription().map(|_| Message::ControlReady)
             }),
-            ferese_theme::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
+            ferese_theme_client::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
             if self
                 .system_modal
                 .as_ref()

@@ -1,7 +1,7 @@
 pub(crate) type Attachment = Result<
     (
         Option<std::sync::Arc<Parent>>,
-        Result<ferese_theme::material::ModalMaterial, String>,
+        Result<ferese_theme_client::material::ModalMaterial, String>,
     ),
     String,
 >;

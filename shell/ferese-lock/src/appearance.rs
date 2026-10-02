@@ -29,7 +29,7 @@ impl Appearance {
         let doc = path
             .and_then(|path| std::fs::read_to_string(path).ok())
             .and_then(|source| Document::parse(&source).ok());
-        let mut theme = ferese_theme::service::current().presented;
+        let mut theme = ferese_theme_client::service::current().presented;
         if let Some(path) = path.filter(|path| ferese_config::config_path().as_deref() != Some(*path))
             && let Some(document) = &doc
             && let Ok(mut connection) = ferese_ipc::theme::Connection::connect()

@@ -192,7 +192,7 @@ impl cosmic::Application for Locker {
             if self.preview {
                 Subscription::none()
             } else {
-                ferese_theme::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot)))
+                ferese_theme_client::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot)))
             },
             event::listen_with(|event, _, _| match event {
                 Event::PlatformSpecific(PlatformSpecific::Wayland(

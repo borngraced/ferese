@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ferese-theme-client = { path = "../../crates/ferese-theme-client" }
 ferese-theme = { path = "../../crates/ferese-theme" }
 ferese-config = { path = "../../crates/ferese-config" }
 libcosmic = { workspace = true, features = ["wgpu", "a11y", "xdg-portal"] }

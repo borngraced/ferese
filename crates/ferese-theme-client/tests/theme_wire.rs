@@ -1,5 +1,5 @@
 use ferese_ipc::theme::Snapshot;
-use ferese_theme::service::fallback;
+use ferese_theme_client::service::fallback;
 use serde_json::{Value, json};
 
 fn fixture() -> Value {
@@ -59,5 +59,8 @@ fn complete_snapshots_do_not_resolve_fallbacks_and_future_versions_are_rejected(
     assert_eq!(serde_json::to_value(snapshot).unwrap(), value);
     let mut future = value;
     future["version"] = json!(ferese_ipc::theme::SCHEMA_VERSION + 1);
-    assert_eq!(Snapshot::decode(future, Vec::new).unwrap_err(), "Unsupported theme snapshot version");
+    assert_eq!(
+        Snapshot::decode(future, Vec::new).unwrap_err(),
+        "Unsupported theme snapshot version"
+    );
 }

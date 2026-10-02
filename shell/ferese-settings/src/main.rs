@@ -214,7 +214,7 @@ impl cosmic::Application for App {
         .into();
         let error = initial.as_ref().err().cloned();
         let current = initial.unwrap_or_else(|_| Snapshot::parse(String::new()).unwrap());
-        let resolved = ferese_theme::service::current();
+        let resolved = ferese_theme_client::service::current();
         let font = ferese_theme::font(Some(&resolved.presented.tokens.typography.font_family));
         let native_palette = visuals::Palette::from_resolved(&resolved.presented);
         let mut app = Self {
@@ -815,7 +815,7 @@ impl cosmic::Application for App {
     fn subscription(&self) -> cosmic::iced::Subscription<Message> {
         cosmic::iced::Subscription::batch([
             cosmic::iced::Subscription::run_with(self.path.clone(), |path| watch::changes(path)),
-            ferese_theme::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
+            ferese_theme_client::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
             if self.page == Page::Displays {
                 cosmic::iced::time::every(std::time::Duration::from_secs(2)).map(|_| Message::RefreshDisplays)
             } else {

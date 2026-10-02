@@ -1717,6 +1717,7 @@ dependencies = [
  "ferese-config",
  "ferese-ipc",
  "ferese-theme",
+ "ferese-theme-client",
  "image",
  "jiff",
  "libc",
@@ -1736,6 +1737,7 @@ dependencies = [
  "ferese-config",
  "ferese-ipc",
  "ferese-theme",
+ "ferese-theme-client",
  "glib",
  "libc",
  "libcosmic",
@@ -1766,6 +1768,7 @@ dependencies = [
  "ferese-config",
  "ferese-ipc",
  "ferese-theme",
+ "ferese-theme-client",
  "image",
  "libcosmic",
  "notify",
@@ -1785,6 +1788,7 @@ dependencies = [
  "ferese-ipc",
  "ferese-protocols",
  "ferese-theme",
+ "ferese-theme-client",
  "iced_accessibility",
  "jiff",
  "libc",
@@ -1803,12 +1807,22 @@ name = "ferese-theme"
 version = "0.1.0"
 dependencies = [
  "ferese-config",
- "ferese-ipc",
- "ferese-protocols",
+ "ferese-theme-model",
  "iced_accessibility",
  "jiff",
  "libcosmic",
+]
+
+[[package]]
+name = "ferese-theme-client"
+version = "0.1.0"
+dependencies = [
+ "ferese-config",
+ "ferese-ipc",
+ "ferese-protocols",
+ "libcosmic",
  "serde_json",
+ "tempfile",
  "tokio",
  "wayland-client",
 ]
@@ -7457,6 +7471,7 @@ dependencies = [
  "ferese-ipc",
  "ferese-protocols",
  "ferese-theme",
+ "ferese-theme-client",
  "futures-util",
  "gstreamer",
  "image",

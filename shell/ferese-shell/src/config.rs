@@ -341,7 +341,7 @@ pub(crate) fn load() -> ShellConfig {
 
 pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, ferese_config::Error> {
     let document = ferese_config::Document::parse(source)?;
-    let snapshot = ferese_theme::service::current();
+    let snapshot = ferese_theme_client::service::current();
     let mut config = parse_document(
         &document.with_theme(&snapshot.presented),
         snapshot.presented.appearance,

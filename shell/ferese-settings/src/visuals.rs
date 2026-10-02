@@ -22,7 +22,7 @@ fn hex(c: Color) -> String {
 }
 
 pub fn native_theme(_snapshot: Option<&Snapshot>) -> cosmic::Theme {
-    Palette::from_resolved(&ferese_theme::service::current().presented).native_theme()
+    Palette::from_resolved(&ferese_theme_client::service::current().presented).native_theme()
 }
 
 pub fn icon(page: Page, tint: Color) -> svg_icon::Icon {
@@ -41,7 +41,7 @@ pub fn action_icon(path: &str, tint: Color) -> svg_icon::Icon {
 }
 
 #[cfg(test)]
-pub use ferese_theme::PRESETS;
+pub use ferese_config::presets::PRESETS;
 
 pub fn split(snapshot: &Snapshot) -> bool {
     snapshot

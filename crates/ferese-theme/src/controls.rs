@@ -355,7 +355,7 @@ mod tests {
         use cosmic::widget::button::Catalog;
 
         let palette = Palette {
-            appearance: ferese_config::theme::Appearance::Dark,
+            appearance: ferese_theme_model::Appearance::Dark,
             high_contrast: false,
             background: Color::from_rgb8(17, 24, 33),
             sidebar: Color::from_rgb8(17, 24, 33),
@@ -387,8 +387,8 @@ mod tests {
 
     #[test]
     fn switch_thumb_remains_readable_in_every_preset_and_state() {
-        for preset in crate::PRESETS {
-            let resolved = ferese_config::theme::ResolvedTheme {
+        for preset in ferese_config::presets::PRESETS {
+            let resolved = ferese_theme_model::ResolvedTheme {
                 appearance: preset.appearance,
                 tokens: ferese_config::theme::preset(preset.id, preset.appearance).unwrap(),
                 ..ferese_config::theme::default_theme()

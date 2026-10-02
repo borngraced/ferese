@@ -2,7 +2,7 @@ use cosmic::iced::Color;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
-    pub appearance: ferese_config::theme::Appearance,
+    pub appearance: ferese_theme_model::Appearance,
     pub high_contrast: bool,
     pub background: Color,
     pub sidebar: Color,
@@ -16,7 +16,7 @@ pub struct Palette {
 }
 
 impl Palette {
-    pub fn from_resolved(theme: &ferese_config::theme::ResolvedTheme) -> Self {
+    pub fn from_resolved(theme: &ferese_theme_model::ResolvedTheme) -> Self {
         let color = |value: &str| parse_color(value).expect("validated resolved theme color");
         Self {
             appearance: theme.appearance,
@@ -46,7 +46,7 @@ impl Palette {
     pub fn native_theme(self) -> cosmic::Theme {
         let rgba = |c: Color| cosmic::cosmic_theme::palette::Srgba::new(c.r, c.g, c.b, 1.);
         use cosmic::cosmic_theme::ThemeBuilder;
-        use ferese_config::theme::Appearance;
+        use ferese_theme_model::Appearance;
         let builder = match (self.appearance, self.high_contrast) {
             (Appearance::Light, false) => ThemeBuilder::light(),
             (Appearance::Dark, false) => ThemeBuilder::dark(),
@@ -109,6 +109,14 @@ pub fn surface_shade(base: Color) -> Color {
     }
 }
 
+pub fn material_opacity(theme: &ferese_theme_model::ResolvedTheme) -> f32 {
+    if theme.tokens.material.style == "translucent" {
+        theme.tokens.material.opacity as f32
+    } else {
+        1.
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,11 +124,11 @@ mod tests {
     #[test]
     fn native_theme_preserves_the_resolved_accessibility_mode() {
         for appearance in [
-            ferese_config::theme::Appearance::Light,
-            ferese_config::theme::Appearance::Dark,
+            ferese_theme_model::Appearance::Light,
+            ferese_theme_model::Appearance::Dark,
         ] {
             for high_contrast in [false, true] {
-                let mut resolved = ferese_config::theme::ResolvedTheme {
+                let mut resolved = ferese_theme_model::ResolvedTheme {
                     appearance,
                     ..ferese_config::theme::default_theme()
                 };
@@ -134,8 +142,8 @@ mod tests {
 
     #[test]
     fn every_preset_builds_an_opaque_control_palette_over_translucent_materials() {
-        for preset in crate::PRESETS {
-            let mut resolved = ferese_config::theme::ResolvedTheme {
+        for preset in ferese_config::presets::PRESETS {
+            let mut resolved = ferese_theme_model::ResolvedTheme {
                 appearance: preset.appearance,
                 tokens: ferese_config::theme::preset(preset.id, preset.appearance).unwrap(),
                 ..ferese_config::theme::default_theme()
@@ -145,7 +153,7 @@ mod tests {
             resolved.tokens.geometry.shell_radius = 0.;
             let palette = Palette::from_resolved(&resolved);
             let native = palette.native_theme();
-            assert_eq!(crate::service::opacity(&resolved), 0.25);
+            assert_eq!(crate::material_opacity(&resolved), 0.25);
             assert_eq!(native.cosmic().primary(false).base.alpha, 1.);
             assert_eq!(native.cosmic().corner_radii.radius_m, [0.; 4]);
             for component in [&native.cosmic().accent, &native.cosmic().accent_button] {
@@ -171,7 +179,7 @@ mod tests {
             let mut theme = ferese_config::theme::default_theme();
             theme.tokens.material.style = style.into();
             theme.tokens.material.opacity = opacity;
-            assert_eq!(crate::service::opacity(&theme), expected);
+            assert_eq!(crate::material_opacity(&theme), expected);
         }
     }
 }
