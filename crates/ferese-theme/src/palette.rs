@@ -168,7 +168,7 @@ mod tests {
             ("translucent", 1., 1.),
             ("translucent", 0., 0.),
         ] {
-            let mut theme = ferese_config::theme::ResolvedTheme::default();
+            let mut theme = ferese_config::theme::default_theme();
             theme.tokens.material.style = style.into();
             theme.tokens.material.opacity = opacity;
             assert_eq!(crate::service::opacity(&theme), expected);

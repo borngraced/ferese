@@ -1681,6 +1681,7 @@ dependencies = [
 name = "ferese-config"
 version = "0.1.0"
 dependencies = [
+ "ferese-theme-model",
  "jiff",
  "kdl",
  "serde",
@@ -1809,6 +1810,13 @@ dependencies = [
  "serde_json",
  "tokio",
  "wayland-client",
+]
+
+[[package]]
+name = "ferese-theme-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

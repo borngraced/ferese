@@ -609,7 +609,7 @@ mod tests {
         drop(writer);
         reader_thread.join().unwrap();
         assert!(matches!(incoming.lock().unwrap().back(), Some(PromptEvent::Cancel)));
-        let appearance = Appearance::from_resolved(&ferese_config::theme::ResolvedTheme::default());
+        let appearance = Appearance::from_resolved(&ferese_config::theme::default_theme());
         let (mut prompt, _) = Prompt::init(Core::default(), (incoming, request_fixture(), appearance));
         *prompt.answer = "test-password".into();
         prompt.waiting = false;
@@ -625,7 +625,7 @@ mod tests {
         use crate::{Generation, PromptEvent};
 
         let incoming = Arc::new(Mutex::new(VecDeque::new()));
-        let appearance = Appearance::from_resolved(&ferese_config::theme::ResolvedTheme::default());
+        let appearance = Appearance::from_resolved(&ferese_config::theme::default_theme());
         let (mut prompt, _) = Prompt::init(Core::default(), (incoming.clone(), request_fixture(), appearance));
         assert_eq!(prompt.select_identity(1), Some(1001));
         let older = prompt.request.generation;
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn selecting_another_account_clears_password_and_waits_for_a_fresh_prompt() {
-        let appearance = Appearance::from_resolved(&ferese_config::theme::ResolvedTheme::default());
+        let appearance = Appearance::from_resolved(&ferese_config::theme::default_theme());
         let (mut prompt, _) = <Prompt as cosmic::Application>::init(
             Core::default(),
             (Arc::new(Mutex::new(VecDeque::new())), request_fixture(), appearance),

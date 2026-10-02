@@ -162,7 +162,7 @@ fn initial_appearance(theme: Option<&ResolvedTheme>, load: impl FnOnce() -> Opti
     theme
         .map(Appearance::from_resolved)
         .or_else(load)
-        .unwrap_or_else(|| Appearance::from_resolved(&ResolvedTheme::default()))
+        .unwrap_or_else(|| Appearance::from_resolved(&ferese_config::theme::default_theme()))
 }
 
 fn read_source(path: &Path) -> Result<String, String> {
@@ -186,7 +186,7 @@ fn load_path(path: &Path) -> Result<Appearance, String> {
     let source = match read_source(path) {
         Ok(source) => source,
         Err(_) if !path.try_exists().map_err(|error| error.to_string())? => {
-            return Ok(Appearance::from_resolved(&ResolvedTheme::default()));
+            return Ok(Appearance::from_resolved(&ferese_config::theme::default_theme()));
         }
         Err(error) => return Err(error),
     };
@@ -222,7 +222,7 @@ mod tests {
         assert_eq!(appearance.contrast, 1);
         assert_ne!(
             appearance.accent,
-            Appearance::from_resolved(&ResolvedTheme::default()).accent
+            Appearance::from_resolved(&ferese_config::theme::default_theme()).accent
         );
 
         std::fs::write(&path, r#"theme { mode "dark"; }; animations { enabled #false; }"#).unwrap();
@@ -248,7 +248,7 @@ mod tests {
     fn disk_fallback_rejects_invalid_config_and_uses_defaults_when_absent() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("config.kdl");
-        let default = Appearance::from_resolved(&ResolvedTheme::default());
+        let default = Appearance::from_resolved(&ferese_config::theme::default_theme());
         assert_eq!(load_path(&path).unwrap(), default);
         for source in [
             r#"theme { broken"#,
