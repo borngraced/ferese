@@ -14,6 +14,7 @@ Keep another desktop available for direct-session recovery.
 
 ## Test guides
 
+- [Output management tests](output-management-testing.md): profiles, hotplug, mirroring, lid handling and failed DRM commits.
 - [Nested resize checks](nested-resize-testing.md): wallpaper and bar responsiveness.
 - [Client soak testing](native-soak-testing.md): repeated client lifecycle and resource growth.
 - [Performance measurements](performance-baseline.md): sampling and historical results.
@@ -88,8 +89,8 @@ have a three-second deadline so a stalled bus cannot block recovery indefinitely
 
 When a device fails, Ferese removes its output globals and retries with exponential
 backoff capped at 32 seconds. Working devices remain usable. Known hardware can return
-under a different `cardN` path. This does not expand support to previously
-unmanaged secondary GPUs. Connected-output reports mark a mode active only when
+under a different `cardN` path. Reconciliation also discovers newly connected
+GPUs. Connected-output reports mark a mode active only when
 output creation succeeded. Lock ownership is retained throughout recovery.
 
 Run the ordering and private D-Bus checks with:

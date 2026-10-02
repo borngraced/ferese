@@ -1,0 +1,669 @@
+//! Validate a device-wide desired topology, then use Smithay for every real commit.
+//! Smithay exposes TEST_ONLY per surface, but not a combined CRTC request. The
+//! one raw request here is validation only; mode/plane ownership stays in Smithay.
+use super::*;
+use smithay::backend::allocator::Allocator;
+use smithay::backend::drm::exporter::{ExportBuffer, ExportFramebuffer};
+use smithay::reexports::drm::control::{AtomicCommitFlags, ResourceHandle, atomic::AtomicModeReq};
+
+fn property<D: ControlDevice, H: ResourceHandle>(drm: &D, handle: H, name: &str) -> io::Result<property::Handle> {
+    for (property, _) in drm.get_properties(handle)?.iter() {
+        if drm.get_property(*property)?.name().to_bytes() == name.as_bytes() {
+            return Ok(*property);
+        }
+    }
+    Err(io::Error::other(format!("missing DRM property {name}")))
+}
+
+fn add<H: ResourceHandle>(
+    drm: &DrmDevice,
+    request: &mut AtomicModeReq,
+    handle: H,
+    name: &str,
+    value: u64,
+) -> io::Result<()> {
+    request.add_raw_property(handle.into(), property(drm, handle, name)?, value);
+    Ok(())
+}
+
+fn clear_secondary_planes(
+    drm: &DrmDevice,
+    request: &mut AtomicModeReq,
+    crtc: crtc::Handle,
+) -> Result<(), Box<dyn Error>> {
+    let planes = drm.planes(&crtc)?;
+    for plane in planes.cursor.iter().chain(&planes.overlay) {
+        let properties = drm.get_properties(plane.handle)?;
+        let owned = properties.iter().any(|(handle, value)| {
+            drm.get_property(*handle)
+                .is_ok_and(|info| info.name().to_bytes() == b"CRTC_ID" && *value == u32::from(crtc) as u64)
+        });
+        if owned {
+            add(drm, request, plane.handle, "FB_ID", 0)?;
+            add(drm, request, plane.handle, "CRTC_ID", 0)?;
+        }
+    }
+    Ok(())
+}
+
+struct Blobs {
+    fd: DrmDeviceFd,
+    ids: Vec<u64>,
+}
+
+impl Drop for Blobs {
+    fn drop(&mut self) {
+        for id in &self.ids {
+            let _ = self.fd.destroy_property_blob(*id);
+        }
+    }
+}
+
+pub(super) fn validate_device(device: &DirectDevice, scan: &OutputScan) -> Result<(), Box<dyn Error>> {
+    if scan.selections.iter().all(|selection| {
+        device
+            .outputs
+            .get(&selection.crtc)
+            .is_some_and(|output| output.connector == selection.connector.handle() && output.mode == selection.mode)
+    }) && scan.selections.len() == device.outputs.len()
+    {
+        return Ok(());
+    }
+    // Legacy KMS has no atomic test. Smithay validates its surface/mode as far as
+    // the API permits; commit failures still go through the restoration path.
+    if !device.drm.is_atomic() {
+        return Ok(());
+    }
+    let drm = &device.drm;
+    let mut request = AtomicModeReq::new();
+    let mut blobs = Blobs {
+        fd: drm.device_fd().clone(),
+        ids: Vec::new(),
+    };
+    let mut buffers = Vec::new();
+    let mut framebuffers = Vec::new();
+    let mut allocator = GbmAllocator::new(device.gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
+    let exporter = GbmFramebufferExporter::new(device.gbm.clone(), Some(device.render_node));
+    let mut used_planes = HashSet::new();
+    let desired_crtcs = scan
+        .selections
+        .iter()
+        .map(|selection| selection.crtc)
+        .collect::<HashSet<_>>();
+    let desired_connectors = scan
+        .selections
+        .iter()
+        .map(|selection| selection.connector.handle())
+        .collect::<HashSet<_>>();
+    for output in device.outputs.values() {
+        if !desired_connectors.contains(&output.connector) {
+            add(drm, &mut request, output.connector, "CRTC_ID", 0)?;
+        }
+        if !desired_crtcs.contains(&output.surface.crtc()) {
+            clear_secondary_planes(drm, &mut request, output.surface.crtc())?;
+            add(drm, &mut request, output.surface.crtc(), "ACTIVE", 0)?;
+            add(drm, &mut request, output.surface.crtc(), "MODE_ID", 0)?;
+            add(drm, &mut request, output.surface.plane(), "FB_ID", 0)?;
+            add(drm, &mut request, output.surface.plane(), "CRTC_ID", 0)?;
+        }
+    }
+    for selection in &scan.selections {
+        clear_secondary_planes(drm, &mut request, selection.crtc)?;
+        let planes = drm.planes(&selection.crtc)?;
+        let primary = device
+            .outputs
+            .get(&selection.crtc)
+            .map(|output| output.surface.plane())
+            .or_else(|| {
+                planes
+                    .primary
+                    .iter()
+                    .find(|plane| !used_planes.contains(&plane.handle))
+                    .map(|plane| plane.handle)
+            })
+            .ok_or("no usable primary plane")?;
+        used_planes.insert(primary);
+        if let Ok(rotation) = property(drm, primary, "rotation") {
+            request.add_raw_property(primary.into(), rotation, 1);
+        }
+        let blob: u64 = drm.create_property_blob(&selection.mode)?.into();
+        blobs.ids.push(blob);
+        add(drm, &mut request, selection.crtc, "MODE_ID", blob)?;
+        add(drm, &mut request, selection.crtc, "ACTIVE", 1)?;
+        add(
+            drm,
+            &mut request,
+            selection.connector.handle(),
+            "CRTC_ID",
+            u32::from(selection.crtc) as u64,
+        )?;
+        let (width, height) = selection.mode.size();
+        let formats = &planes
+            .primary
+            .iter()
+            .find(|plane| plane.handle == primary)
+            .ok_or("primary plane disappeared")?
+            .formats;
+        let mut allocated = None;
+        for format in formats.iter().filter(|format| {
+            matches!(
+                format.code,
+                Fourcc::Argb8888 | Fourcc::Abgr8888 | Fourcc::Xrgb8888 | Fourcc::Xbgr8888
+            )
+        }) {
+            if let Ok(buffer) = allocator.create_buffer(width.into(), height.into(), format.code, &[format.modifier])
+                && let Ok(Some(fb)) = exporter.add_framebuffer(drm.device_fd(), ExportBuffer::Allocator(&buffer), false)
+            {
+                allocated = Some((buffer, fb));
+                break;
+            }
+        }
+        let (buffer, fb) = allocated.ok_or("unable to allocate a DRM validation buffer")?;
+        add(drm, &mut request, primary, "FB_ID", u32::from(*fb.as_ref()) as u64)?;
+        add(drm, &mut request, primary, "CRTC_ID", u32::from(selection.crtc) as u64)?;
+        for (name, value) in [
+            ("SRC_X", 0),
+            ("SRC_Y", 0),
+            ("SRC_W", (width as u64) << 16),
+            ("SRC_H", (height as u64) << 16),
+            ("CRTC_X", 0),
+            ("CRTC_Y", 0),
+            ("CRTC_W", width as u64),
+            ("CRTC_H", height as u64),
+        ] {
+            add(drm, &mut request, primary, name, value)?;
+        }
+        buffers.push(buffer);
+        framebuffers.push(fb);
+    }
+    drm.atomic_commit(AtomicCommitFlags::TEST_ONLY | AtomicCommitFlags::ALLOW_MODESET, request)?;
+    Ok(())
+}
+
+fn prepare(
+    surface: &mut OutputCompositor,
+    renderer: &mut GlesRenderer,
+    mode: DrmMode,
+    settings: &OutputSettings,
+) -> Result<(), Box<dyn Error>> {
+    surface.use_mode(mode)?;
+    surface.set_output_mode_source(OutputModeSource::Static {
+        size: OutputMode::from(mode).size,
+        scale: settings.scale.into(),
+        transform: output_transform(settings.transform),
+    });
+    surface.reset_buffer_ages();
+    let elements: Vec<crate::render::AnimatedWindowRenderElement> = Vec::new();
+    let result = surface.render_frame(
+        renderer,
+        &elements,
+        [0.0, 0.0, 0.0, 1.0],
+        smithay::backend::drm::compositor::FrameFlags::empty(),
+    )?;
+    if let PrimaryPlaneElement::Swapchain(primary) = &result.primary_element {
+        primary.sync.wait()?;
+    }
+    Ok(())
+}
+
+/// Retire a logical output only after its hardware is unavailable or confirmed disabled.
+fn retire(state: &mut Ferese, output: &mut DirectOutput, node: DrmNode, crtc: crtc::Handle) {
+    cancel_output_timers(&state.loop_handle, output);
+    if let Some(global) = output.global.take() {
+        state.display_handle.disable_global::<Ferese>(global);
+    }
+    state.session_lock.output_removed(&output.output);
+    state.unregister_output(&output.output);
+    state
+        .direct_backend
+        .as_mut()
+        .unwrap()
+        .presentation
+        .remove(&(node, crtc));
+}
+
+struct DeviceTransaction<'a> {
+    state: &'a mut Ferese,
+    device: &'a mut DirectDevice,
+    selections: &'a HashMap<crtc::Handle, OutputSelection>,
+    staged: HashMap<crtc::Handle, DirectOutput>,
+    replaced: HashSet<crtc::Handle>,
+}
+
+impl crate::output_transaction::HardwareTransaction for DeviceTransaction<'_> {
+    type Key = crtc::Handle;
+
+    fn stage(&mut self, crtc: crtc::Handle) -> Result<(), String> {
+        let selection = &self.selections[&crtc];
+        if self
+            .device
+            .outputs
+            .get(&crtc)
+            .is_none_or(|output| output.connector != selection.connector.handle())
+        {
+            let output = create_direct_output(
+                self.state,
+                &mut self.device.drm,
+                &self.device.gbm,
+                &self.device.renderer,
+                selection.clone(),
+                false,
+            )
+            .map_err(|error| error.to_string())?;
+            self.staged.insert(crtc, output);
+        }
+        let output = self
+            .staged
+            .get_mut(&crtc)
+            .or_else(|| self.device.outputs.get_mut(&crtc))
+            .unwrap();
+        output
+            .surface
+            .set_connectors(&[selection.connector.handle()])
+            .map_err(|error| error.to_string())?;
+        prepare(
+            &mut output.surface,
+            &mut self.device.renderer,
+            selection.mode,
+            &selection.settings,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn commit(&mut self, crtc: crtc::Handle) -> Result<(), String> {
+        if self.staged.contains_key(&crtc) && self.device.outputs.contains_key(&crtc) {
+            // Connector and mode cannot be changed together through use_mode /
+            // set_connectors: each tests against the other's old value. Stage a
+            // replacement surface, retire the old one *before* its first commit
+            // (Smithay clears the CRTC on surface drop), then publish metadata.
+            let replacement = self.staged.remove(&crtc).unwrap();
+            let previous = self.device.outputs.get_mut(&crtc).unwrap();
+            previous.surface = replacement.surface;
+            self.replaced.insert(crtc);
+        }
+        self.staged
+            .get_mut(&crtc)
+            .or_else(|| self.device.outputs.get_mut(&crtc))
+            .unwrap()
+            .surface
+            .commit_frame()
+            .map_err(|error| error.to_string())
+    }
+
+    fn disable(&mut self, crtc: crtc::Handle) -> Result<(), String> {
+        self.device
+            .outputs
+            .get_mut(&crtc)
+            .unwrap()
+            .surface
+            .clear()
+            .map_err(|error| error.to_string())
+    }
+
+    fn abort_staged(&mut self) {
+        for output in self.staged.values_mut() {
+            let _ = output.surface.clear();
+        }
+        self.staged.clear();
+    }
+
+    fn restore(&mut self, crtc: crtc::Handle) -> Result<(), String> {
+        if self.replaced.contains(&crtc) {
+            let output = &self.device.outputs[&crtc];
+            let connector = self
+                .device
+                .drm
+                .get_connector(output.connector, true)
+                .map_err(|error| error.to_string())?;
+            if connector.state() != connector::State::Connected {
+                return Err("previous connector is no longer available".into());
+            }
+            let selection = OutputSelection {
+                connector,
+                crtc,
+                mode: output.mode,
+                settings: output.settings.clone(),
+                identity: output.identity.clone(),
+                mirror_source: output.mirror_source.clone(),
+            };
+            let mut replacement = create_direct_output(
+                self.state,
+                &mut self.device.drm,
+                &self.device.gbm,
+                &self.device.renderer,
+                selection,
+                false,
+            )
+            .map_err(|error| error.to_string())?;
+            prepare(
+                &mut replacement.surface,
+                &mut self.device.renderer,
+                replacement.mode,
+                &replacement.settings,
+            )
+            .map_err(|error| error.to_string())?;
+            let previous = self.device.outputs.get_mut(&crtc).unwrap();
+            previous.surface = replacement.surface;
+            previous.surface.commit_frame().map_err(|error| error.to_string())?;
+        }
+        let Some(output) = self.device.outputs.get_mut(&crtc) else {
+            return Ok(());
+        };
+        output.surface.reset_state().map_err(|error| error.to_string())?;
+        let restored = output
+            .surface
+            .set_connectors(&[output.connector])
+            .map_err(|error| error.to_string())
+            .and_then(|()| {
+                prepare(
+                    &mut output.surface,
+                    &mut self.device.renderer,
+                    output.mode,
+                    &output.settings,
+                )
+                .map_err(|error| error.to_string())
+            })
+            .and_then(|()| output.surface.commit_frame().map_err(|error| error.to_string()));
+        self.state.session_lock.output_added(&output.output);
+        output.lock_frame_pending = false;
+        output.surface.set_output_mode_source((&output.output).into());
+        cancel_output_timers(&self.state.loop_handle, output);
+        output.frame_pending = false;
+        restored
+    }
+}
+
+/// All allocations/tests precede commits. Logical publication follows every
+/// successful commit on this device; other devices are separately rollbackable.
+pub(super) fn apply_device(
+    state: &mut Ferese,
+    node: DrmNode,
+    device: &mut DirectDevice,
+    scan: OutputScan,
+) -> Result<(), String> {
+    let selections = scan
+        .selections
+        .into_iter()
+        .map(|selection| (selection.crtc, selection))
+        .collect::<HashMap<_, _>>();
+    let mut changed = selections
+        .iter()
+        .filter_map(|(crtc, selection)| {
+            let same = device.outputs.get(crtc).is_some_and(|output| {
+                output.connector == selection.connector.handle()
+                    && output.identity == selection.identity
+                    && output.mode == selection.mode
+                    && output.settings.same_configuration(&selection.settings)
+                    && output.mirror_source == selection.mirror_source
+            });
+            (!same).then_some(*crtc)
+        })
+        .collect::<Vec<_>>();
+    changed.sort_by_key(|crtc| (selections[crtc].mirror_source.is_some(), u32::from(*crtc)));
+    let removals = device
+        .outputs
+        .keys()
+        .filter(|crtc| !selections.contains_key(crtc))
+        .copied()
+        .collect::<Vec<_>>();
+    let hardware_changes = changed
+        .iter()
+        .filter(|crtc| {
+            !device.outputs.get(crtc).is_some_and(|output| {
+                let selection = &selections[crtc];
+                output.connector == selection.connector.handle() && output.mode == selection.mode
+            })
+        })
+        .copied()
+        .collect::<Vec<_>>();
+    let mut driver = DeviceTransaction {
+        state,
+        device,
+        selections: &selections,
+        staged: HashMap::new(),
+        replaced: HashSet::new(),
+    };
+    let result = crate::output_transaction::apply(&mut driver, &hardware_changes, &removals);
+    let mut staged = std::mem::take(&mut driver.staged);
+    if let Err(failure) = result {
+        for crtc in failure.unavailable {
+            if let Some(mut output) = device.outputs.remove(&crtc) {
+                retire(state, &mut output, node, crtc);
+            }
+        }
+        return Err(failure.error);
+    }
+    for crtc in &changed {
+        let selection = &selections[crtc];
+        let mut output = staged.remove(crtc).or_else(|| device.outputs.remove(crtc)).unwrap();
+        let old_geometry = state.space.output_geometry(&output.output);
+        let old_id = state.output_id(&output.output);
+        if output.connector != selection.connector.handle() || output.identity != selection.identity {
+            retire(state, &mut output, node, *crtc);
+            let (handle, _) = create_output(
+                state,
+                &selection.connector,
+                selection.mode,
+                selection.identity.clone(),
+                &selection.settings,
+                false,
+            );
+            output.output = handle;
+        }
+        if selection.mirror_source.is_some() && output.global.is_some() {
+            retire(state, &mut output, node, *crtc);
+        }
+        output.connector = selection.connector.handle();
+        output.internal = internal_connector(selection.connector.interface());
+        output.identity = selection.identity.clone();
+        output.settings = selection.settings.clone();
+        output.mode = selection.mode;
+        output.mirror_source = selection.mirror_source.clone();
+        let position = selection.settings.position.unwrap_or_else(|| {
+            old_geometry
+                .map(|geometry| [geometry.loc.x, geometry.loc.y])
+                .unwrap_or_else(|| {
+                    [
+                        state
+                            .space
+                            .outputs()
+                            .filter_map(|output| state.space.output_geometry(output))
+                            .map(|geometry| geometry.loc.x + geometry.size.w)
+                            .max()
+                            .unwrap_or(0),
+                        0,
+                    ]
+                })
+        });
+        output.output.change_current_state(
+            Some(OutputMode::from(output.mode)),
+            Some(output_transform(output.settings.transform)),
+            Some(Scale::Fractional(output.settings.scale)),
+            Some((position[0], position[1]).into()),
+        );
+        if output.mirror_source.is_none() {
+            if output.global.is_none() {
+                output.global = Some(output.output.create_global::<Ferese>(&state.display_handle));
+            }
+            state.space.map_output(&output.output, (position[0], position[1]));
+            if state.output_id(&output.output).is_none() {
+                state.register_output(&output.output, output.identity.clone());
+            }
+            if let Some(id) = state.output_id(&output.output)
+                && let Some(geometry) = state.space.output_geometry(&output.output)
+            {
+                state.output_workspaces.update_geometry(
+                    id,
+                    ferese_core::OutputGeometry::new(geometry.loc.x, geometry.loc.y, geometry.size.w, geometry.size.h),
+                );
+                if old_id == Some(id)
+                    && let Some(old) = old_geometry
+                {
+                    state.reposition_output_floats(
+                        id,
+                        ferese_layout::Rect::new(
+                            old.loc.x as f64,
+                            old.loc.y as f64,
+                            old.size.w as f64,
+                            old.size.h as f64,
+                        ),
+                        ferese_layout::Rect::new(
+                            geometry.loc.x as f64,
+                            geometry.loc.y as f64,
+                            geometry.size.w as f64,
+                            geometry.size.h as f64,
+                        ),
+                    );
+                }
+            }
+        }
+        state.session_lock.output_added(&output.output);
+        output.lock_frame_pending = false;
+        output.surface.set_output_mode_source((&output.output).into());
+        cancel_output_timers(&state.loop_handle, &mut output);
+        output.frame_pending = false;
+        output.primary_commit = None;
+        output.capture_texture = None;
+        output.power.suspended();
+        let clock = state
+            .direct_backend
+            .as_mut()
+            .unwrap()
+            .presentation
+            .entry((node, *crtc))
+            .or_default();
+        clock.set_refresh(OutputMode::from(output.mode).refresh);
+        clock.reset_timing();
+        device.outputs.insert(*crtc, output);
+    }
+    // Add/register destinations before removing former owners, reusing evacuation.
+    for crtc in removals {
+        let mut output = device.outputs.remove(&crtc).unwrap();
+        retire(state, &mut output, node, crtc);
+    }
+    device.connected_outputs = scan.connected_outputs;
+    update_applied_info(device);
+    Ok(())
+}
+
+pub(super) fn update_applied_info(device: &mut DirectDevice) {
+    for info in &mut device.connected_outputs {
+        info.enabled = false;
+        info.current_mode = None;
+        if let Some(output) = device.outputs.values().find(|output| output.identity == info.identity) {
+            info.enabled = true;
+            info.current_mode = Some(connected_mode_info(output.mode));
+            info.scale = output.settings.scale;
+            info.transform = output.settings.transform;
+            info.configured_position = output.settings.position;
+        }
+    }
+}
+
+/// Disconnected hardware cannot remain logically live, even if a new policy fails validation.
+pub(super) fn retire_disconnected(state: &mut Ferese) {
+    let missing = state
+        .direct_backend
+        .as_ref()
+        .unwrap()
+        .devices
+        .iter()
+        .flat_map(|(node, device)| {
+            device.outputs.iter().filter_map(|(crtc, output)| {
+                device
+                    .drm
+                    .get_connector(output.connector, true)
+                    .ok()
+                    .filter(|connector| connector.state() != connector::State::Connected)
+                    .map(|_| (*node, *crtc))
+            })
+        })
+        .collect::<Vec<_>>();
+    for (node, crtc) in missing {
+        if let Some(mut output) = state
+            .direct_backend
+            .as_mut()
+            .unwrap()
+            .devices
+            .get_mut(&node)
+            .unwrap()
+            .outputs
+            .remove(&crtc)
+        {
+            let _ = output.surface.clear();
+            retire(state, &mut output, node, crtc);
+        }
+    }
+}
+
+/// If initial activation or rollback leaves no usable desktop, try a preferred
+/// mode on each physical monitor independently. Never disable a surviving output.
+pub(super) fn recover_last_output(state: &mut Ferese) {
+    if state
+        .direct_backend
+        .as_ref()
+        .unwrap()
+        .devices
+        .values()
+        .any(|device| device.outputs.values().any(|output| output.global.is_some()))
+    {
+        return;
+    }
+    let backend = state.direct_backend.as_ref().unwrap();
+    let requested = backend.desired_outputs.clone();
+    let original_error = backend.output_error.clone();
+    let mut candidates = backend
+        .monitors
+        .iter()
+        .filter(|monitor| monitor.usable)
+        .cloned()
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|monitor| (!monitor.internal, monitor.key.clone()));
+    for candidate in candidates {
+        let backend = state.direct_backend.as_mut().unwrap();
+        backend.desired_outputs = DesiredOutputConfiguration {
+            profile: None,
+            suspend: requested.suspend,
+            outputs: backend
+                .monitors
+                .iter()
+                .map(|monitor| {
+                    let mut settings = crate::output_policy::defaults(monitor.identity.clone());
+                    settings.enabled = monitor.key == candidate.key;
+                    crate::output_policy::DesiredOutput {
+                        key: monitor.key.clone(),
+                        settings,
+                        mirror_source: None,
+                    }
+                })
+                .collect(),
+        };
+        let nodes = backend
+            .devices
+            .iter()
+            .filter(|(_, device)| candidate.key.starts_with(&format!("{}/", drm_device_key(&device.drm))))
+            .map(|(node, _)| *node)
+            .collect::<Vec<_>>();
+        if validate_desired_outputs(state).is_ok() {
+            for node in nodes {
+                let _ = rescan_device(state, node);
+            }
+            if state
+                .direct_backend
+                .as_ref()
+                .unwrap()
+                .devices
+                .values()
+                .any(|device| device.outputs.values().any(|output| output.global.is_some()))
+            {
+                remember_applied_configuration(state);
+                state.direct_backend.as_mut().unwrap().output_error = original_error;
+                tracing::warn!(identity = %candidate.identity, "recovered last usable output with preferred mode");
+                return;
+            }
+        }
+    }
+    let backend = state.direct_backend.as_mut().unwrap();
+    backend.desired_outputs = requested;
+    backend.output_error = original_error;
+}

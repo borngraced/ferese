@@ -145,6 +145,18 @@ impl Lock {
 }
 
 impl Ferese {
+    fn lock_outputs_protected(&self) -> bool {
+        if let Some(backend) = self.direct_backend.as_ref() {
+            // Reconciliation temporarily removes devices while staging changes.
+            // Never interpret that partial inventory as protected displays.
+            if backend.reconciling() {
+                return false;
+            }
+            return self.session_lock.ready_for_idle(backend.physical_outputs());
+        }
+        self.session_lock.ready_for_idle(self.space.outputs())
+    }
+
     pub(crate) fn lock_input_activity(&mut self) {
         if self.session_lock.activity(Instant::now()) {
             crate::backends::direct::wake_locked_outputs(self);
@@ -162,7 +174,7 @@ impl Ferese {
         if let Some(token) = self.session_lock.idle_timer.take() {
             self.loop_handle.remove(token);
         }
-        if !self.session_lock.ready_for_idle(self.space.outputs()) {
+        if !self.lock_outputs_protected() {
             return;
         }
 
@@ -189,7 +201,7 @@ impl Ferese {
     }
 
     fn update_lock_idle(&mut self, now: Instant) {
-        if !self.session_lock.ready_for_idle(self.space.outputs()) {
+        if !self.lock_outputs_protected() {
             return;
         }
         let fade_duration = self.animation_duration(Duration::from_millis(500));
@@ -257,7 +269,7 @@ impl Ferese {
     pub(crate) fn confirm_lock_if_ready(&mut self) {
         // With no outputs there is no visible content to protect. Re-evaluate
         // here after acquisition and output removal as well as presentation.
-        if !self.session_lock.ready_for_idle(self.space.outputs()) {
+        if !self.lock_outputs_protected() {
             return;
         }
 
@@ -627,6 +639,42 @@ mod tests {
             .next_deadline(Duration::ZERO, Duration::ZERO),
             None
         );
+    }
+
+    #[test]
+    fn mirror_must_present_protected_frame_before_lock_is_ready() {
+        let make_output = |name: &str| {
+            Output::new(
+                name.into(),
+                smithay::output::PhysicalProperties {
+                    size: (0, 0).into(),
+                    subpixel: smithay::output::Subpixel::Unknown,
+                    make: "test".into(),
+                    model: "test".into(),
+                },
+            )
+        };
+        let source = make_output("source");
+        let mirror = make_output("mirror");
+        let mut lock = Lock {
+            lifecycle: Lifecycle::Orphaned,
+            ..Lock::default()
+        };
+        lock.presented.insert(source.clone());
+        let displays = [&source, &mirror];
+        assert!(
+            !lock.ready_for_idle(displays.into_iter()),
+            "failed mirror rendering must block confirmation"
+        );
+        lock.presented.insert(mirror.clone());
+        assert!(lock.ready_for_idle(displays.into_iter()));
+        lock.output_added(&mirror);
+        assert!(
+            !lock.ready_for_idle(displays.into_iter()),
+            "reconfiguration invalidates physical protection"
+        );
+        lock.output_removed(&mirror);
+        assert!(lock.ready_for_idle(std::iter::once(&source)));
     }
 
     #[test]

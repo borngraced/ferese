@@ -251,6 +251,47 @@ mod tests {
     }
 
     #[test]
+    fn invalid_monitor_reload_keeps_last_good_runtime_configuration() {
+        const CHILD: &str = "FERESE_OUTPUT_RELOAD_TEST_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            use std::os::unix::fs::PermissionsExt;
+            let directory = Directory::new();
+            std::fs::set_permissions(&directory.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "reload::tests::invalid_monitor_reload_keeps_last_good_runtime_configuration",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("XDG_RUNTIME_DIR", &directory.0)
+                .env("XDG_CONFIG_HOME", &directory.0)
+                .env_remove("FERESE_SOCKET")
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+            return;
+        }
+        let directory = Directory::new();
+        let source = "output-profile mobile { output eDP-1 scale=1.75; }";
+        let (_, runtime, _) = crate::theme::prepare(source, &directory.0).unwrap();
+        let mut event_loop = smithay::reexports::calloop::EventLoop::try_new().unwrap();
+        let display = smithay::reexports::wayland_server::Display::new().unwrap();
+        let mut state = crate::Ferese::new(&mut event_loop, display, runtime).unwrap();
+        state.config_source = Some(source.into());
+        let accepted = state.output_profiles.clone();
+        for invalid in [
+            "output-profile bad { output eDP-1 scale=0; }",
+            "output-profile bad layout=\"mirror\" { output eDP-1; }",
+            "output-profile mobile { output eDP-1; }\noutput-profile mobile { output DP-1; }",
+        ] {
+            assert!(state.reload_config_source(invalid.into()).is_err());
+            assert_eq!(state.output_profiles, accepted);
+            assert_eq!(state.config_source.as_deref(), Some(source));
+        }
+    }
+
+    #[test]
     fn runtime_validation_rejects_bad_edits_before_application() {
         for source in [
             "animations {\n    speed 0\n}\n",

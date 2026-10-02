@@ -43,6 +43,7 @@ impl Config {
 
                         Ok(OutputSettings {
                             auto_refresh: output.auto_refresh,
+                            required: output.required,
                             matcher: matcher.to_owned(),
                             enabled: output.enabled,
                             mode: output
@@ -58,9 +59,38 @@ impl Config {
                     })
                     .collect::<Result<Vec<_>, ConfigError>>()?;
 
+                if !outputs.iter().any(|output| output.enabled) {
+                    return Err(ConfigError::OutputProfile(format!(
+                        "profile {name:?} disables every output"
+                    )));
+                }
+                if profile.layout != OutputLayout::Mirror && profile.mirror_source.is_some() {
+                    return Err(ConfigError::OutputProfile(format!(
+                        "profile {name:?}: mirror-source requires layout=\"mirror\""
+                    )));
+                }
+                if let Some(source) = &profile.mirror_source
+                    && !outputs.iter().any(|output| &output.matcher == source && output.enabled)
+                {
+                    return Err(ConfigError::OutputProfile(format!(
+                        "profile {name:?}: mirror source must name an enabled output"
+                    )));
+                }
+                if profile.layout == OutputLayout::Mirror && outputs.iter().filter(|output| output.enabled).count() < 2
+                {
+                    return Err(ConfigError::OutputProfile(format!(
+                        "profile {name:?}: mirror needs at least two enabled outputs"
+                    )));
+                }
+
                 Ok(OutputProfile {
                     name: name.to_owned(),
                     outputs,
+                    layout: profile.layout,
+                    confirm_timeout: profile.confirm_timeout,
+                    lid_policy: profile.lid_policy,
+                    lid_closed: profile.lid_closed,
+                    mirror_source: profile.mirror_source.clone(),
                 })
             })
             .collect()
@@ -112,17 +142,35 @@ pub(super) const fn default_output_scale() -> f64 {
 pub struct OutputProfile {
     pub name: String,
     pub outputs: Vec<OutputSettings>,
+    pub layout: OutputLayout,
+    pub confirm_timeout: u32,
+    pub lid_policy: LidPolicy,
+    pub lid_closed: Option<bool>,
+    pub mirror_source: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutputSettings {
     pub auto_refresh: bool,
+    pub required: bool,
     pub matcher: String,
     pub enabled: bool,
     pub mode: Option<OutputModeRequest>,
     pub scale: f64,
     pub transform: OutputTransform,
     pub position: Option<[i32; 2]>,
+}
+
+impl OutputSettings {
+    /// Selectors and requiredness affect matching, not the applied output state.
+    pub(crate) fn same_configuration(&self, other: &Self) -> bool {
+        self.enabled == other.enabled
+            && self.mode == other.mode
+            && self.auto_refresh == other.auto_refresh
+            && self.scale == other.scale
+            && self.transform == other.transform
+            && self.position == other.position
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -152,9 +200,39 @@ pub enum OutputTransform {
     Flipped270,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum LidPolicy {
+    #[default]
+    DockOrSuspend,
+    Ignore,
+}
+
+const fn default_confirm_timeout() -> u32 {
+    15
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutputLayout {
+    InternalOnly,
+    ExternalOnly,
+    #[default]
+    Extend,
+    Mirror,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub(super) struct OutputProfileConfig {
     pub(super) name: String,
+    #[serde(default)]
+    pub(super) layout: OutputLayout,
+    #[serde(default = "default_confirm_timeout")]
+    pub(super) confirm_timeout: u32,
+    #[serde(default)]
+    pub(super) lid_policy: LidPolicy,
+    pub(super) lid_closed: Option<bool>,
+    pub(super) mirror_source: Option<String>,
     #[serde(default)]
     pub(super) outputs: Vec<OutputConfig>,
 }
@@ -163,6 +241,8 @@ pub(super) struct OutputProfileConfig {
 pub(super) struct OutputConfig {
     #[serde(default)]
     pub(super) auto_refresh: bool,
+    #[serde(default = "default_true")]
+    pub(super) required: bool,
     #[serde(rename = "match")]
     pub(super) matcher: String,
     #[serde(default = "default_true")]

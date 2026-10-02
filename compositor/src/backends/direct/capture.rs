@@ -30,7 +30,7 @@ pub(super) fn capture_output(
     Ok(())
 }
 
-fn render_capture<'a, E: RenderElement<GlesRenderer>>(
+pub(super) fn render_capture<'a, E: RenderElement<GlesRenderer>>(
     renderer: &mut GlesRenderer,
     texture: &'a mut Option<GlesTexture>,
     output: &Output,

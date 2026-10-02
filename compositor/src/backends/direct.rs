@@ -7,11 +7,13 @@ use std::time::{Duration, Instant};
 
 mod capture;
 mod lid;
+mod mirror;
 mod output_power;
 mod planes;
 mod redraw;
 mod scheduling;
 mod topology;
+mod transaction;
 use output_power::{OutputPower, Power};
 use redraw::{AnimationFallback, SchedulingMetrics};
 use scheduling::*;
@@ -49,6 +51,8 @@ use topology::{Topology, reconcile_outputs};
 use crate::Ferese;
 use crate::config::{OutputModeRequest, OutputProfile, OutputSettings, OutputTransform};
 use crate::metrics::RenderMetrics;
+use crate::monitor_identity::{Identity, IdentityRegistry};
+use crate::output_policy::{DesiredOutputConfiguration, ManualOverride, Monitor};
 use crate::render::{frame_effect_metrics, sampled_output_elements};
 
 pub struct DirectBackendState {
@@ -57,6 +61,16 @@ pub struct DirectBackendState {
     lid: lid::LidState,
     lid_reader: lid::Reader,
     topology: Topology,
+    identities: IdentityRegistry,
+    pub(crate) manual_outputs: ManualOverride,
+    desired_outputs: DesiredOutputConfiguration,
+    monitors: Vec<Monitor>,
+    output_error: Option<String>,
+    applied_outputs: DesiredOutputConfiguration,
+    revert_outputs: Option<DesiredOutputConfiguration>,
+    confirmation: Option<(DesiredOutputConfiguration, ManualOverride)>,
+    confirmation_timer: Option<RegistrationToken>,
+    confirmation_lid: bool,
     pub(crate) low_power: bool,
     devices: HashMap<DrmNode, DirectDevice>,
     input_devices: Vec<LibinputDevice>,
@@ -70,8 +84,40 @@ pub struct DirectBackendState {
 }
 
 impl DirectBackendState {
+    pub(crate) fn physical_outputs(&self) -> impl Iterator<Item = &Output> {
+        self.devices
+            .values()
+            .flat_map(|device| device.outputs.values().map(|output| &output.output))
+    }
+
+    pub(crate) fn output_configuration_error(&self) -> Option<&str> {
+        self.output_error.as_deref()
+    }
+
+    pub(crate) fn confirmation_pending(&self) -> bool {
+        self.confirmation.is_some()
+    }
+
+    pub(crate) fn reconciling(&self) -> bool {
+        self.topology.reconciling
+    }
+
     fn can_render(&self) -> bool {
         self.active && !self.topology.reconciling && !self.lid.pending()
+    }
+
+    pub(crate) fn scene_output(&self, state: &Ferese, output: &Output) -> Output {
+        let source = self
+            .devices
+            .values()
+            .flat_map(|device| device.outputs.values())
+            .find(|candidate| &candidate.output == output)
+            .and_then(|candidate| candidate.mirror_source.as_ref());
+        source
+            .and_then(|key| self.monitors.iter().find(|monitor| &monitor.key == key))
+            .and_then(|monitor| state.output_by_identity(&monitor.identity))
+            .cloned()
+            .unwrap_or_else(|| output.clone())
     }
 
     pub(crate) fn dump_scheduling_metrics(&self) {
@@ -144,9 +190,14 @@ impl DirectBackendState {
 #[derive(Clone, Debug)]
 pub(crate) struct ConnectedOutputInfo {
     pub connector: String,
+    pub connected: bool,
     pub identity: String,
+    pub internal: bool,
+    pub requested_enabled: bool,
+    pub mirror_source: Option<String>,
     pub enabled: bool,
     pub profile: Option<String>,
+    pub requested_profile: Option<String>,
     pub auto_refresh: bool,
     pub physical_size: Option<(u32, u32)>,
     pub current_mode: Option<ConnectedModeInfo>,
@@ -196,7 +247,13 @@ struct DirectOutput {
     mode: DrmMode,
     settings: OutputSettings,
     output: Output,
-    global: GlobalId,
+    global: Option<GlobalId>,
+    identity: String,
+    mirror_source: Option<String>,
+    mirror_texture: Option<GlesTexture>,
+    mirror_canvas: Option<Output>,
+    mirror_id: smithay::backend::renderer::element::Id,
+    mirror_commit: CommitCounter,
     surface: OutputCompositor,
     primary_commit: Option<CommitCounter>,
     capture_texture: Option<GlesTexture>,
@@ -211,11 +268,14 @@ struct DirectOutput {
     lock_frame_pending: bool,
 }
 
+#[derive(Clone)]
 struct OutputSelection {
     connector: connector::Info,
     crtc: crtc::Handle,
     mode: DrmMode,
     settings: OutputSettings,
+    identity: String,
+    mirror_source: Option<String>,
 }
 
 struct OutputScan {
@@ -248,6 +308,16 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
         lid: lid::LidState::default(),
         lid_reader,
         topology: Topology::default(),
+        identities: IdentityRegistry::default(),
+        manual_outputs: ManualOverride::default(),
+        desired_outputs: DesiredOutputConfiguration::default(),
+        monitors: Vec::new(),
+        output_error: None,
+        applied_outputs: DesiredOutputConfiguration::default(),
+        revert_outputs: None,
+        confirmation: None,
+        confirmation_timer: None,
+        confirmation_lid: false,
         low_power: super::power::low_power(false, super::power::battery_percent()),
         devices: HashMap::new(),
         input_devices: Vec::new(),
@@ -295,10 +365,15 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                 if let Some(backend) = state.direct_backend.as_mut() {
                     backend.active = false;
                     backend.lid.pause();
+                    backend.lid_reader.set_active(false);
                     if let Some(token) = backend.lid_reader.deadline.take() {
                         handle.remove(token);
                     }
                     backend.topology.dirty = true;
+                    backend.topology.coalescer.clear();
+                    if let Some(token) = backend.topology.settle_timer.take() {
+                        handle.remove(token);
+                    }
                     if let Some(token) = backend.topology.retry_timer.take() {
                         handle.remove(token);
                     }
@@ -339,6 +414,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
 
                 if let Some(backend) = state.direct_backend.as_mut() {
                     backend.active = true;
+                    backend.lid_reader.set_active(true);
                 }
 
                 let seat = state.seat.clone();
@@ -357,7 +433,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
             backend.topology.invalidated.insert(node);
         }
 
-        reconcile_outputs(state, false);
+        topology::hotplug(state);
     })?;
 
     tracing::info!(seat = %seat_name, "initialized direct session input and device discovery");
@@ -460,6 +536,145 @@ pub(crate) fn reload_outputs(state: &mut Ferese) {
     reconcile_outputs(state, false);
 }
 
+pub(crate) fn set_output_profile(state: &mut Ferese, name: &str) -> Result<(), String> {
+    let backend = state
+        .direct_backend
+        .as_mut()
+        .ok_or("monitor profiles require the direct DRM backend")?;
+    if !backend.active || backend.lid.pending() {
+        return Err("output session is inactive or refreshing lid state".into());
+    }
+    if name != "auto" && !state.output_profiles.iter().any(|profile| profile.name == name) {
+        return Err(format!("unknown output profile {name:?}"));
+    }
+    let previous = backend.manual_outputs.clone();
+    let known_good = backend.applied_outputs.clone();
+    backend.manual_outputs.profile = (name != "auto").then(|| name.to_owned());
+    backend.manual_outputs.internal = None;
+    let desired = crate::output_policy::select_profile(
+        &backend.monitors,
+        backend.lid.closed(),
+        &state.output_profiles,
+        &backend.manual_outputs,
+    );
+    if name != "auto" && desired.profile.as_deref() != Some(name) {
+        backend.manual_outputs = previous;
+        return Err("profile does not match the connected monitors/lid".into());
+    }
+    if let Err(error) = validate_live_outputs(state, &state.output_profiles) {
+        state.direct_backend.as_mut().unwrap().manual_outputs = previous;
+        return Err(error);
+    }
+    reconcile_outputs(state, false);
+    if let Some(error) = state.direct_backend.as_ref().unwrap().output_error.clone() {
+        state.direct_backend.as_mut().unwrap().manual_outputs = previous;
+        return Err(error);
+    }
+    if name != "auto"
+        && state
+            .direct_backend
+            .as_ref()
+            .unwrap()
+            .desired_outputs
+            .profile
+            .as_deref()
+            != Some(name)
+    {
+        state.direct_backend.as_mut().unwrap().manual_outputs = previous;
+        return Err("profile does not match the connected monitors/lid".into());
+    }
+    arm_output_confirmation(state, known_good, previous);
+    Ok(())
+}
+
+pub(crate) fn set_internal_output(state: &mut Ferese, enabled: bool) -> Result<(), String> {
+    let backend = state
+        .direct_backend
+        .as_mut()
+        .ok_or("internal panel control requires the direct DRM backend")?;
+    if !backend.active || backend.lid.pending() {
+        return Err("output session is inactive or refreshing lid state".into());
+    }
+    if !enabled
+        && !backend
+            .monitors
+            .iter()
+            .any(|monitor| !monitor.internal && monitor.usable)
+    {
+        return Err("cannot disable the last usable output".into());
+    }
+    let previous = backend.manual_outputs.clone();
+    let known_good = backend.applied_outputs.clone();
+    backend.manual_outputs.internal = Some(enabled);
+    reconcile_outputs(state, false);
+    if let Some(error) = state.direct_backend.as_ref().unwrap().output_error.clone() {
+        state.direct_backend.as_mut().unwrap().manual_outputs = previous;
+        return Err(error);
+    }
+    arm_output_confirmation(state, known_good, previous);
+    Ok(())
+}
+
+fn confirmation_baseline<T>(pending: Option<T>, previous: T) -> T {
+    pending.unwrap_or(previous)
+}
+
+fn arm_output_confirmation(state: &mut Ferese, previous: DesiredOutputConfiguration, manual: ManualOverride) {
+    let backend = state.direct_backend.as_mut().unwrap();
+    if let Some(token) = backend.confirmation_timer.take() {
+        state.loop_handle.remove(token);
+    }
+    let timeout = backend
+        .desired_outputs
+        .profile
+        .as_ref()
+        .and_then(|name| state.output_profiles.iter().find(|profile| &profile.name == name))
+        .map_or(15, |profile| profile.confirm_timeout);
+    let baseline = confirmation_baseline(backend.confirmation.take(), (previous, manual));
+    if timeout == 0 || baseline.0.outputs.is_empty() {
+        return;
+    }
+    backend.confirmation = Some(baseline);
+    backend.confirmation_lid = backend.lid.closed();
+    match state.loop_handle.insert_source(
+        Timer::from_duration(Duration::from_secs(timeout.into())),
+        |_, _, state| {
+            if let Some(backend) = state.direct_backend.as_mut() {
+                backend.confirmation_timer = None;
+            }
+            let _ = confirm_output_configuration(state, false);
+            TimeoutAction::Drop
+        },
+    ) {
+        Ok(token) => state.direct_backend.as_mut().unwrap().confirmation_timer = Some(token),
+        Err(error) => {
+            tracing::warn!(%error, "could not arm monitor confirmation; reverting");
+            let _ = confirm_output_configuration(state, false);
+        }
+    }
+}
+
+pub(crate) fn confirm_output_configuration(state: &mut Ferese, confirm: bool) -> Result<(), String> {
+    let backend = state.direct_backend.as_mut().ok_or("direct backend unavailable")?;
+    if let Some(token) = backend.confirmation_timer.take() {
+        state.loop_handle.remove(token);
+    }
+    if let Some((previous, manual)) = backend.confirmation.take()
+        && !confirm
+    {
+        backend.revert_outputs = Some(crate::output_policy::restore_configuration(
+            &previous,
+            &backend.monitors,
+        ));
+        backend.manual_outputs = manual;
+        reconcile_outputs(state, false);
+        if let Some(error) = state.direct_backend.as_ref().unwrap().output_error.clone() {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_live_outputs(state: &Ferese, profiles: &[OutputProfile]) -> Result<(), String> {
     let Some(backend) = state.direct_backend.as_ref() else {
         return Ok(());
@@ -468,10 +683,34 @@ pub(crate) fn validate_live_outputs(state: &Ferese, profiles: &[OutputProfile]) 
         // Syntax/config validation still runs; live probing waits for ownership.
         return Ok(());
     }
+    for profile in profiles {
+        let mut matched = HashSet::new();
+        for settings in &profile.outputs {
+            let matches = backend
+                .monitors
+                .iter()
+                .filter(|monitor| monitor.matches(&settings.matcher))
+                .collect::<Vec<_>>();
+            if matches.len() > 1 || matches.iter().any(|monitor| !matched.insert(&monitor.key)) {
+                return Err(format!(
+                    "profile {:?} contains ambiguous or overlapping monitor selectors",
+                    profile.name
+                ));
+            }
+        }
+    }
+    let mut desired = crate::output_policy::select_profile(
+        &backend.monitors,
+        backend.lid.closed(),
+        profiles,
+        &backend.manual_outputs,
+    );
+    resolve_output_positions(backend, &mut desired)?;
     let mut usable = 0;
     for device in backend.devices.values() {
-        let mut scan = select_outputs(&device.drm, profiles, backend.low_power).map_err(|e| e.to_string())?;
-        apply_lid_policy(&mut scan, backend.lid.closed());
+        let scan =
+            select_outputs(&device.drm, &backend.monitors, &desired, backend.low_power).map_err(|e| e.to_string())?;
+        transaction::validate_device(device, &scan).map_err(|error| error.to_string())?;
         usable += scan.selections.len();
     }
     if usable == 0 {
@@ -830,9 +1069,10 @@ fn redraw(state: &mut Ferese, selected: Option<&[Output]>, source: &'static std:
     let affected = outputs
         .iter()
         .map(|(_, _, output)| {
-            selected.is_none_or(|selected| selected.contains(output))
-                || state.output_has_animations(output)
-                || state.output_has_pending_visual_changes(output)
+            let scene = state.direct_backend.as_ref().unwrap().scene_output(state, output);
+            selected.is_none_or(|selected| selected.contains(output) || selected.contains(&scene))
+                || state.output_has_animations(&scene)
+                || state.output_has_pending_visual_changes(&scene)
         })
         .collect::<Vec<_>>();
     state.advance_animations(Instant::now());
@@ -889,30 +1129,7 @@ fn internal_connector(interface: connector::Interface) -> bool {
     )
 }
 
-fn apply_lid_policy(scan: &mut OutputScan, closed: bool) {
-    let external_available = scan
-        .selections
-        .iter()
-        .any(|selection| !internal_connector(selection.connector.interface()));
-    if !lid_hides_panel(closed, external_available) {
-        return;
-    }
-    let internal = scan
-        .selections
-        .iter()
-        .filter(|selection| internal_connector(selection.connector.interface()))
-        .map(|selection| selection.connector.to_string())
-        .collect::<HashSet<_>>();
-    scan.selections
-        .retain(|selection| !internal_connector(selection.connector.interface()));
-    for output in &mut scan.connected_outputs {
-        if internal.contains(&output.connector) {
-            output.enabled = false;
-            output.current_mode = None;
-        }
-    }
-}
-
+#[cfg(test)]
 fn lid_hides_panel(closed: bool, external_available: bool) -> bool {
     closed && external_available
 }
@@ -943,6 +1160,10 @@ fn render_output(
         .and_then(|backend| backend.devices.get(&node))
         .and_then(|device| device.outputs.get(&crtc))
         .map_or(0, |output| output.scheduler.missed_deadlines);
+    let scene_output = state.direct_backend.as_ref().map(|backend| {
+        let physical = &backend.devices[&node].outputs[&crtc].output;
+        backend.scene_output(state, physical)
+    });
     let Some(mut device) = state
         .direct_backend
         .as_mut()
@@ -968,21 +1189,32 @@ fn render_output(
         .scheduler
         .forecast_time(now, plan)
         .map_or(Duration::ZERO, |target| target.saturating_sub(now));
-    let frame = state.sample_frame(&output.output, horizon);
+    let scene_output = scene_output.unwrap_or_else(|| output.output.clone());
+    let frame = state.sample_frame(&scene_output, horizon);
     let rendered = {
         (|| -> Result<bool, Box<dyn Error>> {
             state.process_dmabuf_imports(&mut device.renderer, Some(device.render_node));
-            let elements = sampled_output_elements(state, &mut device.renderer, &output.output, true, &frame);
+            let elements = if output.mirror_source.is_some() {
+                mirror::elements(state, &mut device.renderer, &scene_output, &frame, &mut output)?
+            } else {
+                sampled_output_elements(state, &mut device.renderer, &output.output, true, &frame)
+            };
             let effects = frame_effect_metrics(&elements, output.output.current_scale().fractional_scale());
             let flags = planes::frame_flags(
                 state.output_has_fullscreen_for_frame(&output.output, frame.overview.is_presenting()),
                 frame.animating,
                 state.session_lock.active(),
             );
-            let result =
-                output
-                    .surface
-                    .render_frame(&mut device.renderer, &elements, [0.035, 0.04, 0.055, 1.0], flags)?;
+            let result = output.surface.render_frame(
+                &mut device.renderer,
+                &elements,
+                if output.mirror_source.is_some() {
+                    [0.0, 0.0, 0.0, 1.0]
+                } else {
+                    [0.035, 0.04, 0.055, 1.0]
+                },
+                flags,
+            )?;
 
             if result.needs_sync()
                 && let PrimaryPlaneElement::Swapchain(primary) = &result.primary_element
@@ -1033,16 +1265,22 @@ fn render_output(
 
                 PrimaryPlaneElement::Element(_) => (Vec::new(), None),
             };
-            let presentation = crate::presentation::take_output_feedback(
-                state,
-                &output.output,
-                &result.states,
-                Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
-            );
+            let presentation = if output.mirror_source.is_some() {
+                OutputPresentationFeedback::new(&output.output)
+            } else {
+                crate::presentation::take_output_feedback(
+                    state,
+                    &output.output,
+                    &result.states,
+                    Kind::Vsync | Kind::HwClock | Kind::HwCompletion,
+                )
+            };
             let visibility = result.states.clone();
             drop(result);
             output.surface.queue_frame(presentation)?;
-            state.display_presentation.queued(&output.output, &visibility);
+            if output.mirror_source.is_none() {
+                state.display_presentation.queued(&output.output, &visibility);
+            }
             output.primary_commit = primary_commit;
             output
                 .render_metrics
@@ -1074,7 +1312,7 @@ fn render_output(
 
     device.outputs.insert(crtc, output);
     restore_device(state, node, device);
-    if !submitted {
+    if !submitted && scene_output == state.direct_backend.as_ref().unwrap().devices[&node].outputs[&crtc].output {
         schedule_frame_callbacks(state, node, crtc, plan.present_at);
     }
 
@@ -1098,243 +1336,113 @@ fn direct_node_for_device(state: &Ferese, device_id: libc::dev_t) -> Option<DrmN
 }
 
 fn rescan_device(state: &mut Ferese, node: DrmNode) -> Result<bool, ()> {
-    if state.direct_backend.as_ref().is_none_or(|backend| !backend.active) {
-        return Err(());
-    }
-    let Some(mut device) = state
-        .direct_backend
-        .as_mut()
-        .and_then(|backend| backend.devices.remove(&node))
-    else {
+    let Some(backend) = state.direct_backend.as_mut().filter(|backend| backend.active) else {
         return Err(());
     };
-
-    let mut scan = match select_outputs(
+    let Some(mut device) = backend.devices.remove(&node) else {
+        return Err(());
+    };
+    let scan = select_outputs(
         &device.drm,
-        &state.output_profiles,
-        state.direct_backend.as_ref().is_some_and(|backend| backend.low_power),
-    ) {
-        Ok(scan) => scan,
-        Err(error) => {
-            tracing::error!(?node, %error, "failed to scan DRM connectors");
-            restore_device(state, node, device);
-            return Err(());
-        }
-    };
-
-    let lid_closed = state
-        .direct_backend
-        .as_ref()
-        .is_some_and(|backend| backend.lid.closed());
-    apply_lid_policy(&mut scan, lid_closed);
-    device.connected_outputs = scan.connected_outputs;
-    let mut complete = true;
-
-    let mut selections = scan
-        .selections
-        .into_iter()
-        .map(|selection| (selection.crtc, selection))
-        .collect::<HashMap<_, _>>();
-    let existing = device.outputs.keys().copied().collect::<Vec<_>>();
-    let mut deferred_removals = Vec::new();
-
-    for crtc in existing {
-        if let Some(selection) = selections.get(&crtc)
-            && let Some(output) = device.outputs.get_mut(&crtc)
-            && selection.connector.handle() == output.connector
-            && (selection.mode != output.mode || selection.settings != output.settings)
-        {
-            // Keep the wl_output/global and workspace ownership alive. A mode
-            // change is tested by DRM before updating client-visible geometry.
-            let result = if selection.mode != output.mode {
-                output.surface.use_mode(selection.mode)
-            } else {
-                Ok(())
-            };
-
-            match result {
-                Ok(()) => {
-                    let old_geometry = state.space.output_geometry(&output.output);
-                    output.mode = selection.mode;
-                    cancel_output_timers(&state.loop_handle, output);
-                    output.settings = selection.settings.clone();
-                    let position = selection.settings.position.unwrap_or_else(|| {
-                        state
-                            .space
-                            .output_geometry(&output.output)
-                            .map(|g| [g.loc.x, g.loc.y])
-                            .unwrap_or([0, 0])
-                    });
-
-                    output.output.change_current_state(
-                        Some(OutputMode::from(output.mode)),
-                        Some(output_transform(output.settings.transform)),
-                        Some(Scale::Fractional(output.settings.scale)),
-                        Some((position[0], position[1]).into()),
-                    );
-                    state.space.map_output(&output.output, (position[0], position[1]));
-                    if let Some(id) = state.output_id(&output.output)
-                        && let Some(g) = state.space.output_geometry(&output.output)
-                    {
-                        state.output_workspaces.update_geometry(
-                            id,
-                            ferese_core::OutputGeometry::new(g.loc.x, g.loc.y, g.size.w, g.size.h),
-                        );
-                        if let Some(old) = old_geometry {
-                            state.reposition_output_floats(
-                                id,
-                                ferese_layout::Rect::new(
-                                    old.loc.x as f64,
-                                    old.loc.y as f64,
-                                    old.size.w as f64,
-                                    old.size.h as f64,
-                                ),
-                                ferese_layout::Rect::new(
-                                    g.loc.x as f64,
-                                    g.loc.y as f64,
-                                    g.size.w as f64,
-                                    g.size.h as f64,
-                                ),
-                            );
-                        }
-                    }
-
-                    output.surface.reset_buffer_ages();
-                    output.primary_commit = None;
-                    output.capture_texture = None;
-                    if let Some(backend) = state.direct_backend.as_mut() {
-                        let clock = backend.presentation.entry((node, crtc)).or_default();
-                        clock.set_refresh(OutputMode::from(output.mode).refresh);
-                        clock.reset_timing();
-                    }
-                }
-
-                Err(error) => {
-                    complete = false;
-                    tracing::warn!(?crtc, %error, "display change failed; retaining current output")
-                }
-            }
-
-            selections.remove(&crtc);
-            continue;
-        }
-
-        let unchanged = device.outputs.get(&crtc).is_some_and(|output| {
-            selections.get(&crtc).is_some_and(|selection| {
-                selection.connector.handle() == output.connector
-                    && selection.mode == output.mode
-                    && selection.settings == output.settings
-            })
-        });
-
-        if unchanged {
-            selections.remove(&crtc);
-            continue;
-        }
-
-        // Add replacements on free CRTCs before removing vanished outputs so
-        // workspace evacuation always has a real destination. Reused CRTCs
-        // still need their old surface released first.
-        if !selections.contains_key(&crtc) {
-            deferred_removals.push(crtc);
-            continue;
-        }
-
-        if let Some(mut output) = device.outputs.remove(&crtc) {
-            cancel_output_timers(&state.loop_handle, &mut output);
-            state.display_handle.disable_global::<Ferese>(output.global);
-            state.unregister_output(&output.output);
-            if let Some(backend) = state.direct_backend.as_mut() {
-                backend.presentation.remove(&(node, crtc));
-            }
-
-            tracing::info!(?node, ?crtc, "removed DRM output");
-        }
+        &backend.monitors,
+        &backend.desired_outputs,
+        backend.low_power,
+    );
+    let result = scan
+        .map_err(|error| error.to_string())
+        .and_then(|scan| transaction::apply_device(state, node, &mut device, scan));
+    if let Err(error) = &result {
+        tracing::warn!(?node, %error, "output transaction failed; restored known-good outputs where possible");
+        state.direct_backend.as_mut().unwrap().output_error = Some(error.clone());
+        transaction::update_applied_info(&mut device);
     }
-
-    for (_, selection) in selections {
-        let crtc = selection.crtc;
-        let mode = selection.mode;
-        match create_direct_output(state, &mut device.drm, &device.gbm, &device.renderer, selection) {
-            Ok(output) => {
-                state
-                    .direct_backend
-                    .as_mut()
-                    .expect("direct backend state remains initialized")
-                    .presentation
-                    .entry((node, crtc))
-                    .or_default()
-                    .set_refresh(OutputMode::from(mode).refresh);
-                device.outputs.insert(crtc, output);
-            }
-
-            Err(error) => {
-                complete = false;
-                tracing::error!(?node, ?crtc, %error, "failed to add DRM output");
-            }
-        }
-    }
-
-    for crtc in deferred_removals {
-        let keep_internal = device.outputs.get(&crtc).is_some_and(|output| output.internal)
-            && lid_closed
-            && device.outputs.get(&crtc).is_some_and(|output| {
-                device
-                    .connected_outputs
-                    .iter()
-                    .any(|info| info.connector == output.output.name())
-            })
-            && !device.outputs.values().any(|output| !output.internal);
-        if keep_internal {
-            tracing::warn!(?crtc, "keeping laptop panel enabled: external output activation failed");
-            if let Some(output) = device.outputs.get(&crtc)
-                && let Some(info) = device
-                    .connected_outputs
-                    .iter_mut()
-                    .find(|info| info.connector == output.output.name())
-            {
-                info.enabled = true;
-                info.current_mode = Some(connected_mode_info(output.mode));
-            }
-
-            continue;
-        }
-
-        if let Some(mut output) = device.outputs.remove(&crtc) {
-            cancel_output_timers(&state.loop_handle, &mut output);
-            state.display_handle.disable_global::<Ferese>(output.global);
-            state.unregister_output(&output.output);
-            if let Some(backend) = state.direct_backend.as_mut() {
-                backend.presentation.remove(&(node, crtc));
-            }
-        }
-    }
-
-    {
-        // Connector detection is not proof that its requested mode was applied.
-        for info in &mut device.connected_outputs {
-            info.enabled = false;
-            info.current_mode = None;
-        }
-
-        for output in device.outputs.values() {
-            if let Some(info) = device
-                .connected_outputs
-                .iter_mut()
-                .find(|info| info.connector == output.output.name())
-            {
-                info.enabled = true;
-                info.current_mode = Some(connected_mode_info(output.mode));
-                info.auto_refresh = output.settings.auto_refresh;
-                info.scale = output.settings.scale;
-                info.transform = output.settings.transform;
-                info.configured_position = output.settings.position;
-            }
-        }
-    }
-
     restore_device(state, node, device);
-    Ok(complete)
+    Ok(result.is_ok())
+}
+
+fn refresh_connected_info(state: &mut Ferese) {
+    let backend = state.direct_backend.as_mut().unwrap();
+    for device in backend.devices.values_mut() {
+        if let Ok(scan) = select_outputs(
+            &device.drm,
+            &backend.monitors,
+            &backend.desired_outputs,
+            backend.low_power,
+        ) {
+            device.connected_outputs = scan.connected_outputs;
+        }
+        transaction::update_applied_info(device);
+        for info in &mut device.connected_outputs {
+            info.profile = backend.applied_outputs.profile.clone();
+        }
+    }
+    let mut inventory = backend
+        .devices
+        .values()
+        .flat_map(|device| device.connected_outputs.clone())
+        .collect::<Vec<_>>();
+    for previous in &backend.connected_outputs {
+        if !inventory.iter().any(|output| output.identity == previous.identity) {
+            let mut missing = previous.clone();
+            missing.connected = false;
+            missing.enabled = false;
+            missing.requested_enabled = false;
+            missing.current_mode = None;
+            inventory.push(missing);
+        }
+    }
+    let identities = inventory
+        .iter()
+        .map(|output| output.identity.clone())
+        .collect::<Vec<_>>();
+    backend.connected_outputs = inventory;
+    for identity in identities {
+        state.ensure_output_identity(&identity);
+    }
+}
+
+fn remember_applied_configuration(state: &mut Ferese) {
+    let backend = state.direct_backend.as_mut().unwrap();
+    let mut applied = backend.desired_outputs.clone();
+    for desired in &mut applied.outputs {
+        let monitor = backend.monitors.iter().find(|monitor| monitor.key == desired.key);
+        let output = monitor.and_then(|monitor| {
+            backend
+                .devices
+                .values()
+                .flat_map(|device| device.outputs.values())
+                .find(|output| output.identity == monitor.identity)
+        });
+        desired.settings.enabled = output.is_some();
+        if let Some(output) = output {
+            desired.settings = output.settings.clone();
+            let (width, height) = output.mode.size();
+            desired.settings.mode = Some(OutputModeRequest {
+                width,
+                height,
+                refresh_millihertz: Some(OutputMode::from(output.mode).refresh as u32),
+            });
+            let position = output.output.current_location();
+            desired.settings.position = Some([position.x, position.y]);
+            desired.mirror_source = output.mirror_source.clone();
+        }
+    }
+    backend.applied_outputs = applied;
+}
+
+fn validate_desired_outputs(state: &Ferese) -> Result<(), String> {
+    let backend = state.direct_backend.as_ref().ok_or("direct backend unavailable")?;
+    for device in backend.devices.values() {
+        let scan = select_outputs(
+            &device.drm,
+            &backend.monitors,
+            &backend.desired_outputs,
+            backend.low_power,
+        )
+        .map_err(|error| error.to_string())?;
+        transaction::validate_device(device, &scan).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn remove_device(state: &mut Ferese, node: DrmNode) {
@@ -1355,7 +1463,9 @@ fn remove_device(state: &mut Ferese, node: DrmNode) {
     state.render.forget_context(&context);
     for (crtc, mut output) in device.outputs {
         cancel_output_timers(&state.loop_handle, &mut output);
-        state.display_handle.disable_global::<Ferese>(output.global);
+        if let Some(global) = output.global.take() {
+            state.display_handle.disable_global::<Ferese>(global);
+        }
         state.unregister_output(&output.output);
         if let Some(backend) = state.direct_backend.as_mut() {
             backend.presentation.remove(&(node, crtc));
@@ -1403,7 +1513,8 @@ fn animation_fallbacks(state: &mut Ferese) -> Vec<(DrmNode, crtc::Handle, Instan
                 .direct_backend
                 .as_ref()
                 .is_some_and(|backend| backend.can_render());
-        let animating = enabled && state.output_has_animations(&identity);
+        let scene = state.direct_backend.as_ref().unwrap().scene_output(state, &identity);
+        let animating = enabled && state.output_has_animations(&scene);
         let backend = state.direct_backend.as_mut().unwrap();
         let output = backend.devices.get_mut(&node).unwrap().outputs.get_mut(&crtc).unwrap();
         // Preserve recovery of a requested final frame if another output
@@ -1515,7 +1626,7 @@ fn schedule_frame_callbacks(state: &mut Ferese, node: DrmNode, crtc: crtc::Handl
         return;
     };
 
-    if output.callback_timer.is_some() || output.frame_pending {
+    if output.mirror_source.is_some() || output.callback_timer.is_some() || output.frame_pending {
         return;
     }
 
@@ -1630,7 +1741,12 @@ fn send_frame_callbacks(state: &mut Ferese, output: &Output) {
     }
 }
 
-fn select_outputs(drm: &DrmDevice, profiles: &[OutputProfile], low_power: bool) -> io::Result<OutputScan> {
+fn select_outputs(
+    drm: &DrmDevice,
+    monitors: &[Monitor],
+    desired: &DesiredOutputConfiguration,
+    low_power: bool,
+) -> io::Result<OutputScan> {
     let resources = drm.resource_handles()?;
     let connected = resources
         .connectors()
@@ -1640,36 +1756,24 @@ fn select_outputs(drm: &DrmDevice, profiles: &[OutputProfile], low_power: bool) 
         .into_iter()
         .filter(|connector| connector.state() == connector::State::Connected)
         .collect::<Vec<_>>();
-    let identities = connected
-        .iter()
-        .map(|connector| connector_identity(drm, connector))
-        .collect::<Vec<_>>();
-    let active_profile = profiles.iter().find(|profile| {
-        profile.outputs.iter().all(|settings| {
-            connected
-                .iter()
-                .zip(&identities)
-                .any(|(connector, identity)| output_matches(settings, connector, identity))
-        })
-    });
-    if let Some(profile) = active_profile {
-        tracing::info!(profile = %profile.name, "selected output profile");
-    }
-
+    let device_key = drm_device_key(drm);
     let mut selections = Vec::new();
     let mut connected_outputs = Vec::new();
     let mut used_crtcs = HashSet::new();
 
-    for (connector, identity) in connected.into_iter().zip(identities) {
-        let settings = active_profile
-            .and_then(|profile| {
-                profile
-                    .outputs
-                    .iter()
-                    .find(|settings| output_matches(settings, &connector, &identity))
-            })
-            .cloned()
-            .unwrap_or_else(|| default_output_settings(connector.to_string()));
+    for connector in connected {
+        let key = format!("{device_key}/{}", connector);
+        let monitor = monitors
+            .iter()
+            .find(|monitor| monitor.key == key)
+            .ok_or_else(|| io::Error::other("connector topology changed during reconciliation"))?;
+        let desired_output = desired
+            .outputs
+            .iter()
+            .find(|output| output.key == key)
+            .ok_or_else(|| io::Error::other("connector missing from desired configuration"))?;
+        let identity = monitor.identity.clone();
+        let settings = desired_output.settings.clone();
         let selected_mode = settings
             .enabled
             .then(|| {
@@ -1691,11 +1795,41 @@ fn select_outputs(drm: &DrmDevice, profiles: &[OutputProfile], low_power: bool) 
                 }
             })
             .flatten();
+        if settings.enabled && selected_mode.is_none() && settings.mode.is_some() {
+            return Err(io::Error::other(format!(
+                "requested mode for {} is unavailable",
+                connector
+            )));
+        }
+        if let Some(mode) = selected_mode {
+            let size = output_transform(settings.transform).transform_size(OutputMode::from(mode).size);
+            let width = (size.w as f64 / settings.scale).round();
+            let height = (size.h as f64 / settings.scale).round();
+            if width < 1.0 || height < 1.0 || width > i32::MAX as f64 || height > i32::MAX as f64 {
+                return Err(io::Error::other(format!(
+                    "scale for {} creates invalid logical geometry",
+                    connector
+                )));
+            }
+            if let Some([x, y]) = settings.position
+                && (x.checked_add(width as i32).is_none() || y.checked_add(height as i32).is_none())
+            {
+                return Err(io::Error::other(format!(
+                    "position for {} overflows logical geometry",
+                    connector
+                )));
+            }
+        }
         connected_outputs.push(ConnectedOutputInfo {
             connector: connector.to_string(),
+            connected: true,
             identity: identity.clone(),
+            internal: monitor.internal,
+            requested_enabled: settings.enabled,
+            mirror_source: desired_output.mirror_source.clone(),
             enabled: settings.enabled,
-            profile: active_profile.map(|profile| profile.name.clone()),
+            profile: desired.profile.clone(),
+            requested_profile: desired.profile.clone(),
             auto_refresh: settings.auto_refresh,
             physical_size: connector.size(),
             current_mode: selected_mode.map(connected_mode_info),
@@ -1731,6 +1865,8 @@ fn select_outputs(drm: &DrmDevice, profiles: &[OutputProfile], low_power: bool) 
                 crtc,
                 mode,
                 settings,
+                identity,
+                mirror_source: desired_output.mirror_source.clone(),
             });
         }
     }
@@ -1752,22 +1888,6 @@ fn connected_mode_info(mode: DrmMode) -> ConnectedModeInfo {
     }
 }
 
-fn output_matches(settings: &OutputSettings, connector: &connector::Info, identity: &str) -> bool {
-    settings.matcher == connector.to_string() || settings.matcher == identity
-}
-
-fn default_output_settings(matcher: String) -> OutputSettings {
-    OutputSettings {
-        auto_refresh: false,
-        matcher,
-        enabled: true,
-        mode: None,
-        scale: 1.0,
-        transform: OutputTransform::Normal,
-        position: None,
-    }
-}
-
 fn select_mode(connector: &connector::Info, requested: Option<OutputModeRequest>) -> Option<DrmMode> {
     let fallback = || {
         connector
@@ -1785,25 +1905,14 @@ fn select_mode(connector: &connector::Info, requested: Option<OutputModeRequest>
         .modes()
         .iter()
         .filter(|mode| mode.size() == (requested.width, requested.height));
-    let selected = if let Some(refresh) = requested.refresh_millihertz {
+    if let Some(refresh) = requested.refresh_millihertz {
         matching
             .min_by_key(|mode| OutputMode::from(**mode).refresh.unsigned_abs().abs_diff(refresh))
             .filter(|mode| OutputMode::from(**mode).refresh.unsigned_abs().abs_diff(refresh) <= 1_000)
             .copied()
     } else {
         matching.max_by_key(|mode| OutputMode::from(**mode).refresh).copied()
-    };
-    if selected.is_none() {
-        tracing::warn!(
-            output = %connector,
-            width = requested.width,
-            height = requested.height,
-            refresh_millihertz = ?requested.refresh_millihertz,
-            "requested output mode is unavailable; using preferred mode"
-        );
     }
-
-    selected.or_else(fallback)
 }
 
 fn create_direct_output(
@@ -1812,14 +1921,16 @@ fn create_direct_output(
     gbm: &GbmDevice<DrmDeviceFd>,
     renderer: &GlesRenderer,
     selection: OutputSelection,
+    publish: bool,
 ) -> Result<DirectOutput, Box<dyn Error>> {
     let OutputSelection {
         connector,
         crtc,
         mode,
         settings,
+        identity,
+        mirror_source,
     } = selection;
-    let identity = connector_identity(drm, &connector);
     let drm_surface = drm.create_surface(crtc, mode, &[connector.handle()])?;
     let allocator = GbmAllocator::new(gbm.clone(), GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT);
     let node = DrmNode::from_file(gbm.as_fd())?;
@@ -1844,7 +1955,14 @@ fn create_direct_output(
     )?;
     // Publish only after DRM/GBM creation succeeds; failed activation must not
     // leave a phantom output/workspace that could receive evacuated windows.
-    let (output, global) = create_output(state, &connector, mode, identity, &settings);
+    let (output, global) = create_output(
+        state,
+        &connector,
+        mode,
+        identity.clone(),
+        &settings,
+        publish && mirror_source.is_none(),
+    );
     surface.set_output_mode_source((&output).into());
     let render_metrics = RenderMetrics::from_environment(output.name());
 
@@ -1856,6 +1974,12 @@ fn create_direct_output(
         settings: settings.clone(),
         output,
         global,
+        identity,
+        mirror_source,
+        mirror_texture: None,
+        mirror_canvas: None,
+        mirror_id: smithay::backend::renderer::element::Id::new(),
+        mirror_commit: CommitCounter::default(),
         surface,
         primary_commit: None,
         capture_texture: None,
@@ -1877,21 +2001,35 @@ fn create_output(
     mode: DrmMode,
     identity: String,
     settings: &OutputSettings,
-) -> (Output, GlobalId) {
+    publish: bool,
+) -> (Output, Option<GlobalId>) {
     let name = connector.to_string();
     let physical_size = connector.size().unwrap_or((0, 0));
+    let edid_identity = identity
+        .strip_prefix("edid:")
+        .map(|value| value.split(':').collect::<Vec<_>>());
     let output = Output::new(
         name,
         PhysicalProperties {
             size: (physical_size.0 as i32, physical_size.1 as i32).into(),
             subpixel: Subpixel::from(connector.subpixel()),
-            make: "Unknown".into(),
-            model: "Unknown".into(),
+            make: edid_identity
+                .as_ref()
+                .and_then(|parts| parts.first())
+                .copied()
+                .unwrap_or("Unknown")
+                .into(),
+            model: edid_identity
+                .as_ref()
+                .and_then(|parts| parts.get(1))
+                .copied()
+                .unwrap_or("Unknown")
+                .into(),
         },
     );
     let output_mode = OutputMode::from(mode);
 
-    let global = output.create_global::<Ferese>(&state.display_handle);
+    let global = publish.then(|| output.create_global::<Ferese>(&state.display_handle));
     for mode in connector.modes().iter().copied().map(OutputMode::from) {
         output.add_mode(mode);
     }
@@ -1912,8 +2050,10 @@ fn create_output(
         Some(Scale::Fractional(settings.scale)),
         Some((position[0], position[1]).into()),
     );
-    state.space.map_output(&output, (position[0], position[1]));
-    state.register_output(&output, identity);
+    if publish {
+        state.space.map_output(&output, (position[0], position[1]));
+        state.register_output(&output, identity);
+    }
     (output, global)
 }
 
@@ -1930,8 +2070,8 @@ fn output_transform(transform: OutputTransform) -> Transform {
     }
 }
 
-fn connector_identity(drm: &DrmDevice, connector: &connector::Info) -> String {
-    let edid = drm.get_properties(connector.handle()).ok().and_then(|properties| {
+fn connector_edid(drm: &DrmDevice, connector: &connector::Info) -> Option<Vec<u8>> {
+    drm.get_properties(connector.handle()).ok().and_then(|properties| {
         properties.iter().find_map(|(handle, raw)| {
             let info = drm.get_property(*handle).ok()?;
             if info.name().to_bytes() != b"EDID" {
@@ -1942,12 +2082,141 @@ fn connector_identity(drm: &DrmDevice, connector: &connector::Info) -> String {
                 _ => None,
             }
         })
-    });
+    })
+}
 
-    match edid {
-        Some(edid) if !edid.is_empty() => format!("drm-edid:{:016x}", stable_hash(&edid)),
-        _ => format!("drm:{connector}"),
+fn drm_device_key(drm: &DrmDevice) -> String {
+    let node = DrmNode::from_file(drm.as_fd()).expect("DRM descriptor has a device identity");
+    let path = node
+        .dev_path()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| Path::new("/sys/class/drm").join(name).join("device"))
+        })
+        .and_then(|path| std::fs::canonicalize(path).ok());
+    path.map_or_else(
+        || format!("gpu-{}", node.dev_id()),
+        |path| path.to_string_lossy().into_owned(),
+    )
+}
+
+fn resolve_output_positions(
+    backend: &DirectBackendState,
+    desired: &mut DesiredOutputConfiguration,
+) -> Result<(), String> {
+    let mut placements = Vec::new();
+    for device in backend.devices.values() {
+        let scan = select_outputs(&device.drm, &backend.monitors, desired, backend.low_power)
+            .map_err(|error| error.to_string())?;
+        for selection in scan.selections {
+            let size =
+                output_transform(selection.settings.transform).transform_size(OutputMode::from(selection.mode).size);
+            let key = format!("{}/{}", drm_device_key(&device.drm), selection.connector);
+            let previous = device
+                .outputs
+                .values()
+                .find(|output| output.identity == selection.identity)
+                .filter(|output| output.mirror_source.is_none())
+                .map(|output| {
+                    let position = output.output.current_location();
+                    [position.x, position.y]
+                });
+            placements.push(crate::output_policy::Placement {
+                key,
+                size: (
+                    (size.w as f64 / selection.settings.scale).round() as i32,
+                    (size.h as f64 / selection.settings.scale).round() as i32,
+                ),
+                previous,
+            });
+        }
     }
+    crate::output_policy::arrange_positions(desired, &placements)
+}
+
+fn refresh_monitor_policy(state: &mut Ferese) -> Result<(), String> {
+    let backend = state.direct_backend.as_mut().ok_or("direct backend unavailable")?;
+    let mut discovered = Vec::new();
+    for device in backend.devices.values() {
+        let drm = &device.drm;
+        let key = drm_device_key(drm);
+        for handle in drm.resource_handles().map_err(|error| error.to_string())?.connectors() {
+            let connector = drm.get_connector(*handle, true).map_err(|error| error.to_string())?;
+            if connector.state() != connector::State::Connected {
+                continue;
+            }
+            let edid = connector_edid(drm, &connector);
+            discovered.push((format!("{key}/{}", connector), connector, edid));
+        }
+    }
+    discovered.sort_by(|a, b| a.0.cmp(&b.0));
+    let identities = backend.identities.resolve(
+        &discovered
+            .iter()
+            .map(|(key, _, edid)| (key.clone(), edid.as_deref().and_then(Identity::from_edid)))
+            .collect::<Vec<_>>(),
+    );
+    backend.monitors = discovered
+        .into_iter()
+        .zip(identities)
+        .map(|((key, connector, edid), identity)| {
+            let mut aliases = vec![format!("drm:{connector}")];
+            if let Some(edid) = edid {
+                aliases.push(format!("drm-edid:{:016x}", stable_hash(&edid)));
+            }
+            Monitor {
+                key,
+                identity,
+                connector: connector.to_string(),
+                aliases,
+                internal: internal_connector(connector.interface()),
+                usable: !connector.modes().is_empty(),
+            }
+        })
+        .collect();
+    if backend.confirmation.is_some() {
+        let previous_keys = backend
+            .applied_outputs
+            .outputs
+            .iter()
+            .map(|output| &output.key)
+            .collect::<HashSet<_>>();
+        let current_keys = backend
+            .monitors
+            .iter()
+            .map(|monitor| &monitor.key)
+            .collect::<HashSet<_>>();
+        if previous_keys != current_keys || backend.confirmation_lid != backend.lid.closed() {
+            backend.confirmation = None;
+            if let Some(token) = backend.confirmation_timer.take() {
+                state.loop_handle.remove(token);
+            }
+        }
+    }
+    let previous_override = backend.manual_outputs.profile.clone();
+    backend
+        .manual_outputs
+        .observe(&backend.monitors, backend.lid.closed(), &state.output_profiles);
+    if previous_override != backend.manual_outputs.profile {
+        backend.confirmation = None;
+        if let Some(token) = backend.confirmation_timer.take() {
+            state.loop_handle.remove(token);
+        }
+    }
+    let mut desired = crate::output_policy::select_profile(
+        &backend.monitors,
+        backend.lid.closed(),
+        &state.output_profiles,
+        &backend.manual_outputs,
+    );
+    resolve_output_positions(backend, &mut desired)?;
+    tracing::debug!(profile = ?desired.profile, changed = ?crate::output_policy::changed_outputs(&backend.desired_outputs, &desired), "selected monitor configuration");
+    if let Some(previous) = backend.revert_outputs.take() {
+        desired = crate::output_policy::restore_configuration(&previous, &backend.monitors);
+        resolve_output_positions(backend, &mut desired)?;
+    }
+    backend.desired_outputs = desired;
+    Ok(())
 }
 
 fn stable_hash(bytes: &[u8]) -> u64 {
@@ -2008,6 +2277,20 @@ mod tests {
     use std::time::SystemTime;
 
     use super::*;
+
+    #[test]
+    fn repeated_unconfirmed_changes_keep_original_rollback_and_manual_state() {
+        let a = ("confirmed A", "automatic");
+        let b = confirmation_baseline(None, a);
+        let c = confirmation_baseline(Some(b), ("unconfirmed B", "profile B"));
+        assert_eq!(c, a);
+        let d = confirmation_baseline(Some(c), ("unconfirmed C", "profile C"));
+        assert_eq!(d, a);
+        assert_eq!(
+            confirmation_baseline(None, ("confirmed C", "profile C")),
+            ("confirmed C", "profile C")
+        );
+    }
 
     #[test]
     fn lid_only_hides_panels_with_a_usable_external_output() {

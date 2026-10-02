@@ -263,6 +263,14 @@ impl Ferese {
     }
 
     pub(crate) fn send_shell_snapshots(&mut self) {
+        if self
+            .direct_backend
+            .as_ref()
+            .is_some_and(|backend| backend.reconciling())
+        {
+            return;
+        }
+
         self.shell_resources.retain(|resource| resource.upgrade().is_ok());
         if self.shell_resources.is_empty() {
             self.last_shell_snapshot = None;

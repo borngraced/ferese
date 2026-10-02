@@ -694,7 +694,40 @@ impl Ferese {
                 return Ok(json!(self.has_client_surfaces(pid)));
             }
             "get-workspaces" => return Ok(self.workspaces_json()),
-            "get-outputs" => return Ok(self.outputs_json()),
+            "outputs" | "get-outputs" => return Ok(self.outputs_json()),
+            "output-profiles" => {
+                return Ok(json!({
+                    "confirmation_pending": self.direct_backend.as_ref().is_some_and(|backend| backend.confirmation_pending()),
+                    "manual_profile": self.direct_backend.as_ref().and_then(|backend| backend.manual_outputs.profile.as_ref()),
+                    "manual_internal": self.direct_backend.as_ref().and_then(|backend| backend.manual_outputs.internal),
+                    "profiles": self.output_profiles.iter().map(|profile| json!({
+                        "name": profile.name, "layout": profile.layout,
+                        "confirm_timeout": profile.confirm_timeout, "lid_policy": profile.lid_policy, "lid_closed": profile.lid_closed, "mirror_source": profile.mirror_source,
+                        "outputs": profile.outputs.iter().map(|output| json!({"selector": output.matcher, "required": output.required, "enabled": output.enabled})).collect::<Vec<_>>()
+                    })).collect::<Vec<_>>()
+                }));
+            }
+            "output-confirm" | "output-revert" => {
+                crate::backends::direct::confirm_output_configuration(self, command == "output-confirm")
+                    .map_err(|error| CommandError::new("output_configuration_failed", error))?;
+                return Ok(self.outputs_json());
+            }
+            "output-profile" => {
+                let name = args["name"]
+                    .as_str()
+                    .ok_or_else(|| CommandError::new("invalid_arguments", "output-profile requires a name or auto"))?;
+                crate::backends::direct::set_output_profile(self, name)
+                    .map_err(|error| CommandError::new("output_configuration_failed", error))?;
+                return Ok(self.outputs_json());
+            }
+            "output-internal" => {
+                let enabled = args["enabled"]
+                    .as_bool()
+                    .ok_or_else(|| CommandError::new("invalid_arguments", "output-internal requires on or off"))?;
+                crate::backends::direct::set_internal_output(self, enabled)
+                    .map_err(|error| CommandError::new("output_configuration_failed", error))?;
+                return Ok(self.outputs_json());
+            }
             _ => {
                 return Err(CommandError::new(
                     "unknown_command",
@@ -1026,8 +1059,8 @@ impl Ferese {
                 .connected_outputs
                 .iter()
                 .map(|info| {
-                    let mapped = self.space.outputs().find(|output| output.name() == info.connector);
-                    let id = mapped.and_then(|output| self.output_id(output));
+                    let mapped = self.output_by_identity(&info.identity);
+                    let id = self.persistent_output_id(&info.identity);
                     let geometry = mapped.and_then(|output| self.space.output_geometry(output));
                     let workspace = id.and_then(|id| self.output_workspaces.active_workspace(id));
                     let position = geometry
@@ -1066,9 +1099,16 @@ impl Ferese {
                         "name": info.connector,
                         "connector": info.connector,
                         "identity": info.identity,
-                        "connected": true,
-                        "enabled": info.enabled && mapped.is_some(),
+                        "connected": info.connected,
+                        "internal": info.internal,
+                        "requested_enabled": info.requested_enabled,
+                        "applied_enabled": info.enabled,
+                        "mirror_source": info.mirror_source,
+                        "enabled": info.enabled,
                         "profile": info.profile,
+                        "requested_profile": info.requested_profile,
+                        "configuration_error": backend.output_configuration_error(),
+                        "confirmation_pending": backend.confirmation_pending(),
                         "auto_refresh": info.auto_refresh,
                         "low_power": backend.low_power,
                         "focused": id.is_some() && id == focused,

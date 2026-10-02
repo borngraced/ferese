@@ -111,6 +111,19 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(String, Value),
     let command = args.next().ok_or_else(usage)?;
     let positional = args.collect::<Vec<_>>();
     let payload = match command.as_str() {
+        "output-profile" => {
+            exactly_one(&command, &positional, "profile name or auto")?;
+            json!({ "name": positional[0] })
+        }
+        "output-internal" => {
+            exactly_one(&command, &positional, "on or off")?;
+            let enabled = match positional[0].as_str() {
+                "on" => true,
+                "off" => false,
+                _ => return Err("output-internal requires on or off".into()),
+            };
+            json!({ "enabled": enabled })
+        }
         "screenshot-window" => {
             exactly_one(&command, &positional, "window ID")?;
             let window = positional[0]
@@ -156,6 +169,10 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(String, Value),
         | "get-windows"
         | "get-workspaces"
         | "get-outputs"
+        | "outputs"
+        | "output-profiles"
+        | "output-confirm"
+        | "output-revert"
         | "reload-config"
         | "exit"
         | "request-logout"
@@ -191,7 +208,7 @@ fn socket_path() -> Result<PathBuf, io::Error> {
 }
 
 fn usage() -> String {
-    "usage: feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl screenshot-window <window-id>\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl workspace-back-and-forth\n       feresectl <focus-last-window|focus-mru-next|focus-mru-previous>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview|toggle-keybinding-guide>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
+    "usage: feresectl outputs\n       feresectl output-profiles\n       feresectl <output-confirm|output-revert>\n       feresectl output-profile <name|auto>\n       feresectl output-internal <on|off>\n       feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl screenshot-window <window-id>\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl workspace-back-and-forth\n       feresectl <focus-last-window|focus-mru-next|focus-mru-previous>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview|toggle-keybinding-guide>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
 }
 
 #[cfg(test)]
@@ -270,6 +287,32 @@ mod tests {
             parse_args(["screenshot".into(), "0,0 8x8".into()]).is_err(),
             "a bare geometry is not accepted without the flag"
         );
+    }
+
+    #[test]
+    fn output_commands_have_consistent_arguments() {
+        for command in ["outputs", "output-profiles", "output-confirm", "output-revert"] {
+            assert_eq!(parse_args([command.into()]).unwrap(), (command.into(), json!({})));
+            assert!(parse_args([command.into(), "extra".into()]).is_err());
+        }
+        assert_eq!(
+            parse_args(["output-profile".into(), "auto".into()]).unwrap().1,
+            json!({"name": "auto"})
+        );
+        assert_eq!(
+            parse_args(["output-profile".into(), "desk".into()]).unwrap().1,
+            json!({"name": "desk"})
+        );
+        assert_eq!(
+            parse_args(["output-internal".into(), "off".into()]).unwrap().1,
+            json!({"enabled": false})
+        );
+        assert_eq!(
+            parse_args(["output-internal".into(), "on".into()]).unwrap().1,
+            json!({"enabled": true})
+        );
+        assert!(parse_args(["output-internal".into(), "maybe".into()]).is_err());
+        assert!(parse_args(["output-profile".into()]).is_err());
     }
 
     #[test]

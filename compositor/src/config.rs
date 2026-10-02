@@ -20,7 +20,7 @@ use ferese_layout::{ColumnWidth, Direction, GapConfig, ViewportFocusStrategy};
 pub use input_motion::InputSettings;
 use input_motion::*;
 use outputs::*;
-pub use outputs::{OutputModeRequest, OutputProfile, OutputSettings, OutputTransform};
+pub use outputs::{LidPolicy, OutputLayout, OutputModeRequest, OutputProfile, OutputSettings, OutputTransform};
 use serde::Deserialize;
 use smithay::input::keyboard::{Keycode, keysyms, xkb};
 
@@ -1049,9 +1049,15 @@ mod tests {
             config.output_profiles().unwrap(),
             vec![OutputProfile {
                 name: "docked".to_owned(),
+                layout: OutputLayout::Extend,
+                confirm_timeout: 15,
+                lid_policy: LidPolicy::DockOrSuspend,
+                lid_closed: None,
+                mirror_source: None,
                 outputs: vec![
                     OutputSettings {
                         auto_refresh: false,
+                        required: true,
                         matcher: "HDMI-A-1".to_owned(),
                         enabled: true,
                         mode: Some(OutputModeRequest {
@@ -1065,6 +1071,7 @@ mod tests {
                     },
                     OutputSettings {
                         auto_refresh: false,
+                        required: true,
                         matcher: "eDP-1".to_owned(),
                         enabled: false,
                         mode: None,
@@ -1075,6 +1082,29 @@ mod tests {
                 ],
             }]
         );
+    }
+
+    #[test]
+    fn output_profile_metadata_and_invalid_mirrors() {
+        let config = parse(
+            "output-profile desk layout=\"mirror\" mirror-source=\"eDP-1\" lid-closed=#false confirm-timeout=0 lid-policy=\"ignore\" { output eDP-1; output DP-1 required=#false; }",
+        );
+        let profile = &config.output_profiles().unwrap()[0];
+        assert_eq!(profile.layout, OutputLayout::Mirror);
+        assert_eq!(profile.lid_closed, Some(false));
+        assert_eq!(profile.confirm_timeout, 0);
+        assert_eq!(profile.lid_policy, LidPolicy::Ignore);
+        assert!(!profile.outputs[1].required);
+        for source in [
+            "output-profile a layout=\"mirror\" { output eDP-1; }",
+            "output-profile a layout=\"extend\" mirror-source=\"eDP-1\" { output eDP-1; }",
+            "output-profile a layout=\"mirror\" mirror-source=\"DP-2\" { output eDP-1; output DP-1; }",
+            "output-profile a { output eDP-1 enabled=#false; }",
+            "output-profile a { output eDP-1; }\noutput-profile a { output DP-1; }",
+        ] {
+            assert!(parse(source).output_profiles().is_err(), "{source}");
+        }
+        assert!(Config::parse_source("output-profile a layout=\"docked\" { output eDP-1; }").is_err());
     }
 
     #[test]

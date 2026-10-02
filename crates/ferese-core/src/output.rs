@@ -89,9 +89,11 @@ struct EvacuationRecord {
 pub struct OutputWorkspaceMap {
     outputs: BTreeMap<OutputId, OutputState>,
     assignments: HashMap<WorkspaceId, OutputId>,
+    homes: HashMap<WorkspaceId, OutputId>,
     revisions: HashMap<WorkspaceId, u64>,
     evacuations: HashMap<OutputId, EvacuationRecord>,
     focused: Option<OutputId>,
+    orphaned_focus: Option<WorkspaceId>,
 }
 
 impl OutputWorkspaceMap {
@@ -118,6 +120,10 @@ impl OutputWorkspaceMap {
         self.assignments.get(&workspace).copied()
     }
 
+    pub fn home_output(&self, workspace: WorkspaceId) -> Option<OutputId> {
+        self.homes.get(&workspace).copied()
+    }
+
     pub fn forget_workspace(&mut self, workspace: WorkspaceId) -> bool {
         if self.outputs.values().any(|output| output.active == workspace) {
             return false;
@@ -131,6 +137,10 @@ impl OutputWorkspaceMap {
             }
         }
         self.revisions.remove(&workspace);
+        self.homes.remove(&workspace);
+        if self.orphaned_focus == Some(workspace) {
+            self.orphaned_focus = None;
+        }
         self.evacuations.retain(|_, record| {
             record.workspaces.retain(|entry| entry.workspace != workspace);
             if record.active == workspace {
@@ -148,6 +158,10 @@ impl OutputWorkspaceMap {
 
     pub fn connected_outputs(&self) -> impl Iterator<Item = OutputId> + '_ {
         self.outputs.keys().copied()
+    }
+
+    pub fn geometry(&self, output: OutputId) -> Option<OutputGeometry> {
+        self.outputs.get(&output).map(|state| state.geometry)
     }
 
     pub fn update_geometry(&mut self, output: OutputId, geometry: OutputGeometry) {
@@ -170,15 +184,19 @@ impl OutputWorkspaceMap {
         let mut reclaimed = Vec::new();
         if let Some(record) = &record {
             for evacuated in &record.workspaces {
-                let assignment_matches = self.assignments.get(&evacuated.workspace).copied() == evacuated.target;
+                let target = self
+                    .assignments
+                    .get(&evacuated.workspace)
+                    .copied()
+                    .or_else(|| evacuated.target.filter(|target| self.outputs.contains_key(target)));
+                let assignment_matches = self.homes.get(&evacuated.workspace) == Some(&output);
                 let revision_matches = self.revision(evacuated.workspace) == evacuated.revision;
 
                 if assignment_matches && revision_matches {
                     // Cleanup may have removed every other workspace while this
                     // monitor was disconnected. Never strand the donor output;
                     // the reconnecting monitor can use its fresh fallback.
-                    if evacuated
-                        .target
+                    if target
                         .and_then(|target| self.outputs.get(&target))
                         .is_some_and(|state| {
                             state.workspaces.len() == 1 && state.workspaces.contains(&evacuated.workspace)
@@ -187,7 +205,7 @@ impl OutputWorkspaceMap {
                         continue;
                     }
 
-                    if let Some(target) = evacuated.target
+                    if let Some(target) = target
                         && let Some(target_state) = self.outputs.get_mut(&target)
                     {
                         target_state.workspaces.remove(&evacuated.workspace);
@@ -214,7 +232,7 @@ impl OutputWorkspaceMap {
             .as_ref()
             .and_then(|record| reclaimed.contains(&record.active).then_some(record.active))
             .or_else(|| reclaimed.iter().copied().min_by_key(|workspace| workspace.0));
-        let active = match active {
+        let mut active = match active {
             Some(active) => active,
             None => {
                 if let Some(owner) = self.assignments.get(&fallback_workspace).copied() {
@@ -224,10 +242,32 @@ impl OutputWorkspaceMap {
                     });
                 }
                 self.assignments.insert(fallback_workspace, output);
+                self.homes.insert(fallback_workspace, output);
                 reclaimed.push(fallback_workspace);
                 fallback_workspace
             }
         };
+
+        if self.outputs.is_empty() {
+            // A replacement may have to reuse the final CRTC, or every cable
+            // may be unplugged. Attach unowned evacuated workspaces without
+            // changing their homes, so every window remains reachable.
+            let orphaned = self
+                .homes
+                .keys()
+                .filter(|workspace| !self.assignments.contains_key(workspace))
+                .copied()
+                .collect::<Vec<_>>();
+            for workspace in orphaned {
+                self.assignments.insert(workspace, output);
+                reclaimed.push(workspace);
+            }
+            if let Some(focused) = self.orphaned_focus.take()
+                && reclaimed.contains(&focused)
+            {
+                active = focused;
+            }
+        }
 
         self.outputs.insert(
             output,
@@ -266,6 +306,9 @@ impl OutputWorkspaceMap {
 
         if removed_had_focus {
             self.focused = target;
+            if target.is_none() {
+                self.orphaned_focus = Some(removed.active);
+            }
             if let Some(target) = target {
                 self.outputs
                     .get_mut(&target)
@@ -327,6 +370,7 @@ impl OutputWorkspaceMap {
         state.activate(workspace);
         self.focused = Some(output);
         if reassigned {
+            self.homes.insert(workspace, output);
             self.bump_revision(workspace);
         }
 
@@ -357,6 +401,7 @@ impl OutputWorkspaceMap {
         }
 
         self.assignments.insert(workspace, output);
+        self.homes.insert(workspace, output);
         self.outputs
             .get_mut(&output)
             .expect("output was checked above")
@@ -366,6 +411,48 @@ impl OutputWorkspaceMap {
 
         debug_assert!(self.validate());
         Ok(output)
+    }
+
+    /// Explicit reassignment changes the home, unlike merely focusing an evacuated workspace.
+    /// The caller supplies a fresh workspace if moving the donor's final workspace.
+    pub fn reassign_workspace(
+        &mut self,
+        output: OutputId,
+        workspace: WorkspaceId,
+        donor_fallback: WorkspaceId,
+    ) -> Result<(), OutputError> {
+        if !self.outputs.contains_key(&output) {
+            return Err(OutputError::UnknownOutput(output));
+        }
+        if let Some(owner) = self.assignments.get(&workspace).copied()
+            && owner != output
+        {
+            let donor = self.outputs.get_mut(&owner).expect("assigned owner is connected");
+            if donor.workspaces.len() == 1 {
+                if let Some(assigned) = self.assignments.get(&donor_fallback) {
+                    return Err(OutputError::WorkspaceAlreadyAssigned {
+                        workspace: donor_fallback,
+                        output: *assigned,
+                    });
+                }
+                donor.workspaces.insert(donor_fallback);
+                self.assignments.insert(donor_fallback, owner);
+                self.homes.insert(donor_fallback, owner);
+            }
+            donor.workspaces.remove(&workspace);
+            if donor.previous == Some(workspace) {
+                donor.previous = None;
+            }
+            if donor.active == workspace {
+                donor.active = *donor.workspaces.first().expect("donor retains a workspace");
+            }
+        }
+        self.assignments.insert(workspace, output);
+        self.homes.insert(workspace, output);
+        self.outputs.get_mut(&output).unwrap().workspaces.insert(workspace);
+        self.bump_revision(workspace);
+        debug_assert!(self.validate());
+        Ok(())
     }
 
     fn migration_target(&self, removed: OutputId, removed_geometry: OutputGeometry) -> Option<OutputId> {
@@ -703,6 +790,64 @@ mod tests {
 
         assert_eq!(outputs.assign_workspace(OutputId(1), WorkspaceId(2)), Ok(OutputId(1)));
         assert_eq!(outputs.active_workspace(OutputId(1)), Some(WorkspaceId(1)));
+        assert_eq!(outputs.output_for_workspace(WorkspaceId(2)), Some(OutputId(1)));
+    }
+    #[test]
+    fn two_hop_evacuation_restores_original_home() {
+        let mut outputs = OutputWorkspaceMap::default();
+        for id in 1..=3 {
+            outputs
+                .connect(OutputId(id), geometry(id as i32 * 1920), WorkspaceId(id))
+                .unwrap();
+        }
+        outputs.focus_output(OutputId(2)).unwrap();
+        outputs.disconnect(OutputId(1)).unwrap();
+        outputs.disconnect(OutputId(2)).unwrap();
+        assert_eq!(outputs.output_for_workspace(WorkspaceId(1)), Some(OutputId(3)));
+        assert_eq!(outputs.home_output(WorkspaceId(1)), Some(OutputId(1)));
+        outputs.connect(OutputId(1), geometry(0), WorkspaceId(4)).unwrap();
+        assert_eq!(outputs.output_for_workspace(WorkspaceId(1)), Some(OutputId(1)));
+        assert!(outputs.active_workspace(OutputId(3)).is_some());
+    }
+
+    #[test]
+    fn explicit_reassignment_after_evacuation_prevents_home_steal_back() {
+        let mut outputs = OutputWorkspaceMap::default();
+        outputs.connect(OutputId(1), geometry(0), WorkspaceId(1)).unwrap();
+        outputs.connect(OutputId(2), geometry(1920), WorkspaceId(2)).unwrap();
+        outputs.disconnect(OutputId(1)).unwrap();
+        outputs
+            .reassign_workspace(OutputId(2), WorkspaceId(1), WorkspaceId(9))
+            .unwrap();
+        outputs.connect(OutputId(1), geometry(0), WorkspaceId(3)).unwrap();
+        assert_eq!(outputs.output_for_workspace(WorkspaceId(1)), Some(OutputId(2)));
+        assert_eq!(outputs.home_output(WorkspaceId(1)), Some(OutputId(2)));
+    }
+
+    #[test]
+    fn reassigning_last_workspace_supplies_donor_fallback() {
+        let mut outputs = OutputWorkspaceMap::default();
+        outputs.connect(OutputId(1), geometry(0), WorkspaceId(1)).unwrap();
+        outputs.connect(OutputId(2), geometry(1920), WorkspaceId(2)).unwrap();
+        outputs
+            .reassign_workspace(OutputId(2), WorkspaceId(1), WorkspaceId(3))
+            .unwrap();
+        assert_eq!(outputs.active_workspace(OutputId(1)), Some(WorkspaceId(3)));
+        assert_eq!(outputs.output_for_workspace(WorkspaceId(1)), Some(OutputId(2)));
+    }
+    #[test]
+    fn final_output_replacement_keeps_all_workspaces_reachable_without_changing_homes() {
+        let mut outputs = OutputWorkspaceMap::default();
+        outputs.connect(OutputId(1), geometry(0), WorkspaceId(1)).unwrap();
+        outputs.assign_workspace(OutputId(1), WorkspaceId(2)).unwrap();
+        outputs.switch_workspace(OutputId(1), WorkspaceId(2)).unwrap();
+        outputs.disconnect(OutputId(1)).unwrap();
+        outputs.connect(OutputId(3), geometry(0), WorkspaceId(3)).unwrap();
+        assert_eq!(outputs.active_workspace(OutputId(3)), Some(WorkspaceId(2)));
+        assert_eq!(outputs.output_for_workspace(WorkspaceId(1)), Some(OutputId(3)));
+        assert_eq!(outputs.home_output(WorkspaceId(1)), Some(OutputId(1)));
+        outputs.connect(OutputId(1), geometry(1920), WorkspaceId(4)).unwrap();
+        assert_eq!(outputs.output_for_workspace(WorkspaceId(1)), Some(OutputId(1)));
         assert_eq!(outputs.output_for_workspace(WorkspaceId(2)), Some(OutputId(1)));
     }
 }

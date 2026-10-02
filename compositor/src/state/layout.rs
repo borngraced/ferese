@@ -70,6 +70,14 @@ impl Ferese {
     }
 
     fn relayout_outputs(&mut self, mut redraw_outputs: Option<Vec<Output>>) {
+        if self
+            .direct_backend
+            .as_ref()
+            .is_some_and(|backend| backend.reconciling())
+        {
+            return;
+        }
+
         if let Some(outputs) = redraw_outputs.as_mut() {
             outputs.extend(
                 self.space

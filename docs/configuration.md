@@ -445,14 +445,25 @@ window-rule app-id="dev.ferese.Settings" floating=#true
 
 ## Displays
 
-`output-profile` has a required unique nonempty `name` and one or more
-`output-profile → output` entries. The first profile whose listed monitors
-are connected wins. Find connector names and persistent identities using
-`feresectl get-outputs`.
+Each `output-profile` needs a unique, nonempty `name` and at least one `output`
+entry. A profile matches when every required monitor is connected and its
+optional `lid-closed` condition matches. The profile with the most required
+monitors wins; ties use config order. If none matches, Ferese extends across all
+usable connected monitors. Find selectors with `feresectl outputs`.
+
+| `output-profile` key | Type | Default |
+| --- | --- | --- |
+| `name` | unique nonempty string | required |
+| `layout` | `internal-only`, `external-only`, `extend`, `mirror` | `extend` |
+| `lid-closed` | boolean | either lid state |
+| `mirror-source` | selector of an enabled output in this profile | first enabled hardware key |
+| `lid-policy` | `dock-or-suspend`, `ignore` | `dock-or-suspend` |
+| `confirm-timeout` | seconds; `0` disables confirmation | `15` |
 
 | `output-profile → output` key | Type | Default |
 | --- | --- | --- |
 | `match` | nonempty connector or persistent identity string | required; unique within profile |
+| `required` | boolean | `true`; set `false` for an optional monitor |
 | `enabled` | boolean | `true` |
 | `mode` | `"WIDTHxHEIGHT"` or `"WIDTHxHEIGHT@HZ"` | Preferred mode |
 | `auto-refresh` | boolean | `false` |
@@ -461,8 +472,68 @@ are connected wins. Find connector names and persistent identities using
 | `position` | `[integer, integer]` | Automatic horizontal placement |
 
 Transforms: `normal`, `rotate-90`, `rotate-180`, `rotate-270`, `flipped`,
-`flipped-90`, `flipped-180`, `flipped-270`. Unspecified connected displays stay
-enabled with defaults. Disabling every usable output is rejected.
+`flipped-90`, `flipped-180`, `flipped-270`. In extend and mirror profiles,
+unlisted monitors stay enabled with defaults. Internal-only and external-only
+filter by connector type. A layout that would disable the final usable display
+falls back to a working display. Profiles that explicitly disable all their
+listed outputs are invalid.
+
+Monitor identities use EDID manufacturer, product/model and serial, rather than
+a hash of the entire EDID. Without a usable serial, the identity includes the
+GPU's sysfs hardware path and connector. For duplicate serials, Ferese adds the
+same path and connector to distinguish the monitors. If both arrive together,
+both identities include those details. If the second arrives later, the first
+keeps its identity and only the second gets the path and connector. Ferese
+remembers that choice for the compositor session. Without serials, Ferese
+identifies monitors by port and cannot tell them apart if you swap their ports.
+Connector names and old `drm-edid:` selectors still work. Ambiguous or
+overlapping selectors are rejected during live reload. A disconnected identity
+can remain in config; it prevents matching only when its entry has
+`required=#true`.
+
+```kdl
+output-profile "desk" layout="external-only" {
+    output "DP-1" mode="2560x1440@60" scale=1.25
+    output "eDP-1" required=#false enabled=#false
+}
+
+output-profile "mobile" layout="internal-only" {
+    output "eDP-1" scale=1.75
+}
+
+output-profile "presentation" layout="mirror" mirror-source="eDP-1" {
+    output "eDP-1" scale=1.75
+    output "HDMI-A-1" mode="1920x1080@60"
+}
+```
+
+Mirror uses the source's logical size, workspace, layers and pointer. Targets
+own no workspaces or separate pointer region. Ferese fits the complete source
+into each target's transformed physical mode, preserving aspect ratio and
+letterboxing instead of cropping. Target scale does not resize the source
+layout. Each target has its own hardware cadence; only the source releases
+client frame callbacks and presentation feedback. Mirrored monitors are listed
+by `outputs`, but expose one logical output to clients and the shell. If a required mirror target disconnects, Ferese selects another matching
+profile or extends across all usable connected monitors. Leaving mirror
+restores evacuated workspaces.
+
+```sh
+feresectl outputs
+feresectl output-profiles
+feresectl output-profile presentation
+feresectl output-confirm
+feresectl output-profile auto
+feresectl output-internal off
+feresectl output-revert
+```
+
+A manual choice overrides automatic selection until the monitor set or lid
+state changes. Reload keeps it only if its profile still exists and matches.
+Manual changes revert after `confirm-timeout` seconds unless confirmed;
+`output-revert` restores immediately. Reverting restores the last confirmed modes,
+scales, transforms and positions, even if you make several changes before
+confirming. The timeout still applies if the client that made the change exits. Automatic hotplug/lid changes never wait for confirmation.
+Disabling the last usable internal panel is rejected.
 
 ```kdl
 output-profile name="docked" {
@@ -486,9 +557,10 @@ changes. Unavailable battery data restores normal refresh. If no matching 60 Hz
 mode exists, normal refresh is retained. Rejected DRM mode changes retain the
 current output. A refresh-rate change can briefly blank the display (about one
 second on some panels), including automatic changes below 30%, recovery at 35%,
-and restoration on AC. Session activation only re-evaluates the power policy;
-an unchanged policy does not trigger an additional rescan. Connector changes
-continue to use the existing hotplug handling.
+and restoration on AC. Session activation refreshes lid and connector state
+before rendering; unchanged outputs retain their handles and workspaces.
+Hotplug bursts settle for 150 ms before one reconciliation. Ferese records changes that arrive while the session is inactive and applies
+them on activation.
 
 ```kdl
 output-profile laptop {
@@ -496,9 +568,25 @@ output-profile laptop {
 }
 ```
 
-With a usable external display, closing the lid disables internal panels.
-Workspaces move to a remaining display and return when their original output
-returns. Ferese does not change the system's suspend policy.
+With a usable external display, closing the lid disables internal panels after
+external activation succeeds. Without one, Ferese asks logind to suspend,
+respecting sleep inhibitors. `lid-policy="ignore"` disables this behavior for
+the selected profile. Resume reads lid state from logind, with ACPI fallback,
+before reconciling fresh hardware. Ferese releases its logind lid inhibitor on
+session pause, so logind handles the lid while another session or TTY is active.
+Workspaces keep their home output and return when it reconnects, unless you
+reassigned or deleted them after evacuation. Floating
+windows are remapped and clamped to the surviving display.
+
+On atomic DRM, Ferese tests the complete configuration for each GPU before
+changing it.
+Smithay performs the real commits; logical changes follow successful hardware
+application. Failed commits attempt restoration, and outputs that cannot be
+restored are removed from logical state. Each GPU commits separately. If a later GPU fails, Ferese attempts to restore
+the earlier GPUs. Legacy KMS lacks atomic
+test-only validation. Hardware failures can still prevent every monitor from
+working; Ferese tries preferred modes to recover a display instead of
+intentionally turning off the last working one.
 
 ## Status controls
 

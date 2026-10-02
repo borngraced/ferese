@@ -7,6 +7,24 @@ impl Ferese {
         }
     }
 
+    pub(crate) fn output_by_identity(&self, identity: &str) -> Option<&Output> {
+        self.output_identity_ids
+            .get(identity)
+            .and_then(|id| self.outputs_by_id.get(id))
+    }
+
+    pub(crate) fn persistent_output_id(&self, identity: &str) -> Option<OutputId> {
+        self.output_identity_ids.get(identity).copied()
+    }
+
+    pub(crate) fn ensure_output_identity(&mut self, identity: &str) -> OutputId {
+        *self.output_identity_ids.entry(identity.to_owned()).or_insert_with(|| {
+            let id = OutputId(self.next_output_id);
+            self.next_output_id = self.next_output_id.checked_add(1).expect("output ID space exhausted");
+            id
+        })
+    }
+
     pub fn register_output(&mut self, output: &Output, identity: String) {
         if self.output_ids.is_empty() {
             self.reset_animation_clock();
@@ -20,19 +38,39 @@ impl Ferese {
             tracing::error!(output = %output.name(), "cannot register an unmapped output");
             return;
         };
-        let output_id = *self.output_identity_ids.entry(identity).or_insert_with(|| {
-            let id = OutputId(self.next_output_id);
-            self.next_output_id = self.next_output_id.saturating_add(1);
-            id
-        });
+        let output_id = self.ensure_output_identity(&identity);
         let fallback_workspace = self
             .workspaces
             .iter()
-            .filter(|workspace| self.output_workspaces.output_for_workspace(workspace.id).is_none())
+            .filter(|workspace| {
+                self.output_workspaces.output_for_workspace(workspace.id).is_none()
+                    && self
+                        .output_workspaces
+                        .home_output(workspace.id)
+                        .is_none_or(|home| home == output_id)
+            })
             .map(|workspace| workspace.id)
             .min_by_key(|id| id.0)
             .unwrap_or_else(|| self.workspaces.create_workspace());
         let geometry = OutputGeometry::new(geometry.loc.x, geometry.loc.y, geometry.size.w, geometry.size.h);
+
+        let returning_floats = self
+            .windows
+            .ids()
+            .values()
+            .filter_map(|id| {
+                let workspace = self.workspaces.workspace_for_window(*id)?;
+                if self.output_workspaces.home_output(workspace) != Some(output_id) {
+                    return None;
+                }
+                let owner = self.output_workspaces.output_for_workspace(workspace)?;
+                let old = self.output_workspaces.geometry(owner)?;
+                let WindowPlacement::Floating { rect } = self.workspaces.placement(*id)? else {
+                    return None;
+                };
+                Some((*id, workspace, rect, old))
+            })
+            .collect::<Vec<_>>();
 
         let registration = self.output_workspaces.connect(output_id, geometry, fallback_workspace);
 
@@ -41,6 +79,27 @@ impl Ferese {
                 self.output_ids.insert(output.clone(), output_id);
                 self.outputs_by_id.insert(output_id, output.clone());
                 self.output_names.insert(output_id, output.name());
+                for (id, workspace, rect, old) in returning_floats {
+                    if self.output_workspaces.output_for_workspace(workspace) == Some(output_id) {
+                        let old = Rect::new(old.x as f64, old.y as f64, old.width as f64, old.height as f64);
+                        let new = Rect::new(
+                            geometry.x as f64,
+                            geometry.y as f64,
+                            geometry.width as f64,
+                            geometry.height as f64,
+                        );
+                        let _ = self
+                            .workspaces
+                            .set_floating_rect(id, moved_floating_rect(rect, old, new));
+                    }
+                }
+                if self
+                    .direct_backend
+                    .as_ref()
+                    .is_some_and(|backend| backend.reconciling())
+                {
+                    return;
+                }
                 self.restore_output_focus();
                 let visible = self.visible_workspace_ids();
                 self.reconcile_workspaces(&visible);
@@ -80,8 +139,35 @@ impl Ferese {
         self.confirm_lock_if_ready();
         self.refresh_lock_idle_policy();
 
+        let old_geometry = self.output_workspaces.geometry(output_id);
+        let evacuated = self
+            .output_workspaces
+            .assigned_workspaces(output_id)
+            .collect::<Vec<_>>();
         match self.output_workspaces.disconnect(output_id) {
             Ok(Some(target)) => {
+                if let (Some(old), Some(new)) = (old_geometry, self.output_workspaces.geometry(target)) {
+                    let old = Rect::new(old.x as f64, old.y as f64, old.width as f64, old.height as f64);
+                    let new = Rect::new(new.x as f64, new.y as f64, new.width as f64, new.height as f64);
+                    let floats = self
+                        .windows
+                        .ids()
+                        .values()
+                        .filter_map(|id| {
+                            let workspace = self.workspaces.workspace_for_window(*id)?;
+                            if !evacuated.contains(&workspace) {
+                                return None;
+                            }
+                            match self.workspaces.placement(*id)? {
+                                WindowPlacement::Floating { rect } => Some((*id, moved_floating_rect(rect, old, new))),
+                                _ => None,
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    for (id, rect) in floats {
+                        let _ = self.workspaces.set_floating_rect(id, rect);
+                    }
+                }
                 if let Some(workspace) = self.output_workspaces.active_workspace(target) {
                     self.activate_output_workspace(target, workspace);
                 }
