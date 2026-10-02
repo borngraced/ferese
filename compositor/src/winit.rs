@@ -163,7 +163,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                             // A callback means permission to draw the next client
                             // frame, not proof of a new compositor presentation.
                             // No-damage frames must still unblock layer clients.
-                            send_nested_frame_callbacks(state, &output, refresh.get());
+                            send_nested_frame_callbacks(state, &output);
                             state.space.refresh();
                             state.popups.cleanup();
                             layer_map_for_output(&output).cleanup();
@@ -209,7 +209,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                         sequence,
                         PresentationKind::Vsync,
                     );
-                    send_nested_frame_callbacks(state, &output, refresh.get());
+                    send_nested_frame_callbacks(state, &output);
                     state.space.refresh();
                     state.popups.cleanup();
                     layer_map_for_output(&output).cleanup();
@@ -224,7 +224,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
     Ok(())
 }
 
-fn send_nested_frame_callbacks(state: &mut Ferese, output: &Output, refresh: Duration) {
+fn send_nested_frame_callbacks(state: &mut Ferese, output: &Output) {
     if state.session_lock.active {
         state.lock_frame_callbacks(output);
         return;
@@ -237,10 +237,14 @@ fn send_nested_frame_callbacks(state: &mut Ferese, output: &Output, refresh: Dur
             .get(*window)
             .is_some_and(|id| state.window_belongs_to_output(*id, output))
     }) {
-        window.send_frame(output, time, Some(refresh), |_, _| Some(output.clone()));
+        window.send_frame(output, time, None, |surface, _| {
+            state.display_presentation.callback_output(&surface.into())
+        });
     }
     for layer in layer_surfaces(output) {
-        layer.send_frame(output, time, Some(refresh), |_, _| Some(output.clone()));
+        layer.send_frame(output, time, None, |surface, _| {
+            state.display_presentation.callback_output(&surface.into())
+        });
     }
     state.send_cursor_frame(output);
 }

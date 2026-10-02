@@ -218,8 +218,8 @@ impl Ferese {
                 surface.wl_surface(),
                 output,
                 self.start_time.elapsed(),
-                Some(std::time::Duration::ZERO),
-                |_, _| Some(output.clone()),
+                None,
+                |surface, _| self.display_presentation.callback_output(&surface.into()),
             );
         }
     }

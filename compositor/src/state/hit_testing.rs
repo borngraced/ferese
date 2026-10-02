@@ -119,13 +119,9 @@ impl Ferese {
             return;
         }
 
-        send_frames_surface_tree(
-            surface,
-            output,
-            self.start_time.elapsed(),
-            Some(Duration::ZERO),
-            |_, _| Some(output.clone()),
-        );
+        send_frames_surface_tree(surface, output, self.start_time.elapsed(), None, |surface, _| {
+            self.display_presentation.callback_output(&surface.into())
+        });
     }
 
     pub fn window_under_visual(&self, position: Point<f64, Logical>) -> Option<Window> {

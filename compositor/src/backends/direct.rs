@@ -1552,14 +1552,14 @@ fn send_frame_callbacks(state: &mut Ferese, output: &Output) {
                 .is_some_and(|id| state.window_belongs_to_output(*id, output))
         })
         .for_each(|window| {
-            window.send_frame(output, state.start_time.elapsed(), Some(Duration::ZERO), |_, _| {
-                Some(output.clone())
+            window.send_frame(output, state.start_time.elapsed(), None, |surface, _| {
+                state.display_presentation.callback_output(&surface.into())
             });
         });
     let layers = layer_map_for_output(output).layers().cloned().collect::<Vec<_>>();
     layers.iter().for_each(|layer| {
-        layer.send_frame(output, state.start_time.elapsed(), Some(Duration::ZERO), |_, _| {
-            Some(output.clone())
+        layer.send_frame(output, state.start_time.elapsed(), None, |surface, _| {
+            state.display_presentation.callback_output(&surface.into())
         });
     });
     state.send_cursor_frame(output);
