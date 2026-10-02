@@ -192,11 +192,11 @@ pub struct Service {
 }
 
 impl Service {
-    fn start(config: &ferese_core::notifications::NotificationConfig) -> Self {
+    fn start(config: &ferese_config::notifications::NotificationConfig) -> Self {
         Self::connect(config, None)
     }
 
-    fn connect(config: &ferese_core::notifications::NotificationConfig, address: Option<String>) -> Self {
+    fn connect(config: &ferese_config::notifications::NotificationConfig, address: Option<String>) -> Self {
         let timeout = Arc::new(std::sync::atomic::AtomicU32::new(config.timeout_ms));
         let worker_timeout = timeout.clone();
         let (sender, events) = tokio::sync::mpsc::channel(256);
@@ -269,7 +269,7 @@ struct Toast {
 }
 
 pub struct Center {
-    config: ferese_core::notifications::NotificationConfig,
+    config: ferese_config::notifications::NotificationConfig,
     service: Service,
     pub ready: bool,
     pub dnd: bool,
@@ -282,7 +282,7 @@ pub struct Center {
 }
 
 impl Center {
-    pub fn new(config: ferese_core::notifications::NotificationConfig) -> Self {
+    pub fn new(config: ferese_config::notifications::NotificationConfig) -> Self {
         Self {
             service: Service::start(&config),
             ready: false,
@@ -304,7 +304,7 @@ impl Center {
             .try_send(Command::Local(title.into(), body.into()));
     }
 
-    pub fn configure(&mut self, config: ferese_core::notifications::NotificationConfig) {
+    pub fn configure(&mut self, config: ferese_config::notifications::NotificationConfig) {
         if self.config.do_not_disturb != config.do_not_disturb {
             self.dnd = config.do_not_disturb;
         }
@@ -617,7 +617,7 @@ impl Center {
 
 #[cfg(test)]
 mod tests {
-    use ferese_core::notifications::NotificationConfig;
+    use ferese_config::notifications::NotificationConfig;
 
     use super::*;
 

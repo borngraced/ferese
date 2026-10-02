@@ -1047,9 +1047,9 @@ mod tests {
     #[test]
     fn note_drag_origin_and_bounds_use_logical_output_coordinates() {
         use cosmic::iced::Point;
-        let mut note = ferese_core::desktop::StickyNote::default();
+        let mut note = ferese_config::desktop::StickyNote::default();
         assert_eq!(super::note_origin(&note, (1920, 1080)), Point::new(1552., 80.));
-        note.anchor = ferese_core::desktop::Anchor::Center;
+        note.anchor = ferese_config::desktop::Anchor::Center;
         assert_eq!(super::note_origin(&note, (1920, 1080)), Point::new(800., 420.));
         assert_eq!(
             super::clamp_note_position(Point::new(-20., 1200.), (1920, 1080), (320, 240)),
@@ -1063,7 +1063,7 @@ mod tests {
 
     #[test]
     fn desktop_clock_anchor_margins_match_only_anchored_edges() {
-        use ferese_core::desktop::{Anchor as Position, Clock};
+        use ferese_config::desktop::{Anchor as Position, Clock};
         let clock = Clock {
             anchor: Position::BottomRight,
             margin_x: 30,

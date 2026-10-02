@@ -7,8 +7,8 @@ const DEFAULT_BACKGROUND: [u8; 3] = [11, 15, 20];
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ShellConfig {
-    pub(crate) notifications: ferese_core::notifications::NotificationConfig,
-    pub(crate) desktop_widgets: ferese_core::desktop::DesktopWidgets,
+    pub(crate) notifications: ferese_config::notifications::NotificationConfig,
+    pub(crate) desktop_widgets: ferese_config::desktop::DesktopWidgets,
     pub(crate) animations: crate::motion::Settings,
     pub(crate) font_family: Option<String>,
     pub(crate) wallpaper: WallpaperConfig,
@@ -157,9 +157,9 @@ pub(crate) enum WallpaperMode {
 #[derive(Debug, Default, Deserialize)]
 struct FereseConfig {
     #[serde(default)]
-    notifications: ferese_core::notifications::NotificationConfig,
+    notifications: ferese_config::notifications::NotificationConfig,
     #[serde(default)]
-    desktop_widgets: ferese_core::desktop::DesktopWidgets,
+    desktop_widgets: ferese_config::desktop::DesktopWidgets,
     #[serde(default)]
     animations: crate::motion::Settings,
     #[serde(default)]
@@ -595,7 +595,7 @@ mod tests {
         .desktop_widgets
         .clock;
         assert!(clock.enabled);
-        assert_eq!(clock.anchor, ferese_core::desktop::Anchor::BottomRight);
+        assert_eq!(clock.anchor, ferese_config::desktop::Anchor::BottomRight);
         assert!(parse_test_source("desktop-widgets {\n    clock {\n        opacity 1.1\n    }\n}\n").is_err());
         assert!(parse_test_source("desktop-widgets {\n    clock {\n        time-format \"%\"\n    }\n}\n").is_err());
     }

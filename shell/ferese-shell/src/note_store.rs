@@ -133,6 +133,6 @@ desktop-widgets {
         let notes = crate::config::parse_source(&source).unwrap().desktop_widgets.notes;
         assert_eq!(notes[0].text, "one\ntwo");
         assert_eq!((notes[0].margin_x, notes[0].margin_y), (50, 60));
-        assert_eq!(notes[0].anchor, ferese_core::desktop::Anchor::TopLeft);
+        assert_eq!(notes[0].anchor, ferese_config::desktop::Anchor::TopLeft);
     }
 }

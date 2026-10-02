@@ -30,11 +30,11 @@ use crate::window_rules::{WindowRule, WindowRuleConfig};
 #[derive(Debug, Default, Deserialize)]
 pub struct Config {
     #[serde(default)]
-    notifications: ferese_core::notifications::NotificationConfig,
+    notifications: ferese_config::notifications::NotificationConfig,
     #[serde(default)]
     lock_screen: crate::session_lock::IdleSettings,
     #[serde(default)]
-    desktop_widgets: ferese_core::desktop::DesktopWidgets,
+    desktop_widgets: ferese_config::desktop::DesktopWidgets,
     #[serde(default)]
     pub(crate) autostart: Vec<DaemonConfig>,
     #[serde(default)]
