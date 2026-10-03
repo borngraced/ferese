@@ -17,7 +17,7 @@ libc.workspace = true
 # Keep GPU rendering available as a fallback/override. The shell defaults to
 # tiny-skia to avoid a second GPU initialization during desktop startup.
 libcosmic = { workspace = true, features = ["wgpu", "a11y"] }
-iced_accessibility = { git = "https://github.com/ferese-wm/libcosmic", rev = "7006277548d8feb756fa019f38a189cd4858396f" }
+iced_accessibility = { git = "https://github.com/ferese-wm/libcosmic", rev = "939f881070de253dcb3381be478f497b6087f01b" }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true

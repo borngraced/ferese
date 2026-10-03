@@ -245,6 +245,7 @@ impl FereseShell {
                     color: color_with_opacity(theme.border, p),
                     width: 1.0,
                     radius: theme.material_radius.into(),
+                    ..Default::default()
                 },
                 snap: true,
                 ..Default::default()

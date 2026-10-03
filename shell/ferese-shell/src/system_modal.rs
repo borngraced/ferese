@@ -623,6 +623,7 @@ impl FereseShell {
                         color: palette.muted.scale_alpha(0.16),
                         width: 1.0,
                         radius: theme.material_radius.into(),
+                        ..Default::default()
                     },
                     snap: true,
                     ..Default::default()

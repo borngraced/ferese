@@ -330,6 +330,7 @@ pub(super) fn workspace_selector_style(
             color: color_with_opacity(shell_theme.accent, 0.55),
             width: if active_elsewhere { 1.0 } else { 0.0 },
             radius: shell_theme.material_radius.min(14.0).into(),
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -353,6 +354,7 @@ pub(super) fn bar_group_style(theme: ShellTheme) -> container::Style {
             color: color(theme.border),
             width: 1.0,
             radius: theme.material_radius.min(16.0).into(),
+            ..Default::default()
         },
         ..Default::default()
     }

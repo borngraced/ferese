@@ -136,6 +136,7 @@ pub fn select<'a, M: 'a>(
             width: 1.,
             color: mix(p.card, p.text, 0.18),
             radius: p.radius.min(7.).into(),
+            ..Default::default()
         },
         ..Default::default()
     }))

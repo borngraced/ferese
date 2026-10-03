@@ -398,6 +398,7 @@ impl<M: Clone> Widget<M, Theme, Renderer> for Radio<'_, M> {
                         color: style.text_color,
                         width: 2.,
                         radius: 10.into(),
+                        ..Default::default()
                     },
                     ..Default::default()
                 },
