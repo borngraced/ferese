@@ -238,7 +238,10 @@ impl Ferese {
         for (id, record, blocked) in self.output_window_records(output, !delta.is_zero()) {
             let Some(original) = record.geometry else { continue };
 
-            if !self.window_belongs_to_output(id, output) {
+            // The workspace strip also draws inactive workspaces on this output.
+            // Keep their samples through the overview exit transition; the main
+            // grid still filters by window_belongs_to_output in the render path.
+            if !overview.is_presenting() && !self.window_belongs_to_output(id, output) {
                 continue;
             }
 
@@ -532,6 +535,58 @@ mod tests {
         assert!(
             state.output_has_animations(&output),
             "remaining output keeps its active animation"
+        );
+
+        let inactive = state.workspaces.create_workspace();
+        state.output_workspaces.assign_workspace(output_id, inactive).unwrap();
+        let preview_id = WindowId(3);
+        state
+            .workspaces
+            .insert_floating_window(preview_id, inactive, settled.visual.current, false)
+            .unwrap();
+        state.windows.records.insert(
+            preview_id,
+            super::super::window_registry::WindowRecord {
+                geometry: Some(settled),
+                ..Default::default()
+            },
+        );
+        assert!(
+            !state
+                .sample_frame(&output, Duration::ZERO)
+                .windows
+                .contains_key(&preview_id)
+        );
+
+        state.set_overview_active(true);
+        let frame = state.sample_frame(&output, Duration::ZERO);
+        assert!(
+            frame.windows.contains_key(&preview_id),
+            "inactive workspace needs a thumbnail sample"
+        );
+        assert!(
+            !state.window_belongs_to_output(preview_id, &output),
+            "thumbnail must stay out of the main grid"
+        );
+        for card in state.overview_workspace_cards_for_frame(&output, Some(&frame)) {
+            for (id, _) in card.windows {
+                assert!(
+                    frame.windows.contains_key(&id),
+                    "workspace card has no presentation for {id:?}"
+                );
+            }
+        }
+
+        state.set_overview_active(false);
+        assert!(
+            state.overview.is_presenting(),
+            "exit transition keeps the strip visible"
+        );
+        assert!(
+            state
+                .sample_frame(&output, Duration::ZERO)
+                .windows
+                .contains_key(&preview_id)
         );
     }
 
