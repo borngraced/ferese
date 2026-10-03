@@ -153,6 +153,30 @@ fn coverage(distance: f64) -> f64 {
 }
 
 #[test]
+fn shared_geometry_matches_the_existing_window_profile() {
+    let bounds = [1.25, 2.5, 61.5, 59.0];
+
+    for shape in [CornerShape::Circular, CornerShape::Continuous] {
+        for radius in [0.0, 0.375, 8.25, 12.375, 24.0, 29.49, 29.5] {
+            let outline = ferese_shape::Outline::new(bounds, [radius; 4], shape).unwrap();
+
+            for y in 0..64 {
+                for x in 0..64 {
+                    let point = [x as f64 + 0.5, y as f64 + 0.5];
+                    let expected = reference_distance(point, bounds, radius, shape);
+                    let actual = outline.signed_distance(point);
+                    assert!(
+                        (actual - expected).abs() < 0.01,
+                        "{shape:?} radius={radius} point={point:?}"
+                    );
+                    assert!((coverage(actual) - coverage(expected)).abs() <= 2.0 / 255.0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn shell_roles_and_shader_sources_keep_circular_corners() {
     use crate::effects::SemanticRole::*;
 
