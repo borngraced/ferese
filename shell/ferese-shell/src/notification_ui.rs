@@ -1,3 +1,4 @@
+use cosmic::iced::border::Shape as BorderShape;
 use cosmic::iced::widget::scrollable::{Direction, Scrollbar};
 use cosmic::widget::{column, scrollable};
 
@@ -82,6 +83,7 @@ fn icon_control<'a>(
     .class(theme::Container::custom(move |_| container::Style {
         background: Some(Background::Color(background)),
         border: Border {
+            shape: BorderShape::Continuous,
             radius: motion::radius(12.0).into(),
             ..Default::default()
         },
@@ -287,6 +289,7 @@ impl FereseShell {
             .class(theme::Container::custom(move |_| container::Style {
                 background: Some(Background::Color(well)),
                 border: Border {
+                    shape: BorderShape::Continuous,
                     radius: motion::radius(15.0).into(),
                     ..Default::default()
                 },
@@ -313,6 +316,7 @@ impl FereseShell {
             .class(theme::Container::custom(move |_| container::Style {
                 background: Some(Background::Color(badge_fill.scale_alpha(opacity))),
                 border: Border {
+                    shape: BorderShape::Continuous,
                     radius: motion::radius(8.0).into(),
                     ..Default::default()
                 },
@@ -466,6 +470,7 @@ impl FereseShell {
                     (!compositor_material).then_some(Background::Color(base))
                 },
                 border: Border {
+                    shape: BorderShape::Continuous,
                     color: color_with_opacity(palette.text_muted, 0.18 * opacity),
                     width: if history { 0.0 } else { 1.0 },
                     radius: palette.material_radius.into(),
@@ -489,6 +494,7 @@ impl FereseShell {
                                 ..foreground
                             })),
                             border: Border {
+                                shape: BorderShape::Continuous,
                                 radius: [0.0, 0.0, motion::radius(6.0), motion::radius(6.0)].into(),
                                 ..Default::default()
                             },
@@ -649,6 +655,7 @@ impl FereseShell {
                 .class(theme::Container::custom(move |_| container::Style {
                     background: Some(Background::Color(base)),
                     border: Border {
+                        shape: BorderShape::Continuous,
                         radius: palette.material_radius.into(),
                         ..Default::default()
                     },
@@ -666,6 +673,7 @@ impl FereseShell {
                             .class(theme::Container::custom(move |_| container::Style {
                                 background: Some(Background::Color(well)),
                                 border: Border {
+                                    shape: BorderShape::Continuous,
                                     radius: motion::radius(28.0).into(),
                                     ..Default::default()
                                 },
@@ -767,6 +775,7 @@ impl FereseShell {
                 .class(theme::Container::custom(move |_| container::Style {
                     background: (!compositor_material).then_some(Background::Color(color(palette.surface_popover))),
                     border: Border {
+                        shape: BorderShape::Continuous,
                         color: color_with_opacity(palette.text_muted, 0.18 * opacity),
                         width: 1.0,
                         radius: palette.material_radius.into(),

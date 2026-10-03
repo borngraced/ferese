@@ -177,28 +177,26 @@ fn shared_geometry_matches_the_existing_window_profile() {
 }
 
 #[test]
-fn shell_roles_and_shader_sources_keep_circular_corners() {
-    use crate::effects::SemanticRole::*;
-
-    for role in [Panel, PanelElevated, Popover, Menu, Notification, Hud, Modal] {
-        assert_eq!(corner_shape_for_role(Some(role)), CornerShape::Circular);
-    }
-
-    assert_eq!(corner_shape_for_role(None), CornerShape::Continuous);
-
+fn shell_masks_match_the_shared_squircle_profile() {
     for source in [BLUR_SHADER, MATERIAL_SHADER, ROUNDED_TEXTURE_SHADER] {
         assert_eq!(
             corner_shader(source),
-            source.replace("//_CORNERS_", include_str!("shaders/corners.glsl"))
+            corner_shader_for(source, CornerShape::Continuous)
         );
-        assert!(!corner_shader(source).contains("CORNER_EXTENT"));
+        assert!(corner_shader(source).contains("CORNER_EXTENT"));
+        assert!(!corner_shader_for(source, CornerShape::Circular).contains("CORNER_EXTENT"));
     }
 }
 
 fn renderer() -> GlesRenderer {
     use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
 
-    let device = EGLDevice::enumerate().unwrap().last().expect("an EGL device");
+    let devices = EGLDevice::enumerate().unwrap().collect::<Vec<_>>();
+    let software = std::env::var_os("FERESE_TEST_EGL_SOFTWARE").is_some();
+    let device = devices
+        .into_iter()
+        .find(|device| device.is_software() == software)
+        .expect("the requested EGL device");
     let display = unsafe { EGLDisplay::new(device).unwrap() };
     unsafe { GlesRenderer::new(EGLContext::new(&display).unwrap()).unwrap() }
 }
@@ -358,12 +356,12 @@ fn apple_window_fill_and_inset_border_match_path_reference_at_fractional_scales(
 
 #[test]
 #[ignore = "requires an EGL rendering device"]
-fn window_programs_do_not_change_cached_shell_materials_and_blur() {
+fn circular_and_squircle_programs_keep_independent_caches() {
     let mut renderer = renderer();
     let mut resources = RenderResources::default();
     let context = renderer.context_id().erased();
-    let circular = rounded_clip_program(&mut resources, &mut renderer).unwrap();
-    material_program(&mut resources, &mut renderer).unwrap();
+    let circular = corner_program(&mut resources, &mut renderer, CornerShape::Circular).unwrap();
+    material_program_for_corners(&mut resources, &mut renderer, CornerShape::Circular).unwrap();
     blur_program(&mut resources, &mut renderer).unwrap();
     let uniforms = [
         Uniform::new("clip_rect", [0.0f32, 0.0, 64.0, 64.0]),
@@ -373,7 +371,7 @@ fn window_programs_do_not_change_cached_shell_materials_and_blur() {
     let before = rasterize(&mut renderer, &circular.solid, &uniforms);
     corner_program(&mut resources, &mut renderer, CornerShape::Continuous).unwrap();
     material_program_for_corners(&mut resources, &mut renderer, CornerShape::Continuous).unwrap();
-    let circular = rounded_clip_program(&mut resources, &mut renderer).unwrap();
+    let circular = corner_program(&mut resources, &mut renderer, CornerShape::Circular).unwrap();
     let after = rasterize(&mut renderer, &circular.solid, &uniforms);
     assert_eq!(before, after);
     let cache = &resources.contexts[&context];

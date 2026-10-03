@@ -457,6 +457,7 @@ impl Locker {
                     text_color: Some(on),
                     icon_color: Some(on),
                     border: iced::Border {
+                        shape: cosmic::iced::border::Shape::Continuous,
                         radius: (avatar_size / 2.).into(),
                         width: 1.,
                         color: a.accent.scale_alpha(0.3),
