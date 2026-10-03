@@ -346,34 +346,6 @@ const fn default_repeat_delay() -> i32 {
     600
 }
 
-const fn default_animation_speed() -> f64 {
-    1.0
-}
-
-const fn default_spring_mass() -> f64 {
-    1.0
-}
-
-const fn default_spring_stiffness() -> f64 {
-    700.0
-}
-
-const fn default_spring_damping() -> f64 {
-    53.0
-}
-
-const fn default_viewport_mass() -> f64 {
-    1.0
-}
-
-const fn default_viewport_stiffness() -> f64 {
-    320.0
-}
-
-const fn default_viewport_damping_ratio() -> f64 {
-    1.0
-}
-
 const fn default_true() -> bool {
     true
 }
@@ -384,6 +356,17 @@ pub(crate) fn config_path() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rejects_undamped_overshoot_before_publication() {
+        for property in ["spring", "viewport-spring"] {
+            for coefficient in ["damping", "damping-ratio"] {
+                let source = format!("animations {{ {property} {{ {coefficient} 0; overshoot #true; }}; }}");
+                let error = Config::parse_source(&source).unwrap().runtime_config().err().unwrap().to_string();
+                assert!(error.contains("overshoot requires positive damping"), "{error}");
+            }
+        }
+    }
+
     use super::*;
 
     #[test]

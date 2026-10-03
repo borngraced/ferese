@@ -44,7 +44,7 @@ impl Config {
     }
 
     pub fn animations_enabled(&self) -> bool {
-        self.animations.enabled && !self.animations.reduced_motion
+        self.animations.motion_enabled()
     }
 
     pub fn animation_speed(&self) -> Result<f64, ConfigError> {
@@ -52,39 +52,14 @@ impl Config {
     }
 
     pub fn spring_config(&self) -> Result<SpringConfig, ConfigError> {
-        let mass = positive_animation_value(self.animations.spring.mass, "spring.mass")?;
-        let stiffness = positive_animation_value(self.animations.spring.stiffness, "spring.stiffness")?;
-        let damping = self.animations.spring.damping;
-        if !damping.is_finite() || damping < 0.0 {
-            return Err(ConfigError::AnimationValue {
-                field: "spring.damping",
-                value: damping,
-            });
-        }
-
-        Ok(SpringConfig {
-            mass,
-            stiffness,
-            damping,
-            ..SpringConfig::default()
-        })
+        self.animations
+            .spring
+            .resolve(SpringConfig::default())
+            .map_err(ConfigError::Binding)
     }
 
     pub fn viewport_spring_config(&self) -> Result<SpringConfig, ConfigError> {
-        let mass = positive_animation_value(self.animations.viewport_spring.mass, "viewport_spring.mass")?;
-        let stiffness =
-            positive_animation_value(self.animations.viewport_spring.stiffness, "viewport_spring.stiffness")?;
-        let damping_ratio = positive_animation_value(
-            self.animations.viewport_spring.damping_ratio,
-            "viewport_spring.damping_ratio",
-        )?;
-
-        Ok(SpringConfig {
-            mass,
-            stiffness,
-            damping: 2.0 * damping_ratio * (stiffness * mass).sqrt(),
-            ..SpringConfig::default()
-        })
+        self.animations.viewport_config().map_err(ConfigError::Binding)
     }
 }
 
@@ -178,68 +153,4 @@ impl Default for TouchpadConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub(super) struct AnimationsConfig {
-    #[serde(default = "enabled_by_default")]
-    pub(super) enabled: bool,
-    #[serde(default)]
-    pub(super) reduced_motion: bool,
-    #[serde(default = "default_animation_speed")]
-    pub(super) speed: f64,
-    #[serde(default)]
-    pub(super) spring: SpringSettings,
-    #[serde(default)]
-    pub(super) viewport_spring: ViewportSpringSettings,
-}
-
-impl Default for AnimationsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            reduced_motion: false,
-            speed: 1.0,
-            spring: SpringSettings::default(),
-            viewport_spring: ViewportSpringSettings::default(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct ViewportSpringSettings {
-    #[serde(default = "default_viewport_mass")]
-    pub(super) mass: f64,
-    #[serde(default = "default_viewport_stiffness")]
-    pub(super) stiffness: f64,
-    #[serde(default = "default_viewport_damping_ratio")]
-    pub(super) damping_ratio: f64,
-}
-
-impl Default for ViewportSpringSettings {
-    fn default() -> Self {
-        Self {
-            mass: default_viewport_mass(),
-            stiffness: default_viewport_stiffness(),
-            damping_ratio: default_viewport_damping_ratio(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct SpringSettings {
-    #[serde(default = "default_spring_mass")]
-    pub(super) mass: f64,
-    #[serde(default = "default_spring_stiffness")]
-    pub(super) stiffness: f64,
-    #[serde(default = "default_spring_damping")]
-    pub(super) damping: f64,
-}
-
-impl Default for SpringSettings {
-    fn default() -> Self {
-        Self {
-            mass: default_spring_mass(),
-            stiffness: default_spring_stiffness(),
-            damping: default_spring_damping(),
-        }
-    }
-}
+pub(super) type AnimationsConfig = ferese_animation::MotionSettings;

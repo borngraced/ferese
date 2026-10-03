@@ -7,13 +7,15 @@ pub(crate) struct FrameScene {
     pub overview: crate::overview::OverviewMotion,
     // Plane selection and scheduling reuse the activity sampled with this scene.
     pub animating: bool,
+    pub delta: Duration,
 }
 
 pub(crate) struct WindowFrame {
     pub geometry: WindowGeometry,
     pub rect: Rect,
-    pub close_scale: f64,
-    pub close_alpha: f32,
+    pub scale_content: bool,
+    pub native_size: Option<ClientSize>,
+    pub alpha: f32,
     pub focus: f64,
     pub dim: f64,
 }
@@ -68,7 +70,12 @@ impl Ferese {
     }
 
     pub(crate) fn output_has_animations(&self, output: &Output) -> bool {
-        if self.overview.is_animating(self.spring_config)
+        if self
+            .render
+            .closing
+            .iter()
+            .any(|window| Some(window.output) == self.output_id(output))
+            || self.overview.is_animating(self.spring_config)
             || self
                 .dismissing_popups
                 .iter()
@@ -80,7 +87,7 @@ impl Ferese {
         if self
             .output_id(output)
             .and_then(|id| self.workspace_slides.get(&id))
-            .is_some_and(|slide| slide.held_progress.is_none() && slide.elapsed < WORKSPACE_SLIDE_DURATION)
+            .is_some_and(|slide| slide.held_progress.is_none() && slide.moving())
         {
             return true;
         }
@@ -95,8 +102,8 @@ impl Ferese {
             }
 
             if record.resize.is_some()
+                || record.opening.is_some()
                 || self.render.snapshot(&id).is_some()
-                || record.closing.as_ref().is_some_and(|close| !close.close_sent)
                 || record.focus.as_ref().is_some_and(|focus| focus.is_animating())
                 || record.dimming.as_ref().is_some_and(|dim| dim.is_animating())
             {
@@ -117,15 +124,10 @@ impl Ferese {
                     .focus_swipe
                     .as_ref()
                     .is_some_and(|swipe| swipe.workspace == workspace);
-                !held
-                    && viewport.advance_with_policy(
-                        Duration::ZERO,
-                        self.viewport_spring_config,
-                        CrossingPolicy::NoCrossing,
-                    )
+                !held && viewport.advance(Duration::ZERO, self.viewport_spring_config)
             }) || record.coupled_width.as_ref().is_some_and(|(_, width)| {
                 let mut width = *width;
-                width.advance_with_policy(Duration::ZERO, self.viewport_spring_config, CrossingPolicy::NoCrossing)
+                width.advance(Duration::ZERO, self.viewport_spring_config)
             })
         })
     }
@@ -187,12 +189,19 @@ impl Ferese {
                 rect.y += y;
             }
 
-            let mut close = record.closing.as_ref().copied().unwrap_or_default();
-            if record.closing.is_some() && !delta.is_zero() {
-                close.advance(delta, true);
+            let mut opening = record.opening.unwrap_or_else(|| AnimatedValue::new(1.0));
+            if !self.animations_enabled {
+                opening.snap();
+            } else if !delta.is_zero() {
+                opening.advance(
+                    delta,
+                    SpringConfig {
+                        position_tolerance: 0.00001,
+                        velocity_tolerance: 0.00001,
+                        ..self.spring_config
+                    },
+                );
             }
-
-            let eased = smoothstep(close.progress);
             let focused = if self.overview.is_active() {
                 self.overview_selected(id)
             } else {
@@ -211,14 +220,31 @@ impl Ferese {
                 motion.current
             };
 
+            let mut focus = record
+                .focus
+                .unwrap_or_else(|| AnimatedValue::new(if focused { 1.0 } else { 0.0 }));
+            if !delta.is_zero() {
+                focus.advance(
+                    delta,
+                    SpringConfig {
+                        position_tolerance: 0.001,
+                        velocity_tolerance: 0.001,
+                        ..self.spring_config
+                    },
+                );
+            }
+            let presence_scale = 0.97 + 0.03 * opening.current;
+            let native_size = (!overview.is_presenting() && presence_scale != 1.0).then(|| ClientSize::from_rect(rect));
+            let rect = crate::presentation::scaled_visual_rect(rect, presence_scale);
             windows.insert(
                 id,
                 WindowFrame {
                     geometry,
                     rect,
-                    close_scale: 1.0 - eased * 0.02,
-                    close_alpha: (1.0 - eased) as f32,
-                    focus: sample_dim(record.focus.as_ref(), if focused { 1.0 } else { 0.0 }),
+                    scale_content: overview.is_presenting(),
+                    native_size,
+                    alpha: opening.current.clamp(0.0, 1.0) as f32,
+                    focus: focus.current.clamp(0.0, 1.0),
                     dim: sample_dim(record.dimming.as_ref(), 0.0),
                 },
             );
@@ -228,6 +254,7 @@ impl Ferese {
             windows,
             overview,
             animating,
+            delta,
         }
     }
 }
@@ -252,9 +279,9 @@ fn predict_geometry(
     if let Some((mut world, mut viewport, held)) = world
         && !zooming
     {
-        world.advance_with_policy(delta, spring, CrossingPolicy::NoCrossing);
+        world.advance(delta, spring);
         if !held {
-            viewport.advance_with_policy(delta, viewport_spring, CrossingPolicy::NoCrossing);
+            viewport.advance(delta, viewport_spring);
         }
 
         predicted.visual.current.x = world.current - viewport.current;
@@ -262,7 +289,7 @@ fn predict_geometry(
     }
 
     if let Some(mut width) = width {
-        width.advance_with_policy(delta, viewport_spring, CrossingPolicy::NoCrossing);
+        width.advance(delta, viewport_spring);
         predicted.visual.current.width = width.current;
         predicted.visual.velocity.width = width.velocity;
     }
@@ -454,7 +481,7 @@ mod tests {
         state.focused_window = Some(id);
         state
             .windows
-            .update(id, |record| record.focus = Some(crate::dimming::DimAnimation::new(1.0)));
+            .update(id, |record| record.focus = Some(AnimatedValue::new(1.0)));
         state.focused_window = Some(other_id);
         assert!(state.output_has_pending_visual_changes(&output));
         state.animations_enabled = false;

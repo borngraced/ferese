@@ -1059,17 +1059,6 @@ fn cursor_affected_outputs(state: &Ferese) -> Vec<Output> {
 }
 
 #[track_caller]
-pub(crate) fn render_window(state: &mut Ferese, window: ferese_layout::WindowId) {
-    let outputs = state
-        .space
-        .outputs()
-        .filter(|output| state.window_belongs_to_output(window, output))
-        .cloned()
-        .collect::<Vec<_>>();
-    render_on(state, &outputs);
-}
-
-#[track_caller]
 pub(crate) fn render_surface(
     state: &mut Ferese,
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,

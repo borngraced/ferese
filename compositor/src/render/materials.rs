@@ -129,6 +129,25 @@ pub(super) fn material_element(
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     surface_geometry: MaterialSurface,
 ) -> Option<(AnimatedWindowRenderElement, AnimatedWindowRenderElement)> {
+    let (role, generation) = crate::effects::surface_role(surface)?;
+    material_element_with_role(
+        state,
+        renderer,
+        output,
+        surface,
+        surface_geometry,
+        (role, generation, crate::effects::surface_opacity(surface)),
+    )
+}
+
+pub(super) fn material_element_with_role(
+    state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    surface_geometry: MaterialSurface,
+    (role, generation, opacity): (crate::effects::SemanticRole, u64, f32),
+) -> Option<(AnimatedWindowRenderElement, AnimatedWindowRenderElement)> {
     let MaterialSurface {
         geometry,
         corners,
@@ -136,13 +155,12 @@ pub(super) fn material_element(
         capture_geometry,
         alpha,
     } = surface_geometry;
-    let (role, generation) = crate::effects::surface_role(surface)?;
     let material = crate::effects::resolve_material(
         role,
         state.theme_settings.material_style,
         state.theme_settings.shell_opacity as f32,
     );
-    let presentation_alpha = crate::effects::surface_opacity(surface) * alpha;
+    let presentation_alpha = opacity * alpha;
     let mode = output.current_mode()?;
     let scale = output.current_scale().fractional_scale();
     let transform = output.current_transform().invert();

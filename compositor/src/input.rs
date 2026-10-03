@@ -170,6 +170,7 @@ impl Ferese {
                             .any(|binding| binding.swipe_fingers(event.fingers())),
                     self.input_settings.touchpad.swipe_threshold,
                 );
+                self.swipe.start_time(std::time::Duration::from_micros(event.time()));
                 if self.swipe.active() {
                     self.focus_output_at(pointer.current_location());
                 } else {
@@ -185,7 +186,11 @@ impl Ferese {
             }
             InputEvent::GestureSwipeUpdate { event } => {
                 if self.swipe.active() {
-                    self.swipe.update(event.delta_x(), event.delta_y());
+                    self.swipe.update_at(
+                        event.delta_x(),
+                        event.delta_y(),
+                        std::time::Duration::from_micros(event.time()),
+                    );
                     if self.swipe_navigation_blocked() {
                         self.finish_workspace_swipe(None);
                         self.finish_focus_swipe(None);
@@ -198,10 +203,13 @@ impl Ferese {
                     {
                         match action {
                             BindingAction::SwitchRelativeWorkspace(next) => {
+                                self.swipe.mark_momentum_navigation();
                                 self.preview_workspace_swipe(next, direction, progress);
                             }
                             BindingAction::Focus(focus @ (Direction::Left | Direction::Right)) => {
-                                self.preview_focus_swipe(focus, direction, progress);
+                                self.swipe.mark_momentum_navigation();
+                                let raw = self.swipe.unbounded_preview().map_or(progress, |(_, value)| value);
+                                self.preview_focus_swipe(focus, direction, raw);
                             }
                             _ => {}
                         }
@@ -220,7 +228,9 @@ impl Ferese {
                 if self.swipe.active() {
                     let fingers = self.swipe.fingers();
                     let cancelled = event.cancelled() || self.swipe_navigation_blocked();
-                    let direction = self.swipe.finish(cancelled);
+                    let direction = self
+                        .swipe
+                        .finish_at(cancelled, std::time::Duration::from_micros(event.time()));
                     let workspace_handled = self.finish_workspace_swipe(direction);
                     let focus_handled = self.finish_focus_swipe(direction);
                     let handled = workspace_handled || focus_handled || self.swipe.preview_started();

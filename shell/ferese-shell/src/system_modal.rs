@@ -295,7 +295,7 @@ impl FereseShell {
                 if let Some(effects) = &entry.effects {
                     let regions = entry.regions.lock().unwrap().clone();
                     let _ = effects.set_material_regions(&regions, ferese_surface_effects_v1::Role::Modal);
-                    let _ = effects.set_opacity(modal.motion.progress());
+                    let _ = effects.set_opacity(modal.motion.progress().clamp(0.0, 1.0));
                 }
             }
         }

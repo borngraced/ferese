@@ -37,6 +37,7 @@ impl CompositorHandler for Ferese {
     fn commit(&mut self, surface: &WlSurface) {
         self.update_surface_preferences(surface);
         self.capture_resize_before_commit(surface);
+        self.capture_close_before_commit(surface);
         on_commit_buffer_handler::<Self>(surface);
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();

@@ -241,6 +241,7 @@ pub(super) fn overview_strip_elements(
                         output,
                         programs.clone(),
                         ConstrainScaleBehavior::Stretch,
+                        None,
                     ));
                 }
             }

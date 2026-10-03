@@ -114,7 +114,8 @@ Changing default width preserves manually resized columns.
 
 ## Animations
 
-Set animation speed in Settings → Motion or edit the `animations` block in
+Continuum is Ferese's shared compositor and shell motion system. Set animation
+speed in Settings → Motion or edit the `animations` block in
 `~/.config/ferese/config.kdl`. Changes apply live. Start with `speed` if you only
 want faster or slower transitions; you do not need to change the springs.
 
@@ -151,7 +152,20 @@ You can omit either spring block to keep its defaults.
 | `animations.spring.damping` | number ≥ 0 | `53` | Spring damping |
 | `animations.viewport-spring.mass` | number > 0 | `1` | Scrolling spring mass |
 | `animations.viewport-spring.stiffness` | number > 0 | `320` | Scrolling stiffness |
-| `animations.viewport-spring.damping-ratio` | number > 0 | `1` | `1` is critically damped |
+| `animations.viewport-spring.damping-ratio` | number ≥ 0 | `1` | `1` is critically damped; zero requires overshoot disabled |
+
+Both `spring` and `viewport-spring` also accept these keys:
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `damping-ratio` | number ≥ 0 | Derived from coefficients for `spring`; `1` for `viewport-spring` | Alternative to `damping`; zero requires overshoot disabled |
+| `duration-ms` | number > 0 | Unset | Response parameter instead of stiffness/damping; not a completion deadline |
+| `bounce` | number strictly between −1 and 1 | `0` with `duration-ms` | Requires `duration-ms`; positive values also require overshoot |
+| `overshoot` | boolean | `false` | Allow target crossings for this spring; requires positive damping |
+
+`mass`, `stiffness` and `damping` are accepted in both blocks. The viewport's
+default damping ratio tracks changes to mass and stiffness unless you supply
+`damping`, `damping-ratio` or `duration-ms` explicitly.
 
 ### Speed and reduced motion
 
@@ -166,17 +180,44 @@ immediate. Reduced motion takes precedence over `enabled #true`; setting
 `speed 0` is invalid. These settings control Ferese's animations, not animations
 inside other applications.
 
+Overview can reverse while moving, and workspace changes slide in their navigation
+direction. Workspace and scrolling gestures carry their release velocity into
+the settling spring. Scrolling gestures resist at viewport limits and spring back.
+Window opening starts when content is available; closing waits for the application
+to unmap, then animates its retained image. Input and application close requests
+remain responsive while the animations finish.
+
 ### Spring tuning
 
 `spring` controls window position and size motion, fullscreen/maximize zoom and
-overview entrance motion. `viewport-spring` controls the scrolling viewport and
-the column-width animation that runs with it. Shell popups and theme fades use
-timed transitions, so the spring parameters do not change their curves.
+overview entrance and dismissal, opening/closing windows, focus emphasis, shell
+popups and notifications. `viewport-spring` controls the scrolling viewport,
+workspace slides and the column-width animation that runs with scrolling.
+Continuum shares the analytic spring solver and motion settings between the
+compositor and shell. Small opacity changes (hover, dimming, theme fades) may
+still use timed transitions.
 
-Spring motion has no fixed duration. Its settling time depends on the distance
-to the target, current velocity and the spring parameters. The `animations`
-block has no settings for per-animation durations, custom curves or animation
-shaders.
+Spring settling time depends on distance, velocity and tolerances. In either
+spring block, you can use duration and bounce instead of stiffness and damping:
+
+```kdl
+animations {
+    spring {
+        duration-ms 300.0
+        bounce 0.0
+    }
+}
+```
+
+`duration-ms` is a response parameter, not a fixed completion deadline. With
+`T = duration-ms / 1000`, Continuum uses `omega = 2*pi/T`,
+`stiffness = mass*omega^2` and `damping = 2*mass*omega*zeta`.
+`zeta = 1-bounce` for nonnegative bounce, otherwise `zeta = 1/(1+bounce)`.
+Bounce defaults to zero and must be strictly between -1 and 1. Positive bounce
+requires `overshoot #true` in that spring block. Do not combine `duration-ms`
+with `stiffness`, `damping` or `damping-ratio`; existing physical settings keep
+working. This conversion does not guarantee the same perceptual duration or
+settling time as Apple's springs.
 
 With the other parameters unchanged, higher stiffness makes motion faster and
 higher mass makes it slower. Damping controls how quickly velocity dies away.
@@ -184,14 +225,16 @@ The default window spring is slightly overdamped, close to critical damping;
 the viewport spring is critically damped.
 
 For `viewport-spring`, `damping-ratio 1.0` is critical damping, values below `1`
-are underdamped and values above `1` are overdamped. The window spring uses a
-damping coefficient instead: critical damping is
+are underdamped and values above `1` are overdamped. Both spring blocks accept a
+damping ratio or a damping coefficient, but not both; critical damping is
 `damping = 2 * sqrt(stiffness * mass)`. Ferese stops spring animations
-at their first target crossing, so lowering damping does not make them bounce
-past the target.
+at their first target crossing by default. `overshoot #true` allows that spring
+to move past its target; opacity remains bounded. Overshoot is never enabled globally.
 
-Mass, stiffness, damping ratio and speed must be finite and greater than zero.
-The window spring's damping coefficient may also be zero. Invalid edits leave
+Mass, stiffness and speed must be finite and greater than zero.
+Damping coefficients and damping ratios may be zero only with overshoot disabled,
+so the first-crossing clamp can settle the animation. Overshoot requires positive
+damping; otherwise closing popups could wait indefinitely for settlement. Invalid edits leave
 the last accepted configuration active.
 
 ## Appearance
@@ -225,7 +268,7 @@ one appearance.
 | `appearance.corner-radius` | number ≥ 0 | unset | Legacy fallback for shell radius |
 | `appearance.inactive-dim.enabled` | boolean | `false` | Dim unfocused windows |
 | `appearance.inactive-dim.amount` | number 0–1 | `0.15` | Darkening strength |
-| `appearance.inactive-dim.duration-ms` | number ≥ 0 | `150` | Dimming and focus-ring transition; 0 snaps |
+| `appearance.inactive-dim.duration-ms` | number ≥ 0 | `150` | Dimming transition; 0 snaps |
 | `theme.typography.font-family` | string | `"Inter"` | Shell, Settings and overview font |
 | `theme.background.path` | string | bundled Ferese wallpaper | Wallpaper image path; an existing selection overrides the default |
 | `theme.background.mode` | `"fill"`, `"fit"` | `"fill"` | Crop or letterbox |

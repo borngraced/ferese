@@ -34,9 +34,10 @@ impl Ferese {
             if workspace.fullscreen.is_some() || !matches!(workspace.layout, WorkspaceLayout::Scrolling(_)) {
                 return;
             }
-            let Ok(Some(to)) = workspace.layout.directional_neighbor(from, direction, bounds) else {
+            let Ok(neighbor) = workspace.layout.directional_neighbor(from, direction, bounds) else {
                 return;
             };
+            let to = neighbor.unwrap_or(from);
             let workspace_id = workspace.id;
             let start = self
                 .viewport_animations
@@ -45,7 +46,8 @@ impl Ferese {
                 .or_else(|| workspace.layout.viewport_x())
                 .unwrap_or(0.0);
             let mut candidate = workspace.layout.clone();
-            if let WorkspaceLayout::Scrolling(layout) = &mut candidate
+            if to != from
+                && let WorkspaceLayout::Scrolling(layout) = &mut candidate
                 && layout.slide_focus_from(from, to).is_err()
             {
                 return;
@@ -63,7 +65,11 @@ impl Ferese {
                 direction,
                 gesture_direction,
                 start,
-                destination: candidate.viewport_x().unwrap_or(start),
+                destination: if to == from {
+                    start
+                } else {
+                    candidate.viewport_x().unwrap_or(start)
+                },
                 progress,
             });
             self.swipe.mark_preview_started();
@@ -91,7 +97,9 @@ impl Ferese {
         // Release from the last input position even if no frame rendered that update.
         if current && let Some(viewport) = self.viewport_animations.get_mut(&swipe.workspace) {
             viewport.current = swipe.position();
-            viewport.velocity = 0.0;
+            viewport.velocity = swipe
+                .release_velocity(self.swipe.release_velocity, self.swipe.unbounded_release_velocity)
+                / self.animation_speed;
         }
         let neighbor = self.output_bounds().and_then(|bounds| {
             self.workspaces
@@ -460,6 +468,11 @@ impl Ferese {
         };
         let previous = self.workspace_slides.remove(&output);
         let mut slide = WorkspaceSlide::new(previous, from, to, direction);
+        slide.spring = SpringConfig {
+            position_tolerance: 0.00001,
+            velocity_tolerance: 0.00001,
+            ..self.viewport_spring_config
+        };
         slide.held_progress = Some(progress);
         slide.gesture = Some((from, to, direction));
         self.workspace_slides.insert(output, slide);
@@ -481,7 +494,7 @@ impl Ferese {
             && self.activate_managed_workspace_from_swipe(to, expected);
         if !committed {
             if let Some(slide) = self.workspace_slides.get_mut(&output) {
-                slide.release(false);
+                slide.release_with_velocity(false, self.swipe.release_velocity / self.animation_speed);
             }
             self.last_animation_tick = Instant::now();
             self.relayout();
@@ -497,26 +510,55 @@ impl Ferese {
         workspace: WorkspaceId,
         slide_direction: Option<SwipeDirection>,
     ) {
+        if owner != requested_output {
+            return;
+        }
         let mut previous_slide = self.workspace_slides.remove(&owner);
+        if previous == Some(workspace) {
+            if let Some(slide) = previous_slide {
+                self.workspace_slides.insert(owner, slide);
+            }
+            return;
+        }
         if owner == requested_output
             && let Some(slide) = previous_slide.as_mut()
             && slide
                 .gesture
                 .is_some_and(|(_, to, direction)| to == workspace && Some(direction) == slide_direction)
         {
-            slide.release(true);
+            slide.release_with_velocity(true, self.swipe.release_velocity / self.animation_speed);
             self.last_animation_tick = Instant::now();
             self.workspace_slides.insert(owner, previous_slide.unwrap());
             return;
         }
+        let slide_direction = slide_direction.or_else(|| {
+            let from = previous?;
+            let ids = self
+                .output_workspaces
+                .ordered_workspace_ids(&self.workspaces, owner)
+                .collect::<Vec<_>>();
+            let from = ids.iter().position(|id| *id == from)?;
+            let to = ids.iter().position(|id| *id == workspace)?;
+            Some(if to > from {
+                SwipeDirection::Up
+            } else {
+                SwipeDirection::Down
+            })
+        });
         if owner == requested_output
             && let (Some(from), Some(direction)) = (previous, slide_direction)
             && from != workspace
             && self.animations_enabled
+            && !self.overview.is_presenting()
         {
             self.last_animation_tick = Instant::now();
-            self.workspace_slides
-                .insert(owner, WorkspaceSlide::new(previous_slide, from, workspace, direction));
+            let mut slide = WorkspaceSlide::new(previous_slide, from, workspace, direction);
+            slide.spring = SpringConfig {
+                position_tolerance: 0.00001,
+                velocity_tolerance: 0.00001,
+                ..self.viewport_spring_config
+            };
+            self.workspace_slides.insert(owner, slide);
         }
     }
 

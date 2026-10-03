@@ -523,3 +523,63 @@ mod tests {
         assert!(handoff_alpha(Duration::from_millis(1)) > 0.99);
     }
 }
+
+pub(crate) fn scaled_visual_rect(rect: ferese_layout::Rect, scale: f64) -> ferese_layout::Rect {
+    let scale = scale.max(0.0);
+    let width = rect.width * scale;
+    let height = rect.height * scale;
+
+    ferese_layout::Rect::new(
+        rect.x + (rect.width - width) / 2.0,
+        rect.y + (rect.height - height) / 2.0,
+        width,
+        height,
+    )
+}
+
+pub(crate) fn scaled_visual_velocity(
+    rect: ferese_layout::Rect,
+    velocity: ferese_animation::RectVelocity,
+    scale: f64,
+    scale_velocity: f64,
+) -> ferese_animation::RectVelocity {
+    ferese_animation::RectVelocity {
+        x: velocity.x + ((1.0 - scale) * velocity.width - rect.width * scale_velocity) * 0.5,
+        y: velocity.y + ((1.0 - scale) * velocity.height - rect.height * scale_velocity) * 0.5,
+        width: velocity.width * scale + rect.width * scale_velocity,
+        height: velocity.height * scale + rect.height * scale_velocity,
+    }
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::*;
+    #[test]
+    fn center_scale_velocity_matches_the_visible_rectangle() {
+        let rect = ferese_layout::Rect::new(12.25, 18.75, 400.5, 300.25);
+        let velocity = ferese_animation::RectVelocity {
+            x: 80.0,
+            y: -40.0,
+            width: 100.0,
+            height: 20.0,
+        };
+        let v = scaled_visual_velocity(rect, velocity, 0.98, 0.07);
+        let before = scaled_visual_rect(rect, 0.98);
+        let dt = 1e-5;
+        let next = ferese_layout::Rect::new(
+            rect.x + velocity.x * dt,
+            rect.y + velocity.y * dt,
+            rect.width + velocity.width * dt,
+            rect.height + velocity.height * dt,
+        );
+        let after = scaled_visual_rect(next, 0.98 + 0.07 * dt);
+        for (measured, expected) in [
+            ((after.x - before.x) / dt, v.x),
+            ((after.y - before.y) / dt, v.y),
+            ((after.width - before.width) / dt, v.width),
+            ((after.height - before.height) / dt, v.height),
+        ] {
+            assert!((measured - expected).abs() < 0.0001);
+        }
+    }
+}

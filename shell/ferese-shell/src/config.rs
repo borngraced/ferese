@@ -360,6 +360,7 @@ fn parse_document(
         .map_err(|error| ferese_config::Error::from(error.to_string()))
     {
         Ok(config) => {
+            config.animations.validate().map_err(ferese_config::Error::from)?;
             config.notifications.validate().map_err(ferese_config::Error::from)?;
             config.desktop_widgets.validate().map_err(ferese_config::Error::from)?;
             let mut theme = shell_theme(&config.theme);
@@ -577,6 +578,17 @@ pub(crate) fn config_path() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rejects_undamped_overshoot_before_publication() {
+        for property in ["spring", "viewport-spring"] {
+            for coefficient in ["damping", "damping-ratio"] {
+                let source = format!("animations {{ {property} {{ {coefficient} 0; overshoot #true; }}; }}");
+                let error = parse_test_source(&source).unwrap_err().to_string();
+                assert!(error.contains("overshoot requires positive damping"), "{error}");
+            }
+        }
+    }
+
     #[test]
     fn desktop_clock_parses_and_rejects_invalid_reload_values() {
         let clock = parse_test_source(

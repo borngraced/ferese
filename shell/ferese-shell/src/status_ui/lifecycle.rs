@@ -26,9 +26,12 @@ impl FereseShell {
             self.calendar_offset = 0;
         }
 
-        let destroy = self.destroy_menu();
         if !kind.available(&self.status) {
-            return destroy;
+            return Task::none();
+        }
+        if self.menu.as_ref().is_some_and(|menu| menu.kind == Menu::Notifications) {
+            self.notifications.history_open = false;
+            self.notifications.hovered = None;
         }
 
         if kind == Menu::Notifications && self.notifications.ready {
@@ -36,14 +39,6 @@ impl FereseShell {
         }
 
         let notifications = self.sync_notification_surface();
-        let id = window::Id::unique();
-        self.menu = Some(OpenMenu {
-            id,
-            kind,
-            motion: crate::motion::PopupMotion::new(self.config.animations),
-            effects: None,
-            regions: Default::default(),
-        });
         crate::EFFECT_FRAME_PENDING.store(true, std::sync::atomic::Ordering::Relaxed);
         self.status_error = None;
         let parent = self.bar_surface_id;
@@ -70,6 +65,33 @@ impl FereseShell {
         } else {
             kind.height_limit()
         };
+        let positioner = SctkPositioner {
+            anchor_rect: anchor,
+            anchor: 2u32.try_into().unwrap(),
+            gravity: 6u32.try_into().unwrap(),
+            offset: (anchor.width / 2, 8),
+            // The view's autosize widget supplies the active panel's bounds.
+            // Keep initial popup limits broad enough for later panel changes.
+            size_limits: Limits::NONE.max_width(368.0).max_height(720.0_f32.max(height_limit)),
+            constraint_adjustment: 3,
+            ..Default::default()
+        };
+        if let Some(menu) = &mut self.menu {
+            menu.kind = kind;
+            menu.motion.retarget(1.0, Instant::now());
+            return Task::batch([
+                notifications,
+                cosmic::iced::platform_specific::shell::commands::popup::reposition(menu.id, positioner),
+            ]);
+        }
+        let id = window::Id::unique();
+        self.menu = Some(OpenMenu {
+            id,
+            kind,
+            motion: crate::motion::PopupMotion::new(self.config.animations),
+            effects: None,
+            regions: Default::default(),
+        });
         let action = cosmic::surface::action::app_popup::<Self>(
             |_| Default::default(),
             move |_| SctkPopupSettings {
@@ -79,23 +101,11 @@ impl FereseShell {
                 grab: true,
                 close_with_children: false,
                 input_zone: None,
-                positioner: SctkPositioner {
-                    anchor_rect: anchor,
-                    // Numeric protocol values avoid depending on libcosmic's private SCTK reexport.
-                    anchor: 2u32.try_into().unwrap(),  // bottom
-                    gravity: 6u32.try_into().unwrap(), // bottom-left
-                    offset: (anchor.width / 2, 8),
-                    size_limits: Limits::NONE
-                        .min_width(kind.width())
-                        .max_width(kind.width())
-                        .max_height(height_limit),
-                    constraint_adjustment: 3, // slide X/Y, never flip above the bar
-                    ..Default::default()
-                },
+                positioner: positioner.clone(),
             },
             Some(Box::new(Self::view_status_menu)),
         );
-        Task::batch([destroy, notifications]).chain(cosmic::task::message(cosmic::Action::Surface(action)))
+        notifications.chain(cosmic::task::message(cosmic::Action::Surface(action)))
     }
 
     pub fn destroy_menu(&mut self) -> Task<Message> {
@@ -136,7 +146,7 @@ impl FereseShell {
     pub fn animate_menu(&mut self) -> Task<Message> {
         if let Some(menu) = &self.menu {
             if let Some(effects) = &menu.effects {
-                let _ = effects.set_opacity(menu.progress());
+                let _ = effects.set_opacity(menu.progress().clamp(0.0, 1.0));
             }
             if menu.motion.closing() && !menu.animating() {
                 return self.destroy_menu();

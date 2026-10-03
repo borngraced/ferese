@@ -262,7 +262,7 @@ impl Service {
 
 struct Toast {
     id: u32,
-    born: Instant,
+    motion: super::motion::PopupMotion,
     closing: Option<Instant>,
     remaining: Option<Duration>,
     hovered: bool,
@@ -320,30 +320,27 @@ impl Center {
         }
     }
 
+    pub fn update_motion_settings(&mut self, settings: super::motion::Settings) {
+        for toast in &mut self.toasts {
+            toast.motion.update_settings(settings);
+        }
+    }
+
     pub fn unread(&self) -> u32 {
         self.entries.iter().filter(|notice| notice.unread).count() as u32
     }
 
     pub fn visible(&self) -> impl Iterator<Item = (&Notice, f32)> {
-        let duration = super::motion::notification_duration();
         self.toasts.iter().rev().filter_map(move |toast| {
             let notice = self.entries.iter().find(|notice| notice.id == toast.id)?;
-            let p = if duration.is_zero() {
-                if toast.closing.is_some() { 0.0 } else { 1.0 }
-            } else {
-                toast.closing.map_or_else(
-                    || (toast.born.elapsed().as_secs_f32() / duration.as_secs_f32()).min(1.0),
-                    |closing| (1.0 - closing.elapsed().as_secs_f32() / duration.as_secs_f32()).max(0.0),
-                )
-            };
-            Some((notice, p * p * (3.0 - 2.0 * p)))
+            Some((notice, toast.motion.progress().clamp(0.0, 1.0)))
         })
     }
 
     pub fn animating(&self) -> bool {
         self.toasts
             .iter()
-            .any(|toast| toast.closing.is_some() || toast.born.elapsed() < super::motion::notification_duration())
+            .any(|toast| toast.closing.is_some() || toast.motion.animating())
     }
 
     pub fn popup_groups(&self) -> Vec<(&Notice, f32, usize)> {
@@ -433,7 +430,11 @@ impl Center {
             }
         }
         if let Some(toast) = self.toasts.iter_mut().find(|toast| toast.id == id) {
-            toast.closing.get_or_insert_with(Instant::now);
+            if toast.closing.is_none() {
+                let now = Instant::now();
+                toast.closing = Some(now);
+                toast.motion.retarget(0.0, now);
+            }
         }
     }
 
@@ -499,7 +500,11 @@ impl Center {
         if show {
             self.toasts.push_back(Toast {
                 id: notice.id,
-                born: Instant::now(),
+                motion: {
+                    let mut motion = super::motion::PopupMotion::new(super::motion::settings());
+                    motion.begin(Instant::now());
+                    motion
+                },
                 closing: None,
                 remaining: notice.timeout,
                 hovered: group_hovered,
@@ -604,11 +609,8 @@ impl Center {
         for id in expired {
             self.close(id, 1);
         }
-        self.toasts.retain(|toast| {
-            toast
-                .closing
-                .is_none_or(|closing| now.duration_since(closing) < super::motion::notification_duration())
-        });
+        self.toasts
+            .retain(|toast| toast.closing.is_none() || toast.motion.animating());
         let visible: HashSet<_> = self.toasts.iter().map(|toast| toast.id).collect();
         self.entries
             .retain(|notice| !notice.transient || notice.live || visible.contains(&notice.id));

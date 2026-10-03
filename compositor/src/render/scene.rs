@@ -124,8 +124,8 @@ pub(crate) fn sampled_output_elements(
             return None;
         }
         let sample = frame.windows.get(&id)?;
-        let visual = scaled_visual_rect(sample.rect, sample.close_scale);
-        let close_alpha = sample.close_alpha;
+        let visual = sample.rect;
+        let close_alpha = sample.alpha;
         let decoration_progress = sample.geometry.decorations.clamp(0.0, 1.0);
 
         Some((window.clone(), id, sample, visual, decoration_progress, close_alpha))
@@ -145,7 +145,16 @@ pub(crate) fn sampled_output_elements(
             .collect::<Vec<_>>()
     };
 
+    let live = windows.iter().map(|(_, id, ..)| *id).collect();
     for (window, id, sample, visual, decoration_progress, close_alpha) in windows {
+        elements.extend(super::closing::elements(
+            state,
+            renderer,
+            output,
+            Some(id),
+            &live,
+            frame.delta,
+        ));
         let constrain = rounded_visual_rect(visual, output_geometry.loc);
         let material_surface = window
             .toplevel()
@@ -165,7 +174,7 @@ pub(crate) fn sampled_output_elements(
         let rounded_clip_program = corner_program(&mut state.render, renderer, shape);
         let pixels = corners.rect;
         // Only overview/close intentionally scale the complete application.
-        let scale_content = frame.overview.is_presenting() || sample.close_scale != 1.0;
+        let scale_content = sample.scale_content;
         let behavior = resize_content_behavior(scale_content);
 
         let dim = sample.dim;
@@ -227,13 +236,33 @@ pub(crate) fn sampled_output_elements(
                 output,
                 &programs,
             );
-            if !scale_content
-                && let Some(snapshot) = state.render.snapshot(&id)
+            if let Some(snapshot) = state.render.snapshot(&id)
                 && snapshot.context == renderer.context_id().erased()
                 && (snapshot.scale - scale).abs() < 0.001
             {
                 let size = snapshot.texture.size();
-                let visible = Rectangle::new(pixels.loc, (size.w, size.h).into()).intersection(pixels);
+                let (sx, sy) = if scale_content {
+                    (
+                        f64::from(pixels.size.w) / f64::from(size.w),
+                        f64::from(pixels.size.h) / f64::from(size.h),
+                    )
+                } else if let Some(native) = sample.native_size {
+                    (
+                        f64::from(pixels.size.w) / (f64::from(native.width) * scale).round().max(1.0),
+                        f64::from(pixels.size.h) / (f64::from(native.height) * scale).round().max(1.0),
+                    )
+                } else {
+                    (1.0, 1.0)
+                };
+                let visible = Rectangle::new(
+                    pixels.loc,
+                    (
+                        (f64::from(size.w) * sx).round() as i32,
+                        (f64::from(size.h) * sy).round() as i32,
+                    )
+                        .into(),
+                )
+                .intersection(pixels);
                 if let Some(visible) = visible {
                     let clip = framebuffer_clip_rect(
                         pixels,
@@ -247,8 +276,8 @@ pub(crate) fn sampled_output_elements(
                             texture: snapshot.texture.clone(),
                             geometry: visible,
                             source: Rectangle::from_size(Size::from((
-                                f64::from(visible.size.w),
-                                f64::from(visible.size.h),
+                                f64::from(visible.size.w) / sx,
+                                f64::from(visible.size.h) / sy,
                             ))),
                             alpha: crate::presentation::handoff_alpha(snapshot.elapsed) * close_alpha,
                             program: Some(programs.texture.clone()),
@@ -268,6 +297,7 @@ pub(crate) fn sampled_output_elements(
                 output,
                 programs.clone(),
                 behavior,
+                sample.native_size,
             ));
             let source = window.geometry().size;
             if material_surface.is_none()
@@ -322,6 +352,14 @@ pub(crate) fn sampled_output_elements(
             ));
         }
     }
+    elements.extend(super::closing::elements(
+        state,
+        renderer,
+        output,
+        None,
+        &live,
+        frame.delta,
+    ));
     elements.extend(layer_elements(
         state,
         renderer,
@@ -374,7 +412,14 @@ pub(super) fn layer_elements(
             .collect::<Vec<_>>()
     };
 
-    state.render.surfaces.retain(|surface, _| surface.is_alive());
+    state.render.surfaces.retain(|surface, _| {
+        surface.is_alive()
+            || state
+                .render
+                .closing
+                .iter()
+                .any(|window| window.material.as_ref().is_some_and(|(key, ..)| key == surface))
+    });
 
     let mut elements = Vec::new();
     for (geometry, layer) in layers {

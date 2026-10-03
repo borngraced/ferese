@@ -1,45 +1,12 @@
-//! Draw-only popup transform; layout stays stable while its presentation animates.
 use cosmic::iced::advanced::{Clipboard, Layout, Renderer as _, Shell, Widget, layout, mouse, renderer, widget};
 use cosmic::iced::{Event, Length, Rectangle, Size, Transformation, Vector};
 use cosmic::{Element, Theme};
 
 pub type Regions = std::sync::Arc<std::sync::Mutex<Vec<[f32; 5]>>>;
 
-#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
-#[serde(default)]
-pub(crate) struct Settings {
-    enabled: bool,
-    reduced_motion: bool,
-    speed: f64,
-}
+pub(crate) use ferese_animation::MotionSettings as Settings;
+use ferese_animation::{AnimatedValue, SpringConfig};
 
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            reduced_motion: false,
-            speed: 1.0,
-        }
-    }
-}
-
-impl Settings {
-    fn hover_duration(self) -> std::time::Duration {
-        self.duration(120.0)
-    }
-
-    pub(crate) fn duration(self, milliseconds: f64) -> std::time::Duration {
-        if !self.enabled || self.reduced_motion {
-            return std::time::Duration::ZERO;
-        }
-        let speed = if self.speed.is_finite() && self.speed > 0.0 {
-            self.speed.clamp(0.01, 100.0)
-        } else {
-            1.0
-        };
-        std::time::Duration::from_secs_f64(milliseconds / 1000.0 / speed)
-    }
-}
 static SETTINGS: std::sync::OnceLock<std::sync::RwLock<Settings>> = std::sync::OnceLock::new();
 static SHELL_RADIUS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(14.0_f32.to_bits());
 
@@ -56,25 +23,29 @@ pub(crate) fn configure(settings: Settings, radius: f32) {
         .unwrap() = settings;
 }
 
-pub(crate) fn notification_duration() -> std::time::Duration {
-    SETTINGS
+pub(crate) fn settings() -> Settings {
+    *SETTINGS
         .get_or_init(|| std::sync::RwLock::new(Settings::default()))
         .read()
         .unwrap()
-        .duration(180.0)
 }
 
 pub(crate) struct PopupMotion {
-    start: f32,
-    target: f32,
+    value: AnimatedValue,
     started: Option<std::time::Instant>,
     settings: Settings,
 }
 
 impl PopupMotion {
     pub(crate) fn update_settings(&mut self, settings: Settings) {
-        let now = std::time::Instant::now();
-        self.start = self.progress_at(now);
+        self.update_settings_at(settings, std::time::Instant::now());
+    }
+
+    fn update_settings_at(&mut self, settings: Settings, now: std::time::Instant) {
+        self.value = self.sample(now);
+        // Stored velocities use simulation seconds. Preserve visible velocity
+        // when changing the clock rate during an in-flight transition.
+        self.value.velocity *= self.settings.speed / settings.speed;
         self.settings = settings;
         if self.started.is_some() {
             self.started = Some(now);
@@ -83,8 +54,11 @@ impl PopupMotion {
 
     pub(crate) fn new(settings: Settings) -> Self {
         Self {
-            start: 0.0,
-            target: 1.0,
+            value: AnimatedValue {
+                current: 0.0,
+                target: 1.0,
+                velocity: 0.0,
+            },
             started: None,
             settings,
         }
@@ -96,36 +70,49 @@ impl PopupMotion {
         }
     }
 
-    pub(crate) fn progress_at(&self, now: std::time::Instant) -> f32 {
+    fn sample(&self, now: std::time::Instant) -> AnimatedValue {
+        let mut value = self.value;
         let Some(started) = self.started else {
-            return self.start;
+            return value;
         };
-        let duration = self.settings.duration(if self.target == 1.0 { 200.0 } else { 140.0 });
-        if duration.is_zero() {
-            return self.target;
+        if !self.settings.motion_enabled() {
+            value.snap();
+            return value;
         }
-        let t = (now.saturating_duration_since(started).as_secs_f32() / duration.as_secs_f32()).min(1.0);
-        if t == 1.0 {
-            return self.target;
-        }
-        self.start + (self.target - self.start) * t * t * (3.0 - 2.0 * t)
+        let spring = self
+            .settings
+            .spring
+            .resolve(SpringConfig::default())
+            .expect("validated motion settings");
+        value.advance(
+            now.saturating_duration_since(started).mul_f64(self.settings.speed),
+            SpringConfig {
+                position_tolerance: 0.00001,
+                velocity_tolerance: 0.00001,
+                ..spring
+            },
+        );
+        value
+    }
+
+    pub(crate) fn progress_at(&self, now: std::time::Instant) -> f32 {
+        self.sample(now).current as f32
     }
 
     pub(crate) fn progress(&self) -> f32 {
         self.progress_at(std::time::Instant::now())
     }
-
     pub(crate) fn closing(&self) -> bool {
-        self.target == 0.0
+        self.value.target == 0.0
     }
-
     pub(crate) fn animating(&self) -> bool {
-        self.progress() != self.target
+        let value = self.sample(std::time::Instant::now());
+        value.current != value.target || value.velocity != 0.0
     }
 
     pub(crate) fn retarget(&mut self, target: f32, now: std::time::Instant) {
-        self.start = self.progress_at(now);
-        self.target = target;
+        self.value = self.sample(now);
+        self.value.set_target(f64::from(target));
         self.started = Some(now);
     }
 }
@@ -158,7 +145,7 @@ pub(crate) fn button<'a, M: Clone + 'a>(
         duration: SETTINGS
             .get()
             .map_or_else(Settings::default, |settings| *settings.read().unwrap())
-            .hover_duration(),
+            .duration(120.0),
     })
 }
 
@@ -506,6 +493,28 @@ impl widget::Operation for CollectRegions {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn zero_damping_with_crossing_clamp_finishes_popup_close() {
+        let settings = super::Settings {
+            spring: ferese_animation::SpringSettings {
+                damping: Some(0.0),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        settings.validate().unwrap();
+        let now = std::time::Instant::now();
+        let mut motion = super::PopupMotion::new(settings);
+        motion.begin(now);
+        let opened = now + std::time::Duration::from_secs(1);
+        assert_eq!(motion.sample(opened).current, 1.0);
+        motion.retarget(0.0, opened);
+        let closed = motion.sample(opened + std::time::Duration::from_secs(1));
+        assert!(motion.closing());
+        assert_eq!(closed.current, closed.target);
+        assert_eq!(closed.velocity, 0.0);
+    }
+
     use super::*;
 
     #[test]
@@ -529,19 +538,48 @@ mod tests {
     }
 
     #[test]
-    fn popup_waits_for_configuration_then_opens_and_closes_faster() {
+    fn popup_waits_for_configuration_and_preserves_reversal_velocity() {
         let now = std::time::Instant::now();
         let mut motion = PopupMotion::new(Settings::default());
         assert_eq!(motion.progress_at(now + std::time::Duration::from_secs(30)), 0.0);
         motion.begin(now);
-        // Later configure/focus notifications must not restart the clock.
-        motion.begin(now + std::time::Duration::from_millis(90));
-        assert!((motion.progress_at(now + std::time::Duration::from_millis(100)) - 0.5).abs() < 0.00001);
-        assert_eq!(motion.progress_at(now + std::time::Duration::from_millis(200)), 1.0);
-        motion.retarget(0.0, now + std::time::Duration::from_millis(200));
+        let reverse = now + std::time::Duration::from_millis(90);
+        let before = motion.sample(reverse);
+        motion.begin(reverse);
+        assert_eq!(motion.sample(reverse), before);
+        motion.retarget(0.0, reverse);
+        let after = motion.sample(reverse);
+        assert_eq!(after.current, before.current);
+        assert_eq!(after.velocity, before.velocity);
         assert!(motion.closing());
-        assert!((motion.progress_at(now + std::time::Duration::from_millis(270)) - 0.5).abs() < 0.00001);
-        assert_eq!(motion.progress_at(now + std::time::Duration::from_millis(340)), 0.0);
+        assert_eq!(motion.progress_at(reverse + std::time::Duration::from_secs(2)), 0.0);
+    }
+
+    #[test]
+    fn live_speed_change_preserves_visible_velocity_and_reduced_motion_snaps() {
+        let now = std::time::Instant::now();
+        let mut motion = PopupMotion::new(Settings::default());
+        motion.begin(now);
+        let time = now + std::time::Duration::from_millis(90);
+        let before = motion.sample(time);
+        motion.update_settings_at(
+            Settings {
+                speed: 2.0,
+                ..Settings::default()
+            },
+            time,
+        );
+        let after = motion.sample(time);
+        assert_eq!(after.current, before.current);
+        assert_eq!(after.velocity * 2.0, before.velocity);
+        motion.update_settings_at(
+            Settings {
+                reduced_motion: true,
+                ..Settings::default()
+            },
+            time,
+        );
+        assert_eq!(motion.progress_at(time), 1.0);
     }
 
     #[test]
@@ -560,7 +598,7 @@ mod tests {
         let before = motion.progress_at(reopen);
         motion.retarget(1.0, reopen);
         assert_eq!(motion.progress_at(reopen), before);
-        assert_eq!(motion.progress_at(reopen + std::time::Duration::from_secs(1)), 1.0);
+        assert_eq!(motion.progress_at(reopen + std::time::Duration::from_secs(2)), 1.0);
         for settings in [
             Settings {
                 reduced_motion: true,
@@ -632,7 +670,7 @@ mod tests {
                 speed: 0.75,
                 ..Settings::default()
             }
-            .hover_duration(),
+            .duration(120.0),
             std::time::Duration::from_millis(160)
         );
         for settings in [
@@ -645,9 +683,9 @@ mod tests {
                 ..Settings::default()
             },
         ] {
-            assert!(settings.hover_duration().is_zero());
+            assert!(settings.duration(120.0).is_zero());
             let mut hover = HoverState::default();
-            assert!(!hover.advance(1.0, std::time::Instant::now(), settings.hover_duration()));
+            assert!(!hover.advance(1.0, std::time::Instant::now(), settings.duration(120.0)));
             assert_eq!(hover.current, 1.0);
         }
     }

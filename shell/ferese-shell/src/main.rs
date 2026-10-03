@@ -904,6 +904,7 @@ impl FereseShell {
         motion::configure(config.animations, config.theme.material_radius);
 
         if self.config.animations != config.animations {
+            self.notifications.update_motion_settings(config.animations);
             if let Some(menu) = &mut self.menu {
                 menu.motion.update_settings(config.animations);
             }

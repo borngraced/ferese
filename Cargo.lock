@@ -1675,6 +1675,7 @@ name = "ferese-animation"
 version = "0.1.0"
 dependencies = [
  "ferese-layout",
+ "serde",
 ]
 
 [[package]]
@@ -1784,6 +1785,7 @@ dependencies = [
 name = "ferese-shell"
 version = "0.1.0"
 dependencies = [
+ "ferese-animation",
  "ferese-config",
  "ferese-ipc",
  "ferese-protocols",

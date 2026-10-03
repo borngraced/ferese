@@ -8,6 +8,7 @@ use super::*;
 /// context. Desktop policy and animation values do not live in these caches.
 #[derive(Default)]
 pub(crate) struct RenderResources {
+    pub closing: Vec<ClosedWindow>,
     pub(super) windows: HashMap<WindowId, WindowBuffers>,
     pub(super) contexts: HashMap<ErasedContextId, ContextPrograms>,
     pub(super) outputs: HashMap<OutputId, OverviewScrim>,
@@ -71,6 +72,16 @@ impl RenderResources {
     }
 
     pub fn remove_output(&mut self, id: OutputId) {
+        let removed: Vec<_> = self
+            .closing
+            .iter()
+            .filter(|window| window.output == id)
+            .map(|window| window.id)
+            .collect();
+        self.closing.retain(|window| window.output != id);
+        for id in removed {
+            self.remove_window(id);
+        }
         self.outputs.remove(&id);
 
         for window in self.windows.values_mut() {
@@ -124,6 +135,16 @@ impl RenderResources {
     }
 
     pub fn forget_context(&mut self, context: &ErasedContextId) {
+        let removed: Vec<_> = self
+            .closing
+            .iter()
+            .filter(|window| &window.snapshot.context == context)
+            .map(|window| window.id)
+            .collect();
+        self.closing.retain(|window| &window.snapshot.context != context);
+        for id in removed {
+            self.remove_window(id);
+        }
         self.contexts.remove(context);
 
         for window in self.windows.values_mut() {

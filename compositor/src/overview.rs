@@ -17,7 +17,6 @@ const OVERVIEW_MARGIN: f64 = 48.0;
 const OVERVIEW_GAP: f64 = 40.0;
 // Applied after the configured animation speed, in both live and predicted motion.
 const OVERVIEW_MOTION_SPEED: f64 = 0.6;
-const EXIT_DURATION: f64 = 0.18;
 const WORKSPACE_CARD_GAP: f64 = 8.0;
 const MAX_PREVIEW_SCALE: f64 = 0.82;
 
@@ -117,7 +116,6 @@ pub(crate) struct OverviewMotion {
     active: bool,
     presentations: HashMap<WindowId, AnimatedRect>,
     opacity: AnimatedValue,
-    exit_transition: Option<(f64, f64)>,
 }
 
 impl Default for OverviewState {
@@ -179,8 +177,7 @@ fn centered_row_start(strip: Rect, count: usize, card_width: f64) -> f64 {
 
 impl OverviewState {
     pub(crate) fn needs_tick(&self) -> bool {
-        self.motion.exit_transition.is_some()
-            || self.motion.opacity.current != self.motion.opacity.target
+        self.motion.opacity.current != self.motion.opacity.target
             || self.motion.opacity.velocity != 0.0
             || self
                 .motion
@@ -366,25 +363,22 @@ impl OverviewState {
         self.motion.presented_rect(id, normal)
     }
 
+    pub(crate) fn presented_velocity(&self, id: WindowId) -> Option<ferese_animation::RectVelocity> {
+        let velocity = self.motion.presentations.get(&id)?.velocity;
+        Some(ferese_animation::RectVelocity {
+            x: velocity.x * OVERVIEW_MOTION_SPEED,
+            y: velocity.y * OVERVIEW_MOTION_SPEED,
+            width: velocity.width * OVERVIEW_MOTION_SPEED,
+            height: velocity.height * OVERVIEW_MOTION_SPEED,
+        })
+    }
+
     fn enter(
         &mut self,
         targets: HashMap<WindowId, (Rect, Rect)>,
         selected: Option<WindowId>,
         animations_enabled: bool,
     ) {
-        // Reverse a dismissal from the currently visible geometry, not the old grid.
-        if self.motion.exit_transition.is_some() {
-            let visible: Vec<_> = targets
-                .iter()
-                .map(|(id, (normal, _))| (*id, self.presented_rect(*id, *normal)))
-                .collect();
-            for (id, rect) in visible {
-                if let Some(presentation) = self.motion.presentations.get_mut(&id) {
-                    *presentation = AnimatedRect::new(rect);
-                }
-            }
-        }
-        self.motion.exit_transition = None;
         self.selection_workspace = None;
         self.motion.active = true;
         self.motion.opacity.retarget_preserving_motion(1.0);
@@ -423,7 +417,6 @@ impl OverviewState {
 
     fn exit(&mut self, normal: HashMap<WindowId, Rect>, animations_enabled: bool) {
         self.motion.active = false;
-        self.motion.exit_transition = animations_enabled.then_some((0.0, self.motion.opacity.current));
         self.motion.opacity.retarget_preserving_motion(0.0);
         if !animations_enabled {
             self.motion.opacity.snap();
@@ -605,6 +598,17 @@ impl Ferese {
 
     pub(crate) fn retarget_overview(&mut self) {
         if !self.overview.is_active() {
+            if self.overview.is_presenting() {
+                let normal = self.normal_window_rects();
+                self.overview.motion.presentations.retain(|id, presentation| {
+                    if let Some(target) = normal.get(id) {
+                        presentation.set_target(*target);
+                        true
+                    } else {
+                        false
+                    }
+                });
+            }
             return;
         }
 
@@ -643,17 +647,26 @@ impl Ferese {
             presented.x += x;
             presented.y += y;
         }
-        Some(presented)
+        let record = self.windows.record(id)?;
+        let opening = record.opening.map_or(1.0, |value| value.current);
+        Some(crate::presentation::scaled_visual_rect(
+            presented,
+            0.97 + 0.03 * opening,
+        ))
     }
 
     pub(crate) fn inverse_presented_window_point(&self, id: WindowId, x: f64, y: f64) -> Option<(f64, f64)> {
         let geometry = self.windows.geometry(&id)?;
-        if !self.overview.is_presenting() {
+        if !self.overview.is_presenting() && self.windows.record(id)?.opening.is_none() {
             let presented = self.presented_window_rect(id)?;
             return Some((x - presented.x, y - presented.y));
         }
-        let source = geometry.client.committed_size?;
-        let presented = self.overview.presented_rect(id, geometry.visual.current);
+        let source = if self.overview.is_presenting() {
+            geometry.client.committed_size?
+        } else {
+            ferese_animation::ClientSize::from_rect(geometry.visual.current)
+        };
+        let presented = self.presented_window_rect(id)?;
 
         if source.width <= 0 || source.height <= 0 || presented.width <= 0.0 || presented.height <= 0.0 {
             return None;
@@ -989,15 +1002,13 @@ impl Default for OverviewMotion {
             active: false,
             presentations: HashMap::new(),
             opacity: AnimatedValue::new(0.0),
-            exit_transition: None,
         }
     }
 }
 
 impl OverviewMotion {
     pub(crate) fn is_animating(&self, spring: SpringConfig) -> bool {
-        self.exit_transition.is_some()
-            || (self.opacity.current - self.opacity.target).abs() > 0.001
+        (self.opacity.current - self.opacity.target).abs() > 0.001
             || self.opacity.velocity.abs() > 0.005
             || self.presentations.values().any(|rect| !rect.is_settled(spring))
     }
@@ -1012,43 +1023,17 @@ impl OverviewMotion {
 
     pub(crate) fn presented_rect(&self, id: WindowId, normal: Rect) -> Rect {
         let preview = self.presentations.get(&id).map_or(normal, |p| p.current);
-        if let Some((elapsed, _)) = self.exit_transition {
-            let t = 1.0 - (1.0 - (elapsed / EXIT_DURATION).clamp(0.0, 1.0)).powi(3);
-            return Rect::new(
-                preview.x + (normal.x - preview.x) * t,
-                preview.y + (normal.y - preview.y) * t,
-                preview.width + (normal.width - preview.width) * t,
-                preview.height + (normal.height - preview.height) * t,
-            );
-        }
         preview
     }
 
     pub(crate) fn advance(&mut self, delta: Duration, spring: SpringConfig, animations_enabled: bool) -> bool {
         let delta = delta.mul_f64(OVERVIEW_MOTION_SPEED);
 
-        if let Some((elapsed, initial_opacity)) = self.exit_transition {
-            let elapsed = if animations_enabled {
-                elapsed + delta.as_secs_f64()
-            } else {
-                EXIT_DURATION
-            };
-            let remaining = (1.0 - elapsed / EXIT_DURATION).clamp(0.0, 1.0);
-            self.opacity.current = initial_opacity * remaining.powi(3);
-            if elapsed >= EXIT_DURATION {
-                self.exit_transition = None;
-                self.presentations.clear();
-                self.opacity.snap();
-                return false;
-            }
-            self.exit_transition = Some((elapsed, initial_opacity));
-            return true;
-        }
         let mut active_animation = false;
 
         for presentation in self.presentations.values_mut() {
             if animations_enabled {
-                active_animation |= presentation.advance_with_policy(delta, spring, CrossingPolicy::NoCrossing);
+                active_animation |= presentation.advance(delta, spring);
             } else {
                 presentation.snap();
             }
@@ -1197,7 +1182,7 @@ mod tests {
         let before = overview.presented_rect(id, normal);
         let opacity = overview.opacity();
 
-        let finished = overview.sample(Duration::from_millis(24), SpringConfig::default());
+        let finished = overview.sample(Duration::from_secs(2), SpringConfig::default());
         let earlier = overview.sample(Duration::from_millis(4), SpringConfig::default());
 
         assert!(!finished.is_presenting());
@@ -1351,7 +1336,7 @@ mod tests {
     }
 
     #[test]
-    fn exiting_overview_tracks_a_moving_layout_and_finishes_in_300ms() {
+    fn exiting_overview_retargets_without_resetting_motion() {
         let id = WindowId(1);
         let initial = Rect::new(-400.0, 0.0, 800.0, 600.0);
         let preview = Rect::new(100.0, 100.0, 400.0, 300.0);
@@ -1359,10 +1344,15 @@ mod tests {
         let mut overview = OverviewState::default();
         overview.enter(HashMap::from([(id, (initial, preview))]), Some(id), false);
         overview.exit(HashMap::from([(id, initial)]), true);
-        overview.advance(Duration::from_millis(150), SpringConfig::default(), true);
-        let shown = overview.presented_rect(id, moved);
-        assert!((shown.x - 187.5).abs() < 0.001);
-        overview.advance(Duration::from_millis(150), SpringConfig::default(), true);
+        overview.advance(Duration::from_millis(60), SpringConfig::default(), true);
+        let before = overview.motion.presentations[&id];
+        overview.exit(HashMap::from([(id, moved)]), true);
+        let after = overview.motion.presentations[&id];
+        assert_eq!(before.current, after.current);
+        assert_eq!(before.velocity, after.velocity);
+        for _ in 0..300 {
+            overview.advance(Duration::from_millis(8), SpringConfig::default(), true);
+        }
         assert!(!overview.is_presenting());
         assert_eq!(overview.presented_rect(id, moved), moved);
     }
@@ -1378,7 +1368,9 @@ mod tests {
         overview.exit(HashMap::from([(id, normal)]), true);
         overview.advance(Duration::from_millis(60), SpringConfig::default(), true);
         let shown = overview.presented_rect(id, normal);
+        let velocity = overview.motion.presentations[&id].velocity;
         overview.enter(targets, Some(id), true);
+        assert_eq!(overview.motion.presentations[&id].velocity, velocity);
         assert_eq!(overview.presented_rect(id, normal), shown);
     }
 

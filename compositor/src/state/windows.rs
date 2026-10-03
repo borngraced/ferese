@@ -417,6 +417,7 @@ impl Ferese {
     }
 
     pub fn remove_tiled_window(&mut self, window: &Window) {
+        self.retain_closed_window(window);
         // Uncommitted toplevels have not entered a workspace yet.
         self.space.unmap_elem(window);
         let Some(id) = self.windows.remove(window) else {
@@ -493,7 +494,13 @@ impl Ferese {
             return;
         }
 
-        let used: usize = self.render.snapshots().map(|snapshot| snapshot.bytes()).sum();
+        let used: usize = self.render.snapshots().map(|snapshot| snapshot.bytes()).sum::<usize>()
+            + self
+                .render
+                .closing
+                .iter()
+                .map(|window| window.snapshot.bytes())
+                .sum::<usize>();
         let remaining = crate::presentation::SNAPSHOT_BUDGET.saturating_sub(used);
         let result = if let Some(backend) = &self.nested_backend {
             // Commit dispatch does not run inside the Winit event callback;
@@ -556,6 +563,20 @@ impl Ferese {
         let Some(size) = client_size(window) else {
             return;
         };
+
+        if let Some(record) = self.windows.record_mut(id)
+            && !record.mapped_once
+        {
+            record.mapped_once = true;
+            if self.animations_enabled {
+                record.opening = Some(AnimatedValue {
+                    current: 0.0,
+                    target: 1.0,
+                    velocity: 0.0,
+                });
+                self.last_animation_tick = Instant::now();
+            }
+        }
 
         let fullscreen = self
             .workspaces
@@ -648,35 +669,16 @@ impl Ferese {
     }
 
     pub fn close_focused_window(&mut self) {
-        let Some(focused) = self.focused_window else {
-            return;
-        };
-
-        if !self.animations_enabled {
+        if let Some(focused) = self.focused_window {
             self.send_window_close(focused);
-            return;
         }
-
-        self.windows.update(focused, |record| {
-            record.closing.get_or_insert_default();
-        });
-        crate::backends::direct::render_window(self, focused);
     }
 
     pub(crate) fn close_managed_window(&mut self, id: WindowId) -> bool {
         if self.windows.window(id).is_none() {
             return false;
         }
-
-        if self.animations_enabled {
-            self.windows.update(id, |record| {
-                record.closing.get_or_insert_default();
-            });
-            crate::backends::direct::render_window(self, id);
-        } else {
-            self.send_window_close(id);
-        }
-
+        self.send_window_close(id);
         true
     }
 

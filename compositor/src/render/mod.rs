@@ -1,5 +1,7 @@
 mod backdrop;
 mod capture;
+mod closing;
+pub(crate) use closing::ClosedWindow;
 #[cfg(test)]
 mod corner_tests;
 mod decorations;
@@ -78,7 +80,7 @@ render_elements! {
     Native=NativeTextureElement,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ResizeSnapshot {
     pub texture: GlesTexture,
     pub context: ErasedContextId,
@@ -134,7 +136,7 @@ fn corner_shader_for(source: &str, shape: CornerShape) -> String {
     }
 }
 
-fn window_corner_shape(window: &smithay::desktop::Window) -> CornerShape {
+pub(crate) fn window_corner_shape(window: &smithay::desktop::Window) -> CornerShape {
     // Semantic shell surfaces keep their client-matching circular outlines.
     corner_shape_for_role(
         window

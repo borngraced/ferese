@@ -2,7 +2,10 @@ use std::time::Duration;
 
 use ferese_layout::Rect;
 
+mod settings;
 mod spring;
+pub use settings::{MotionSettings, SpringSettings};
+pub mod gesture;
 
 /// Crossing behavior belongs to the property, not the physical solver.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -20,6 +23,7 @@ pub struct SpringConfig {
     pub damping: f64,
     pub position_tolerance: f64,
     pub velocity_tolerance: f64,
+    pub crossing: CrossingPolicy,
 }
 
 impl Default for SpringConfig {
@@ -30,6 +34,7 @@ impl Default for SpringConfig {
             damping: 53.0,
             position_tolerance: 0.1,
             velocity_tolerance: 0.1,
+            crossing: CrossingPolicy::NoCrossing,
         }
     }
 }
@@ -44,6 +49,7 @@ impl SpringConfig {
             damping: non_negative_or(self.damping, defaults.damping),
             position_tolerance: positive_or(self.position_tolerance, defaults.position_tolerance),
             velocity_tolerance: positive_or(self.velocity_tolerance, defaults.velocity_tolerance),
+            crossing: self.crossing,
         }
     }
 }
@@ -71,6 +77,14 @@ pub struct AnimatedValue {
 }
 
 impl AnimatedValue {
+    pub fn needs_update(&self, target: f64) -> bool {
+        self.target != target || self.is_animating()
+    }
+
+    pub fn is_animating(&self) -> bool {
+        self.current != self.target || self.velocity != 0.0
+    }
+
     pub fn new(value: f64) -> Self {
         let value = finite_or_zero(value);
 
@@ -86,13 +100,7 @@ impl AnimatedValue {
     }
 
     pub fn retarget_preserving_motion(&mut self, target: f64) {
-        let target = finite_or_zero(target);
-        let direction = (target - self.current).signum();
-
-        if direction != 0.0 && self.velocity.signum() != direction {
-            self.velocity *= 0.35;
-        }
-        self.target = target;
+        self.set_target(target);
     }
 
     pub fn snap(&mut self) {
@@ -100,9 +108,9 @@ impl AnimatedValue {
         self.velocity = 0.0;
     }
 
-    /// Compatibility entry point; existing presentation properties do not cross.
+    /// Advance with the spring's configured crossing policy.
     pub fn advance(&mut self, delta: Duration, config: SpringConfig) -> bool {
-        self.advance_with_policy(delta, config, CrossingPolicy::NoCrossing)
+        self.advance_with_policy(delta, config, config.crossing)
     }
 
     pub fn advance_with_policy(&mut self, delta: Duration, config: SpringConfig, policy: CrossingPolicy) -> bool {
@@ -156,7 +164,7 @@ impl AnimatedRect {
     }
 
     pub fn advance(&mut self, delta: Duration, config: SpringConfig) -> bool {
-        self.advance_with_policy(delta, config, CrossingPolicy::NoCrossing)
+        self.advance_with_policy(delta, config, config.crossing)
     }
 
     pub fn advance_with_policy(&mut self, delta: Duration, config: SpringConfig, policy: CrossingPolicy) -> bool {
@@ -304,9 +312,7 @@ pub struct WindowGeometry {
 /// Maximized/fullscreen geometry and decorations share a clock, including on reversal.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ZoomTransition {
-    from: Rect,
-    decorations_from: f64,
-    progress: AnimatedValue,
+    decorations: AnimatedValue,
 }
 
 impl WindowGeometry {
@@ -359,28 +365,12 @@ impl WindowGeometry {
         let rect = normalized_rect(rect);
         let before = (self.visual.current, self.decorations);
         if self.mode != mode || (self.zoom.is_some() && self.logical != rect) {
-            let mut progress = AnimatedValue::new(0.0);
-            progress.set_target(1.0);
-            let from = self.visual.current;
-            let distance = [
-                rect.x - from.x,
-                rect.y - from.y,
-                rect.width - from.width,
-                rect.height - from.height,
-            ];
-            let velocity = self.visual.velocity;
-            let speed = [velocity.x, velocity.y, velocity.width, velocity.height];
-            let squared_length = distance.iter().map(|value| value * value).sum::<f64>();
-            if squared_length > 0.001 {
-                let projected = distance.iter().zip(speed).map(|(d, v)| d * v).sum::<f64>() / squared_length;
-                // Keep forward momentum; soften a reversal without jumping position.
-                progress.velocity = if projected < 0.0 { projected * 0.35 } else { projected };
-            }
-            self.zoom = Some(ZoomTransition {
-                from: self.visual.current,
-                decorations_from: self.decorations,
-                progress,
-            });
+            let mut decorations = self
+                .zoom
+                .map(|zoom| zoom.decorations)
+                .unwrap_or_else(|| AnimatedValue::new(self.decorations));
+            decorations.set_target(if mode == PresentationMode::Fullscreen { 0.0 } else { 1.0 });
+            self.zoom = Some(ZoomTransition { decorations });
         }
         self.mode = mode;
         self.logical = rect;
@@ -440,55 +430,23 @@ impl WindowGeometry {
             return self.zoom.is_some() || !self.visual.is_settled(config);
         }
 
+        // Retarget the existing rectangle directly: projecting four independent
+        // velocities onto a new scalar progress loses motion on interruption.
+        let geometry_active = self.visual.advance(delta, config);
         if let Some(zoom) = &mut self.zoom {
-            let target = self.visual.target;
-            // Spring tolerances describe pixels and pixels/second, whereas this
-            // spring advances unit progress. Without conversion it snaps several
-            // pixels early on large zooms, visibly shifting the trailing edge.
-            let travel = rect_distance(zoom.from, target)
-                .max((zoom.from.x + zoom.from.width - target.x - target.width).abs())
-                .max((zoom.from.y + zoom.from.height - target.y - target.height).abs())
-                .max(1.0);
-            let config = config.normalized();
-            let progress_config = SpringConfig {
-                position_tolerance: config.position_tolerance / travel,
-                velocity_tolerance: config.velocity_tolerance / travel,
+            let decoration_config = SpringConfig {
+                position_tolerance: 0.00001,
+                velocity_tolerance: 0.00001,
                 ..config
             };
-            let active = zoom
-                .progress
-                .advance_with_policy(delta, progress_config, CrossingPolicy::NoCrossing);
-            let p = zoom.progress.current;
-            let lerp = |a: f64, b: f64| a + (b - a) * p;
-            self.visual.current = Rect::new(
-                lerp(zoom.from.x, target.x),
-                lerp(zoom.from.y, target.y),
-                lerp(zoom.from.width, target.width),
-                lerp(zoom.from.height, target.height),
-            );
-            self.visual.velocity = RectVelocity {
-                x: (target.x - zoom.from.x) * zoom.progress.velocity,
-                y: (target.y - zoom.from.y) * zoom.progress.velocity,
-                width: (target.width - zoom.from.width) * zoom.progress.velocity,
-                height: (target.height - zoom.from.height) * zoom.progress.velocity,
-            };
-            self.decorations = lerp(
-                zoom.decorations_from,
-                if self.mode == PresentationMode::Fullscreen {
-                    0.0
-                } else {
-                    1.0
-                },
-            );
-            if !active {
+            let decorations_active = zoom.decorations.advance(delta, decoration_config);
+            self.decorations = zoom.decorations.current.clamp(0.0, 1.0);
+            if !geometry_active && !decorations_active {
                 self.zoom = None;
-                self.visual.snap();
             }
-            return active;
+            return geometry_active || decorations_active;
         }
-
-        self.visual
-            .advance_with_policy(delta, config, CrossingPolicy::NoCrossing)
+        geometry_active
     }
 
     pub fn inverse_visual_point(&self, x: f64, y: f64) -> Option<(f64, f64)> {
@@ -931,7 +889,7 @@ mod tests {
     }
 
     #[test]
-    fn scalar_spring_softens_opposing_velocity_on_reversal() {
+    fn scalar_spring_preserves_opposing_velocity_on_reversal() {
         let mut value = AnimatedValue::new(0.0);
         value.set_target(1_000.0);
         value.advance(Duration::from_millis(40), SpringConfig::default());
@@ -941,7 +899,7 @@ mod tests {
         value.retarget_preserving_motion(-500.0);
 
         assert!(value.velocity > 0.0);
-        assert_eq!(value.velocity, velocity * 0.35);
+        assert_eq!(value.velocity, velocity);
         assert_eq!(value.current, current);
     }
 

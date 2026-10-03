@@ -1,5 +1,3 @@
-//! Navigation previews follow finger motion; actions commit once on release.
-
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(u32)]
 pub(crate) enum SwipeDirection {
@@ -12,10 +10,16 @@ pub(crate) enum SwipeDirection {
 #[derive(Default)]
 pub(crate) struct Swipe {
     delta: Option<(f64, f64)>,
+    tracker_x: ferese_animation::gesture::VelocityTracker,
+    tracker_y: ferese_animation::gesture::VelocityTracker,
+    pub release_velocity: f64,
+    pub unbounded_release_velocity: f64,
+
     threshold: f64,
     fingers: u32,
     direction: Option<SwipeDirection>,
     preview_started: bool,
+    momentum_navigation: bool,
 }
 
 impl Swipe {
@@ -25,6 +29,59 @@ impl Swipe {
         self.fingers = fingers;
         self.direction = None;
         self.preview_started = false;
+        self.momentum_navigation = false;
+        self.tracker_x = Default::default();
+        self.tracker_y = Default::default();
+        self.release_velocity = 0.0;
+        self.unbounded_release_velocity = 0.0;
+    }
+
+    pub fn start_time(&mut self, time: std::time::Duration) {
+        self.tracker_x.push(time, 0.0);
+        self.tracker_y.push(time, 0.0);
+    }
+
+    pub fn update_at(&mut self, dx: f64, dy: f64, time: std::time::Duration) {
+        self.update(dx, dy);
+        if let Some((x, y)) = self.delta {
+            self.tracker_x.push(time, x);
+            self.tracker_y.push(time, y);
+        }
+    }
+
+    pub fn finish_at(&mut self, cancelled: bool, time: std::time::Duration) -> Option<SwipeDirection> {
+        let Some(direction) = self.direction else {
+            return self.finish(cancelled);
+        };
+        let v = match direction {
+            SwipeDirection::Left => -self.tracker_x.velocity(time),
+            SwipeDirection::Right => self.tracker_x.velocity(time),
+            SwipeDirection::Up => -self.tracker_y.velocity(time),
+            SwipeDirection::Down => self.tracker_y.velocity(time),
+        };
+        self.release_velocity = if cancelled {
+            0.0
+        } else {
+            v / (2.0 * self.threshold.max(1.0))
+        };
+        self.unbounded_release_velocity = self.release_velocity;
+        if !self.preview_started && !self.momentum_navigation {
+            return self.finish(cancelled);
+        }
+        let Some((_, progress)) = self.preview() else {
+            self.release_velocity = 0.0;
+            self.unbounded_release_velocity = 0.0;
+            self.delta = None;
+            return None;
+        };
+        // The preview is bounded. Its visible velocity is zero when pushing
+        // farther beyond either endpoint, even if the fingers keep moving.
+        if (progress == 0.0 && self.release_velocity < 0.0) || (progress == 1.0 && self.release_velocity > 0.0) {
+            self.release_velocity = 0.0;
+        }
+        self.delta = None;
+        (!cancelled && ferese_animation::gesture::project(progress, self.release_velocity, 0.997) >= 0.5)
+            .then_some(direction)
     }
 
     pub fn fingers(&self) -> u32 {
@@ -49,11 +106,20 @@ impl Swipe {
         self.preview_started = true;
     }
 
+    pub fn mark_momentum_navigation(&mut self) {
+        self.momentum_navigation = true;
+    }
+
     pub fn preview_started(&self) -> bool {
         self.preview_started
     }
 
     pub fn preview(&self) -> Option<(SwipeDirection, f64)> {
+        self.unbounded_preview()
+            .map(|(direction, progress)| (direction, progress.clamp(0.0, 1.0)))
+    }
+
+    pub fn unbounded_preview(&self) -> Option<(SwipeDirection, f64)> {
         let (x, y) = self.delta?;
         if !x.is_finite() || !y.is_finite() {
             return None;
@@ -65,7 +131,7 @@ impl Swipe {
             SwipeDirection::Up => -y,
             SwipeDirection::Down => y,
         };
-        Some((direction, (distance / (self.threshold.max(1.0) * 2.0)).clamp(0.0, 1.0)))
+        Some((direction, distance / (self.threshold.max(1.0) * 2.0)))
     }
 
     pub fn finish(&mut self, cancelled: bool) -> Option<SwipeDirection> {
@@ -102,6 +168,47 @@ fn dominant_direction(x: f64, y: f64, threshold: f64) -> Option<SwipeDirection> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_uses_momentum_and_a_pause_removes_it() {
+        use std::time::Duration;
+        let swipe = || {
+            let mut swipe = Swipe::default();
+            swipe.begin(3, false, 80);
+            swipe.start_time(Duration::ZERO);
+            swipe.update_at(0.0, -20.0, Duration::from_millis(10));
+            swipe.update_at(0.0, -20.0, Duration::from_millis(20));
+            swipe.mark_preview_started();
+            swipe
+        };
+        let mut flick = swipe();
+        assert_eq!(flick.preview(), Some((SwipeDirection::Up, 0.25)));
+        assert_eq!(
+            flick.finish_at(false, Duration::from_millis(20)),
+            Some(SwipeDirection::Up)
+        );
+        assert!((flick.release_velocity - 12.5).abs() < 1e-9);
+        let mut paused = swipe();
+        assert_eq!(paused.finish_at(false, Duration::from_millis(80)), None);
+        assert_eq!(paused.release_velocity, 0.0);
+        let mut cancelled = swipe();
+        assert_eq!(cancelled.finish_at(true, Duration::from_millis(20)), None);
+        assert_eq!(cancelled.release_velocity, 0.0);
+    }
+
+    #[test]
+    fn reversing_momentum_can_cancel_past_halfway() {
+        use std::time::Duration;
+        let mut swipe = Swipe::default();
+        swipe.begin(3, false, 80);
+        swipe.start_time(Duration::ZERO);
+        swipe.update_at(0.0, -120.0, Duration::from_millis(200));
+        swipe.update_at(0.0, 20.0, Duration::from_millis(210));
+        swipe.mark_preview_started();
+        assert_eq!(swipe.preview(), Some((SwipeDirection::Up, 0.625)));
+        assert_eq!(swipe.finish_at(false, Duration::from_millis(210)), None);
+        assert!(swipe.release_velocity < 0.0);
+    }
 
     #[test]
     fn cancellation_and_new_gestures_reset_preview_state() {

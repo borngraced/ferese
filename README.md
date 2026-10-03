@@ -22,6 +22,7 @@ Ferese combines a window manager and desktop shell with one configuration.
 - Scrolling columns with window grouping, tree tiling and floating windows that remember their size and placement
 - Workspace overview and recent-window switching
 - Remappable keyboard shortcuts and touchpad gestures
+- [Continuum motion](docs/configuration.md#animations): interruptible springs, gesture momentum and motion settings shared by the compositor and shell
 - Multiple monitors with fractional scaling and automatic refresh-rate switching on low battery
 - Themes, wallpapers and blur that update live, with Light/Dark/Auto modes and custom KDL themes
 - Squircle window corners with matching borders and shadows
@@ -40,7 +41,7 @@ compares current upstream features and names separate tools where they are neede
 | Tiling layouts | Scrolling columns and tree tiling; switch per workspace | [Scrolling, dwindle, master and monocle; per-workspace layouts](https://github.com/hyprwm/Hyprland#features) | Scrolling columns |
 | Floating windows | Built in | Built in | Built in |
 | Workspace overview | Built in | Plugins such as [HyprExpo](https://github.com/sandwichfarm/hyprexpo) | Built in |
-| Animations | Spring and easing animations | Bézier and spring curves | [Spring and easing animations; custom shaders](https://niri-wm.github.io/niri/Configuration:-Animations.html) |
+| Animations | [Continuum: interruptible springs, gesture momentum; speed and reduced-motion settings shared by the compositor and shell](docs/configuration.md#animations) | Bézier and spring curves | [Spring and easing animations; custom shaders](https://niri-wm.github.io/niri/Configuration:-Animations.html) |
 | Live configuration reload | Yes | Yes | Yes |
 | Monitor mirroring | Built in | [Built in](https://wiki.hypr.land/configuring/core/monitors/) | Separate tool, such as [wl-mirror](https://niri-wm.github.io/niri/Screencasting.html#screen-mirroring) |
 | Desktop controls | Included Settings and Control Center | [Separate utilities](https://wiki.hypr.land/hypr-ecosystem/) or a desktop shell | [Separate desktop shell or tools](https://niri-wm.github.io/niri/Integrating-niri.html#desktop-components) |
