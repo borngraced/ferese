@@ -35,3 +35,17 @@ The site uses relative links, including for handbook search, so it also works un
 
 For deployment setup, follow [GitHub’s custom workflow
 documentation](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages).
+
+## Brand assets
+
+`docs/images/ferese-icon.svg` is the transparent, icon-only vector trace of the
+supplied curved blue Ferese mark. The README, homepage header, intro and footer,
+and handbook headers and footers share this asset. It contains paths and gradients,
+with no font or embedded bitmap.
+
+The favicons are derived from the supplied PNG after background removal and
+cropping to the same square bounds as the SVG: `site/assets/favicon-32.png`
+is a transparent 32×32 PNG, and `site/assets/favicon.ico` contains transparent
+16×16, 32×32 and 48×48 images. These are copied by the normal site build; icon
+generation adds no build dependency. Keep both homepage and handbook favicon
+references relative so they resolve under the GitHub Pages project path.
