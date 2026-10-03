@@ -111,3 +111,65 @@ impl Dispatch<FereseSurfaceMaterialV1, ()> for MaterialState {
 }
 
 delegate_noop!(MaterialState: ignore FereseMaterialManagerV1);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cosmic::iced::window::raw_window_handle::{
+        DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
+        WindowHandle,
+    };
+    use std::ptr::NonNull;
+    use wayland_client::protocol::wl_compositor;
+
+    // Supplies the same borrowed Wayland handles used by Iced, backed by a real client.
+    struct Window {
+        connection: Connection,
+        surface: wl_surface::WlSurface,
+    }
+    impl HasDisplayHandle for Window {
+        fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+            let pointer = NonNull::new(self.connection.backend().display_ptr().cast()).unwrap();
+            // The connection outlives the returned handle.
+            Ok(unsafe { DisplayHandle::borrow_raw(WaylandDisplayHandle::new(pointer).into()) })
+        }
+    }
+    impl HasWindowHandle for Window {
+        fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+            let pointer = NonNull::new(self.surface.id().as_ptr().cast()).unwrap();
+            // The surface outlives the returned handle.
+            Ok(unsafe { WindowHandle::borrow_raw(WaylandWindowHandle::new(pointer).into()) })
+        }
+    }
+    delegate_noop!(MaterialState: ignore wl_compositor::WlCompositor);
+    delegate_noop!(MaterialState: ignore wl_surface::WlSurface);
+
+    #[test]
+    #[ignore = "requires a private nested Ferese compositor"]
+    fn attachment_acknowledgement_and_last_clone_release() {
+        assert_eq!(std::env::var("FERESE_TEST_MATERIAL").as_deref(), Ok("1"));
+        let connection = Connection::connect_to_env().unwrap();
+        let (globals, mut queue) = registry_queue_init::<MaterialState>(&connection).unwrap();
+        let qh = queue.handle();
+        let compositor: wl_compositor::WlCompositor = globals.bind(&qh, 1..=6, ()).unwrap();
+        let window = Window {
+            surface: compositor.create_surface(&qh, ()),
+            connection,
+        };
+        let binding = ModalMaterial::attach(&window).expect("compositor acknowledges attachment");
+        let retained = binding.clone();
+        let weak = Arc::downgrade(&binding._binding);
+        drop(binding);
+        assert!(weak.upgrade().is_some());
+        drop(retained);
+        assert!(weak.upgrade().is_none());
+        queue.roundtrip(&mut MaterialState::default()).unwrap();
+        // The compositor rejects duplicate materials. Reattachment proves the final
+        // drop destroyed the first material while preserving the borrowed display.
+        let replacement = ModalMaterial::attach(&window).expect("last clone released the surface material");
+        drop(replacement);
+        queue.roundtrip(&mut MaterialState::default()).unwrap();
+        window.surface.destroy();
+        queue.roundtrip(&mut MaterialState::default()).unwrap();
+    }
+}

@@ -22,7 +22,7 @@ fn hex(c: Color) -> String {
 }
 
 pub fn native_theme(_snapshot: Option<&Snapshot>) -> cosmic::Theme {
-    Palette::from_resolved(&ferese_theme::service::current().presented).native_theme()
+    Palette::from_resolved(&ferese_theme_client::service::current().presented).native_theme()
 }
 
 pub fn icon(page: Page, tint: Color) -> svg_icon::Icon {
@@ -41,7 +41,7 @@ pub fn action_icon(path: &str, tint: Color) -> svg_icon::Icon {
 }
 
 #[cfg(test)]
-pub use ferese_theme::PRESETS;
+pub use ferese_config::presets::PRESETS;
 
 pub fn split(snapshot: &Snapshot) -> bool {
     snapshot
@@ -297,7 +297,7 @@ mod tests {
             let theme = ferese_config::theme::ResolvedTheme {
                 appearance: preset.appearance,
                 tokens,
-                ..Default::default()
+                ..ferese_config::theme::default_theme()
             };
             let palette = Palette::from_resolved(&theme);
             for background in [palette.background, palette.sidebar, palette.card] {
@@ -348,7 +348,7 @@ mod tests {
             let resolved = ferese_config::theme::ResolvedTheme {
                 appearance: item.appearance,
                 tokens: ferese_config::theme::preset(item.id, item.appearance).unwrap(),
-                ..Default::default()
+                ..ferese_config::theme::default_theme()
             };
             assert_eq!(
                 Palette::from_resolved(&resolved).native_theme().cosmic().is_dark,

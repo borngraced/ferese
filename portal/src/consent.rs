@@ -5,8 +5,8 @@ use cosmic::Element;
 use cosmic::app::{Core, Settings, Task};
 use cosmic::iced::{Alignment, Length};
 use cosmic::widget::{button, column, container, image, row, scrollable, text_input};
-use ferese_theme::material::ModalMaterial;
 use ferese_theme::{Palette, accent_button, controls, text};
+use ferese_theme_client::material::ModalMaterial;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -29,7 +29,7 @@ pub(crate) struct ShortcutField {
 
 #[derive(Clone, Debug)]
 enum Message {
-    ThemeChanged(Box<ferese_config::theme::Snapshot>),
+    ThemeChanged(Box<ferese_ipc::theme::Snapshot>),
     Opened(cosmic::iced::window::Id),
     Attached(crate::parent::Attachment),
     Accept,
@@ -101,7 +101,7 @@ impl cosmic::Application for Consent {
             prompt,
             material: None,
             parent: None,
-            palette: Palette::from_resolved(&ferese_theme::service::current().presented),
+            palette: Palette::from_resolved(&ferese_theme_client::service::current().presented),
             font,
             background,
         };
@@ -110,7 +110,7 @@ impl cosmic::Application for Consent {
 
     fn subscription(&self) -> cosmic::iced::Subscription<Message> {
         cosmic::iced::Subscription::batch([
-            ferese_theme::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
+            ferese_theme_client::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
             cosmic::iced::event::listen_with(|event, _, id| match event {
                 cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => Some(Message::Opened(id)),
                 cosmic::iced::Event::Keyboard(cosmic::iced::keyboard::Event::KeyPressed {
@@ -128,7 +128,7 @@ impl cosmic::Application for Consent {
                 self.palette = Palette::from_resolved(&snapshot.presented).flat();
                 self.font = ferese_theme::font(Some(&snapshot.presented.tokens.typography.font_family));
                 self.background = cosmic::iced::Color {
-                    a: ferese_theme::service::opacity(&snapshot.presented),
+                    a: ferese_theme::material_opacity(&snapshot.presented),
                     ..self.palette.sidebar
                 };
                 return cosmic::command::set_theme(self.palette.native_theme());

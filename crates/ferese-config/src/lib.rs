@@ -1,4 +1,6 @@
+pub mod desktop;
 pub mod families;
+pub mod notifications;
 pub mod presets;
 pub mod theme;
 

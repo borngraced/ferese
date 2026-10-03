@@ -504,7 +504,7 @@ fn capture_privacy_pixels_and_policy_transitions() {
     state.theme_settings.backdrop_blur = 12.0;
     // Place the glass over the secret, preserving the protocol-owned buffer.
     let public_id = state.windows.ids()[&public];
-    let secret_geometry = state.windows.geometry(&id).unwrap().clone();
+    let secret_geometry = *state.windows.geometry(&id).unwrap();
     state.windows.set_geometry(public_id, secret_geometry);
     state
         .space
@@ -539,9 +539,57 @@ fn capture_privacy_pixels_and_policy_transitions() {
     app_id(&mut state, &secret, "public-again");
     state.cursor_image(&seat, CursorImageStatus::Surface(cursor.clone()));
     assert!(state.capture_cursor_protected());
+    let mut presentation = state.current_window_presentation(id).unwrap();
+    presentation.close();
+    let snapshot = crate::render::capture_resize_snapshot(
+        &mut renderer,
+        &secret,
+        secret.geometry(),
+        1.0,
+        crate::presentation::SNAPSHOT_BUDGET,
+    )
+    .unwrap()
+    .unwrap();
     state.remove_tiled_window(&secret);
     assert!(state.capture_cursor_protected());
     assert!(matches!(&state.cursor_status, CursorImageStatus::Surface(current) if current == &cursor));
     state.cursor_image(&seat, CursorImageStatus::Hidden);
     assert!(!state.capture_cursor_protected());
+    assert!(!state.has_capture_exclusions());
+
+    // A close snapshot remains visible after the protected client leaves the
+    // registry. The nested readback shortcut must still use the filtered scene.
+    state.space.unmap_elem(&public);
+    state.space.unmap_elem(&child);
+    state.render.closing.push(crate::render::ClosedWindow {
+        presentation,
+        output: state.output_ids[&output],
+        below: None,
+        snapshot,
+        handoff: None,
+        radius: 0.0,
+        shape: crate::presentation::CornerShape::Continuous,
+        decorations: 0.0,
+        dim: 0.0,
+        fill: None,
+        material: None,
+    });
+    assert!(
+        state.has_capture_exclusions(),
+        "close snapshot bypassed capture filtering"
+    );
+    assert!(has_red(&pixels(
+        &mut state,
+        &mut renderer,
+        &output,
+        false,
+        &mut display_texture
+    )));
+    assert!(!has_red(&pixels(
+        &mut state,
+        &mut renderer,
+        &output,
+        true,
+        &mut capture_texture
+    )));
 }

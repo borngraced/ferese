@@ -19,17 +19,27 @@ pub(super) fn append_material_surface(
             state.theme_settings.material_radius
         };
     let regions = crate::effects::surface_regions(surface);
+    let opacities = crate::effects::surface_region_opacities(surface);
     let targets: Vec<_> = match &regions {
-        None => vec![(geometry, RoundedRect::from_logical(geometry, scale, radius))],
+        None => vec![(geometry, RoundedRect::from_logical(geometry, scale, radius), 1.0)],
         Some(regions) => regions
             .iter()
-            .filter_map(|r| material_region_geometry(*r, geometry, content_origin, scale))
+            .enumerate()
+            .filter_map(|(index, r)| {
+                material_region_geometry(*r, geometry, content_origin, scale).map(|(rect, corners)| {
+                    (
+                        rect,
+                        corners,
+                        opacities.get(index).copied().unwrap_or(1000) as f32 / 1000.0,
+                    )
+                })
+            })
             .collect(),
     };
     let materials: Vec<_> = targets
         .iter()
         .enumerate()
-        .filter_map(|(index, (rect, corners))| {
+        .filter_map(|(index, (rect, corners, alpha))| {
             material_element(
                 state,
                 renderer,
@@ -40,7 +50,7 @@ pub(super) fn append_material_surface(
                     corners: *corners,
                     index,
                     capture_geometry: geometry,
-                    alpha: 1.0,
+                    alpha: *alpha,
                 },
             )
         })
@@ -129,6 +139,25 @@ pub(super) fn material_element(
     surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
     surface_geometry: MaterialSurface,
 ) -> Option<(AnimatedWindowRenderElement, AnimatedWindowRenderElement)> {
+    let (role, generation) = crate::effects::surface_role(surface)?;
+    material_element_with_role(
+        state,
+        renderer,
+        output,
+        surface,
+        surface_geometry,
+        (role, generation, crate::effects::surface_opacity(surface)),
+    )
+}
+
+pub(super) fn material_element_with_role(
+    state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+    surface_geometry: MaterialSurface,
+    (role, generation, opacity): (crate::effects::SemanticRole, u64, f32),
+) -> Option<(AnimatedWindowRenderElement, AnimatedWindowRenderElement)> {
     let MaterialSurface {
         geometry,
         corners,
@@ -136,13 +165,12 @@ pub(super) fn material_element(
         capture_geometry,
         alpha,
     } = surface_geometry;
-    let (role, generation) = crate::effects::surface_role(surface)?;
     let material = crate::effects::resolve_material(
         role,
         state.theme_settings.material_style,
         state.theme_settings.shell_opacity as f32,
     );
-    let presentation_alpha = crate::effects::surface_opacity(surface) * alpha;
+    let presentation_alpha = opacity * alpha;
     let mode = output.current_mode()?;
     let scale = output.current_scale().fractional_scale();
     let transform = output.current_transform().invert();

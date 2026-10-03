@@ -380,6 +380,7 @@ pub(super) fn rounded_window_elements(
     output: &Output,
     programs: RoundedClipPrograms,
     behavior: ConstrainScaleBehavior,
+    native_size: Option<ferese_animation::ClientSize>,
 ) -> Vec<AnimatedWindowRenderElement> {
     let Some(toplevel) = window.toplevel() else {
         return Vec::new();
@@ -390,7 +391,13 @@ pub(super) fn rounded_window_elements(
 
     let physical_constrain = corners.rect;
     let geometry = window.geometry();
-    let reference = geometry.to_physical_precise_round(scale);
+    let mut reference = geometry.to_physical_precise_round(scale);
+    let behavior = if let Some(size) = native_size {
+        reference.size = Size::<i32, Logical>::from((size.width, size.height)).to_physical_precise_round(scale);
+        ConstrainScaleBehavior::Stretch
+    } else {
+        behavior
+    };
     let location = physical_constrain.loc - geometry.loc.to_physical_precise_round(scale);
     let clip = framebuffer_clip_rect(physical_constrain, mode.size, output.current_transform().invert());
     let radius = corners.radius;
@@ -462,18 +469,8 @@ pub(super) fn resize_content_behavior(intentional_scale: bool) -> ConstrainScale
     }
 }
 
-pub(super) fn scaled_visual_rect(rect: ferese_layout::Rect, scale: f64) -> ferese_layout::Rect {
-    let scale = scale.clamp(0.0, 1.0);
-    let width = rect.width * scale;
-    let height = rect.height * scale;
-
-    ferese_layout::Rect::new(
-        rect.x + (rect.width - width) / 2.0,
-        rect.y + (rect.height - height) / 2.0,
-        width,
-        height,
-    )
-}
+#[cfg(test)]
+pub(super) use crate::presentation::scaled_visual_rect;
 
 pub(super) fn color_with_alpha(mut color: [f32; 4], alpha: f32) -> [f32; 4] {
     color[3] *= alpha;

@@ -7,8 +7,8 @@ const DEFAULT_BACKGROUND: [u8; 3] = [11, 15, 20];
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ShellConfig {
-    pub(crate) notifications: ferese_core::notifications::NotificationConfig,
-    pub(crate) desktop_widgets: ferese_core::desktop::DesktopWidgets,
+    pub(crate) notifications: ferese_config::notifications::NotificationConfig,
+    pub(crate) desktop_widgets: ferese_config::desktop::DesktopWidgets,
     pub(crate) animations: crate::motion::Settings,
     pub(crate) font_family: Option<String>,
     pub(crate) wallpaper: WallpaperConfig,
@@ -157,9 +157,9 @@ pub(crate) enum WallpaperMode {
 #[derive(Debug, Default, Deserialize)]
 struct FereseConfig {
     #[serde(default)]
-    notifications: ferese_core::notifications::NotificationConfig,
+    notifications: ferese_config::notifications::NotificationConfig,
     #[serde(default)]
-    desktop_widgets: ferese_core::desktop::DesktopWidgets,
+    desktop_widgets: ferese_config::desktop::DesktopWidgets,
     #[serde(default)]
     animations: crate::motion::Settings,
     #[serde(default)]
@@ -341,7 +341,7 @@ pub(crate) fn load() -> ShellConfig {
 
 pub(crate) fn parse_source(source: &str) -> Result<ShellConfig, ferese_config::Error> {
     let document = ferese_config::Document::parse(source)?;
-    let snapshot = ferese_theme::service::current();
+    let snapshot = ferese_theme_client::service::current();
     let mut config = parse_document(
         &document.with_theme(&snapshot.presented),
         snapshot.presented.appearance,
@@ -360,6 +360,7 @@ fn parse_document(
         .map_err(|error| ferese_config::Error::from(error.to_string()))
     {
         Ok(config) => {
+            config.animations.validate().map_err(ferese_config::Error::from)?;
             config.notifications.validate().map_err(ferese_config::Error::from)?;
             config.desktop_widgets.validate().map_err(ferese_config::Error::from)?;
             let mut theme = shell_theme(&config.theme);
@@ -578,6 +579,17 @@ pub(crate) fn config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn rejects_removed_physics_keys_before_publication() {
+        for property in ["spring", "viewport-spring"] {
+            for coefficient in ["mass", "stiffness", "damping", "damping-ratio"] {
+                let source = format!("animations {{ {property} {{ {coefficient} 0; overshoot #true; }}; }}");
+                let error = parse_test_source(&source).unwrap_err().to_string();
+                assert!(error.contains("unknown field"), "{error}");
+            }
+        }
+    }
+
+    #[test]
     fn desktop_clock_parses_and_rejects_invalid_reload_values() {
         let clock = parse_test_source(
             r#"desktop-widgets {
@@ -595,7 +607,7 @@ mod tests {
         .desktop_widgets
         .clock;
         assert!(clock.enabled);
-        assert_eq!(clock.anchor, ferese_core::desktop::Anchor::BottomRight);
+        assert_eq!(clock.anchor, ferese_config::desktop::Anchor::BottomRight);
         assert!(parse_test_source("desktop-widgets {\n    clock {\n        opacity 1.1\n    }\n}\n").is_err());
         assert!(parse_test_source("desktop-widgets {\n    clock {\n        time-format \"%\"\n    }\n}\n").is_err());
     }

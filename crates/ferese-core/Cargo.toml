@@ -8,4 +8,3 @@ rust-version.workspace = true
 [dependencies]
 ferese-layout = { path = "../ferese-layout" }
 serde = { workspace = true, features = ["derive"] }
-jiff.workspace = true

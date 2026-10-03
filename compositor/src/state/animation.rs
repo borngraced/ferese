@@ -82,6 +82,7 @@ impl Ferese {
         if self.focus_swipe.is_some()
             || !self.paused_workspaces.is_empty()
             || !self.workspace_slides.is_empty()
+            || !self.render.closing.is_empty()
             || !self.dismissing_popups.is_empty()
             || self.render.snapshots().next().is_some()
             || self.overview.needs_tick()
@@ -192,12 +193,32 @@ impl Ferese {
         for (&id, record) in self.windows.records_mut() {
             let selected = selected_window == Some(id);
             let target = if selected { 1.0 } else { 0.0 };
-            let focus = record
-                .focus
-                .get_or_insert_with(|| crate::dimming::DimAnimation::new(target));
+            let focus = record.focus.get_or_insert_with(|| AnimatedValue::new(target));
             let previous = focus.current;
-            active_animation |= focus.advance_visual(target, delta, duration);
+            let changed = focus.target != target;
+            focus.set_target(target);
+            if self.animations_enabled {
+                active_animation |= focus.advance(
+                    if changed { Duration::ZERO } else { delta },
+                    crate::presentation::emphasis_spring(self.spring_config),
+                );
+            } else {
+                focus.snap();
+            }
             dim_changed |= previous != focus.current;
+            let shadow = record.shadow.get_or_insert_with(|| AnimatedValue::new(target));
+            let previous = shadow.current;
+            let changed = shadow.target != target;
+            shadow.set_target(target);
+            if self.animations_enabled {
+                active_animation |= shadow.advance(
+                    if changed { Duration::ZERO } else { delta },
+                    crate::presentation::shadow_spring(self.spring_config),
+                );
+            } else {
+                shadow.snap();
+            }
+            dim_changed |= previous != shadow.current;
         }
 
         for window in self.space.elements() {
@@ -217,19 +238,40 @@ impl Ferese {
             dim_changed |= previous != dim.current;
         }
 
-        let mut ready_to_close = Vec::new();
-        for (id, record) in self.windows.records_mut() {
-            let Some(animation) = &mut record.closing else { continue };
-
-            if animation.advance(delta, self.animations_enabled) {
-                ready_to_close.push(*id);
-            } else if !animation.close_sent {
-                active_animation = true;
+        for (_, record) in self.windows.records_mut() {
+            if let Some(opening) = &mut record.opening {
+                let active = if self.animations_enabled {
+                    opening.advance(
+                        delta,
+                        SpringConfig {
+                            position_tolerance: 0.00001,
+                            velocity_tolerance: 0.00001,
+                            ..self.spring_config
+                        },
+                    )
+                } else {
+                    opening.snap();
+                    false
+                };
+                active_animation |= active;
+                if !active {
+                    record.opening = None;
+                }
             }
         }
-
-        for id in ready_to_close {
-            self.send_window_close(id);
+        let mut finished = Vec::new();
+        self.render.closing.retain_mut(|window| {
+            let active =
+                self.animations_enabled && !self.session_lock.active() && window.advance(delta, self.spring_config);
+            if !active {
+                finished.push(window.presentation.id);
+            }
+            active_animation |= active;
+            active
+        });
+        for id in finished {
+            tracing::debug!(?id, "released close presentation");
+            self.render.remove_window(id);
         }
 
         // Include transactions expiring on this dispatch: their waiting time
@@ -325,8 +367,7 @@ impl Ferese {
                 viewport.current = swipe.position();
                 viewport.velocity = 0.0;
             } else if self.animations_enabled {
-                active_animation |=
-                    viewport.advance_with_policy(delta, self.viewport_spring_config, CrossingPolicy::NoCrossing);
+                active_animation |= viewport.advance(delta, self.viewport_spring_config);
             } else {
                 viewport.snap();
             }
@@ -379,8 +420,7 @@ impl Ferese {
                 if zooming {
                     sync_scrolling_coordinates(geometry, world_x, viewport, true);
                 } else if self.animations_enabled {
-                    active_animation |=
-                        world_x.advance_with_policy(delta, self.spring_config, CrossingPolicy::NoCrossing);
+                    active_animation |= world_x.advance(delta, self.spring_config);
                 } else {
                     world_x.snap();
                 }
@@ -392,7 +432,7 @@ impl Ferese {
 
             if let Some((_, width)) = record.coupled_width.as_mut() {
                 let width_active = if self.animations_enabled {
-                    width.advance_with_policy(delta, self.viewport_spring_config, CrossingPolicy::NoCrossing)
+                    width.advance(delta, self.viewport_spring_config)
                 } else {
                     width.snap();
                     false
@@ -462,6 +502,9 @@ impl Ferese {
             self.send_shell_snapshots();
             active_animation = true;
         }
+        if !self.overview.is_active() {
+            self.retarget_overview();
+        }
         active_animation |= self
             .overview
             .advance(delta, self.spring_config, self.animations_enabled);
@@ -525,10 +568,9 @@ impl Ferese {
             else {
                 continue;
             };
-            let progress = slide.progress_at(delta);
 
             for item in &slide.items {
-                let position = item.start.between(item.target, progress);
+                let position = slide.position(item, delta);
                 offsets.insert(
                     item.workspace,
                     (position.x * f64::from(size.w), position.y * f64::from(size.h)),
@@ -573,8 +615,9 @@ fn record_needs_tick(
     mapped: impl FnOnce() -> bool,
 ) -> bool {
     if record.resize.is_some()
-        || record.closing.as_ref().is_some_and(|close| !close.close_sent)
+        || record.opening.is_some()
         || record.focus.as_ref().is_none_or(|motion| motion.needs_update(focus))
+        || record.shadow.as_ref().is_none_or(|motion| motion.needs_update(focus))
     {
         return true;
     }
@@ -610,7 +653,8 @@ mod tests {
 
         WindowRecord {
             geometry: Some(geometry),
-            focus: Some(DimAnimation::new(1.0)),
+            focus: Some(AnimatedValue::new(1.0)),
+            shadow: Some(AnimatedValue::new(1.0)),
             dimming: Some(DimAnimation::new(0.0)),
             ..Default::default()
         }
@@ -629,6 +673,20 @@ mod tests {
         assert!(record_needs_tick(&record, 0.0, 0.0, || true));
         assert!(record_needs_tick(&record, 1.0, 0.15, || true));
         assert!(!record_needs_tick(&record, 1.0, 0.15, || false));
+    }
+
+    #[test]
+    fn shadow_keeps_ticks_until_it_settles_after_emphasis() {
+        let mut record = settled();
+        let shadow = record.shadow.as_mut().unwrap();
+        shadow.current = 0.9;
+        shadow.velocity = 0.2;
+        assert!(record_needs_tick(&record, 1.0, 0.0, || false));
+        record.shadow.as_mut().unwrap().advance(
+            Duration::from_secs(3),
+            crate::presentation::shadow_spring(SpringConfig::default()),
+        );
+        assert!(!record_needs_tick(&record, 1.0, 0.0, || false));
     }
 
     #[test]
@@ -660,11 +718,11 @@ mod tests {
     }
 
     #[test]
-    fn close_requests_and_coupled_width_cleanup_still_get_their_final_tick() {
+    fn opening_and_coupled_width_cleanup_still_get_their_final_tick() {
         let mut record = settled();
-        record.closing = Some(ClosingAnimation::default());
+        record.opening = Some(AnimatedValue::new(0.0));
         assert!(record_needs_tick(&record, 1.0, 0.0, || false));
-        record.closing.as_mut().unwrap().close_sent = true;
+        record.opening = None;
         assert!(!record_needs_tick(&record, 1.0, 0.0, || true));
         record.coupled_width = Some((WorkspaceId(1), AnimatedValue::new(400.0)));
         assert!(record_needs_tick(&record, 1.0, 0.0, || true));
@@ -871,7 +929,7 @@ mod tests {
         // A settled transaction still has to flush its resume guard; otherwise
         // the next unrelated animation would inherit an old paused workspace.
         state.viewport_animations.get_mut(&workspace).unwrap().snap();
-        state.windows.record_mut(id).unwrap().focus = Some(DimAnimation::new(0.0));
+        state.windows.record_mut(id).unwrap().focus = Some(AnimatedValue::new(0.0));
         state.windows.set_transaction(
             id,
             crate::resize_transaction::ResizeTransaction::new(3.into(), Duration::from_millis(800)),

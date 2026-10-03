@@ -149,7 +149,7 @@ pub(super) fn overview_strip_elements(
         {
             continue;
         }
-        let Some(rect) = frame.windows.get(&id).map(|sample| sample.rect) else {
+        let Some(rect) = frame.windows.get(&id).map(|sample| sample.presentation.bounds.current) else {
             continue;
         };
         let Some((buffer, size)) = state.overview_window_label(id, scale, rect.width) else {
@@ -238,12 +238,31 @@ pub(super) fn overview_strip_elements(
                     let clip_changed = state
                         .output_id(output)
                         .is_some_and(|output| state.render.thumbnail_corner_changed(*id, output, shape));
+                    let Some(sample) = frame.windows.get(id) else { continue };
+                    let presentation = sample.presentation.thumbnail(*rect);
+                    let corners = RoundedRect::new(presentation.bounds.current, output_geometry.loc, scale, 4.0)
+                        .with_shape(shape);
+                    if let Some(snapshot) = state.render.snapshot(id)
+                        && snapshot.context == renderer.context_id().erased()
+                        && (snapshot.scale - scale).abs() < 0.001
+                        && let Some(element) = super::window_content::snapshot_element(
+                            snapshot,
+                            presentation,
+                            corners,
+                            scale,
+                            output,
+                            &programs,
+                            alpha * crate::presentation::handoff_alpha(snapshot.elapsed),
+                        )
+                    {
+                        elements.push(element.into());
+                    }
                     elements.extend(rounded_window_elements(
                         renderer,
                         window,
-                        RoundedRect::new(*rect, output_geometry.loc, scale, 4.0).with_shape(shape),
+                        corners,
                         scale,
-                        alpha,
+                        alpha * presentation.alpha(),
                         // Crop/scale/alpha/geometry already track their own
                         // damage. Role changes also alter the corner shader,
                         // even when the client buffer itself is unchanged.
@@ -251,6 +270,7 @@ pub(super) fn overview_strip_elements(
                         output,
                         programs.clone(),
                         ConstrainScaleBehavior::Stretch,
+                        None,
                     ));
                 }
             }

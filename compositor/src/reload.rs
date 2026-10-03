@@ -297,13 +297,13 @@ impl crate::Ferese {
         } = prepared;
         // Identical watcher/IPC reloads do not restart a theme transition.
         if self.config_source.as_ref() == Some(&source)
-            && candidate.theme == self.theme_engine.snapshot.theme
-            && candidate.families == self.theme_engine.snapshot.families
-            && candidate.policy.mode == self.theme_engine.snapshot.mode
-            && candidate.warnings == self.theme_engine.snapshot.warnings
-            && candidate.fallback_note == self.theme_engine.snapshot.fallback_note
+            && candidate.theme == self.theme_engine.live.theme
+            && candidate.families == self.theme_engine.live.families
+            && candidate.policy.mode == self.theme_engine.live.mode
+            && candidate.warnings == self.theme_engine.live.warnings
+            && candidate.fallback_note == self.theme_engine.live.fallback_note
             && self.theme_engine.matches_files(&candidate.files)
-            && self.theme_engine.snapshot.error.is_none()
+            && self.theme_engine.live.error.is_none()
         {
             if let Err(error) = self.theme_engine.arm_clock(candidate.next_transition) {
                 tracing::warn!(%error, "cannot arm appearance schedule");
@@ -433,7 +433,7 @@ mod tests {
             } else {
                 std::fs::remove_file(&path).unwrap();
             }
-            let before = state.theme_engine.snapshot.revision;
+            let before = state.theme_engine.revision;
             let (reply, received) = std::sync::mpsc::sync_channel(1);
             state.queue_config_reload(index == 1, Some((42, reply))).unwrap();
             let deadline = Instant::now() + Duration::from_secs(5);
@@ -452,7 +452,7 @@ mod tests {
             );
             assert_eq!(state.config_source.as_deref(), Some(valid));
             if source == Some(valid) && before > 0 {
-                assert_eq!(state.theme_engine.snapshot.revision, before);
+                assert_eq!(state.theme_engine.revision, before);
             }
         }
     }
@@ -491,8 +491,8 @@ mod tests {
         let display = smithay::reexports::wayland_server::Display::new().unwrap();
         let mut state = crate::Ferese::new(&mut event_loop, display, runtime).unwrap();
         state.config_source = Some(source.into());
-        state.theme_engine.snapshot.theme = candidate.theme.clone();
-        state.theme_engine.snapshot.presented = candidate.theme;
+        state.theme_engine.live.theme = candidate.theme.clone();
+        state.theme_engine.live.presented = candidate.theme;
 
         for enabled in [false, true, false] {
             let source = format!("appearance {{ inactive-dim {{ enabled #{enabled}; amount 0.25; }}; }}");

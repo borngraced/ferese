@@ -164,6 +164,13 @@ impl FereseShell {
     }
 
     pub(super) fn handle_event(&mut self, event: Event, id: window::Id) -> Task<Message> {
+        if let Event::Mouse(cosmic::iced::mouse::Event::ButtonPressed(_)) = &event
+            && let Some(modal) = &mut self.system_modal
+            && modal.contains(id)
+        {
+            modal.focus_visible = false;
+        }
+
         if let Event::Mouse(mouse) = &event {
             if !self
                 .outputs
@@ -326,9 +333,6 @@ impl FereseShell {
                         }
                         _ => {}
                     }
-                    if let Some(effects) = &menu.effects {
-                        let _ = effects.set_opacity(menu.progress());
-                    }
                 }
                 Task::none()
             }
@@ -481,6 +485,7 @@ pub(super) struct EffectsBinding {
     _queue: EventQueue<EffectsState>,
     regions: std::cell::RefCell<Option<Vec<[f32; 5]>>>,
     opacity: std::cell::Cell<Option<u32>>,
+    presentation: std::cell::RefCell<Option<(Vec<[f32; 5]>, u32, Vec<u32>, ferese_surface_effects_v1::Role)>>,
 }
 
 impl EffectsBinding {
@@ -504,7 +509,7 @@ impl EffectsBinding {
         let connection = Connection::from_backend(backend);
         let (globals, queue) = registry_queue_init::<EffectsState>(&connection)?;
         let qh = queue.handle();
-        let manager = globals.bind::<FereseEffectsManagerV1, _, _>(&qh, 3..=3, ())?;
+        let manager = globals.bind::<FereseEffectsManagerV1, _, _>(&qh, 5..=5, ())?;
         let effects = manager.get_surface_effects(surface, &qh, ());
 
         let opacity = (opacity.clamp(0.0, 1.0) * 1000.0).round() as u32;
@@ -523,7 +528,35 @@ impl EffectsBinding {
             _queue: queue,
             regions: Default::default(),
             opacity: std::cell::Cell::new(Some(opacity)),
+            presentation: Default::default(),
         })
+    }
+
+    pub(super) fn set_presentation(
+        &self,
+        regions: &[[f32; 5]],
+        opacity: f32,
+        region_opacities: impl IntoIterator<Item = f32>,
+        role: ferese_surface_effects_v1::Role,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let opacity = (opacity.clamp(0.0, 1.0) * 1000.0).round() as u32;
+        let values: Vec<u32> = region_opacities
+            .into_iter()
+            .take(32)
+            .map(|value| (value.clamp(0.0, 1.0) * 1000.0).round() as u32)
+            .collect();
+        let next = (regions.to_vec(), opacity, values, role);
+        if self.presentation.borrow().as_ref() != Some(&next) {
+            self.surface.set_presentation(
+                role,
+                encode_regions(regions),
+                opacity,
+                next.2.iter().flat_map(|value| value.to_ne_bytes()).collect(),
+            );
+            self.connection.flush()?;
+            *self.presentation.borrow_mut() = Some(next);
+        }
+        Ok(())
     }
 
     pub(super) fn set_regions(&self, regions: &[[f32; 5]]) -> Result<(), Box<dyn std::error::Error>> {

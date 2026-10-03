@@ -6,7 +6,11 @@ use crate::Ferese;
 
 impl Ferese {
     pub(crate) fn has_capture_exclusions(&self) -> bool {
-        !self.capture_protected_windows.is_empty() || self.capture_protected_cursor.is_some()
+        // Detached close snapshots outlive the registry's privacy metadata.
+        // Keep them on the display and use the filtered scene for captures.
+        !self.capture_protected_windows.is_empty()
+            || self.capture_protected_cursor.is_some()
+            || !self.render.closing.is_empty()
     }
 
     /// Resolve at capture time: metadata changes must not wait for placement rules.

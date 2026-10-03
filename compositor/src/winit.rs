@@ -96,6 +96,7 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
             let mut backend = backend.borrow_mut();
             match event {
                 WinitEvent::Resized { size, scale_factor } => {
+                    tracing::debug!(target: "ferese::nested_input", ?size, scale_factor, "host resized nested output");
                     let scale = normalized_scale(scale_factor);
                     let rate = backend
                         .window()
@@ -116,7 +117,13 @@ pub fn init(event_loop: &mut EventLoop<Ferese>, state: &mut Ferese) -> Result<()
                     }
                     backend.window().request_redraw();
                 }
-                WinitEvent::Input(event) => state.process_input_event(event),
+                WinitEvent::Input(event) => {
+                    let kind = std::mem::discriminant(&event);
+                    state.process_input_event(event);
+                    tracing::debug!(target: "ferese::nested_input", ?kind,
+                        pointer = ?state.seat.get_pointer().map(|pointer| pointer.current_location()),
+                        "host input in nested output");
+                }
                 WinitEvent::Redraw => {
                     state.advance_animations(Instant::now());
                     let age = backend.buffer_age().unwrap_or(0);

@@ -26,7 +26,7 @@ struct Appearance {
 
 impl Appearance {
     fn load() -> Self {
-        let snapshot = ferese_theme::service::current();
+        let snapshot = ferese_theme_client::service::current();
         Self::from_resolved(&snapshot.presented)
     }
 
@@ -37,7 +37,7 @@ impl Appearance {
             appearance: theme.appearance,
             high_contrast: theme.accessibility.increase_contrast,
             surface: Color {
-                a: ferese_theme::service::opacity(theme),
+                a: ferese_theme::material_opacity(theme),
                 ..palette.sidebar
             },
             text: palette.text,
@@ -72,9 +72,9 @@ impl Appearance {
 
 #[derive(Clone)]
 enum Message {
-    ThemeChanged(Box<ferese_config::theme::Snapshot>),
+    ThemeChanged(Box<ferese_ipc::theme::Snapshot>),
     WindowOpened(cosmic::iced::window::Id),
-    MaterialAttached(Result<ferese_theme::material::ModalMaterial, String>),
+    MaterialAttached(Result<ferese_theme_client::material::ModalMaterial, String>),
     Tick,
     Input(String),
     Submit,
@@ -91,7 +91,7 @@ impl std::fmt::Debug for Message {
 
 struct Prompt {
     core: Core,
-    material: Option<ferese_theme::material::ModalMaterial>,
+    material: Option<ferese_theme_client::material::ModalMaterial>,
     appearance: Appearance,
     incoming: Arc<Mutex<VecDeque<PromptEvent>>>,
     request: AuthenticationRequest,
@@ -302,7 +302,7 @@ impl cosmic::Application for Prompt {
 
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
-            ferese_theme::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
+            ferese_theme_client::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
             cosmic::iced::time::every(Duration::from_millis(30)).map(|_| Message::Tick),
             cosmic::iced::event::listen_with(|event, _, id| match event {
                 cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => {
@@ -320,7 +320,7 @@ impl cosmic::Application for Prompt {
                 return cosmic::command::set_theme(self.appearance.theme());
             }
             Message::WindowOpened(id) => {
-                return cosmic::iced::window::run(id, ferese_theme::material::ModalMaterial::attach)
+                return cosmic::iced::window::run(id, ferese_theme_client::material::ModalMaterial::attach)
                     .map(|result| cosmic::Action::App(Message::MaterialAttached(result)));
             }
             Message::MaterialAttached(result) => {
@@ -609,7 +609,7 @@ mod tests {
         drop(writer);
         reader_thread.join().unwrap();
         assert!(matches!(incoming.lock().unwrap().back(), Some(PromptEvent::Cancel)));
-        let appearance = Appearance::from_resolved(&ferese_config::theme::ResolvedTheme::default());
+        let appearance = Appearance::from_resolved(&ferese_config::theme::default_theme());
         let (mut prompt, _) = Prompt::init(Core::default(), (incoming, request_fixture(), appearance));
         *prompt.answer = "test-password".into();
         prompt.waiting = false;
@@ -625,7 +625,7 @@ mod tests {
         use crate::{Generation, PromptEvent};
 
         let incoming = Arc::new(Mutex::new(VecDeque::new()));
-        let appearance = Appearance::from_resolved(&ferese_config::theme::ResolvedTheme::default());
+        let appearance = Appearance::from_resolved(&ferese_config::theme::default_theme());
         let (mut prompt, _) = Prompt::init(Core::default(), (incoming.clone(), request_fixture(), appearance));
         assert_eq!(prompt.select_identity(1), Some(1001));
         let older = prompt.request.generation;
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn selecting_another_account_clears_password_and_waits_for_a_fresh_prompt() {
-        let appearance = Appearance::from_resolved(&ferese_config::theme::ResolvedTheme::default());
+        let appearance = Appearance::from_resolved(&ferese_config::theme::default_theme());
         let (mut prompt, _) = <Prompt as cosmic::Application>::init(
             Core::default(),
             (Arc::new(Mutex::new(VecDeque::new())), request_fixture(), appearance),

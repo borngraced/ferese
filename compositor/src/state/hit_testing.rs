@@ -202,12 +202,16 @@ impl Ferese {
     }
 
     pub fn visual_scale_for_window(&self, window: &Window) -> Option<(f64, f64)> {
-        if !self.overview.is_presenting() {
+        let id = self.windows.ids().get(window)?;
+        if !self.overview.is_presenting() && self.windows.record(*id)?.opening.is_none() {
             return Some((1.0, 1.0));
         }
-        let id = self.windows.ids().get(window)?;
         let geometry = self.windows.geometry(id)?;
-        let source = geometry.client.committed_size?;
+        let source = if self.overview.is_presenting() {
+            geometry.client.committed_size?
+        } else {
+            ClientSize::from_rect(geometry.visual.current)
+        };
         let presented = self.presented_window_rect(*id)?;
 
         if source.width <= 0 || source.height <= 0 {

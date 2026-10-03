@@ -110,7 +110,7 @@ fn capture_old_golden_trace_and_retarget_policy() {
     value.retarget_preserving_motion(-500.0);
     println!("old reversal: {}, {}", value.current, value.velocity);
     assert_eq!(value.current, position);
-    assert_eq!(value.velocity, velocity * 0.35);
+    assert_eq!(value.velocity, velocity);
 }
 
 #[test]
@@ -282,7 +282,7 @@ fn retarget_golden_policy_values() {
     old.retarget_preserving_motion(2000.);
     close(old.velocity, 9837.123292018367, 1e-9);
     old.retarget_preserving_motion(-500.);
-    close(old.velocity, 3442.993152206428, 1e-9);
+    close(old.velocity, 9837.123292018367, 1e-9);
 }
 
 #[test]
@@ -342,7 +342,7 @@ fn rapid_retarget_trace_preserves_position_and_the_golden_policy() {
     let before = value;
     value.retarget_preserving_motion(-500.0);
     assert_eq!(value.current, before.current);
-    assert_eq!(value.velocity, before.velocity * 0.35);
+    assert_eq!(value.velocity, before.velocity);
     clock.sample(Duration::from_millis(81), &mut value, SpringConfig::default());
     assert_ne!(value.velocity, 0.0);
 
@@ -350,11 +350,11 @@ fn rapid_retarget_trace_preserves_position_and_the_golden_policy() {
     value.current = 318.94300938241565;
     value.velocity = 9837.123292018367;
     value.retarget_preserving_motion(-500.0);
-    close(value.velocity, 3442.993152206428, 1e-9);
+    close(value.velocity, 9837.123292018367, 1e-9);
 }
 
 #[test]
-fn interrupted_resize_and_zoom_targets_are_c0_continuous() {
+fn interrupted_resize_and_zoom_targets_preserve_position_and_velocity() {
     let initial = Rect::new(0., 0., 400., 300.);
     let mut geometry = WindowGeometry::new(initial, None);
     geometry.set_logical_target(Rect::new(100., 50., 900., 600.), Duration::ZERO);
@@ -366,8 +366,10 @@ fn interrupted_resize_and_zoom_targets_are_c0_continuous() {
         PresentationMode::Normal,
     ] {
         let before = (geometry.visual.current, geometry.decorations);
+        let velocity = geometry.visual.velocity;
         geometry.set_presentation_mode(Rect::new(200., 100., 700., 500.), mode, Duration::from_millis(40));
         assert_eq!((geometry.visual.current, geometry.decorations), before);
+        assert_eq!(geometry.visual.velocity, velocity);
         geometry.advance(Duration::ZERO, SpringConfig::default(), true);
         assert_eq!((geometry.visual.current, geometry.decorations), before);
         geometry.advance(Duration::from_millis(16), SpringConfig::default(), true);

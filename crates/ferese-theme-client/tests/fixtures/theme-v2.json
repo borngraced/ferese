@@ -1,0 +1,266 @@
+{
+  "version": 2,
+  "revision": 0,
+  "mode": "dark",
+  "theme": {
+    "appearance": "dark",
+    "tokens": {
+      "colors": {
+        "surface_base": "#111821",
+        "surface_raised": "#1E2530",
+        "application_background": "#171E27",
+        "text_primary": "#F4F7FB",
+        "text_muted": "#8793A2",
+        "accent": "#3D7BE6",
+        "on_accent": "#FFFFFF",
+        "border": "#FFFFFF18",
+        "shadow": "#00000055"
+      },
+      "material": {
+        "style": "solid",
+        "opacity": 0.78,
+        "blur_radius": 12.0,
+        "tint_strength": 0.5
+      },
+      "geometry": {
+        "border_width": 1.0,
+        "focus_ring_width": 2.0,
+        "window_radius": 14.0,
+        "shell_radius": 14.0,
+        "top_bar_height": 28.0,
+        "top_bar_margin_top": 0,
+        "top_bar_margin_horizontal": 0,
+        "top_bar_window_gap": 0,
+        "panel_padding": 12.0,
+        "control_gap": 12.0
+      },
+      "typography": {
+        "font_family": "Inter"
+      },
+      "background": {
+        "path": "<wallpaper>",
+        "lock_path": null,
+        "mode": "fill"
+      },
+      "surface": {
+        "bar": {
+          "background": "#111821",
+          "text_primary": "#F4F7FB",
+          "text_muted": "#8793A2"
+        }
+      },
+      "shadow": {
+        "soft": {
+          "offset_y": 4.0,
+          "blur": 18.0,
+          "opacity": 0.2
+        }
+      },
+      "border": {
+        "gradient": null
+      },
+      "focus_ring": {
+        "gradient": null
+      }
+    },
+    "requested_accent": "#3D7BE6",
+    "accessibility": {
+      "increase_contrast": false,
+      "reduce_transparency": false
+    },
+    "reduced_motion": false
+  },
+  "presented": {
+    "appearance": "dark",
+    "tokens": {
+      "colors": {
+        "surface_base": "#111821",
+        "surface_raised": "#1E2530",
+        "application_background": "#171E27",
+        "text_primary": "#F4F7FB",
+        "text_muted": "#8793A2",
+        "accent": "#3D7BE6",
+        "on_accent": "#FFFFFF",
+        "border": "#FFFFFF18",
+        "shadow": "#00000055"
+      },
+      "material": {
+        "style": "solid",
+        "opacity": 0.78,
+        "blur_radius": 12.0,
+        "tint_strength": 0.5
+      },
+      "geometry": {
+        "border_width": 1.0,
+        "focus_ring_width": 2.0,
+        "window_radius": 14.0,
+        "shell_radius": 14.0,
+        "top_bar_height": 28.0,
+        "top_bar_margin_top": 0,
+        "top_bar_margin_horizontal": 0,
+        "top_bar_window_gap": 0,
+        "panel_padding": 12.0,
+        "control_gap": 12.0
+      },
+      "typography": {
+        "font_family": "Inter"
+      },
+      "background": {
+        "path": "<wallpaper>",
+        "lock_path": null,
+        "mode": "fill"
+      },
+      "surface": {
+        "bar": {
+          "background": "#111821",
+          "text_primary": "#F4F7FB",
+          "text_muted": "#8793A2"
+        }
+      },
+      "shadow": {
+        "soft": {
+          "offset_y": 4.0,
+          "blur": 18.0,
+          "opacity": 0.2
+        }
+      },
+      "border": {
+        "gradient": null
+      },
+      "focus_ring": {
+        "gradient": null
+      }
+    },
+    "requested_accent": "#3D7BE6",
+    "accessibility": {
+      "increase_contrast": false,
+      "reduce_transparency": false
+    },
+    "reduced_motion": false
+  },
+  "warnings": [],
+  "error": null,
+  "families": [
+    {
+      "id": "ferese-blue",
+      "name": "Ferese Blue",
+      "light": {
+        "background": "#F5F7FB",
+        "bar": "#F5F7FB",
+        "surface": "#E7E9ED",
+        "text": "#182234",
+        "muted": "#586579",
+        "accent": "#3D7BE6"
+      },
+      "dark": {
+        "background": "#111821",
+        "bar": "#111821",
+        "surface": "#1E2530",
+        "text": "#F4F7FB",
+        "muted": "#8793A2",
+        "accent": "#3D7BE6"
+      }
+    },
+    {
+      "id": "catppuccin",
+      "name": "Catppuccin",
+      "light": {
+        "background": "#EFF1F5",
+        "bar": "#EFF1F5",
+        "surface": "#E6E9EF",
+        "text": "#4C4F69",
+        "muted": "#5C5F77",
+        "accent": "#8839EF"
+      },
+      "dark": {
+        "background": "#1E1E2E",
+        "bar": "#1E1E2E",
+        "surface": "#313244",
+        "text": "#CDD6F4",
+        "muted": "#A6ADC8",
+        "accent": "#CBA6F7"
+      }
+    },
+    {
+      "id": "gruvbox",
+      "name": "Gruvbox",
+      "light": {
+        "background": "#FBF1C7",
+        "bar": "#FBF1C7",
+        "surface": "#F2E5BC",
+        "text": "#3C3836",
+        "muted": "#665C54",
+        "accent": "#AF3A03"
+      },
+      "dark": {
+        "background": "#282828",
+        "bar": "#282828",
+        "surface": "#3C3836",
+        "text": "#EBDBB2",
+        "muted": "#BDAE93",
+        "accent": "#FE8019"
+      }
+    },
+    {
+      "id": "rose-pine",
+      "name": "Rosé Pine",
+      "light": {
+        "background": "#FAF4ED",
+        "bar": "#FAF4ED",
+        "surface": "#FFFAF3",
+        "text": "#464261",
+        "muted": "#716D89",
+        "accent": "#B4637A"
+      },
+      "dark": {
+        "background": "#232136",
+        "bar": "#232136",
+        "surface": "#2A273F",
+        "text": "#E0DEF4",
+        "muted": "#918DAA",
+        "accent": "#EA9A97"
+      }
+    },
+    {
+      "id": "tokyo-night",
+      "name": "Tokyo Night",
+      "light": {
+        "background": "#E1E2E7",
+        "bar": "#E1E2E7",
+        "surface": "#D0D5E3",
+        "text": "#3358B0",
+        "muted": "#4D5A8C",
+        "accent": "#2C76DD"
+      },
+      "dark": {
+        "background": "#1A1B26",
+        "bar": "#1A1B26",
+        "surface": "#292E42",
+        "text": "#C0CAF5",
+        "muted": "#A9B1D6",
+        "accent": "#7AA2F7"
+      }
+    },
+    {
+      "id": "everforest",
+      "name": "Everforest",
+      "light": {
+        "background": "#FFFBEF",
+        "bar": "#FFFBEF",
+        "surface": "#F8F5E4",
+        "text": "#5C6A72",
+        "muted": "#677367",
+        "accent": "#849601"
+      },
+      "dark": {
+        "background": "#272E33",
+        "bar": "#272E33",
+        "surface": "#2E383C",
+        "text": "#D3C6AA",
+        "muted": "#9DA9A0",
+        "accent": "#A7C080"
+      }
+    }
+  ],
+  "fallback_note": null
+}

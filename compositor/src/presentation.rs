@@ -17,6 +17,73 @@ use crate::render::SharedPixelShaderElement;
 pub(crate) const HANDOFF: Duration = Duration::from_millis(80);
 pub(crate) const SNAPSHOT_BUDGET: usize = 64 * 1024 * 1024;
 
+/// One window identity and motion sample, regardless of whether its pixels
+/// come from a live surface, a resize snapshot, or a retained close image.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct WindowPresentation {
+    pub id: ferese_layout::WindowId,
+    pub bounds: ferese_animation::AnimatedRect,
+    pub opacity: ferese_animation::AnimatedValue,
+    pub emphasis: ferese_animation::AnimatedValue,
+    pub shadow: ferese_animation::AnimatedValue,
+    pub scale_content: bool,
+    pub native_size: Option<ferese_animation::ClientSize>,
+}
+
+impl WindowPresentation {
+    pub fn alpha(self) -> f32 {
+        self.opacity.current.clamp(0.0, 1.0) as f32
+    }
+
+    pub fn focus(self) -> f64 {
+        self.emphasis.current.clamp(0.0, 1.0)
+    }
+
+    /// A thumbnail is another view of the same content and lifecycle state.
+    pub fn thumbnail(mut self, rect: ferese_layout::Rect) -> Self {
+        self.bounds = ferese_animation::AnimatedRect::new(rect);
+        self.scale_content = true;
+        self.native_size = None;
+        self
+    }
+
+    pub fn close(&mut self) {
+        self.bounds.set_target(scaled_visual_rect(self.bounds.current, 0.98));
+        self.opacity.set_target(0.0);
+        self.emphasis.set_target(0.0);
+        self.shadow.set_target(0.0);
+        self.scale_content = true;
+        self.native_size = None;
+    }
+
+    /// Shadow intensity and elevation may respond independently; its outline
+    /// always follows the window's shared rounded geometry.
+    pub fn shadow_factors(self) -> (f64, f64, f64) {
+        let strength = self.shadow.current.clamp(0.0, 1.0);
+        (0.75 + 0.25 * strength, 0.9 + 0.1 * strength, 0.8 + 0.2 * strength)
+    }
+}
+
+// Response multipliers preserve damping ratio and the user's crossing policy.
+// Emphasis responds sooner; the shadow settles a little later than the bounds.
+pub(crate) fn emphasis_spring(base: ferese_animation::SpringConfig) -> ferese_animation::SpringConfig {
+    visual_response(base, 0.8)
+}
+
+pub(crate) fn shadow_spring(base: ferese_animation::SpringConfig) -> ferese_animation::SpringConfig {
+    visual_response(base, 1.2)
+}
+
+fn visual_response(base: ferese_animation::SpringConfig, response: f64) -> ferese_animation::SpringConfig {
+    ferese_animation::SpringConfig {
+        stiffness: base.stiffness / (response * response),
+        damping: base.damping / response,
+        position_tolerance: 0.001,
+        velocity_tolerance: 0.001,
+        ..base
+    }
+}
+
 pub(crate) fn take_output_feedback(
     state: &crate::Ferese,
     output: &Output,
@@ -300,6 +367,93 @@ impl RenderElement<GlesRenderer> for NativeTextureElement {
 
 #[cfg(test)]
 mod tests {
+    fn moving_presentation() -> WindowPresentation {
+        use ferese_animation::{AnimatedRect, AnimatedValue, RectVelocity};
+        WindowPresentation {
+            id: ferese_layout::WindowId(7),
+            bounds: AnimatedRect {
+                velocity: RectVelocity {
+                    x: 150.0,
+                    y: -90.0,
+                    width: 20.0,
+                    height: 5.0,
+                },
+                ..AnimatedRect::new(ferese_layout::Rect::new(12.25, -4.5, 601.75, 399.25))
+            },
+            opacity: AnimatedValue {
+                current: 0.7,
+                target: 1.0,
+                velocity: 0.4,
+            },
+            emphasis: AnimatedValue {
+                current: 0.6,
+                target: 1.0,
+                velocity: 0.3,
+            },
+            shadow: AnimatedValue {
+                current: 0.4,
+                target: 1.0,
+                velocity: 0.2,
+            },
+            scale_content: false,
+            native_size: None,
+        }
+    }
+
+    #[test]
+    fn thumbnail_and_close_keep_window_identity_and_live_motion() {
+        let live = moving_presentation();
+        let thumbnail = live.thumbnail(ferese_layout::Rect::new(0.25, 8.5, 120.5, 80.25));
+        assert_eq!(thumbnail.id, live.id);
+        assert_eq!(thumbnail.opacity, live.opacity);
+        assert_eq!(thumbnail.emphasis, live.emphasis);
+        assert_eq!(thumbnail.shadow, live.shadow);
+        let mut closing = live;
+        closing.close();
+        assert_eq!(closing.id, live.id);
+        assert_eq!(closing.bounds.current, live.bounds.current);
+        assert_eq!(closing.bounds.velocity, live.bounds.velocity);
+        assert_eq!(closing.opacity.current, live.opacity.current);
+        assert_eq!(closing.opacity.velocity, live.opacity.velocity);
+        assert_eq!(closing.emphasis.velocity, live.emphasis.velocity);
+        assert_eq!(closing.shadow.velocity, live.shadow.velocity);
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            assert_eq!(
+                RoundedRect::new(live.bounds.current, (0, 0).into(), scale, 14.0),
+                RoundedRect::new(closing.bounds.current, (0, 0).into(), scale, 14.0)
+            );
+        }
+    }
+
+    #[test]
+    fn layered_responses_preserve_damping_and_settle_independently() {
+        use ferese_animation::{AnimatedValue, SpringConfig};
+        let base = SpringConfig::default();
+        let damping_ratio = |spring: SpringConfig| spring.damping / (2.0 * (spring.mass * spring.stiffness).sqrt());
+        for spring in [emphasis_spring(base), shadow_spring(base)] {
+            assert!((damping_ratio(spring) - damping_ratio(base)).abs() < 1e-12);
+            assert_eq!(spring.crossing, base.crossing);
+        }
+        let mut emphasis = AnimatedValue {
+            current: 0.0,
+            target: 1.0,
+            velocity: 0.0,
+        };
+        let mut shadow = emphasis;
+        let dt = Duration::from_millis(80);
+        emphasis.advance(dt, emphasis_spring(base));
+        shadow.advance(dt, shadow_spring(base));
+        assert!(emphasis.current > shadow.current);
+        let before = (emphasis.velocity, shadow.velocity);
+        emphasis.set_target(0.0);
+        shadow.set_target(0.0);
+        assert_eq!((emphasis.velocity, shadow.velocity), before);
+        emphasis.advance(Duration::from_secs(3), emphasis_spring(base));
+        shadow.advance(Duration::from_secs(3), shadow_spring(base));
+        assert!(!emphasis.is_animating());
+        assert!(!shadow.is_animating());
+    }
+
     #[test]
     fn rounded_outline_clamps_after_physical_snapping() {
         // Logical clamping would give 1.125; the snapped 3px rect allows radius 1.5.
@@ -521,5 +675,65 @@ mod tests {
         assert_eq!(handoff_alpha(HANDOFF), 0.0);
         assert_eq!(handoff_alpha(Duration::from_secs(1)), 0.0);
         assert!(handoff_alpha(Duration::from_millis(1)) > 0.99);
+    }
+}
+
+pub(crate) fn scaled_visual_rect(rect: ferese_layout::Rect, scale: f64) -> ferese_layout::Rect {
+    let scale = scale.max(0.0);
+    let width = rect.width * scale;
+    let height = rect.height * scale;
+
+    ferese_layout::Rect::new(
+        rect.x + (rect.width - width) / 2.0,
+        rect.y + (rect.height - height) / 2.0,
+        width,
+        height,
+    )
+}
+
+pub(crate) fn scaled_visual_velocity(
+    rect: ferese_layout::Rect,
+    velocity: ferese_animation::RectVelocity,
+    scale: f64,
+    scale_velocity: f64,
+) -> ferese_animation::RectVelocity {
+    ferese_animation::RectVelocity {
+        x: velocity.x + ((1.0 - scale) * velocity.width - rect.width * scale_velocity) * 0.5,
+        y: velocity.y + ((1.0 - scale) * velocity.height - rect.height * scale_velocity) * 0.5,
+        width: velocity.width * scale + rect.width * scale_velocity,
+        height: velocity.height * scale + rect.height * scale_velocity,
+    }
+}
+
+#[cfg(test)]
+mod motion_tests {
+    use super::*;
+    #[test]
+    fn center_scale_velocity_matches_the_visible_rectangle() {
+        let rect = ferese_layout::Rect::new(12.25, 18.75, 400.5, 300.25);
+        let velocity = ferese_animation::RectVelocity {
+            x: 80.0,
+            y: -40.0,
+            width: 100.0,
+            height: 20.0,
+        };
+        let v = scaled_visual_velocity(rect, velocity, 0.98, 0.07);
+        let before = scaled_visual_rect(rect, 0.98);
+        let dt = 1e-5;
+        let next = ferese_layout::Rect::new(
+            rect.x + velocity.x * dt,
+            rect.y + velocity.y * dt,
+            rect.width + velocity.width * dt,
+            rect.height + velocity.height * dt,
+        );
+        let after = scaled_visual_rect(next, 0.98 + 0.07 * dt);
+        for (measured, expected) in [
+            ((after.x - before.x) / dt, v.x),
+            ((after.y - before.y) / dt, v.y),
+            ((after.width - before.width) / dt, v.width),
+            ((after.height - before.height) / dt, v.height),
+        ] {
+            assert!((measured - expected).abs() < 0.0001);
+        }
     }
 }

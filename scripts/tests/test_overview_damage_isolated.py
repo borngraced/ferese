@@ -2,7 +2,9 @@
 
 FERESE_TEST_OVERVIEW_DAMAGE=1 FERESE_TEST_BINARY=target/release/ferese \
     FERESE_TEST_CTL=target/release/feresectl python3 scripts/tests/test_overview_damage_isolated.py
-Requires a Wayland host, foot and dbus-daemon. Never connects clients to the host.
+Set FERESE_TEST_TERMINAL=alacritty to use Alacritty instead of foot.
+Requires a Wayland host, the selected terminal and dbus-daemon.
+Never connects clients to the host.
 """
 import errno
 import json
@@ -22,6 +24,8 @@ class OverviewDamageTest(unittest.TestCase):
         repo = Path(__file__).resolve().parents[2]
         binary = repo / os.environ.get("FERESE_TEST_BINARY", "target/debug/ferese")
         control = repo / os.environ.get("FERESE_TEST_CTL", "target/debug/feresectl")
+        terminal = os.environ.get("FERESE_TEST_TERMINAL", "foot")
+        self.assertIn(terminal, ("foot", "alacritty"))
         children = []
         with tempfile.TemporaryDirectory(prefix="ferese-overview-damage-") as temporary:
             root = Path(temporary)
@@ -36,7 +40,7 @@ class OverviewDamageTest(unittest.TestCase):
 
             env = dict(os.environ, WAYLAND_DISPLAY=str(display), XDG_RUNTIME_DIR=str(runtime),
                        XDG_CONFIG_HOME=str(root / "config"), XDG_STATE_HOME=str(root / "state"),
-                       FERESE_TRACE_PERFORMANCE="1", RUST_LOG="ferese=info")
+                       FERESE_TRACE_PERFORMANCE="1", RUST_LOG="ferese=info,ferese::nested_input=debug")
             env.pop("WAYLAND_SOCKET", None)
             env.pop("FERESE_SHELL_CONTROL_SOCKET", None)
             log_path = root / "compositor.log"
@@ -68,8 +72,24 @@ class OverviewDamageTest(unittest.TestCase):
                 # The first report includes time before this call. The second
                 # covers a full five seconds of the requested stationary scene.
                 count = len(reports())
-                wait_for(lambda: len(reports()) >= count + 2)
-                return reports()[-1]
+                for attempt in range(3):
+                    wait_for(lambda: len(reports()) >= count + 2)
+                    lines = log_path.read_text().splitlines()
+                    boundaries = [index for index, line in enumerate(lines)
+                                  if "render performance" in line]
+                    interval = lines[boundaries[-2] + 1:boundaries[-1]]
+                    if not any("ferese::nested_input:" in line for line in interval):
+                        return reports()[-1]
+                    print("Discarding interval with host input; waiting for a quiet interval", flush=True)
+                    count = len(boundaries) - 1
+                self.fail("No input-free interval for the stationary overview check")
+
+            def assert_quiet(label, report):
+                print(label + ":", report, flush=True)
+                with self.subTest(stage=label):
+                    self.assertEqual(report["frames"], 0, str(report) + "\n" + log_path.read_text()[-5000:])
+                    self.assertEqual(report["damaged_pixels"], 0, str(report))
+                    self.assertGreater(report["no_damage_frames"], 0, str(report))
 
             writer = None
             with log_path.open("w") as log:
@@ -89,7 +109,9 @@ class OverviewDamageTest(unittest.TestCase):
                         app = f"ferese.test.overview.{index}"
                         client = (["sh", "-c", 'cat "$1"; sleep 120', "sh", str(fifo)]
                                   if index == 0 else ["sleep", "120"])
-                        launch(["foot", "--app-id", app, *client], stdout=log, stderr=log)
+                        terminal_command = (["alacritty", "--class", app, "--command", *client]
+                                            if terminal == "alacritty" else ["foot", "--app-id", app, *client])
+                        launch(terminal_command, stdout=log, stderr=log)
                         wait_for(lambda: any(window["app_id"] == app and window["width"] > 0
                                              for window in command("get-windows")))
 
@@ -106,21 +128,31 @@ class OverviewDamageTest(unittest.TestCase):
                     command("toggle-overview")
                     time.sleep(2)
                     quiet = stationary_interval()
-                    self.assertEqual(quiet["frames"], 0, str(quiet))
-                    self.assertEqual(quiet["damaged_pixels"], 0, str(quiet))
-                    self.assertGreater(quiet["no_damage_frames"], 0, str(quiet))
+                    assert_quiet("Settled overview", quiet)
 
                     count = len(reports())
                     os.write(writer, b"Live overview content must still update.\n")
                     wait_for(lambda: len(reports()) > count)
                     changed = reports()[-1]
-                    self.assertGreater(changed["frames"], 0, str(changed))
-                    self.assertGreater(changed["damaged_pixels"], 0, str(changed))
+                    print("Live content update:", changed, flush=True)
+                    with self.subTest(stage="Live content update"):
+                        self.assertGreater(changed["frames"], 0, str(changed))
+                        self.assertGreater(changed["damaged_pixels"], 0, str(changed))
 
                     # The content commit must not start another perpetual repaint.
                     quiet = stationary_interval()
-                    self.assertEqual(quiet["frames"], 0, str(quiet))
-                    self.assertGreater(quiet["no_damage_frames"], 0, str(quiet))
+                    assert_quiet("Settled overview after content update", quiet)
+
+                    # Exercise spring dismissal and reverse it while still in
+                    # flight, then dismiss again and check the settled desktop.
+                    command("toggle-overview")
+                    time.sleep(.08)
+                    command("toggle-overview")
+                    time.sleep(.08)
+                    command("toggle-overview")
+                    time.sleep(2)
+                    quiet = stationary_interval()
+                    assert_quiet("Settled desktop after overview reversals", quiet)
                 finally:
                     if writer is not None:
                         os.close(writer)

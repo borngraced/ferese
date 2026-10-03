@@ -55,6 +55,7 @@ class UnmappedToplevelTest(unittest.TestCase):
                 XDG_RUNTIME_DIR=str(runtime),
                 XDG_CONFIG_HOME=str(root / "config"),
                 WAYLAND_DISPLAY=host_display,
+                RUST_LOG="ferese=info,ferese::state::lifecycle=debug,ferese::state::animation=debug",
             )
             compositor_binary = repo / os.environ.get("FERESE_TEST_BINARY", "target/debug/ferese")
             ctl_binary = repo / os.environ.get("FERESE_TEST_CTL", "target/debug/feresectl")
@@ -117,6 +118,10 @@ class UnmappedToplevelTest(unittest.TestCase):
                             # Leave a configure/resize outstanding when the buffer is detached.
                             subprocess.run([str(ctl_binary), "toggle-maximized"], env=env,
                                            capture_output=True, check=True)
+                            time.sleep(.08)
+                        if phase == "detached":
+                            self.assertIn("retained close presentation", (root / "compositor.log").read_text(),
+                                          "unmap lost the old buffer before snapshot capture")
 
                         client.stdin.write("\n")
                         client.stdin.flush()
@@ -140,6 +145,11 @@ class UnmappedToplevelTest(unittest.TestCase):
                         [str(ctl_binary), "get-focused-window"], env=env, text=True
                     ))
                     self.assertIsNone(focused, "focus history must not restore a destroyed window")
+                    deadline = time.monotonic() + 3
+                    while "released close presentation" not in (root / "compositor.log").read_text():
+                        if time.monotonic() >= deadline:
+                            self.fail("retained close texture did not settle and release")
+                        time.sleep(.025)
                 finally:
                     if client and client.poll() is None:
                         client.terminate()

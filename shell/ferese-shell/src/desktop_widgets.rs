@@ -172,7 +172,7 @@ impl FereseShell {
         if save {
             if drag.id.is_none() {
                 let clock = &mut self.config.desktop_widgets.clock;
-                clock.anchor = ferese_core::desktop::Anchor::TopLeft;
+                clock.anchor = ferese_config::desktop::Anchor::TopLeft;
                 clock.margin_x = drag.position.x.round() as i32;
                 clock.margin_y = drag.position.y.round() as i32;
                 for entry in &self.outputs {
@@ -192,7 +192,7 @@ impl FereseShell {
                 .iter_mut()
                 .find(|note| Some(&note.id) == drag.id.as_ref())
             {
-                note.anchor = ferese_core::desktop::Anchor::TopLeft;
+                note.anchor = ferese_config::desktop::Anchor::TopLeft;
                 note.margin_x = drag.position.x.round() as i32;
                 note.margin_y = drag.position.y.round() as i32;
 
@@ -285,9 +285,9 @@ impl FereseShell {
             return text("").into();
         };
         let alignment = match note.alignment {
-            ferese_core::desktop::Alignment::Left => alignment::Horizontal::Left,
-            ferese_core::desktop::Alignment::Center => alignment::Horizontal::Center,
-            ferese_core::desktop::Alignment::Right => alignment::Horizontal::Right,
+            ferese_config::desktop::Alignment::Left => alignment::Horizontal::Left,
+            ferese_config::desktop::Alignment::Center => alignment::Horizontal::Center,
+            ferese_config::desktop::Alignment::Right => alignment::Horizontal::Right,
         };
         let font = configured_font(
             note.font_family
@@ -477,14 +477,14 @@ impl FereseShell {
     }
 
     pub(super) fn view_clock_content(&self) -> Element<'_, cosmic::Action<Message>> {
-        use ferese_core::desktop::Alignment as ClockAlignment;
+        use ferese_config::desktop::Alignment as ClockAlignment;
         let clock = &self.config.desktop_widgets.clock;
         let alignment = match clock.alignment {
             ClockAlignment::Left => alignment::Horizontal::Left,
             ClockAlignment::Center => alignment::Horizontal::Center,
             ClockAlignment::Right => alignment::Horizontal::Right,
         };
-        let pixel = clock.style == ferese_core::desktop::ClockStyle::Pixel;
+        let pixel = clock.style == ferese_config::desktop::ClockStyle::Pixel;
         let custom_font = clock.font_family.as_deref().filter(|family| !family.trim().is_empty());
         let mut font = configured_font(if pixel {
             custom_font.or(Some("Cantarell"))
@@ -668,7 +668,7 @@ pub(super) fn clamp_note_position(
     )
 }
 
-pub(super) fn note_origin(note: &ferese_core::desktop::StickyNote, output: (i32, i32)) -> cosmic::iced::Point {
+pub(super) fn note_origin(note: &ferese_config::desktop::StickyNote, output: (i32, i32)) -> cosmic::iced::Point {
     widget_origin(
         note.anchor,
         note.margin_x,
@@ -679,13 +679,13 @@ pub(super) fn note_origin(note: &ferese_core::desktop::StickyNote, output: (i32,
 }
 
 pub(super) fn widget_origin(
-    anchor: ferese_core::desktop::Anchor,
+    anchor: ferese_config::desktop::Anchor,
     margin_x: i32,
     margin_y: i32,
     size: (u32, u32),
     output: (i32, i32),
 ) -> cosmic::iced::Point {
-    use ferese_core::desktop::Anchor as A;
+    use ferese_config::desktop::Anchor as A;
     let x = match anchor {
         A::TopLeft | A::CenterLeft | A::BottomLeft => margin_x as f32,
         A::TopRight | A::CenterRight | A::BottomRight => output.0 as f32 - size.0 as f32 - margin_x as f32,
@@ -699,16 +699,16 @@ pub(super) fn widget_origin(
     clamp_note_position(cosmic::iced::Point::new(x, y), output, size)
 }
 
-pub(super) fn clock_placement(clock: &ferese_core::desktop::Clock) -> (Anchor, IcedMargin) {
+pub(super) fn clock_placement(clock: &ferese_config::desktop::Clock) -> (Anchor, IcedMargin) {
     widget_placement(clock.anchor, clock.margin_x, clock.margin_y)
 }
 
 pub(super) fn widget_placement(
-    position: ferese_core::desktop::Anchor,
+    position: ferese_config::desktop::Anchor,
     margin_x: i32,
     margin_y: i32,
 ) -> (Anchor, IcedMargin) {
-    use ferese_core::desktop::Anchor as Position;
+    use ferese_config::desktop::Anchor as Position;
     let horizontal = match position {
         Position::TopLeft | Position::CenterLeft | Position::BottomLeft => Anchor::LEFT,
         Position::TopRight | Position::CenterRight | Position::BottomRight => Anchor::RIGHT,

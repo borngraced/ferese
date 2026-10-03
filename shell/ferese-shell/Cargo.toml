@@ -6,10 +6,11 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ferese-animation = { path = "../../crates/ferese-animation" }
+ferese-theme-client = { path = "../../crates/ferese-theme-client" }
 ferese-ipc = { path = "../../crates/ferese-ipc" }
 ferese-theme = { path = "../../crates/ferese-theme" }
 ferese-config = { path = "../../crates/ferese-config" }
-ferese-core = { path = "../../crates/ferese-core" }
 ferese-protocols = { path = "../../crates/ferese-protocols", default-features = false, features = ["client"] }
 jiff.workspace = true
 libc.workspace = true

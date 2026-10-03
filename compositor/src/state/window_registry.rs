@@ -21,9 +21,11 @@ pub(crate) struct WindowRecord {
     pub title: String,
     pub metadata_revision: u64,
     pub resize: Option<ResizeTransaction>,
-    pub focus: Option<crate::dimming::DimAnimation>,
+    pub focus: Option<AnimatedValue>,
+    pub shadow: Option<AnimatedValue>,
     pub dimming: Option<crate::dimming::DimAnimation>,
-    pub(super) closing: Option<super::ClosingAnimation>,
+    pub opening: Option<AnimatedValue>,
+    pub mapped_once: bool,
     pub world_x: Option<(WorkspaceId, AnimatedValue)>,
     pub coupled_width: Option<(WorkspaceId, AnimatedValue)>,
     pub maximized: bool,
@@ -302,8 +304,8 @@ mod tests {
             record.resize_anchor = Some((true, false, Rect::new(0., 0., 800., 600.)));
             record.column_width_pending = true;
             record.rules_applied = true;
-            record.focus = Some(crate::dimming::DimAnimation::new(1.0));
-            record.closing = Some(super::super::ClosingAnimation::default());
+            record.focus = Some(AnimatedValue::new(1.0));
+            record.opening = Some(AnimatedValue::new(0.0));
             record.world_x = Some((WorkspaceId(1), AnimatedValue::new(50.0)));
             record.coupled_width = Some((WorkspaceId(1), AnimatedValue::new(800.0)));
         });

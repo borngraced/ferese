@@ -10,6 +10,7 @@ mod reconciliation;
 pub(crate) use reconciliation::{DesktopChanges, DesktopOutput, DesktopTransition};
 mod prediction;
 pub(crate) use prediction::FrameScene;
+mod lifecycle;
 mod window_registry;
 mod windows;
 
@@ -20,7 +21,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use calloop::LoopHandle;
-use ferese_animation::{AnimatedValue, ClientSize, CrossingPolicy, PresentationMode, SpringConfig, WindowGeometry};
+use ferese_animation::{AnimatedValue, ClientSize, PresentationMode, SpringConfig, WindowGeometry};
 use ferese_core::{
     LayoutMode, OutputGeometry, OutputId, OutputWorkspaceMap, WindowPlacement, WorkspaceId, WorkspaceLayout,
     WorkspaceSet,
@@ -99,9 +100,11 @@ use crate::wallpaper::{WallpaperConfig, WallpaperState};
 use crate::window_rules::{WindowRule, resolve as resolve_window_rules};
 use crate::winit::NestedBackend;
 
-const CLOSE_ANIMATION_DURATION: Duration = Duration::from_millis(140);
-const WORKSPACE_SLIDE_DURATION: Duration = Duration::from_millis(220);
-const WORKSPACE_SLIDE_FIRST_FRAME: Duration = Duration::from_millis(8);
+#[cfg(test)]
+use ferese_animation::CrossingPolicy;
+
+#[cfg(test)]
+const SLIDE_SETTLE_TEST_BUDGET: Duration = Duration::from_secs(2);
 
 fn workspace_swipe_is_current(
     outputs: &OutputWorkspaceMap,
@@ -154,11 +157,12 @@ struct FocusSwipe {
 }
 
 impl FocusSwipe {
-    fn position(&self) -> f64 {
+    fn distance(&self) -> f64 {
         let distance = self.destination - self.start;
         // When both columns already fit, give bounded drag feedback and settle
         // back to the unchanged viewport after selecting the next window.
-        let distance = if distance.abs() < 0.001 {
+
+        if distance.abs() < 0.001 {
             if self.direction == Direction::Right {
                 64.0
             } else {
@@ -166,8 +170,29 @@ impl FocusSwipe {
             }
         } else {
             distance
+        }
+    }
+
+    fn position(&self) -> f64 {
+        let progress = if self.to == self.from {
+            ferese_animation::gesture::rubber_band(self.progress.max(0.0), 1.0, 0.55).0
+        } else {
+            self.progress.clamp(0.0, 1.0)
         };
-        self.start + distance * self.progress
+        self.start + self.distance() * progress
+    }
+
+    fn release_velocity(&self, bounded: f64, unbounded: f64) -> f64 {
+        let velocity = if self.to == self.from {
+            if self.progress <= 0.0 {
+                0.0
+            } else {
+                unbounded * ferese_animation::gesture::rubber_band(self.progress, 1.0, 0.55).1
+            }
+        } else {
+            bounded
+        };
+        self.distance() * velocity
     }
 }
 
@@ -176,12 +201,13 @@ struct WorkspaceSlideItem {
     workspace: WorkspaceId,
     start: SlideOffset,
     target: SlideOffset,
+    velocity: SlideOffset,
 }
 
 #[derive(Clone)]
 struct WorkspaceSlide {
     items: Vec<WorkspaceSlideItem>,
-    elapsed: Duration,
+    spring: SpringConfig,
     held_progress: Option<f64>,
     gesture: Option<(WorkspaceId, WorkspaceId, SwipeDirection)>,
 }
@@ -191,12 +217,14 @@ impl WorkspaceSlide {
         let movement = SlideOffset::for_swipe(direction);
         let mut items = previous
             .map(|slide| {
-                let progress = slide.progress();
+                let progress = slide.held_progress;
                 slide
                     .items
                     .into_iter()
                     .map(|mut item| {
-                        item.start = item.start.between(item.target, progress);
+                        if let Some(progress) = progress {
+                            item.start = item.start.between(item.target, progress);
+                        }
                         item
                     })
                     .collect::<Vec<_>>()
@@ -210,6 +238,7 @@ impl WorkspaceSlide {
                 workspace: from,
                 start: SlideOffset::default(),
                 target: movement,
+                velocity: SlideOffset::default(),
             });
         }
         if let Some(item) = items.iter_mut().find(|item| item.workspace == to) {
@@ -219,30 +248,74 @@ impl WorkspaceSlide {
                 workspace: to,
                 start: movement.opposite(),
                 target: SlideOffset::default(),
+                velocity: SlideOffset::default(),
             });
         }
 
         Self {
             items,
-            elapsed: WORKSPACE_SLIDE_FIRST_FRAME,
+            spring: SpringConfig {
+                stiffness: 320.0,
+                damping: 2.0 * 320.0_f64.sqrt(),
+                position_tolerance: 0.00001,
+                velocity_tolerance: 0.00001,
+                ..SpringConfig::default()
+            },
             held_progress: None,
             gesture: None,
         }
     }
 
-    fn progress(&self) -> f64 {
-        self.progress_at(Duration::ZERO)
+    fn position(&self, item: &WorkspaceSlideItem, delta: Duration) -> SlideOffset {
+        self.sample(item, delta).0
     }
 
-    fn progress_at(&self, delta: Duration) -> f64 {
-        self.held_progress.unwrap_or_else(|| {
-            let elapsed = self.elapsed.saturating_add(delta).min(WORKSPACE_SLIDE_DURATION);
-            smoothstep(elapsed.as_secs_f64() / WORKSPACE_SLIDE_DURATION.as_secs_f64())
-        })
+    fn sample(&self, item: &WorkspaceSlideItem, delta: Duration) -> (SlideOffset, SlideOffset) {
+        if let Some(progress) = self.held_progress {
+            return (item.start.between(item.target, progress), item.velocity);
+        }
+        let mut x = AnimatedValue {
+            current: item.start.x,
+            target: item.target.x,
+            velocity: item.velocity.x,
+        };
+        let mut y = AnimatedValue {
+            current: item.start.y,
+            target: item.target.y,
+            velocity: item.velocity.y,
+        };
+        x.advance(delta, self.spring);
+        y.advance(delta, self.spring);
+        (
+            SlideOffset {
+                x: x.current,
+                y: y.current,
+            },
+            SlideOffset {
+                x: x.velocity,
+                y: y.velocity,
+            },
+        )
+    }
+
+    fn moving(&self) -> bool {
+        self.items
+            .iter()
+            .any(|item| item.start != item.target || item.velocity != SlideOffset::default())
+    }
+
+    fn release_with_velocity(&mut self, committed: bool, velocity: f64) {
+        for item in &mut self.items {
+            item.velocity = SlideOffset {
+                x: (item.target.x - item.start.x) * velocity,
+                y: (item.target.y - item.start.y) * velocity,
+            };
+        }
+        self.release(committed);
     }
 
     fn release(&mut self, committed: bool) {
-        let progress = self.progress();
+        let progress = self.held_progress.unwrap_or(0.0);
         for item in &mut self.items {
             let position = item.start.between(item.target, progress);
             if !committed && let Some((from, to, direction)) = self.gesture {
@@ -256,12 +329,36 @@ impl WorkspaceSlide {
         }
         self.held_progress = None;
         self.gesture = None;
-        self.elapsed = Duration::ZERO;
     }
 
     fn advance(&mut self, delta: Duration) -> bool {
-        self.elapsed = (self.elapsed + delta).min(WORKSPACE_SLIDE_DURATION);
-        self.elapsed < WORKSPACE_SLIDE_DURATION
+        if self.held_progress.is_some() {
+            return true;
+        }
+        let mut moving = false;
+        for item in &mut self.items {
+            let mut x = AnimatedValue {
+                current: item.start.x,
+                target: item.target.x,
+                velocity: item.velocity.x,
+            };
+            let mut y = AnimatedValue {
+                current: item.start.y,
+                target: item.target.y,
+                velocity: item.velocity.y,
+            };
+            moving |= x.advance(delta, self.spring);
+            moving |= y.advance(delta, self.spring);
+            item.start = SlideOffset {
+                x: x.current,
+                y: y.current,
+            };
+            item.velocity = SlideOffset {
+                x: x.velocity,
+                y: y.velocity,
+            };
+        }
+        moving
     }
 
     fn contains(&self, workspace: WorkspaceId) -> bool {
@@ -270,40 +367,13 @@ impl WorkspaceSlide {
 
     #[cfg(test)]
     fn offset(&self, workspace: WorkspaceId, width: f64, height: f64) -> (f64, f64) {
-        let progress = self.progress();
         let position = self
             .items
             .iter()
             .find(|item| item.workspace == workspace)
-            .map(|item| item.start.between(item.target, progress))
+            .map(|item| self.position(item, Duration::ZERO))
             .unwrap_or_default();
         (position.x * width, position.y * height)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct ClosingAnimation {
-    progress: f64,
-    close_sent: bool,
-}
-
-impl ClosingAnimation {
-    fn advance(&mut self, delta: Duration, animations_enabled: bool) -> bool {
-        if self.close_sent {
-            return false;
-        }
-
-        self.progress = if animations_enabled {
-            (self.progress + delta.as_secs_f64() / CLOSE_ANIMATION_DURATION.as_secs_f64()).min(1.0)
-        } else {
-            1.0
-        };
-        if self.progress < 1.0 {
-            return false;
-        }
-
-        self.close_sent = true;
-        true
     }
 }
 
@@ -378,7 +448,7 @@ pub struct Ferese {
     pub(crate) inactive_dim: crate::config::InactiveDimSettings,
     animations_enabled: bool,
     animation_speed: f64,
-    spring_config: SpringConfig,
+    pub(crate) spring_config: SpringConfig,
     viewport_spring_config: SpringConfig,
     pub(crate) output_profiles: Vec<OutputProfile>,
     pub(crate) autostart: Vec<DaemonConfig>,
@@ -793,6 +863,13 @@ impl Ferese {
         self.animation_speed = config.animation_speed;
         self.spring_config = config.spring_config;
         self.viewport_spring_config = config.viewport_spring_config;
+        for slide in self.workspace_slides.values_mut() {
+            slide.spring = SpringConfig {
+                position_tolerance: 0.00001,
+                velocity_tolerance: 0.00001,
+                ..self.viewport_spring_config
+            };
+        }
         self.output_profiles = config.output_profiles;
         self.autostart = config.autostart;
         if daemons_changed && let Some(runner) = self.daemons.clone() {
@@ -950,12 +1027,6 @@ fn natural_floating_rect(bounds: Rect, size: ClientSize) -> Rect {
     )
 }
 
-fn smoothstep(progress: f64) -> f64 {
-    let progress = progress.clamp(0.0, 1.0);
-
-    progress * progress * (3.0 - 2.0 * progress)
-}
-
 fn restored_scrolling_world_x(had_geometry: bool, visual_x: f64, viewport_x: f64, target_world_x: f64) -> f64 {
     if had_geometry {
         visual_x + viewport_x
@@ -1055,19 +1126,80 @@ impl ClientData for ClientState {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn slide_item_sampling_matches_advance_without_mutating_the_slide() {
+        let mut slide = WorkspaceSlide::new(None, WorkspaceId(1), WorkspaceId(2), SwipeDirection::Up);
+        slide.advance(Duration::from_millis(30));
+        for held in [None, Some(0.35)] {
+            slide.held_progress = held;
+            for delta in [Duration::ZERO, Duration::from_millis(8), Duration::from_millis(400)] {
+                let before = (slide.items[0].start, slide.items[0].velocity);
+                let mut reference = slide.clone();
+                reference.advance(delta);
+                for (item, advanced) in slide.items.iter().zip(&reference.items) {
+                    let (position, velocity) = slide.sample(item, delta);
+                    let expected = held.map_or(advanced.start, |p| advanced.start.between(advanced.target, p));
+                    assert_eq!(position, expected);
+                    assert_eq!(velocity, advanced.velocity);
+                }
+                assert_eq!((slide.items[0].start, slide.items[0].velocity), before);
+            }
+        }
+    }
+
+    #[test]
+    fn workspace_reversal_keeps_position_and_velocity() {
+        let from = WorkspaceId(1);
+        let to = WorkspaceId(2);
+        let mut slide = WorkspaceSlide::new(None, from, to, SwipeDirection::Up);
+        slide.advance(Duration::from_millis(40));
+        let before: Vec<_> = slide
+            .items
+            .iter()
+            .map(|item| (item.workspace, item.start, item.velocity))
+            .collect();
+        let reversed = WorkspaceSlide::new(Some(slide), to, from, SwipeDirection::Down);
+        for (id, position, velocity) in before {
+            let item = reversed.items.iter().find(|item| item.workspace == id).unwrap();
+            assert_eq!(item.start, position);
+            assert_eq!(item.velocity, velocity);
+            assert!(velocity.y < 0.0);
+        }
+    }
+    #[test]
+    fn viewport_limit_uses_resisted_position_and_release_velocity() {
+        let swipe = FocusSwipe {
+            workspace: WorkspaceId(1),
+            from: WindowId(1),
+            to: WindowId(1),
+            direction: Direction::Right,
+            gesture_direction: SwipeDirection::Left,
+            start: 20.0,
+            destination: 20.0,
+            progress: 2.0,
+        };
+        assert!(swipe.position() > 20.0 && swipe.position() < 84.0);
+        assert!(swipe.release_velocity(0.0, 3.0) > 0.0);
+        let mut released = AnimatedValue {
+            current: swipe.position(),
+            target: swipe.start,
+            velocity: swipe.release_velocity(0.0, 3.0),
+        };
+        let initial = released;
+        released.advance(Duration::from_micros(1), SpringConfig::default());
+        assert!((released.current - initial.current - initial.velocity * 1e-6).abs() < 1e-6);
+        released.advance(Duration::from_secs(2), SpringConfig::default());
+        assert_eq!(released.current, swipe.start);
+    }
+    #[test]
     fn sampling_slide_progress_matches_advancing_without_mutating_the_slide() {
         let slide = WorkspaceSlide::new(None, WorkspaceId(1), WorkspaceId(2), SwipeDirection::Left);
-
-        for delta in [Duration::ZERO, Duration::from_millis(8), Duration::from_secs(1)] {
+        for delta in [Duration::ZERO, Duration::from_millis(16), Duration::from_millis(100)] {
             let mut advanced = slide.clone();
             advanced.advance(delta);
-            assert_eq!(slide.progress_at(delta), advanced.progress());
-            assert_eq!(slide.elapsed, WORKSPACE_SLIDE_FIRST_FRAME);
+            for (before, after) in slide.items.iter().zip(&advanced.items) {
+                assert_eq!(slide.position(before, delta), after.start);
+            }
         }
-
-        let mut held = slide;
-        held.held_progress = Some(0.37);
-        assert_eq!(held.progress_at(Duration::from_secs(1)), 0.37);
     }
 
     #[test]
@@ -1088,15 +1220,6 @@ mod tests {
                 Duration::from_millis(milliseconds),
             );
         }
-    }
-
-    #[test]
-    fn disabling_motion_finishes_an_in_progress_close_once() {
-        let mut animation = ClosingAnimation::default();
-        assert!(!animation.advance(Duration::from_millis(35), true));
-        assert!(animation.advance(Duration::ZERO, false));
-        assert_eq!(animation.progress, 1.0);
-        assert!(!animation.advance(Duration::ZERO, false));
     }
 
     #[test]
@@ -1251,7 +1374,7 @@ mod tests {
             slide.release(committed);
             assert_eq!(slide.offset(from, 1000.0, 1000.0), (0.0, -400.0));
             assert_eq!(slide.offset(to, 1000.0, 1000.0), (0.0, 600.0));
-            assert!(!slide.advance(WORKSPACE_SLIDE_DURATION));
+            assert!(!slide.advance(SLIDE_SETTLE_TEST_BUDGET));
             let active = if committed { to } else { from };
             assert_eq!(slide.offset(active, 1000.0, 1000.0), (0.0, 0.0));
         }
@@ -1263,14 +1386,14 @@ mod tests {
         let second = WorkspaceId(2);
         let third = WorkspaceId(3);
         let mut previous = WorkspaceSlide::new(None, first, second, SwipeDirection::Up);
-        previous.advance(WORKSPACE_SLIDE_DURATION / 3);
+        previous.advance(Duration::from_millis(40));
         let mut slide = WorkspaceSlide::new(Some(previous), second, third, SwipeDirection::Up);
         slide.gesture = Some((second, third, SwipeDirection::Up));
         slide.held_progress = Some(0.25);
         let position = slide.offset(second, 1000.0, 1000.0);
         slide.release(false);
         assert_eq!(slide.offset(second, 1000.0, 1000.0), position);
-        slide.advance(WORKSPACE_SLIDE_DURATION);
+        slide.advance(SLIDE_SETTLE_TEST_BUDGET);
         assert_eq!(slide.offset(second, 1000.0, 1000.0), (0.0, 0.0));
     }
 
@@ -1289,13 +1412,13 @@ mod tests {
             let mut slide = WorkspaceSlide::new(None, from, to, direction);
             assert!(slide.contains(from));
             assert!(slide.contains(to));
-            assert!(slide.advance(WORKSPACE_SLIDE_DURATION / 2));
+            assert!(slide.advance(Duration::from_millis(50)));
             let outgoing = slide.offset(from, width, height);
             let incoming = slide.offset(to, width, height);
             assert!((incoming.0 - outgoing.0).abs() == outgoing_target.0.abs());
             assert!((incoming.1 - outgoing.1).abs() == outgoing_target.1.abs());
 
-            assert!(!slide.advance(WORKSPACE_SLIDE_DURATION));
+            assert!(!slide.advance(SLIDE_SETTLE_TEST_BUDGET));
             assert_eq!(slide.offset(from, width, height), outgoing_target);
             assert_eq!(slide.offset(to, width, height), (0.0, 0.0));
         }
@@ -1307,7 +1430,7 @@ mod tests {
         let second = WorkspaceId(2);
         let third = WorkspaceId(3);
         let mut slide = WorkspaceSlide::new(None, first, second, SwipeDirection::Up);
-        slide.advance(WORKSPACE_SLIDE_DURATION / 3);
+        slide.advance(Duration::from_millis(40));
         let first_position = slide.offset(first, 1600.0, 900.0);
         let second_position = slide.offset(second, 1600.0, 900.0);
 
@@ -1415,24 +1538,6 @@ mod tests {
     }
 
     #[test]
-    fn close_easing_is_bounded_and_symmetric() {
-        assert_eq!(smoothstep(-1.0), 0.0);
-        assert_eq!(smoothstep(0.5), 0.5);
-        assert_eq!(smoothstep(2.0), 1.0);
-    }
-
-    #[test]
-    fn close_animation_delays_the_protocol_close_until_it_finishes() {
-        let mut animation = ClosingAnimation::default();
-
-        assert!(!animation.advance(Duration::from_millis(70), true));
-        assert_eq!(animation.progress, 0.5);
-        assert!(animation.advance(Duration::from_millis(70), true));
-        assert!(animation.close_sent);
-        assert!(!animation.advance(Duration::from_secs(1), true));
-    }
-
-    #[test]
     fn coupled_right_column_width_keeps_its_right_edge_stable() {
         let spring = SpringConfig {
             mass: 1.0,
@@ -1440,6 +1545,7 @@ mod tests {
             damping: 2.0 * 320.0_f64.sqrt(),
             position_tolerance: 0.1,
             velocity_tolerance: 0.1,
+            ..SpringConfig::default()
         };
         let mut width = AnimatedValue::new(980.0);
         let mut viewport = AnimatedValue::new(495.0);

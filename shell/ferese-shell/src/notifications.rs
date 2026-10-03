@@ -192,11 +192,11 @@ pub struct Service {
 }
 
 impl Service {
-    fn start(config: &ferese_core::notifications::NotificationConfig) -> Self {
+    fn start(config: &ferese_config::notifications::NotificationConfig) -> Self {
         Self::connect(config, None)
     }
 
-    fn connect(config: &ferese_core::notifications::NotificationConfig, address: Option<String>) -> Self {
+    fn connect(config: &ferese_config::notifications::NotificationConfig, address: Option<String>) -> Self {
         let timeout = Arc::new(std::sync::atomic::AtomicU32::new(config.timeout_ms));
         let worker_timeout = timeout.clone();
         let (sender, events) = tokio::sync::mpsc::channel(256);
@@ -262,14 +262,14 @@ impl Service {
 
 struct Toast {
     id: u32,
-    born: Instant,
+    motion: super::motion::PopupMotion,
     closing: Option<Instant>,
     remaining: Option<Duration>,
     hovered: bool,
 }
 
 pub struct Center {
-    config: ferese_core::notifications::NotificationConfig,
+    config: ferese_config::notifications::NotificationConfig,
     service: Service,
     pub ready: bool,
     pub dnd: bool,
@@ -282,7 +282,7 @@ pub struct Center {
 }
 
 impl Center {
-    pub fn new(config: ferese_core::notifications::NotificationConfig) -> Self {
+    pub fn new(config: ferese_config::notifications::NotificationConfig) -> Self {
         Self {
             service: Service::start(&config),
             ready: false,
@@ -304,7 +304,7 @@ impl Center {
             .try_send(Command::Local(title.into(), body.into()));
     }
 
-    pub fn configure(&mut self, config: ferese_core::notifications::NotificationConfig) {
+    pub fn configure(&mut self, config: ferese_config::notifications::NotificationConfig) {
         if self.config.do_not_disturb != config.do_not_disturb {
             self.dnd = config.do_not_disturb;
         }
@@ -320,35 +320,49 @@ impl Center {
         }
     }
 
+    pub fn update_motion_settings(&mut self, settings: super::motion::Settings) {
+        for toast in &mut self.toasts {
+            toast.motion.update_settings(settings);
+        }
+    }
+
     pub fn unread(&self) -> u32 {
         self.entries.iter().filter(|notice| notice.unread).count() as u32
     }
 
+    #[cfg(test)]
     pub fn visible(&self) -> impl Iterator<Item = (&Notice, f32)> {
-        let duration = super::motion::notification_duration();
+        self.visible_at(Instant::now())
+    }
+
+    fn visible_at(&self, now: Instant) -> impl Iterator<Item = (&Notice, f32)> {
         self.toasts.iter().rev().filter_map(move |toast| {
             let notice = self.entries.iter().find(|notice| notice.id == toast.id)?;
-            let p = if duration.is_zero() {
-                if toast.closing.is_some() { 0.0 } else { 1.0 }
-            } else {
-                toast.closing.map_or_else(
-                    || (toast.born.elapsed().as_secs_f32() / duration.as_secs_f32()).min(1.0),
-                    |closing| (1.0 - closing.elapsed().as_secs_f32() / duration.as_secs_f32()).max(0.0),
-                )
-            };
-            Some((notice, p * p * (3.0 - 2.0 * p)))
+            Some((notice, toast.motion.progress_at(now).clamp(0.0, 1.0)))
         })
     }
 
-    pub fn animating(&self) -> bool {
+    pub fn frame_active(&self, now: Instant) -> bool {
+        self.toasts.iter().any(|toast| toast.motion.frame_active(now))
+    }
+
+    pub fn has_finished_closes(&self, now: Instant) -> bool {
         self.toasts
             .iter()
-            .any(|toast| toast.closing.is_some() || toast.born.elapsed() < super::motion::notification_duration())
+            .any(|toast| toast.closing.is_some() && !toast.motion.animating_at(now))
+    }
+
+    pub fn motion_revision(&self) -> Option<Instant> {
+        self.toasts.iter().filter_map(|toast| toast.motion.revision()).max()
     }
 
     pub fn popup_groups(&self) -> Vec<(&Notice, f32, usize)> {
+        self.popup_groups_at(Instant::now())
+    }
+
+    pub fn popup_groups_at(&self, now: Instant) -> Vec<(&Notice, f32, usize)> {
         let mut groups: Vec<(&Notice, f32, usize)> = Vec::new();
-        for (notice, opacity) in self.visible() {
+        for (notice, opacity) in self.visible_at(now) {
             if let Some(group) = groups.iter_mut().find(|(head, _, _)| head.app == notice.app) {
                 group.2 += 1;
             } else {
@@ -432,8 +446,12 @@ impl Center {
                 self.command(Command::Close(id, revision, reason));
             }
         }
-        if let Some(toast) = self.toasts.iter_mut().find(|toast| toast.id == id) {
-            toast.closing.get_or_insert_with(Instant::now);
+        if let Some(toast) = self.toasts.iter_mut().find(|toast| toast.id == id)
+            && toast.closing.is_none()
+        {
+            let now = Instant::now();
+            toast.closing = Some(now);
+            toast.motion.retarget(0.0, now);
         }
     }
 
@@ -499,7 +517,11 @@ impl Center {
         if show {
             self.toasts.push_back(Toast {
                 id: notice.id,
-                born: Instant::now(),
+                motion: {
+                    let mut motion = super::motion::PopupMotion::new(super::motion::settings());
+                    motion.begin(Instant::now());
+                    motion
+                },
                 closing: None,
                 remaining: notice.timeout,
                 hovered: group_hovered,
@@ -546,10 +568,6 @@ impl Center {
     }
 
     pub fn tick_subscription(&self) -> cosmic::iced::Subscription<()> {
-        if self.animating() {
-            return cosmic::iced::time::every(Duration::from_millis(16)).map(|_| ());
-        }
-
         fn deadline_stream(deadline: &Instant) -> impl cosmic::iced::futures::Stream<Item = ()> + use<> {
             let deadline = *deadline;
             cosmic::iced::futures::stream::once(async move {
@@ -604,11 +622,8 @@ impl Center {
         for id in expired {
             self.close(id, 1);
         }
-        self.toasts.retain(|toast| {
-            toast
-                .closing
-                .is_none_or(|closing| now.duration_since(closing) < super::motion::notification_duration())
-        });
+        self.toasts
+            .retain(|toast| toast.closing.is_none() || (!self.history_open && toast.motion.animating()));
         let visible: HashSet<_> = self.toasts.iter().map(|toast| toast.id).collect();
         self.entries
             .retain(|notice| !notice.transient || notice.live || visible.contains(&notice.id));
@@ -617,7 +632,7 @@ impl Center {
 
 #[cfg(test)]
 mod tests {
-    use ferese_core::notifications::NotificationConfig;
+    use ferese_config::notifications::NotificationConfig;
 
     use super::*;
 
@@ -660,6 +675,36 @@ mod tests {
             unread: true,
             received_at: Instant::now(),
         }
+    }
+
+    #[test]
+    fn hidden_toast_closes_do_not_wait_for_unavailable_frame_callbacks() {
+        let (mut center, _) = fixture();
+        center.receive(notice(1));
+        center.toasts.front_mut().unwrap().motion.begin(Instant::now());
+        center.history_open = true;
+        center.close(1, 2);
+        center.tick();
+        assert!(center.toasts.is_empty());
+        assert!(center.expiry_deadline().is_none());
+        assert!(!center.frame_active(Instant::now()));
+        assert_eq!(center.entries.len(), 1, "history retains the notice");
+    }
+
+    #[test]
+    fn closing_toast_can_finish_while_another_toast_is_still_moving() {
+        let (mut center, _) = fixture();
+        center.receive(notice(1));
+        let old = Instant::now() - Duration::from_secs(3);
+        center.toasts.front_mut().unwrap().motion.retarget(0.0, old);
+        center.toasts.front_mut().unwrap().closing = Some(old);
+        center.receive(notice(2));
+        let now = Instant::now();
+        assert!(center.frame_active(now));
+        assert!(center.has_finished_closes(now));
+        center.tick();
+        assert!(!center.has_finished_closes(Instant::now()));
+        assert_eq!(center.toasts.len(), 1);
     }
 
     #[test]

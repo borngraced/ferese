@@ -52,7 +52,7 @@ pub(crate) struct Selection {
 
 #[derive(Clone, Debug)]
 enum Message {
-    ThemeChanged(Box<ferese_config::theme::Snapshot>),
+    ThemeChanged(Box<ferese_ipc::theme::Snapshot>),
     WindowOpened(cosmic::iced::window::Id),
     Attached(crate::parent::Attachment),
     Select(usize),
@@ -63,7 +63,7 @@ enum Message {
 
 struct Picker {
     core: Core,
-    material: Option<ferese_theme::material::ModalMaterial>,
+    material: Option<ferese_theme_client::material::ModalMaterial>,
     parent: Option<std::sync::Arc<crate::parent::Parent>>,
     prompt: Prompt,
     selected: Vec<usize>,
@@ -153,7 +153,7 @@ impl cosmic::Application for Picker {
 
     fn subscription(&self) -> cosmic::iced::Subscription<Message> {
         cosmic::iced::Subscription::batch([
-            ferese_theme::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
+            ferese_theme_client::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
             cosmic::iced::event::listen_with(|event, _, id| match event {
                 cosmic::iced::Event::Window(cosmic::iced::window::Event::Opened { .. }) => {
                     Some(Message::WindowOpened(id))
@@ -169,7 +169,7 @@ impl cosmic::Application for Picker {
                 self.palette = ferese_theme::Palette::from_resolved(&snapshot.presented).flat();
                 self.font = ferese_theme::font(Some(&snapshot.presented.tokens.typography.font_family));
                 self.background = cosmic::iced::Color {
-                    a: ferese_theme::service::opacity(&snapshot.presented),
+                    a: ferese_theme::material_opacity(&snapshot.presented),
                     ..self.palette.sidebar
                 };
                 return cosmic::command::set_theme(self.palette.native_theme());
@@ -178,7 +178,7 @@ impl cosmic::Application for Picker {
                 let parent = self.prompt.parent.clone();
                 return cosmic::iced::window::run(id, move |window| {
                     let parent = crate::parent::Parent::attach(window, &parent)?.map(std::sync::Arc::new);
-                    Ok((parent, ferese_theme::material::ModalMaterial::attach(window)))
+                    Ok((parent, ferese_theme_client::material::ModalMaterial::attach(window)))
                 })
                 .map(|result| cosmic::Action::App(Message::Attached(result)));
             }
@@ -387,14 +387,14 @@ pub(crate) fn appearance() -> (
     cosmic::iced::Color,
     ferese_theme::Palette,
 ) {
-    let snapshot = ferese_theme::service::current();
+    let snapshot = ferese_theme_client::service::current();
     let palette = ferese_theme::Palette::from_resolved(&snapshot.presented).flat();
     let family = &snapshot.presented.tokens.typography.font_family;
     (
         palette.native_theme(),
         ferese_theme::font(Some(family)),
         cosmic::iced::Color {
-            a: ferese_theme::service::opacity(&snapshot.presented),
+            a: ferese_theme::material_opacity(&snapshot.presented),
             ..palette.sidebar
         },
         palette,

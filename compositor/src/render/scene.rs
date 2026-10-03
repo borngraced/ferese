@@ -152,8 +152,8 @@ fn scene_elements(
             return None;
         }
         let sample = frame.windows.get(&id)?;
-        let visual = scaled_visual_rect(sample.rect, sample.close_scale);
-        let close_alpha = sample.close_alpha;
+        let visual = sample.presentation.bounds.current;
+        let close_alpha = sample.presentation.alpha();
         let decoration_progress = sample.geometry.decorations.clamp(0.0, 1.0);
 
         Some((window.clone(), id, sample, visual, decoration_progress, close_alpha))
@@ -173,7 +173,17 @@ fn scene_elements(
             .collect::<Vec<_>>()
     };
 
+    let mut closing = super::closing::grouped_elements(
+        state,
+        renderer,
+        output,
+        windows.iter().map(|(_, id, ..)| *id),
+        frame.delta,
+    );
     for (window, id, sample, visual, decoration_progress, close_alpha) in windows {
+        if let Some(group) = closing.remove(&Some(id)) {
+            elements.extend(group);
+        }
         let constrain = rounded_visual_rect(visual, output_geometry.loc);
         let material_surface = window
             .toplevel()
@@ -191,9 +201,8 @@ fn scene_elements(
         let corners = RoundedRect::new(visual, output_geometry.loc, scale, window_radius).with_shape(shape);
         let corner_shape_changed = state.render.prepare_window_corners(id, shape);
         let rounded_clip_program = corner_program(&mut state.render, renderer, shape);
-        let pixels = corners.rect;
         // Only overview/close intentionally scale the complete application.
-        let scale_content = frame.overview.is_presenting() || sample.close_scale != 1.0;
+        let scale_content = sample.presentation.scale_content;
         let behavior = resize_content_behavior(scale_content);
 
         let dim = sample.dim;
@@ -217,7 +226,7 @@ fn scene_elements(
             let shadow_blur = state.theme_settings.shadow_blur;
             let shadow_opacity = state.theme_settings.shadow_opacity;
             let shadow_color = state.theme_settings.shadow_color.0;
-            let focus = sample.focus;
+            let focus = sample.presentation.focus();
             let border_width = state.theme_settings.border_width
                 + (state.theme_settings.focus_ring_width - state.theme_settings.border_width) * focus;
             let border_color = state.theme_settings.border_color.0;
@@ -241,6 +250,7 @@ fn scene_elements(
             ) {
                 elements.push(border.into());
             }
+            let (offset_factor, blur_factor, opacity_factor) = sample.presentation.shadow_factors();
             let shadow = window_shadow_element(
                 &mut state.render,
                 renderer,
@@ -248,44 +258,29 @@ fn scene_elements(
                 constrain,
                 corners,
                 scale,
-                shadow_offset_y,
-                shadow_blur,
-                shadow_opacity * f64::from(close_alpha) * decoration_progress,
+                shadow_offset_y * offset_factor,
+                shadow_blur * blur_factor,
+                shadow_opacity * opacity_factor * f64::from(close_alpha) * decoration_progress,
                 shadow_color,
                 output,
                 &programs,
             );
-            if !scale_content
-                && let Some(snapshot) = state.render.snapshot(&id)
+            if let Some(snapshot) = state.render.snapshot(&id)
                 && snapshot.context == renderer.context_id().erased()
                 && (snapshot.scale - scale).abs() < 0.001
+                && let Some(element) = super::window_content::snapshot_element(
+                    snapshot,
+                    sample.presentation,
+                    corners,
+                    scale,
+                    output,
+                    &programs,
+                    crate::presentation::handoff_alpha(snapshot.elapsed),
+                )
             {
-                let size = snapshot.texture.size();
-                let visible = Rectangle::new(pixels.loc, (size.w, size.h).into()).intersection(pixels);
-                if let Some(visible) = visible {
-                    let clip = framebuffer_clip_rect(
-                        pixels,
-                        output.current_mode().unwrap().size,
-                        output.current_transform().invert(),
-                    );
-                    elements.push(
-                        NativeTextureElement {
-                            id: snapshot.id.clone(),
-                            commit: snapshot.commit,
-                            texture: snapshot.texture.clone(),
-                            geometry: visible,
-                            source: Rectangle::from_size(Size::from((
-                                f64::from(visible.size.w),
-                                f64::from(visible.size.h),
-                            ))),
-                            alpha: crate::presentation::handoff_alpha(snapshot.elapsed) * close_alpha,
-                            program: Some(programs.texture.clone()),
-                            uniforms: vec![Uniform::new("clip_rect", clip), Uniform::new("radius", corners.radius)],
-                        }
-                        .into(),
-                    );
-                }
+                elements.push(element.into());
             }
+
             elements.extend(rounded_window_elements(
                 renderer,
                 &window,
@@ -296,6 +291,7 @@ fn scene_elements(
                 output,
                 programs.clone(),
                 behavior,
+                sample.presentation.native_size,
             ));
             let source = window.geometry().size;
             if material_surface.is_none()
@@ -350,6 +346,9 @@ fn scene_elements(
             ));
         }
     }
+    if let Some(group) = closing.remove(&None) {
+        elements.extend(group);
+    }
     elements.extend(layer_elements(
         state,
         renderer,
@@ -402,7 +401,14 @@ pub(super) fn layer_elements(
             .collect::<Vec<_>>()
     };
 
-    state.render.surfaces.retain(|surface, _| surface.is_alive());
+    state.render.surfaces.retain(|surface, _| {
+        surface.is_alive()
+            || state
+                .render
+                .closing
+                .iter()
+                .any(|window| window.material.as_ref().is_some_and(|(key, ..)| key == surface))
+    });
 
     let mut elements = Vec::new();
     for (geometry, layer) in layers {

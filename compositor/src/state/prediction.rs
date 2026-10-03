@@ -7,18 +7,102 @@ pub(crate) struct FrameScene {
     pub overview: crate::overview::OverviewMotion,
     // Plane selection and scheduling reuse the activity sampled with this scene.
     pub animating: bool,
+    pub delta: Duration,
 }
 
 pub(crate) struct WindowFrame {
     pub geometry: WindowGeometry,
-    pub rect: Rect,
-    pub close_scale: f64,
-    pub close_alpha: f32,
-    pub focus: f64,
+    pub presentation: crate::presentation::WindowPresentation,
     pub dim: f64,
 }
 
 impl Ferese {
+    pub(crate) fn current_window_presentation(&self, id: WindowId) -> Option<crate::presentation::WindowPresentation> {
+        let geometry = *self.windows.geometry(&id)?;
+        Some(self.compose_window_presentation(
+            id,
+            geometry,
+            self.overview.motion(),
+            self.workspace_slide_offset(id),
+            Duration::ZERO,
+        ))
+    }
+
+    fn compose_window_presentation(
+        &self,
+        id: WindowId,
+        geometry: WindowGeometry,
+        overview: &crate::overview::OverviewMotion,
+        offset: (f64, f64),
+        delta: Duration,
+    ) -> crate::presentation::WindowPresentation {
+        let record = self.windows.record(id).expect("presentation has a window record");
+        let mut bounds = overview.presented_bounds(id, geometry.visual);
+        if !overview.is_presenting() {
+            bounds.current.x += offset.0;
+            bounds.current.y += offset.1;
+            if let Some(workspace) = self.workspaces.workspace_for_window(id)
+                && let Some(output_id) = self.output_workspaces.output_for_workspace(workspace)
+                && let Some(slide) = self.workspace_slides.get(&output_id)
+                && let Some(item) = slide.items.iter().find(|item| item.workspace == workspace)
+                && let Some(area) = self
+                    .outputs_by_id
+                    .get(&output_id)
+                    .and_then(|output| self.space.output_geometry(output))
+            {
+                let (_, velocity) = slide.sample(item, delta);
+                bounds.velocity.x += velocity.x * f64::from(area.size.w);
+                bounds.velocity.y += velocity.y * f64::from(area.size.h);
+            }
+        }
+        let focused = if self.overview.is_active() {
+            self.overview_selected(id)
+        } else {
+            self.focused_window == Some(id)
+        };
+        let mut opacity = record.opening.unwrap_or_else(|| AnimatedValue::new(1.0));
+        let mut emphasis = record
+            .focus
+            .unwrap_or_else(|| AnimatedValue::new(if focused { 1.0 } else { 0.0 }));
+        let mut shadow = record.shadow.unwrap_or(emphasis);
+        if !self.animations_enabled {
+            opacity.snap();
+            emphasis.snap();
+            shadow.snap();
+        } else if !delta.is_zero() {
+            opacity.advance(
+                delta,
+                SpringConfig {
+                    position_tolerance: 0.00001,
+                    velocity_tolerance: 0.00001,
+                    ..self.spring_config
+                },
+            );
+            emphasis.advance(delta, crate::presentation::emphasis_spring(self.spring_config));
+            shadow.advance(delta, crate::presentation::shadow_spring(self.spring_config));
+        }
+        let presence_scale = 0.97 + 0.03 * opacity.current;
+        let native_size =
+            (!overview.is_presenting() && presence_scale != 1.0).then(|| ClientSize::from_rect(bounds.current));
+        bounds.velocity = crate::presentation::scaled_visual_velocity(
+            bounds.current,
+            bounds.velocity,
+            presence_scale,
+            0.03 * opacity.velocity,
+        );
+        bounds.current = crate::presentation::scaled_visual_rect(bounds.current, presence_scale);
+        bounds.target = bounds.current;
+        crate::presentation::WindowPresentation {
+            id,
+            bounds,
+            opacity,
+            emphasis,
+            shadow,
+            scale_content: overview.is_presenting(),
+            native_size,
+        }
+    }
+
     fn output_window_records<'a>(
         &'a self,
         output: &'a Output,
@@ -56,6 +140,10 @@ impl Ferese {
                     .focus
                     .as_ref()
                     .is_some_and(|focus| focus.needs_update(if selected == Some(id) { 1.0 } else { 0.0 }))
+                    || record
+                        .shadow
+                        .as_ref()
+                        .is_some_and(|shadow| shadow.needs_update(if selected == Some(id) { 1.0 } else { 0.0 }))
                     || record.dimming.as_ref().is_some_and(|dim| {
                         dim.needs_update(crate::dimming::target(
                             self.inactive_dim,
@@ -68,7 +156,12 @@ impl Ferese {
     }
 
     pub(crate) fn output_has_animations(&self, output: &Output) -> bool {
-        if self.overview.is_animating(self.spring_config)
+        if self
+            .render
+            .closing
+            .iter()
+            .any(|window| Some(window.output) == self.output_id(output))
+            || self.overview.is_animating(self.spring_config)
             || self
                 .dismissing_popups
                 .iter()
@@ -80,7 +173,7 @@ impl Ferese {
         if self
             .output_id(output)
             .and_then(|id| self.workspace_slides.get(&id))
-            .is_some_and(|slide| slide.held_progress.is_none() && slide.elapsed < WORKSPACE_SLIDE_DURATION)
+            .is_some_and(|slide| slide.held_progress.is_none() && slide.moving())
         {
             return true;
         }
@@ -95,9 +188,10 @@ impl Ferese {
             }
 
             if record.resize.is_some()
+                || record.opening.is_some()
                 || self.render.snapshot(&id).is_some()
-                || record.closing.as_ref().is_some_and(|close| !close.close_sent)
                 || record.focus.as_ref().is_some_and(|focus| focus.is_animating())
+                || record.shadow.as_ref().is_some_and(|shadow| shadow.is_animating())
                 || record.dimming.as_ref().is_some_and(|dim| dim.is_animating())
             {
                 return true;
@@ -117,15 +211,10 @@ impl Ferese {
                     .focus_swipe
                     .as_ref()
                     .is_some_and(|swipe| swipe.workspace == workspace);
-                !held
-                    && viewport.advance_with_policy(
-                        Duration::ZERO,
-                        self.viewport_spring_config,
-                        CrossingPolicy::NoCrossing,
-                    )
+                !held && viewport.advance(Duration::ZERO, self.viewport_spring_config)
             }) || record.coupled_width.as_ref().is_some_and(|(_, width)| {
                 let mut width = *width;
-                width.advance_with_policy(Duration::ZERO, self.viewport_spring_config, CrossingPolicy::NoCrossing)
+                width.advance(Duration::ZERO, self.viewport_spring_config)
             })
         })
     }
@@ -149,7 +238,10 @@ impl Ferese {
         for (id, record, blocked) in self.output_window_records(output, !delta.is_zero()) {
             let Some(original) = record.geometry else { continue };
 
-            if !self.window_belongs_to_output(id, output) {
+            // The workspace strip also draws inactive workspaces on this output.
+            // Keep their samples through the overview exit transition; the main
+            // grid still filters by window_belongs_to_output in the render path.
+            if !overview.is_presenting() && !self.window_belongs_to_output(id, output) {
                 continue;
             }
 
@@ -176,50 +268,22 @@ impl Ferese {
                 )
             };
 
-            let mut rect = overview.presented_rect(id, geometry.visual.current);
-            if !overview.is_presenting() {
-                let (x, y) = self
-                    .workspaces
-                    .workspace_for_window(id)
-                    .and_then(|workspace| slide_offsets.get(&workspace).copied())
-                    .unwrap_or_default();
-                rect.x += x;
-                rect.y += y;
+            let offset = self
+                .workspaces
+                .workspace_for_window(id)
+                .and_then(|workspace| slide_offsets.get(&workspace).copied())
+                .unwrap_or_default();
+            let presentation = self.compose_window_presentation(id, geometry, &overview, offset, delta);
+            let mut dim = record.dimming.clone();
+            if let Some(dim) = &mut dim {
+                dim.predict(delta, self.inactive_dim.duration_ms);
             }
-
-            let mut close = record.closing.as_ref().copied().unwrap_or_default();
-            if record.closing.is_some() && !delta.is_zero() {
-                close.advance(delta, true);
-            }
-
-            let eased = smoothstep(close.progress);
-            let focused = if self.overview.is_active() {
-                self.overview_selected(id)
-            } else {
-                self.focused_window == Some(id)
-            };
-
-            let sample_dim = |motion: Option<&DimAnimation>, fallback| {
-                let Some(mut motion) = motion.cloned() else {
-                    return fallback;
-                };
-
-                if !delta.is_zero() {
-                    motion.predict(delta, self.inactive_dim.duration_ms);
-                }
-
-                motion.current
-            };
-
             windows.insert(
                 id,
                 WindowFrame {
                     geometry,
-                    rect,
-                    close_scale: 1.0 - eased * 0.02,
-                    close_alpha: (1.0 - eased) as f32,
-                    focus: sample_dim(record.focus.as_ref(), if focused { 1.0 } else { 0.0 }),
-                    dim: sample_dim(record.dimming.as_ref(), 0.0),
+                    presentation,
+                    dim: dim.map_or(0.0, |dim| dim.current),
                 },
             );
         }
@@ -228,6 +292,7 @@ impl Ferese {
             windows,
             overview,
             animating,
+            delta,
         }
     }
 }
@@ -252,9 +317,9 @@ fn predict_geometry(
     if let Some((mut world, mut viewport, held)) = world
         && !zooming
     {
-        world.advance_with_policy(delta, spring, CrossingPolicy::NoCrossing);
+        world.advance(delta, spring);
         if !held {
-            viewport.advance_with_policy(delta, viewport_spring, CrossingPolicy::NoCrossing);
+            viewport.advance(delta, viewport_spring);
         }
 
         predicted.visual.current.x = world.current - viewport.current;
@@ -262,7 +327,7 @@ fn predict_geometry(
     }
 
     if let Some(mut width) = width {
-        width.advance_with_policy(delta, viewport_spring, CrossingPolicy::NoCrossing);
+        width.advance(delta, viewport_spring);
         predicted.visual.current.width = width.current;
         predicted.visual.velocity.width = width.velocity;
     }
@@ -412,7 +477,9 @@ mod tests {
         assert_eq!(offsets[&to].0, 1440.0);
         assert_eq!(
             state.sample_frame(&output, Duration::from_millis(8)).windows[&id]
-                .rect
+                .presentation
+                .bounds
+                .current
                 .x,
             state.sample_frame(&output, Duration::from_millis(8)).windows[&id]
                 .geometry
@@ -454,7 +521,7 @@ mod tests {
         state.focused_window = Some(id);
         state
             .windows
-            .update(id, |record| record.focus = Some(crate::dimming::DimAnimation::new(1.0)));
+            .update(id, |record| record.focus = Some(AnimatedValue::new(1.0)));
         state.focused_window = Some(other_id);
         assert!(state.output_has_pending_visual_changes(&output));
         state.animations_enabled = false;
@@ -468,6 +535,58 @@ mod tests {
         assert!(
             state.output_has_animations(&output),
             "remaining output keeps its active animation"
+        );
+
+        let inactive = state.workspaces.create_workspace();
+        state.output_workspaces.assign_workspace(output_id, inactive).unwrap();
+        let preview_id = WindowId(3);
+        state
+            .workspaces
+            .insert_floating_window(preview_id, inactive, settled.visual.current, false)
+            .unwrap();
+        state.windows.records.insert(
+            preview_id,
+            super::super::window_registry::WindowRecord {
+                geometry: Some(settled),
+                ..Default::default()
+            },
+        );
+        assert!(
+            !state
+                .sample_frame(&output, Duration::ZERO)
+                .windows
+                .contains_key(&preview_id)
+        );
+
+        state.set_overview_active(true);
+        let frame = state.sample_frame(&output, Duration::ZERO);
+        assert!(
+            frame.windows.contains_key(&preview_id),
+            "inactive workspace needs a thumbnail sample"
+        );
+        assert!(
+            !state.window_belongs_to_output(preview_id, &output),
+            "thumbnail must stay out of the main grid"
+        );
+        for card in state.overview_workspace_cards_for_frame(&output, Some(&frame)) {
+            for (id, _) in card.windows {
+                assert!(
+                    frame.windows.contains_key(&id),
+                    "workspace card has no presentation for {id:?}"
+                );
+            }
+        }
+
+        state.set_overview_active(false);
+        assert!(
+            state.overview.is_presenting(),
+            "exit transition keeps the strip visible"
+        );
+        assert!(
+            state
+                .sample_frame(&output, Duration::ZERO)
+                .windows
+                .contains_key(&preview_id)
         );
     }
 

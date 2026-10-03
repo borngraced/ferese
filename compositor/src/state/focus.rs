@@ -10,17 +10,13 @@ impl Ferese {
                 (window.toplevel().is_some()
                     && self.window_content_ready(window)
                     && self.windows.geometry(id).is_some()
-                    && self.output_workspaces.focused_output().is_some()
-                    && self.windows.record(*id).is_none_or(|record| record.closing.is_none()))
+                    && self.output_workspaces.focused_output().is_some())
                 .then_some(*id)
             })
             .collect()
     }
 
     pub(crate) fn focus_preview_output(&self, id: WindowId) -> Option<OutputId> {
-        if self.windows.record(id).is_some_and(|record| record.closing.is_some()) {
-            return None;
-        }
         self.workspaces
             .workspace_for_window(id)
             .and_then(|workspace| self.output_workspaces.output_for_workspace(workspace))

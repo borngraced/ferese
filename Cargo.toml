@@ -6,6 +6,8 @@ members = [
     "crates/ferese-core",
     "crates/ferese-config",
     "crates/ferese-theme",
+    "crates/ferese-theme-client",
+    "crates/ferese-theme-model",
     "crates/ferese-ipc",
     "crates/ferese-layout",
     "crates/ferese-protocols",

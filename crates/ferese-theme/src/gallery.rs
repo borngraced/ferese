@@ -2,8 +2,8 @@ use cosmic::iced::advanced::widget::{Id, Operation, Tree, tree};
 use cosmic::iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, renderer};
 use cosmic::iced::{Event, Length, Rectangle, Size, keyboard};
 use cosmic::{Element, Renderer, Theme};
-use ferese_config::families::{Family, Palette};
-use ferese_config::theme::Appearance;
+use ferese_theme_model::Appearance;
+use ferese_theme_model::families::{Family, Palette};
 use iced_accessibility::{A11yTree, accesskit};
 
 pub struct TileOptions {
@@ -184,9 +184,9 @@ pub fn svg(family: &Family, variant: Option<Appearance>, active: Option<Appearan
             .or(family.dark.as_ref())
             .or(family.light.as_ref())
             .unwrap();
-        let foreground = ferese_config::theme::hex(ferese_config::theme::readable(
+        let foreground = ferese_theme_model::hex(ferese_theme_model::readable(
             [1.; 4],
-            ferese_config::theme::rgba(&p.accent).unwrap(),
+            ferese_theme_model::rgba(&p.accent).unwrap(),
             4.5,
         ));
         result.push_str(&format!(r#"<circle cx="183" cy="16" r="10" fill="{}"/><path d="M178 16l3 3 6-6" fill="none" stroke="{foreground}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>"#, p.accent));

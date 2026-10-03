@@ -1675,12 +1675,14 @@ name = "ferese-animation"
 version = "0.1.0"
 dependencies = [
  "ferese-layout",
+ "serde",
 ]
 
 [[package]]
 name = "ferese-config"
 version = "0.1.0"
 dependencies = [
+ "ferese-theme-model",
  "jiff",
  "kdl",
  "serde",
@@ -1693,7 +1695,6 @@ name = "ferese-core"
 version = "0.1.0"
 dependencies = [
  "ferese-layout",
- "jiff",
  "serde",
 ]
 
@@ -1701,7 +1702,7 @@ dependencies = [
 name = "ferese-ipc"
 version = "0.1.0"
 dependencies = [
- "ferese-config",
+ "ferese-theme-model",
  "serde",
  "serde_json",
 ]
@@ -1717,6 +1718,7 @@ dependencies = [
  "ferese-config",
  "ferese-ipc",
  "ferese-theme",
+ "ferese-theme-client",
  "image",
  "jiff",
  "libc",
@@ -1734,7 +1736,9 @@ name = "ferese-polkit-agent"
 version = "0.1.0"
 dependencies = [
  "ferese-config",
+ "ferese-ipc",
  "ferese-theme",
+ "ferese-theme-client",
  "glib",
  "libc",
  "libcosmic",
@@ -1765,6 +1769,7 @@ dependencies = [
  "ferese-config",
  "ferese-ipc",
  "ferese-theme",
+ "ferese-theme-client",
  "image",
  "libcosmic",
  "notify",
@@ -1780,11 +1785,12 @@ dependencies = [
 name = "ferese-shell"
 version = "0.1.0"
 dependencies = [
+ "ferese-animation",
  "ferese-config",
- "ferese-core",
  "ferese-ipc",
  "ferese-protocols",
  "ferese-theme",
+ "ferese-theme-client",
  "iced_accessibility",
  "jiff",
  "libc",
@@ -1803,20 +1809,38 @@ name = "ferese-theme"
 version = "0.1.0"
 dependencies = [
  "ferese-config",
- "ferese-ipc",
- "ferese-protocols",
+ "ferese-theme-model",
  "iced_accessibility",
  "jiff",
  "libcosmic",
+]
+
+[[package]]
+name = "ferese-theme-client"
+version = "0.1.0"
+dependencies = [
+ "ferese-config",
+ "ferese-ipc",
+ "ferese-protocols",
+ "libcosmic",
  "serde_json",
+ "tempfile",
  "tokio",
  "wayland-client",
+]
+
+[[package]]
+name = "ferese-theme-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
 name = "feresectl"
 version = "0.1.0"
 dependencies = [
+ "ferese-config",
  "ferese-ipc",
  "libc",
  "serde_json",
@@ -7449,6 +7473,7 @@ dependencies = [
  "ferese-ipc",
  "ferese-protocols",
  "ferese-theme",
+ "ferese-theme-client",
  "futures-util",
  "gstreamer",
  "image",

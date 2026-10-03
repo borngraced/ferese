@@ -69,6 +69,7 @@ pub(super) struct SystemModal {
     error: Option<String>,
     inhibitors: Option<compositor_ipc::Approval>,
     keyboard_nav: bool,
+    pub(super) focus_visible: bool,
 }
 
 impl SystemModal {
@@ -236,6 +237,7 @@ impl FereseShell {
             error: None,
             inhibitors: mode.is_none().then(compositor_ipc::Approval::default),
             keyboard_nav,
+            focus_visible: false,
         });
         Task::batch(tasks)
     }
@@ -289,18 +291,6 @@ impl FereseShell {
         }
     }
 
-    pub(super) fn update_power_materials(&self) {
-        if let Some(modal) = &self.system_modal {
-            for entry in &modal.surfaces {
-                if let Some(effects) = &entry.effects {
-                    let regions = entry.regions.lock().unwrap().clone();
-                    let _ = effects.set_material_regions(&regions, ferese_surface_effects_v1::Role::Modal);
-                    let _ = effects.set_opacity(modal.motion.progress());
-                }
-            }
-        }
-    }
-
     pub(super) fn close_system_modal(&mut self) -> Task<Message> {
         if self.system_modal.as_ref().is_some_and(SystemModal::is_display_mode) {
             if self.display_mode.busy {
@@ -337,7 +327,6 @@ impl FereseShell {
         {
             return self.destroy_system_modal(false);
         }
-        self.update_power_materials();
         Task::none()
     }
 
@@ -387,10 +376,17 @@ impl FereseShell {
         }
     }
 
-    pub(super) fn navigate_system_modal(&self, backwards: bool) -> Task<Message> {
-        if self.system_modal.as_ref().is_none_or(|modal| modal.motion.closing()) {
+    pub(super) fn navigate_system_modal(&mut self, backwards: bool) -> Task<Message> {
+        let Some(modal) = &mut self.system_modal else {
+            return Task::none();
+        };
+
+        if modal.motion.closing() {
             return Task::none();
         }
+
+        modal.focus_visible = true;
+
         cosmic::iced::advanced::widget::operate(modal_focus_operation(backwards))
     }
 
@@ -468,7 +464,35 @@ impl FereseShell {
         let Some(surface) = modal.surfaces.iter().find(|surface| surface.id == id) else {
             return text("").into();
         };
-        let progress = modal.motion.progress();
+        motion::frame_driven(
+            modal.motion.revision(),
+            move |now| self.view_system_modal_at(id, now),
+            |now| modal.motion.frame_active(now),
+            |now| {
+                if let Some(effects) = &surface.effects {
+                    let _ = effects.set_presentation(
+                        &surface.regions.lock().unwrap(),
+                        modal.motion.progress_at(now),
+                        [],
+                        ferese_surface_effects_v1::Role::Modal,
+                    );
+                }
+            },
+            |now| {
+                (surface.primary && modal.motion.closing() && !modal.motion.animating_at(now))
+                    .then_some(cosmic::Action::App(Message::AnimatePower))
+            },
+        )
+    }
+
+    fn view_system_modal_at(&self, id: window::Id, now: Instant) -> Element<'_, cosmic::Action<Message>> {
+        let Some(modal) = &self.system_modal else {
+            return text("").into();
+        };
+        let Some(surface) = modal.surfaces.iter().find(|surface| surface.id == id) else {
+            return text("").into();
+        };
+        let progress = modal.motion.progress_at(now);
         let content: Element<'_, cosmic::Action<Message>> = if surface.primary {
             let theme = self.config.theme;
             let material = surface.effects.is_some();
@@ -511,14 +535,25 @@ impl FereseShell {
                             row![
                                 Space::new().width(Length::Fill),
                                 ferese_theme::controls::text_button("Cancel", shell_font(), palette, false)
+                                    .class(ferese_theme::controls::button_style_with_focus(
+                                        palette,
+                                        false,
+                                        modal.focus_visible,
+                                    ))
                                     .id("ferese-modal-cancel".into())
                                     .on_press(cosmic::Action::App(Message::CancelPower)),
-                                ferese_theme::controls::text_button(label, shell_font(), palette, true).on_press_maybe(
-                                    modal
-                                        .inhibitors
-                                        .is_some()
-                                        .then_some(cosmic::Action::App(Message::ExecutePower))
-                                ),
+                                ferese_theme::controls::text_button(label, shell_font(), palette, true)
+                                    .class(ferese_theme::controls::button_style_with_focus(
+                                        palette,
+                                        true,
+                                        modal.focus_visible,
+                                    ))
+                                    .on_press_maybe(
+                                        modal
+                                            .inhibitors
+                                            .is_some()
+                                            .then_some(cosmic::Action::App(Message::ExecutePower))
+                                    ),
                             ]
                             .spacing(10),
                         )
@@ -557,6 +592,11 @@ impl FereseShell {
                         container(row![
                             Space::new().width(Length::Fill),
                             ferese_theme::controls::text_button("Got it", shell_font(), palette, true,)
+                                .class(ferese_theme::controls::button_style_with_focus(
+                                    palette,
+                                    true,
+                                    modal.focus_visible,
+                                ))
                                 .id("ferese-modal-cancel".into())
                                 .on_press(cosmic::Action::App(Message::CancelPower)),
                         ])

@@ -1,6 +1,4 @@
-pub mod desktop;
 mod focus;
-pub mod notifications;
 mod output;
 mod workspace;
 mod workspace_policy;

@@ -83,6 +83,16 @@ animations {
     enabled #true
     reduced-motion #false
     speed 0.9
+    spring {
+        duration-ms 240.0
+        bounce 0.0
+        overshoot #false
+    }
+    viewport-spring {
+        duration-ms 350.0
+        bounce 0.0
+        overshoot #false
+    }
 }
 
 appearance {

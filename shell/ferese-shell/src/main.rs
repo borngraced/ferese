@@ -223,7 +223,7 @@ struct OutputSurfaces {
 
 #[derive(Clone, Debug)]
 enum Message {
-    ThemeChanged(Box<ferese_config::theme::Snapshot>),
+    ThemeChanged(Box<ferese_ipc::theme::Snapshot>),
     ThemeMode(ferese_config::theme::Mode),
     ThemeModeSet(Result<(), String>),
     BeginNoteEdit(String),
@@ -354,16 +354,7 @@ impl cosmic::Application for FereseShell {
             self.control.as_ref().map_or_else(Subscription::none, |control| {
                 control.subscription().map(|_| Message::ControlReady)
             }),
-            ferese_theme::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
-            if self
-                .system_modal
-                .as_ref()
-                .is_some_and(|modal| modal.motion.animating() || modal.motion.closing())
-            {
-                cosmic::iced::time::every(Duration::from_millis(16)).map(|_| Message::AnimatePower)
-            } else {
-                Subscription::none()
-            },
+            ferese_theme_client::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
             self.notifications.subscription().map(Message::NotificationEvent),
             self.notifications
                 .tick_subscription()
@@ -377,6 +368,7 @@ impl cosmic::Application for FereseShell {
                     .load(Ordering::Relaxed)
                     .then_some(Message::Event(event, id)),
                 Event::Keyboard(_)
+                | Event::Mouse(cosmic::iced::mouse::Event::ButtonPressed(_))
                 | Event::Window(window::Event::Opened { .. } | window::Event::Closed)
                 | Event::PlatformSpecific(PlatformSpecific::Wayland(
                     wayland::Event::Popup(..) | wayland::Event::Layer(..) | wayland::Event::Output(..),
@@ -399,45 +391,10 @@ impl cosmic::Application for FereseShell {
             } else {
                 Subscription::none()
             },
-            if self
-                .menu
-                .as_ref()
-                .is_some_and(|menu| menu.animating() || menu.motion.closing())
-            {
-                cosmic::iced::time::every(Duration::from_millis(16)).map(|_| Message::AnimateMenu)
-            } else {
-                Subscription::none()
-            },
         ])
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
-        if let Some(menu) = &self.menu
-            && let Some(effects) = &menu.effects
-        {
-            if let Err(error) = effects.set_opacity(menu.progress()) {
-                eprintln!("ferese-shell: could not update popup opacity: {error}");
-            }
-
-            let regions = menu.regions.lock().unwrap().clone();
-
-            if let Err(error) = effects.set_regions(&regions) {
-                eprintln!("ferese-shell: could not update card materials: {error}");
-            }
-        }
-
-        if let Some(surface) = &self.notification_surface
-            && let Some(effects) = &surface.effects
-        {
-            let regions = surface.regions.lock().unwrap().clone();
-
-            if let Err(error) = effects.set_regions(&regions) {
-                eprintln!("ferese-shell: could not update notification materials: {error}");
-            }
-        }
-
-        self.update_power_materials();
-
         match message {
             Message::ThemeChanged(snapshot) => {
                 let mut config = self.config.clone();
@@ -904,6 +861,7 @@ impl FereseShell {
         motion::configure(config.animations, config.theme.material_radius);
 
         if self.config.animations != config.animations {
+            self.notifications.update_motion_settings(config.animations);
             if let Some(menu) = &mut self.menu {
                 menu.motion.update_settings(config.animations);
             }
@@ -1047,9 +1005,9 @@ mod tests {
     #[test]
     fn note_drag_origin_and_bounds_use_logical_output_coordinates() {
         use cosmic::iced::Point;
-        let mut note = ferese_core::desktop::StickyNote::default();
+        let mut note = ferese_config::desktop::StickyNote::default();
         assert_eq!(super::note_origin(&note, (1920, 1080)), Point::new(1552., 80.));
-        note.anchor = ferese_core::desktop::Anchor::Center;
+        note.anchor = ferese_config::desktop::Anchor::Center;
         assert_eq!(super::note_origin(&note, (1920, 1080)), Point::new(800., 420.));
         assert_eq!(
             super::clamp_note_position(Point::new(-20., 1200.), (1920, 1080), (320, 240)),
@@ -1063,7 +1021,7 @@ mod tests {
 
     #[test]
     fn desktop_clock_anchor_margins_match_only_anchored_edges() {
-        use ferese_core::desktop::{Anchor as Position, Clock};
+        use ferese_config::desktop::{Anchor as Position, Clock};
         let clock = Clock {
             anchor: Position::BottomRight,
             margin_x: 30,

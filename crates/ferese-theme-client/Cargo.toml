@@ -1,0 +1,18 @@
+[package]
+name = "ferese-theme-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ferese-config = { path = "../ferese-config" }
+ferese-ipc = { path = "../ferese-ipc" }
+ferese-protocols = { path = "../ferese-protocols", default-features = false, features = ["client"] }
+libcosmic.workspace = true
+wayland-client.workspace = true
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true

@@ -3,6 +3,7 @@
 FERESE_TEST_WINDOW_CAPTURE=1 python3 scripts/tests/test_window_capture_isolated.py
 Requires built debug binaries, a Wayland host, PipeWire, gst-launch-1.0,
 cc, wayland-scanner and Pillow.
+Override FERESE_TEST_BINARY, FERESE_TEST_CTL and FERESE_TEST_PORTAL to test a release build.
 """
 import io
 import json
@@ -16,6 +17,9 @@ import time
 import unittest
 
 REPO = Path(__file__).resolve().parents[2]
+COMPOSITOR = Path(os.environ.get("FERESE_TEST_BINARY", REPO / "target/debug/ferese"))
+CTL = Path(os.environ.get("FERESE_TEST_CTL", REPO / "target/debug/feresectl"))
+PORTAL = Path(os.environ.get("FERESE_TEST_PORTAL", REPO / "target/debug/xdg-desktop-portal-ferese"))
 
 
 @unittest.skipUnless(os.environ.get("FERESE_TEST_WINDOW_CAPTURE") == "1", "requires a Wayland host")
@@ -54,7 +58,7 @@ class WindowCapture(unittest.TestCase):
             env.pop("FERESE_SHELL_CONTROL_SOCKET", None)
             log = (root / "compositor.log").open("w")
             try:
-                compositor = subprocess.Popen([str(REPO / "target/debug/ferese"), "--backend=nested"], env=env, stdout=log, stderr=log, start_new_session=True)
+                compositor = subprocess.Popen([str(COMPOSITOR), "--backend=nested"], env=env, stdout=log, stderr=log, start_new_session=True)
                 processes.append(compositor)
                 deadline = time.monotonic() + 10
                 while not (runtime / "ferese/control.sock").exists():
@@ -65,7 +69,7 @@ class WindowCapture(unittest.TestCase):
                 env["WAYLAND_DISPLAY"] = str(next(path for path in sockets if not path.name.endswith(".lock")))
 
                 def call(*args):
-                    return subprocess.check_output([str(REPO / "target/debug/feresectl"), *args], env=env, timeout=10)
+                    return subprocess.check_output([str(CTL), *args], env=env, timeout=10)
 
                 def windows(count):
                     deadline = time.monotonic() + 10
@@ -94,7 +98,7 @@ class WindowCapture(unittest.TestCase):
                 # Exercise the asynchronous conversion worker and reuse its render
                 # target across a stream, not just the synchronous screenshot path.
                 stream_env = dict(env, PIPEWIRE_REMOTE=str(Path(os.environ["XDG_RUNTIME_DIR"]) / "pipewire-0"))
-                worker = subprocess.Popen([str(REPO / "target/debug/xdg-desktop-portal-ferese"),
+                worker = subprocess.Popen([str(PORTAL),
                                            "--stream-window", str(target["id"]), "hidden"],
                                           env=stream_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                           stderr=log, start_new_session=True)
@@ -126,7 +130,7 @@ class WindowCapture(unittest.TestCase):
                 self.assertEqual(worker.wait(timeout=7), 0)
                 worker.stdin.close()
                 worker.stdout.close()
-                rejected = subprocess.run([str(REPO / "target/debug/feresectl"), "screenshot-window", str(target["id"])],
+                rejected = subprocess.run([str(CTL), "screenshot-window", str(target["id"])],
                                           env=env, capture_output=True, timeout=10)
                 self.assertNotEqual(rejected.returncode, 0)
                 self.assertIn(b"protected", rejected.stderr)
