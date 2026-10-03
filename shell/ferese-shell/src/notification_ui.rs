@@ -57,6 +57,23 @@ fn card_button<'a>(
         .into()
 }
 
+fn card_surface<'a>(
+    content: impl Into<Element<'a, cosmic::Action<Message>>>,
+    history: bool,
+    style: container::Style,
+) -> Element<'a, cosmic::Action<Message>> {
+    container(content)
+        .id(if history {
+            "ferese-history-card"
+        } else {
+            "ferese-blur-card"
+        })
+        .width(Length::Fill)
+        .clip_to_border(true)
+        .class(theme::Container::custom(move |_| style))
+        .into()
+}
+
 fn icon_control<'a>(
     source: &'static [u8],
     label: &'static str,
@@ -452,15 +469,10 @@ impl FereseShell {
                     .push(actions);
             }
         }
-        let card = container(face)
-            .id(if history {
-                "ferese-history-card"
-            } else {
-                "ferese-blur-card"
-            })
-            .width(Length::Fill)
-            .clip(true)
-            .class(theme::Container::custom(move |_| container::Style {
+        let card = card_surface(
+            face,
+            history,
+            container::Style {
                 background: if history {
                     Some(Background::Color(Color {
                         a: 0.045 * opacity,
@@ -478,8 +490,8 @@ impl FereseShell {
                 },
                 snap: true,
                 ..Default::default()
-            }));
-        let card: Element<'_, cosmic::Action<Message>> = card.into();
+            },
+        );
         let card: Element<'_, cosmic::Action<Message>> = if count > 1 {
             // With translucent materials, complete backing rectangles show
             // through the face and multiply its tint. Paint only the exposed
@@ -811,6 +823,94 @@ impl FereseShell {
                     .unwrap_or_default(),
                 self.config.theme.material_radius,
             )
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cosmic::iced::advanced::renderer::{Headless, Renderer as _};
+    use cosmic::iced::advanced::{Layout, layout, mouse, widget::Tree};
+    use cosmic::iced::{Font, Pixels, Rectangle, Size};
+
+    #[test]
+    fn notification_action_hover_stays_inside_card_corners() {
+        check_action_hover("tiny-skia");
+    }
+
+    #[test]
+    #[ignore = "requires a GPU or software Vulkan adapter"]
+    fn gpu_notification_action_hover_stays_inside_card_corners() {
+        check_action_hover("wgpu");
+    }
+
+    fn check_action_hover(backend: &str) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut renderer = runtime
+            .block_on(<cosmic::Renderer as Headless>::new(
+                Font::default(),
+                Pixels(14.0),
+                Some(backend),
+            ))
+            .unwrap();
+        let theme = cosmic::Theme::dark();
+        let bounds = Rectangle::with_size(Size::new(368.0, 114.0));
+        for history in [false, true] {
+            for scale in [1.0, 1.25, 1.5] {
+                let action = card_button(
+                    cosmic::widget::Space::new().height(38),
+                    Message::InvokeNotification(1, "action".into()),
+                    Color::WHITE,
+                    Color::WHITE,
+                    false,
+                    "Action".into(),
+                );
+                let face = column([cosmic::widget::Space::new().height(76).into(), action]);
+                let mut card = card_surface(
+                    face,
+                    history,
+                    container::Style {
+                        border: Border {
+                            shape: BorderShape::Continuous,
+                            radius: 14.0.into(),
+                            width: if history { 0.0 } else { 1.0 },
+                            ..Default::default()
+                        },
+                        snap: true,
+                        ..Default::default()
+                    },
+                );
+                let mut tree = Tree::new(card.as_widget());
+                let node =
+                    card.as_widget_mut()
+                        .layout(&mut tree, &renderer, &layout::Limits::new(Size::ZERO, bounds.size()));
+                renderer.reset(bounds);
+                card.as_widget().draw(
+                    &tree,
+                    &mut renderer,
+                    &theme,
+                    &Default::default(),
+                    Layout::new(&node),
+                    mouse::Cursor::Available((80.0, 100.0).into()),
+                    &bounds,
+                );
+                let size = Size::new((bounds.width * scale) as u32, (bounds.height * scale) as u32);
+                let pixels = Headless::screenshot(&mut renderer, size, scale, Color::TRANSPARENT);
+                let alpha = |x: u32, y: u32| pixels[((y * size.width + x) * 4 + 3) as usize];
+                assert_eq!(
+                    alpha(0, size.height - 1),
+                    0,
+                    "{backend}, scale={scale}, history={history}"
+                );
+                assert!(
+                    alpha(size.width / 2, size.height - 4) > 200,
+                    "the action hover must still render"
+                );
+            }
         }
     }
 }
