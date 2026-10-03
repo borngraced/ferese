@@ -10,6 +10,7 @@ pub(crate) struct WindowRuleConfig {
     pub width: Option<f64>,
     pub height: Option<f64>,
     pub fullscreen: Option<bool>,
+    pub block_out_from_screencasts: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -22,6 +23,7 @@ pub struct WindowRule {
     width: Option<f64>,
     height: Option<f64>,
     fullscreen: Option<bool>,
+    block_out_from_screencasts: Option<bool>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -31,14 +33,18 @@ pub struct WindowRuleResult {
     pub width: Option<f64>,
     pub height: Option<f64>,
     pub fullscreen: Option<bool>,
+    pub block_out_from_screencasts: Option<bool>,
 }
 
 /// Only changed matches should override an existing window's manual state.
 pub(crate) fn live_result(
-    old: WindowRuleResult,
+    mut old: WindowRuleResult,
     mut new: WindowRuleResult,
     transient: bool,
 ) -> Option<WindowRuleResult> {
+    // Capture policy is resolved independently of placement at capture time.
+    old.block_out_from_screencasts = None;
+    new.block_out_from_screencasts = None;
     if old == new {
         return None;
     }
@@ -70,6 +76,10 @@ pub fn resolve(rules: &[WindowRule], app_id: Option<&str>, title: Option<&str>, 
         result.floating = Some(true);
     }
 
+    if app_id.as_deref() == Some("dev.ferese.authentication") {
+        result.block_out_from_screencasts = Some(true);
+    }
+
     for rule in rules {
         let app_id_matches = rule
             .app_id
@@ -86,6 +96,7 @@ pub fn resolve(rules: &[WindowRule], app_id: Option<&str>, title: Option<&str>, 
         result.width = rule.width.or(result.width);
         result.height = rule.height.or(result.height);
         result.fullscreen = rule.fullscreen.or(result.fullscreen);
+        result.block_out_from_screencasts = rule.block_out_from_screencasts.or(result.block_out_from_screencasts);
     }
 
     result
@@ -125,6 +136,7 @@ fn validate_rule(index: usize, rule: &WindowRuleConfig) -> Result<WindowRule, St
         width,
         height,
         fullscreen: rule.fullscreen,
+        block_out_from_screencasts: rule.block_out_from_screencasts,
     })
 }
 
@@ -202,7 +214,61 @@ mod tests {
             width: None,
             height: None,
             fullscreen: None,
+            block_out_from_screencasts: None,
         }
+    }
+
+    #[test]
+    fn capture_privacy_defaults_overrides_and_placement_are_independent() {
+        for app_id in ["dev.ferese.Authentication", "dev.ferese.Authentication.desktop"] {
+            assert_eq!(
+                resolve(&[], Some(app_id), None, false).block_out_from_screencasts,
+                Some(true)
+            );
+            let rules = validate(&[WindowRuleConfig {
+                block_out_from_screencasts: Some(false),
+                ..config(app_id)
+            }])
+            .unwrap();
+            assert_eq!(
+                resolve(&rules, Some(app_id), None, false).block_out_from_screencasts,
+                Some(false)
+            );
+        }
+        assert_eq!(
+            resolve(&[], Some("editor"), None, false).block_out_from_screencasts,
+            None
+        );
+        let rules = validate(&[
+            WindowRuleConfig {
+                block_out_from_screencasts: Some(true),
+                ..config("editor")
+            },
+            WindowRuleConfig {
+                title: Some("Public".into()),
+                block_out_from_screencasts: Some(false),
+                ..config("editor")
+            },
+        ])
+        .unwrap();
+        assert_eq!(
+            resolve(&rules, Some("editor"), Some("Secret"), false).block_out_from_screencasts,
+            Some(true)
+        );
+        assert_eq!(
+            resolve(&rules, Some("editor"), Some("Public"), false).block_out_from_screencasts,
+            Some(false)
+        );
+        let old = WindowRuleResult {
+            width: Some(800.),
+            floating: Some(true),
+            ..Default::default()
+        };
+        let new = WindowRuleResult {
+            block_out_from_screencasts: Some(true),
+            ..old
+        };
+        assert_eq!(live_result(old, new, false), None);
     }
 
     #[test]
@@ -279,6 +345,7 @@ mod tests {
             width: None,
             height: None,
             fullscreen: None,
+            block_out_from_screencasts: None,
         };
         let invalid_size = WindowRuleConfig {
             width: Some(f64::NAN),

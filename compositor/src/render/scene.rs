@@ -32,6 +32,32 @@ pub(crate) fn sampled_output_elements(
     include_cursor: bool,
     frame: &crate::state::FrameScene,
 ) -> Vec<AnimatedWindowRenderElement> {
+    scene_elements(state, renderer, output, include_cursor, frame, false)
+}
+
+pub(crate) fn capture_output_elements(
+    state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    include_cursor: bool,
+    frame: &crate::state::FrameScene,
+) -> Vec<AnimatedWindowRenderElement> {
+    // Blur textures and resize handoff snapshots must never be shared with
+    // display rendering. Only the capture scene can populate these caches.
+    std::mem::swap(&mut state.render, &mut state.capture_render);
+    let elements = scene_elements(state, renderer, output, include_cursor, frame, true);
+    std::mem::swap(&mut state.render, &mut state.capture_render);
+    elements
+}
+
+fn scene_elements(
+    state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    include_cursor: bool,
+    frame: &crate::state::FrameScene,
+    capture: bool,
+) -> Vec<AnimatedWindowRenderElement> {
     if state.session_lock.active() {
         let Some(geometry) = state.space.output_geometry(output) else {
             return Vec::new();
@@ -89,7 +115,8 @@ pub(crate) fn sampled_output_elements(
     };
     let scale = output.current_scale().fractional_scale();
 
-    let mut elements = if include_cursor {
+    let protected_cursor = capture && state.capture_cursor_protected();
+    let mut elements = if include_cursor && !protected_cursor {
         cursor_elements(state, renderer, output_geometry, scale)
     } else {
         Vec::new()
@@ -108,12 +135,13 @@ pub(crate) fn sampled_output_elements(
             output_geometry,
             scale,
             frame,
+            capture,
         ));
     }
     let prepare_window = |window: &Window| {
         // Configure immediately, but present the frame/shadow only after
         // the first buffer commit has settled the actual client geometry.
-        if !state.window_content_ready(window) {
+        if (capture && state.capture_protected(window)) || !state.window_content_ready(window) {
             return None;
         }
         let id = *state.windows.ids().get(window)?;

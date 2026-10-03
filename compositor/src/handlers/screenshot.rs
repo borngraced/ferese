@@ -560,9 +560,13 @@ impl Coordinator {
     }
 
     pub(crate) fn terminate_all(&mut self) -> Vec<u64> {
+        self.terminate_all_with_reason("Screenshot cancelled: the session was locked")
+    }
+
+    pub(crate) fn terminate_all_with_reason(&mut self, reason: &str) -> Vec<u64> {
         let ids: Vec<u64> = self.requests.keys().copied().collect();
         for id in &ids {
-            self.reject_inner(*id, "Screenshot cancelled: the session was locked");
+            self.reject_inner(*id, reason);
         }
         ids
     }
@@ -1027,6 +1031,26 @@ mod completion {
         let action = harness.coordinator.on_encoded(id, Ok(PathBuf::from("/tmp/late.png")));
         assert!(matches!(action, Action::DiscardFile(ref path) if path.ends_with("late.png")));
         assert!(harness.response().is_none(), "no late success is delivered");
+    }
+
+    #[test]
+    fn privacy_change_cancels_encoding_and_discards_late_results() {
+        let mut harness = Harness::new(1);
+        let id = harness.coordinator.next_id;
+        harness.coordinator.on_part(id, 0, Ok(buffer(2, 2)));
+        assert!(harness.coordinator.is_encoding(id));
+        assert_eq!(
+            harness.coordinator.terminate_all_with_reason("Capture privacy changed"),
+            vec![id]
+        );
+        assert!(harness.response().unwrap().error.is_some());
+        assert!(matches!(
+            harness
+                .coordinator
+                .on_encoded(id, Ok(PathBuf::from("/tmp/private.png"))),
+            Action::DiscardFile(_)
+        ));
+        assert!(harness.response().is_none());
     }
 
     #[test]

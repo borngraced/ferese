@@ -52,6 +52,7 @@ impl SeatHandler for Ferese {
                 .or_insert_with(|| crate::cursor::load_named_cursor(&self.cursor_theme, *icon));
         }
         self.cursor_status = image;
+        self.update_capture_cursor_privacy();
         // Pointer focus transitions invoke this with the pointer lock held.
         // render_all -> cursor_elements -> current_location would try to
         // acquire that same lock, freezing the entire compositor thread.

@@ -57,6 +57,7 @@ impl Drop for Permit {
 #[derive(Debug)]
 pub(super) struct Snapshot {
     id: WindowId,
+    epoch: u64,
     logical_size: (u32, u32),
     pixels: CaptureBuffer,
     _permit: Permit,
@@ -159,7 +160,7 @@ fn finish_conversion(state: &Ferese, result: Conversion) {
     }
     if state.session_lock.active()
         || !super::screencopy::capture_allowed()
-        || !state.windows.ids().values().any(|id| *id == snapshot.id)
+        || !state.capture_window_allowed(snapshot.id, snapshot.epoch)
     {
         *data.used.lock().unwrap() = true;
         frame.failed();
@@ -273,6 +274,9 @@ impl Ferese {
             .find(|(_, candidate)| **candidate == id)?
             .0
             .clone();
+        if self.capture_protected(&window) {
+            return None;
+        }
         let workspace = self.workspaces.workspace_for_window(id)?;
         let owner = self.output_workspaces.output_for_workspace(workspace)?;
         let output = self
@@ -295,7 +299,7 @@ impl Ferese {
             *busy = true;
             return None;
         };
-        let cursor = if overlay_cursor && !self.overview.is_presenting() {
+        let cursor = if overlay_cursor && !self.overview.is_presenting() && !self.capture_cursor_protected() {
             self.seat.get_pointer().and_then(|pointer| {
                 let location = pointer.current_location();
                 if self.window_under_visual(location).as_ref() != Some(&window) {
@@ -345,6 +349,7 @@ impl Ferese {
         }
         Some(Snapshot {
             id,
+            epoch: self.capture_epoch,
             logical_size: (geometry.size.w as u32, geometry.size.h as u32),
             pixels,
             _permit: permit,
@@ -365,7 +370,7 @@ pub(super) fn copy_snapshot(state: &Ferese, resource: &ZwlrScreencopyFrameV1, da
     };
     if state.session_lock.active()
         || !super::screencopy::capture_allowed()
-        || !state.windows.ids().values().any(|id| *id == snapshot.id)
+        || !state.capture_window_allowed(snapshot.id, snapshot.epoch)
     {
         resource.failed();
         return;
@@ -407,8 +412,95 @@ pub(super) fn copy_snapshot(state: &Ferese, resource: &ZwlrScreencopyFrameV1, da
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Exercise both asynchronous publication boundaries using real resources.
+    pub(crate) fn check_deferred_snapshot(
+        state: &Ferese,
+        window: &smithay::desktop::Window,
+        epoch: u64,
+        allowed: bool,
+    ) {
+        let client = window.toplevel().unwrap().wl_surface().client().unwrap();
+        let id = state.windows.ids()[window];
+        let budget = Arc::default();
+        let snapshot = || Snapshot {
+            id,
+            epoch,
+            logical_size: (64, 48),
+            pixels: CaptureBuffer {
+                width: 64,
+                height: 48,
+                stride: 256,
+                pixels: vec![0; 64 * 48 * 4],
+            },
+            _permit: Permit::reserve(&budget, 64 * 48 * 4).unwrap(),
+        };
+        let frame_data = || {
+            Arc::new(FrameData {
+                output: None,
+                region: Rectangle::from_size((64, 48).into()),
+                overlay_cursor: false,
+                used: Mutex::new(false),
+                snapshot: Mutex::new(None),
+            })
+        };
+        let (worker, _requests) = std::sync::mpsc::sync_channel(1);
+        let manager = client
+            .create_resource::<FereseWindowCaptureManagerV1, Global, Ferese>(
+                &state.display_handle,
+                1,
+                Global {
+                    budget: budget.clone(),
+                    worker,
+                },
+            )
+            .unwrap();
+        let data = frame_data();
+        let frame = client
+            .create_resource::<ZwlrScreencopyFrameV1, Arc<FrameData>, Ferese>(&state.display_handle, 3, data.clone())
+            .unwrap();
+        finish_conversion(
+            state,
+            Conversion {
+                snapshot: snapshot(),
+                frame,
+                manager,
+            },
+        );
+        assert_eq!(data.snapshot.lock().unwrap().is_some(), allowed);
+        assert_eq!(*data.used.lock().unwrap(), !allowed);
+
+        let data = frame_data();
+        *data.snapshot.lock().unwrap() = Some(snapshot());
+        let frame = client
+            .create_resource::<ZwlrScreencopyFrameV1, Arc<FrameData>, Ferese>(&state.display_handle, 3, data.clone())
+            .unwrap();
+        let buffer = client
+            .object_from_protocol_id::<WlBuffer>(&state.display_handle, 6)
+            .unwrap();
+        let before = with_buffer_contents_mut(&buffer, |ptr, _, layout| {
+            // SAFETY: the fixture allocates and validates this 64x48 SHM buffer.
+            unsafe { std::slice::from_raw_parts(ptr.add(layout.offset as usize), 64 * 48 * 4).to_vec() }
+        })
+        .unwrap();
+        copy_snapshot(state, &frame, &data, &buffer);
+        with_buffer_contents_mut(&buffer, |ptr, _, layout| {
+            // SAFETY: same fixture-owned buffer as above.
+            let after = unsafe { std::slice::from_raw_parts(ptr.add(layout.offset as usize), 64 * 48 * 4) };
+            if allowed {
+                assert!(after.iter().all(|byte| *byte == 0));
+            } else {
+                assert_eq!(after, before, "rejected snapshot wrote private pixels");
+            }
+            // Restore the client's colored buffer for subsequent renderer checks.
+            unsafe {
+                std::ptr::copy_nonoverlapping(before.as_ptr(), ptr.add(layout.offset as usize), before.len());
+            }
+        })
+        .unwrap();
+    }
 
     #[test]
     fn outstanding_snapshots_release_both_limits_when_dropped() {

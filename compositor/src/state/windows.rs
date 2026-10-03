@@ -116,6 +116,7 @@ impl Ferese {
         }
 
         self.windows.register_window(window.clone(), id);
+        self.refresh_capture_privacy();
         self.windows.update(id, |w| w.placement_anchor = Some(anchor));
 
         if rule.width.is_none() && rule.height.is_none() && client_size(&window).is_none() && remembered_work.is_none()
@@ -157,6 +158,7 @@ impl Ferese {
         }
 
         self.windows.register_window(window.clone(), id);
+        self.refresh_capture_privacy();
         self.window_stack.insert(id);
         if focus_new_window {
             self.focused_window = Some(id);
@@ -197,6 +199,7 @@ impl Ferese {
         }
 
         self.windows.register_window(window.clone(), id);
+        self.refresh_capture_privacy();
         self.window_stack.insert(id);
         if client_size(&window).is_none() {
             self.windows.update(id, |w| w.natural_floating_pending = true);
@@ -417,6 +420,7 @@ impl Ferese {
     }
 
     pub fn remove_tiled_window(&mut self, window: &Window) {
+        self.update_capture_cursor_privacy();
         self.retain_closed_window(window);
         // Uncommitted toplevels have not entered a workspace yet.
         self.space.unmap_elem(window);
@@ -424,11 +428,13 @@ impl Ferese {
             return;
         };
 
+        self.refresh_capture_privacy();
         self.focus_history.remove(id);
         #[cfg(feature = "resize-metrics")]
         self.resize_metrics
             .end(id, self.start_time.elapsed(), crate::resize_metrics::End::Cancelled);
         self.render.remove_window(id);
+        self.capture_render.remove_window(id);
         self.window_stack.remove(id);
         self.floating_above_fullscreen.remove(&id);
         if let Err(error) = self.workspaces.remove_window(id) {

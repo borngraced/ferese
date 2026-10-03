@@ -1,0 +1,595 @@
+//! Private protocol clients and offscreen EGL; no host desktop or DRM required.
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, RawFd};
+use std::os::unix::net::UnixStream;
+use std::sync::Arc;
+use std::time::Duration;
+
+use smithay::backend::allocator::Fourcc;
+use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
+use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+use smithay::backend::renderer::{Bind, ExportMem, Offscreen};
+use smithay::desktop::Window;
+use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
+use smithay::reexports::calloop::EventLoop;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_wm_base::XdgWmBase;
+use smithay::reexports::wayland_server::protocol::{wl_compositor::WlCompositor, wl_shm::WlShm};
+use smithay::reexports::wayland_server::{Display, Resource};
+use smithay::utils::{Rectangle, Transform};
+use smithay::wayland::compositor::with_states;
+use smithay::wayland::shell::xdg::{XdgShellHandler, XdgToplevelSurfaceData, XdgWmBaseUserData};
+
+use crate::Ferese;
+use crate::state::{ClientState, DesktopOutput};
+
+fn request(wire: &mut UnixStream, object: u32, opcode: u32, args: &[u32], fd: Option<RawFd>) {
+    let bytes = [object, (((args.len() + 2) * 4) as u32) << 16 | opcode]
+        .into_iter()
+        .chain(args.iter().copied())
+        .flat_map(u32::to_ne_bytes)
+        .collect::<Vec<_>>();
+    if let Some(fd) = fd {
+        let mut iov = libc::iovec {
+            iov_base: bytes.as_ptr().cast_mut().cast(),
+            iov_len: bytes.len(),
+        };
+        let mut control = [0usize; 8];
+        // SAFETY: aligned control storage and iovec remain live for sendmsg;
+        // the one SCM_RIGHTS entry contains an owned, open tempfile descriptor.
+        unsafe {
+            let mut msg: libc::msghdr = std::mem::zeroed();
+            msg.msg_iov = &mut iov;
+            msg.msg_iovlen = 1;
+            msg.msg_control = control.as_mut_ptr().cast();
+            msg.msg_controllen = libc::CMSG_SPACE(std::mem::size_of::<RawFd>() as u32) as usize;
+            let header = libc::CMSG_FIRSTHDR(&msg);
+            (*header).cmsg_level = libc::SOL_SOCKET;
+            (*header).cmsg_type = libc::SCM_RIGHTS;
+            (*header).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<RawFd>() as u32) as usize;
+            libc::CMSG_DATA(header).cast::<RawFd>().write(fd);
+            assert_eq!(libc::sendmsg(wire.as_raw_fd(), &msg, 0), bytes.len() as isize);
+        }
+    } else {
+        wire.write_all(&bytes).unwrap();
+    }
+}
+
+fn dispatch(events: &mut EventLoop<'static, Ferese>, state: &mut Ferese) {
+    events.dispatch(Duration::from_millis(1), state).unwrap();
+    state.display_handle.flush_clients().unwrap();
+}
+
+fn ack_configure(wire: &mut UnixStream, xdg: u32) {
+    wire.set_nonblocking(true).unwrap();
+    let mut bytes = Vec::new();
+    let _ = wire.read_to_end(&mut bytes);
+    wire.set_nonblocking(false).unwrap();
+    let mut serial = None;
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let object = u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap());
+        let header = u32::from_ne_bytes(bytes[offset + 4..offset + 8].try_into().unwrap());
+        if object == xdg && header & 0xffff == 0 {
+            serial = Some(u32::from_ne_bytes(bytes[offset + 8..offset + 12].try_into().unwrap()));
+        }
+        offset += (header >> 16) as usize;
+    }
+    assert!(serial.is_some(), "missing configure for {xdg}: {bytes:?}");
+    request(wire, xdg, 4, &[serial.unwrap()], None);
+}
+
+fn window(state: &mut Ferese, events: &mut EventLoop<'static, Ferese>, color: u32) -> (Window, UnixStream) {
+    let (server, mut wire) = UnixStream::pair().unwrap();
+    let client = state
+        .display_handle
+        .insert_client(server, Arc::new(ClientState::default()))
+        .unwrap();
+    let compositor = client
+        .create_resource::<WlCompositor, (), Ferese>(&state.display_handle, 6, ())
+        .unwrap();
+    let shell = client
+        .create_resource::<XdgWmBase, XdgWmBaseUserData, Ferese>(&state.display_handle, 6, Default::default())
+        .unwrap();
+    let shm = client
+        .create_resource::<WlShm, (), Ferese>(&state.display_handle, 1, ())
+        .unwrap();
+    request(&mut wire, compositor.id().protocol_id(), 0, &[2], None);
+    request(&mut wire, shell.id().protocol_id(), 2, &[3, 2], None);
+    request(&mut wire, 3, 1, &[4], None);
+    request(&mut wire, 2, 6, &[], None);
+    dispatch(events, state);
+    ack_configure(&mut wire, 3);
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&color.to_ne_bytes().repeat(64 * 48)).unwrap();
+    request(
+        &mut wire,
+        shm.id().protocol_id(),
+        0,
+        &[5, 64 * 48 * 4],
+        Some(file.as_raw_fd()),
+    );
+    request(&mut wire, 5, 0, &[6, 0, 64, 48, 64 * 4, 0], None);
+    request(&mut wire, 3, 3, &[0, 0, 64, 48], None);
+    request(&mut wire, 2, 1, &[6, 0, 0], None);
+    request(&mut wire, 2, 2, &[0, 0, 64, 48], None);
+    request(&mut wire, 2, 6, &[], None);
+    dispatch(events, state);
+    let window = state
+        .windows
+        .ids()
+        .keys()
+        .find(|window| {
+            window
+                .toplevel()
+                .unwrap()
+                .wl_surface()
+                .client()
+                .is_some_and(|owner| owner.id() == client.id())
+        })
+        .expect("mapped window")
+        .clone();
+    (window, wire)
+}
+
+fn attach_children(
+    state: &mut Ferese,
+    events: &mut EventLoop<'static, Ferese>,
+    window: &Window,
+    wire: &mut UnixStream,
+) {
+    use smithay::reexports::wayland_server::protocol::wl_subcompositor::WlSubcompositor;
+    let client = window.toplevel().unwrap().wl_surface().client().unwrap();
+    let compositor = client
+        .create_resource::<WlCompositor, (), Ferese>(&state.display_handle, 6, ())
+        .unwrap();
+    let subcompositor = client
+        .create_resource::<WlSubcompositor, (), Ferese>(&state.display_handle, 1, ())
+        .unwrap();
+    request(wire, compositor.id().protocol_id(), 0, &[7], None);
+    request(wire, subcompositor.id().protocol_id(), 1, &[8, 7, 2], None);
+    request(wire, 8, 1, &[11, 11], None);
+    request(wire, 7, 1, &[6, 0, 0], None);
+    request(wire, 7, 6, &[], None);
+    request(wire, 2, 6, &[], None);
+    let shell = client
+        .create_resource::<XdgWmBase, XdgWmBaseUserData, Ferese>(&state.display_handle, 6, Default::default())
+        .unwrap();
+    request(wire, compositor.id().protocol_id(), 0, &[9], None);
+    request(wire, shell.id().protocol_id(), 2, &[10, 9], None);
+    request(wire, shell.id().protocol_id(), 1, &[11], None);
+    request(wire, 11, 1, &[32, 16], None);
+    request(wire, 11, 2, &[32, 16, 1, 1], None);
+    request(wire, 10, 2, &[12, 3, 11], None);
+    request(wire, 9, 6, &[], None);
+    dispatch(events, state);
+    ack_configure(wire, 10);
+    request(wire, 10, 3, &[0, 0, 32, 16], None);
+    request(wire, 9, 1, &[6, 0, 0], None);
+    request(wire, 9, 6, &[], None);
+    dispatch(events, state);
+    assert_eq!(
+        smithay::desktop::PopupManager::popups_for_surface(window.toplevel().unwrap().wl_surface()).count(),
+        1
+    );
+}
+
+fn app_id(state: &mut Ferese, window: &Window, app: &str) {
+    let top = window.toplevel().unwrap();
+    with_states(top.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .app_id = Some(app.into());
+    });
+    state.app_id_changed(top.clone());
+}
+
+fn pixels(
+    state: &mut Ferese,
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    capture: bool,
+    texture: &mut GlesTexture,
+) -> Vec<u8> {
+    let scene = state.sample_frame(output, Duration::ZERO);
+    if capture {
+        let (sender, receiver) = smithay::reexports::calloop::channel::channel();
+        state
+            .pending_screencopies
+            .push(crate::handlers::screencopy::PendingScreencopy::owned(
+                1,
+                0,
+                sender,
+                output.clone(),
+                Rectangle::from_size((320, 240).into()),
+            ));
+        let mut target = Some(texture.clone());
+        crate::backends::direct::capture::capture_output(state, renderer, &mut target, output, &scene).unwrap();
+        let mut result = receiver.try_recv().unwrap().result.unwrap().pixels;
+        for pixel in result.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        return result;
+    }
+    let elements = crate::render::sampled_output_elements(state, renderer, output, false, &scene);
+    let mut target = renderer.bind(texture).unwrap();
+    crate::render::redraw_output(renderer, &mut target, output, &elements).unwrap();
+    let mapping = renderer
+        .copy_framebuffer(&target, Rectangle::from_size((320, 240).into()), Fourcc::Abgr8888)
+        .unwrap();
+    renderer.map_texture(&mapping).unwrap().to_vec()
+}
+
+#[test]
+#[ignore = "requires an EGL device; uses a disposable runtime and private protocol clients"]
+fn capture_privacy_pixels_and_policy_transitions() {
+    if std::env::var_os("FERESE_PRIVACY_TEST_CHILD").is_none() {
+        let runtime = tempfile::tempdir().unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "state::capture_privacy::tests::capture_privacy_pixels_and_policy_transitions",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("FERESE_PRIVACY_TEST_CHILD", "1")
+            .env("FERESE_ENABLE_SCREENCOPY", "1")
+            .env("XDG_RUNTIME_DIR", runtime.path())
+            .env("XDG_CONFIG_HOME", runtime.path())
+            .env("XDG_STATE_HOME", runtime.path())
+            .env_remove("FERESE_SOCKET")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let mut events = EventLoop::try_new().unwrap();
+    let config = crate::config::Config::parse_source(
+        "animations { reduced-motion #true; }\nwindow-rule transient=#false floating=#true\n",
+    )
+    .unwrap()
+    .runtime_config()
+    .unwrap();
+    let mut state = Ferese::new(&mut events, Display::new().unwrap(), config).unwrap();
+    let output = Output::new(
+        "privacy".into(),
+        PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: Subpixel::Unknown,
+            make: "test".into(),
+            model: "test".into(),
+        },
+    );
+    let desktop = DesktopOutput {
+        output: output.clone(),
+        identity: "privacy".into(),
+        mode: Mode {
+            size: (320, 240).into(),
+            refresh: 60_000,
+        },
+        transform: Transform::Normal,
+        scale: Scale::Fractional(1.0),
+        position: (0, 0).into(),
+    };
+    state.begin_desktop_transition();
+    let changes = state.publish_desktop(vec![desktop]).unwrap();
+    state.finish_desktop_transition(changes);
+    let (secret, mut secret_wire) = window(&mut state, &mut events, 0xffff0000);
+    attach_children(&mut state, &mut events, &secret, &mut secret_wire);
+    let id = state.windows.ids()[&secret];
+    assert!(state.window_content_ready(&secret));
+    let device = EGLDevice::enumerate().unwrap().last().expect("EGL device");
+    let display = unsafe { EGLDisplay::new(device).unwrap() };
+    let context = EGLContext::new(&display).unwrap();
+    let mut renderer = unsafe { GlesRenderer::new(context).unwrap() };
+    let mut display_texture =
+        Offscreen::<GlesTexture>::create_buffer(&mut renderer, Fourcc::Abgr8888, (320, 240).into()).unwrap();
+    let mut capture_texture =
+        Offscreen::<GlesTexture>::create_buffer(&mut renderer, Fourcc::Abgr8888, (320, 240).into()).unwrap();
+    let has_red = |bytes: &[u8]| bytes.chunks_exact(4).any(|pixel| pixel == [255, 0, 0, 255]);
+    assert!(has_red(&pixels(
+        &mut state,
+        &mut renderer,
+        &output,
+        false,
+        &mut display_texture
+    )));
+    assert!(has_red(&pixels(
+        &mut state,
+        &mut renderer,
+        &output,
+        true,
+        &mut capture_texture
+    )));
+    let epoch = state.capture_epoch;
+    assert!(!state.has_capture_exclusions());
+    crate::handlers::window_capture::tests::check_deferred_snapshot(&state, &secret, epoch, true);
+    app_id(&mut state, &secret, "ordinary");
+    assert_eq!(
+        state.capture_epoch, epoch,
+        "unmatched metadata must not interrupt capture"
+    );
+    app_id(&mut state, &secret, "dev.ferese.Authentication");
+    assert!(state.capture_protected(&secret));
+    assert!(state.has_capture_exclusions());
+    assert!(!state.capture_window_allowed(id, epoch));
+    crate::handlers::window_capture::tests::check_deferred_snapshot(&state, &secret, epoch, false);
+    assert!(
+        !has_red(&pixels(&mut state, &mut renderer, &output, true, &mut capture_texture)),
+        "reused capture target leaked previous pixels"
+    );
+    assert!(
+        has_red(&pixels(&mut state, &mut renderer, &output, false, &mut display_texture)),
+        "display lost protected content"
+    );
+    app_id(&mut state, &secret, "ordinary");
+    assert!(
+        !state.capture_window_allowed(id, epoch),
+        "protect then unprotect must invalidate deferred frames"
+    );
+    assert!(state.capture_window_allowed(id, state.capture_epoch));
+    crate::handlers::window_capture::tests::check_deferred_snapshot(&state, &secret, epoch, false);
+    assert!(has_red(&pixels(
+        &mut state,
+        &mut renderer,
+        &output,
+        true,
+        &mut capture_texture
+    )));
+    let rules =
+        crate::config::Config::parse_source("window-rule app-id=\"ordinary\" block-out-from-screencasts=#true\n")
+            .unwrap()
+            .window_rules()
+            .unwrap();
+    state.window_rules = rules;
+    state.refresh_capture_privacy();
+    assert!(state.capture_protected(&secret));
+    assert!(!has_red(&pixels(
+        &mut state,
+        &mut renderer,
+        &output,
+        true,
+        &mut capture_texture
+    )));
+    for transform in [
+        Transform::Normal,
+        Transform::_90,
+        Transform::_180,
+        Transform::_270,
+        Transform::Flipped,
+        Transform::Flipped90,
+        Transform::Flipped180,
+        Transform::Flipped270,
+    ] {
+        for scale in [1.0, 1.25] {
+            output.change_current_state(None, Some(transform), Some(Scale::Fractional(scale)), None);
+            assert!(
+                has_red(&pixels(&mut state, &mut renderer, &output, false, &mut display_texture)),
+                "display {transform:?}/{scale}"
+            );
+            assert!(
+                !has_red(&pixels(&mut state, &mut renderer, &output, true, &mut capture_texture)),
+                "capture {transform:?}/{scale}"
+            );
+        }
+    }
+    output.change_current_state(None, Some(Transform::Normal), Some(Scale::Fractional(1.0)), None);
+    // An otherwise unprotected child still inherits its parent's protection.
+    let (child, _child_wire) = window(&mut state, &mut events, 0xff00ff00);
+    with_states(child.toplevel().unwrap().wl_surface(), |states| {
+        states
+            .data_map
+            .get::<XdgToplevelSurfaceData>()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .parent = Some(secret.toplevel().unwrap().wl_surface().clone());
+    });
+    state.parent_changed(child.toplevel().unwrap().clone());
+    assert!(state.capture_protected(&child));
+    let captured = pixels(&mut state, &mut renderer, &output, true, &mut capture_texture);
+    assert!(!has_red(&captured));
+    assert!(!captured.chunks_exact(4).any(|pixel| pixel == [0, 255, 0, 255]));
+
+    state.set_overview_active(true);
+    let overview = pixels(&mut state, &mut renderer, &output, true, &mut capture_texture);
+    assert!(!has_red(&overview));
+    assert!(!overview.chunks_exact(4).any(|pixel| pixel == [0, 255, 0, 255]));
+    state.set_overview_active(false);
+
+    // Region requests go through the same filtered output readback.
+    let (sender, receiver) = smithay::reexports::calloop::channel::channel();
+    state
+        .pending_screencopies
+        .push(crate::handlers::screencopy::PendingScreencopy::owned(
+            2,
+            0,
+            sender,
+            output.clone(),
+            Rectangle::new((32, 24).into(), (160, 120).into()),
+        ));
+    let scene = state.sample_frame(&output, Duration::ZERO);
+    crate::backends::direct::capture::capture_output(
+        &mut state,
+        &mut renderer,
+        &mut Some(capture_texture.clone()),
+        &output,
+        &scene,
+    )
+    .unwrap();
+    let region = receiver.try_recv().unwrap().result.unwrap();
+    assert_eq!((region.width, region.height), (160, 120));
+    assert!(
+        !region
+            .pixels
+            .chunks_exact(4)
+            .any(|pixel| pixel == [0, 0, 255, 255] || pixel == [0, 255, 0, 255])
+    );
+
+    // A transient remains protected when moved to a different monitor.
+    let second = Output::new(
+        "second".into(),
+        PhysicalProperties {
+            size: (0, 0).into(),
+            subpixel: Subpixel::Unknown,
+            make: "test".into(),
+            model: "test".into(),
+        },
+    );
+    let mut desktop = state.current_desktop_outputs();
+    desktop.push(DesktopOutput {
+        output: second.clone(),
+        identity: "second".into(),
+        mode: Mode {
+            size: (320, 240).into(),
+            refresh: 60_000,
+        },
+        transform: Transform::Normal,
+        scale: Scale::Fractional(1.0),
+        position: (400, 0).into(),
+    });
+    state.begin_desktop_transition();
+    let changes = state.publish_desktop(desktop).unwrap();
+    state.finish_desktop_transition(changes);
+    let destination = state
+        .output_workspaces
+        .active_workspace(state.output_ids[&second])
+        .unwrap();
+    let child_id = state.windows.ids()[&child];
+    state
+        .workspaces
+        .move_window_to_workspace(child_id, destination, ferese_layout::Axis::Horizontal, 0.5)
+        .unwrap();
+    state.relayout();
+    let rect = ferese_layout::Rect::new(440.0, 40.0, 64.0, 48.0);
+    state.workspaces.set_floating_rect(child_id, rect).unwrap();
+    let mut geometry = ferese_animation::WindowGeometry::new(rect, None);
+    geometry.client.committed_size = Some(ferese_animation::ClientSize::from_rect(rect));
+    state.windows.set_geometry(child_id, geometry);
+    state.space.map_element(child.clone(), (440, 40), false);
+    assert!(
+        pixels(&mut state, &mut renderer, &second, false, &mut display_texture)
+            .chunks_exact(4)
+            .any(|pixel| pixel == [0, 255, 0, 255])
+    );
+    assert!(
+        !pixels(&mut state, &mut renderer, &second, true, &mut capture_texture)
+            .chunks_exact(4)
+            .any(|pixel| pixel == [0, 255, 0, 255])
+    );
+
+    // Unprotected content still captures, including translucent pixels.
+    let (public, mut public_wire) = window(&mut state, &mut events, 0x80000080);
+    let captured = pixels(&mut state, &mut renderer, &output, true, &mut capture_texture);
+    assert!(captured.chunks_exact(4).any(|pixel| pixel[2] > 100));
+    assert!(!has_red(&captured));
+
+    // A translucent material over the secret must never reuse display blur.
+    use ferese_protocols::material::v1::server::ferese_material_manager_v1::FereseMaterialManagerV1;
+    let client = public.toplevel().unwrap().wl_surface().client().unwrap();
+    let manager = client
+        .create_resource::<FereseMaterialManagerV1, (), Ferese>(&state.display_handle, 1, ())
+        .unwrap();
+    request(&mut public_wire, manager.id().protocol_id(), 1, &[7, 2], None);
+    dispatch(&mut events, &mut state);
+    state.theme_settings.material_style = crate::config::MaterialStyle::Translucent;
+    state.theme_settings.backdrop_blur = 12.0;
+    // Place the glass over the secret, preserving the protocol-owned buffer.
+    let public_id = state.windows.ids()[&public];
+    let secret_geometry = *state.windows.geometry(&id).unwrap();
+    state.windows.set_geometry(public_id, secret_geometry);
+    state
+        .space
+        .map_element(public.clone(), state.space.element_location(&secret).unwrap(), true);
+    let before = pixels(&mut state, &mut renderer, &output, false, &mut display_texture);
+    let protected = pixels(&mut state, &mut renderer, &output, true, &mut capture_texture);
+    state.space.unmap_elem(&secret);
+    state.space.unmap_elem(&child);
+    let absent = pixels(&mut state, &mut renderer, &output, true, &mut capture_texture);
+    assert_eq!(protected, absent, "protected content leaked through a cached material");
+    let without = pixels(&mut state, &mut renderer, &output, false, &mut display_texture);
+    assert_ne!(before, without, "fixture must place protected content behind glass");
+
+    // A stationary client's cursor is a separate surface and can outlive its
+    // protected toplevel. Never reveal that retained image after an opt-out or close.
+    use smithay::input::{SeatHandler, pointer::CursorImageStatus};
+    use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+    let client = secret.toplevel().unwrap().wl_surface().client().unwrap();
+    let compositor = client
+        .create_resource::<WlCompositor, (), Ferese>(&state.display_handle, 6, ())
+        .unwrap();
+    request(&mut secret_wire, compositor.id().protocol_id(), 0, &[13], None);
+    request(&mut secret_wire, 13, 1, &[6, 0, 0], None);
+    request(&mut secret_wire, 13, 6, &[], None);
+    dispatch(&mut events, &mut state);
+    let cursor = client
+        .object_from_protocol_id::<WlSurface>(&state.display_handle, 13)
+        .unwrap();
+    let seat = state.seat.clone();
+    state.cursor_image(&seat, CursorImageStatus::Surface(cursor.clone()));
+    assert!(state.capture_cursor_protected());
+    app_id(&mut state, &secret, "public-again");
+    state.cursor_image(&seat, CursorImageStatus::Surface(cursor.clone()));
+    assert!(state.capture_cursor_protected());
+    let mut presentation = state.current_window_presentation(id).unwrap();
+    presentation.close();
+    let snapshot = crate::render::capture_resize_snapshot(
+        &mut renderer,
+        &secret,
+        secret.geometry(),
+        1.0,
+        crate::presentation::SNAPSHOT_BUDGET,
+    )
+    .unwrap()
+    .unwrap();
+    state.remove_tiled_window(&secret);
+    assert!(state.capture_cursor_protected());
+    assert!(matches!(&state.cursor_status, CursorImageStatus::Surface(current) if current == &cursor));
+    state.cursor_image(&seat, CursorImageStatus::Hidden);
+    assert!(!state.capture_cursor_protected());
+    assert!(!state.has_capture_exclusions());
+
+    // A close snapshot remains visible after the protected client leaves the
+    // registry. The nested readback shortcut must still use the filtered scene.
+    state.space.unmap_elem(&public);
+    state.space.unmap_elem(&child);
+    state.render.closing.push(crate::render::ClosedWindow {
+        presentation,
+        output: state.output_ids[&output],
+        below: None,
+        snapshot,
+        handoff: None,
+        radius: 0.0,
+        shape: crate::presentation::CornerShape::Continuous,
+        decorations: 0.0,
+        dim: 0.0,
+        fill: None,
+        material: None,
+    });
+    assert!(
+        state.has_capture_exclusions(),
+        "close snapshot bypassed capture filtering"
+    );
+    assert!(has_red(&pixels(
+        &mut state,
+        &mut renderer,
+        &output,
+        false,
+        &mut display_texture
+    )));
+    assert!(!has_red(&pixels(
+        &mut state,
+        &mut renderer,
+        &output,
+        true,
+        &mut capture_texture
+    )));
+}

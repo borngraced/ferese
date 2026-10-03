@@ -5,7 +5,7 @@ use std::os::fd::AsFd;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-mod capture;
+pub(crate) mod capture;
 mod lid;
 mod mirror;
 mod output_power;
@@ -251,6 +251,7 @@ struct DirectOutput {
     identity: String,
     mirror_source: Option<String>,
     mirror_texture: Option<GlesTexture>,
+    mirror_capture_texture: Option<GlesTexture>,
     mirror_canvas: Option<Output>,
     mirror_id: smithay::backend::renderer::element::Id,
     mirror_commit: CommitCounter,
@@ -1267,13 +1268,17 @@ fn render_output(
                 primary.sync.wait()?;
             }
 
-            capture::capture_output(
-                state,
-                &mut device.renderer,
-                &mut output.capture_texture,
-                &output.output,
-                &frame,
-            )?;
+            if output.mirror_source.is_some() {
+                capture::capture_mirror(state, &mut device.renderer, &scene_output, &frame, &mut output)?;
+            } else {
+                capture::capture_output(
+                    state,
+                    &mut device.renderer,
+                    &mut output.capture_texture,
+                    &output.output,
+                    &frame,
+                )?;
+            }
 
             if result.is_empty {
                 output
@@ -1511,6 +1516,7 @@ fn remove_device(state: &mut Ferese, node: DrmNode) {
     let context = device.renderer.context_id().erased();
     state.wallpaper.forget_context(&context);
     state.render.forget_context(&context);
+    state.capture_render.forget_context(&context);
     for (crtc, mut output) in device.outputs {
         cancel_output_timers(&state.loop_handle, &mut output);
         if let Some(global) = output.global.take() {
@@ -2027,6 +2033,7 @@ fn create_direct_output(
         identity,
         mirror_source,
         mirror_texture: None,
+        mirror_capture_texture: None,
         mirror_canvas: None,
         mirror_id: smithay::backend::renderer::element::Id::new(),
         mirror_commit: CommitCounter::default(),

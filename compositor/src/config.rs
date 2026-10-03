@@ -1016,7 +1016,7 @@ mod tests {
     #[test]
     fn parses_and_validates_window_rules() {
         let config = parse(
-            "window-rule app-id=\"org.example.Editor\" workspace=3 floating=#true width=900.0 height=600.0 fullscreen=#false\n",
+            "window-rule app-id=\"org.example.Editor\" workspace=3 floating=#true width=900.0 height=600.0 fullscreen=#false block-out-from-screencasts=#true\n",
         );
         let rules = config.window_rules().unwrap();
         let result = window_rules::resolve(&rules, Some("org.example.editor.desktop"), Some("Document"), false);
@@ -1026,6 +1026,7 @@ mod tests {
         assert_eq!(result.width, Some(900.0));
         assert_eq!(result.height, Some(600.0));
         assert_eq!(result.fullscreen, Some(false));
+        assert_eq!(result.block_out_from_screencasts, Some(true));
     }
 
     #[test]

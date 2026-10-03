@@ -1046,7 +1046,6 @@ impl OverviewMotion {
 
     #[cfg(test)]
     pub(crate) fn presented_rect(&self, id: WindowId, normal: Rect) -> Rect {
-
         self.presentations.get(&id).map_or(normal, |p| p.current)
     }
 
