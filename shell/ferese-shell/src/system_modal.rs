@@ -291,18 +291,6 @@ impl FereseShell {
         }
     }
 
-    pub(super) fn update_power_materials(&self) {
-        if let Some(modal) = &self.system_modal {
-            for entry in &modal.surfaces {
-                if let Some(effects) = &entry.effects {
-                    let regions = entry.regions.lock().unwrap().clone();
-                    let _ = effects.set_material_regions(&regions, ferese_surface_effects_v1::Role::Modal);
-                    let _ = effects.set_opacity(modal.motion.progress().clamp(0.0, 1.0));
-                }
-            }
-        }
-    }
-
     pub(super) fn close_system_modal(&mut self) -> Task<Message> {
         if self.system_modal.as_ref().is_some_and(SystemModal::is_display_mode) {
             if self.display_mode.busy {
@@ -339,7 +327,6 @@ impl FereseShell {
         {
             return self.destroy_system_modal(false);
         }
-        self.update_power_materials();
         Task::none()
     }
 
@@ -483,9 +470,12 @@ impl FereseShell {
             |now| modal.motion.frame_active(now),
             |now| {
                 if let Some(effects) = &surface.effects {
-                    let _ = effects
-                        .set_material_regions(&surface.regions.lock().unwrap(), ferese_surface_effects_v1::Role::Modal);
-                    let _ = effects.set_opacity(modal.motion.progress_at(now).clamp(0.0, 1.0));
+                    let _ = effects.set_presentation(
+                        &surface.regions.lock().unwrap(),
+                        modal.motion.progress_at(now),
+                        [],
+                        ferese_surface_effects_v1::Role::Modal,
+                    );
                 }
             },
             |now| {

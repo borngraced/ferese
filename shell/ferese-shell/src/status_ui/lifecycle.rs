@@ -145,9 +145,6 @@ impl FereseShell {
 
     pub fn animate_menu(&mut self) -> Task<Message> {
         if let Some(menu) = &self.menu {
-            if let Some(effects) = &menu.effects {
-                let _ = effects.set_opacity(menu.progress().clamp(0.0, 1.0));
-            }
             if menu.motion.closing() && !menu.animating() {
                 return self.destroy_menu();
             }

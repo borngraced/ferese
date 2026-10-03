@@ -119,10 +119,10 @@ class ShellMotionTest(unittest.TestCase):
                     # Clock/status updates still redraw settled surfaces. Count
                     # commits: Iced can request two callbacks for one redraw.
                     self.assertLessEqual(idle_frames, 12, "settled toast kept requesting animation frames")
-                    material_updates = log_path.read_text().count('.set_region_opacities(')
+                    material_updates = log_path.read_text().count('.set_presentation(')
                     dbus("CloseNotification", notice)
                     wait_for(lambda: destroyed(surface), timeout=5)
-                    self.assertGreater(log_path.read_text().count('.set_region_opacities(') - material_updates, 5,
+                    self.assertGreater(log_path.read_text().count('.set_presentation(') - material_updates, 5,
                                        "notification materials did not follow their fade")
                     print(f"Toast: {opening_frames} opening callback requests, {idle_frames / 2:g} settled commits/s; destroyed", flush=True)
 

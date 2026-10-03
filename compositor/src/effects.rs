@@ -52,12 +52,21 @@ pub(crate) fn resolve_material(role: SemanticRole, style: MaterialStyle, opacity
 }
 
 #[derive(Debug)]
+struct PendingPresentation {
+    role: SemanticRole,
+    regions: Vec<[f64; 5]>,
+    opacity: u32,
+    region_opacities: Vec<u32>,
+}
+
+#[derive(Debug)]
 struct SurfaceEffectsState {
     attached: AtomicBool,
     generation: AtomicU64,
     role: Mutex<Option<SemanticRole>>,
     regions: Mutex<Option<Vec<[f64; 5]>>>,
     opacity: Mutex<u32>,
+    pending: Mutex<Option<PendingPresentation>>,
     region_opacities: Mutex<Vec<u32>>,
     presentation_supported: AtomicBool,
     dismissing: AtomicBool,
@@ -71,10 +80,24 @@ impl SurfaceEffectsState {
             role: Mutex::new(None),
             regions: Mutex::new(None),
             opacity: Mutex::new(1000),
+            pending: Mutex::new(None),
             region_opacities: Mutex::new(Vec::new()),
             presentation_supported: AtomicBool::new(false),
             dismissing: AtomicBool::new(false),
         }
+    }
+
+    fn commit_presentation(&self) {
+        let Some(pending) = self.pending.lock().unwrap().take() else {
+            return;
+        };
+        *self.role.lock().unwrap() = Some(pending.role);
+        *self.regions.lock().unwrap() = Some(pending.regions);
+        *self.region_opacities.lock().unwrap() = pending.region_opacities;
+        if !self.dismissing.load(Ordering::Acquire) {
+            *self.opacity.lock().unwrap() = pending.opacity;
+        }
+        self.generation.fetch_add(1, Ordering::Release);
     }
 
     fn set_role(&self, role: Option<SemanticRole>) -> bool {
@@ -103,7 +126,7 @@ impl SurfaceEffectsUserData {
 }
 
 pub(crate) fn init_global(display: &DisplayHandle) {
-    display.create_global::<Ferese, FereseEffectsManagerV1, _>(4, ());
+    display.create_global::<Ferese, FereseEffectsManagerV1, _>(5, ());
     display.create_global::<Ferese, FereseMaterialManagerV1, _>(1, ());
 }
 
@@ -183,6 +206,14 @@ impl Dispatch<FereseSurfaceMaterialV1, SurfaceEffectsUserData> for Ferese {
             detach(&surface);
         }
     }
+}
+
+pub(crate) fn commit_presentation(surface: &WlSurface) {
+    with_states(surface, |states| {
+        if let Some(effects) = states.data_map.get::<SurfaceEffectsState>() {
+            effects.commit_presentation();
+        }
+    });
 }
 
 pub(crate) fn surface_regions(surface: &WlSurface) -> Option<Vec<[f64; 5]>> {
@@ -330,6 +361,30 @@ impl Dispatch<FereseSurfaceEffectsV1, SurfaceEffectsUserData> for Ferese {
         };
 
         match request {
+            ferese_surface_effects_v1::Request::SetPresentation {
+                role,
+                regions,
+                opacity,
+                region_opacities,
+            } => {
+                let (Some(role), Some(regions), Some(region_opacities)) = (
+                    decode_role(role),
+                    decode_regions(&regions),
+                    decode_region_opacities(&region_opacities),
+                ) else {
+                    return;
+                };
+                with_states(&surface, |states| {
+                    if let Some(effects) = states.data_map.get::<SurfaceEffectsState>() {
+                        *effects.pending.lock().unwrap() = Some(PendingPresentation {
+                            role,
+                            regions,
+                            opacity: opacity.min(1000),
+                            region_opacities,
+                        });
+                    }
+                });
+            }
             ferese_surface_effects_v1::Request::SetOpacity { opacity } => {
                 let changed = with_states(&surface, |states| {
                     let Some(effects) = states.data_map.get::<SurfaceEffectsState>() else {
@@ -352,15 +407,8 @@ impl Dispatch<FereseSurfaceEffectsV1, SurfaceEffectsUserData> for Ferese {
                 }
             }
             ferese_surface_effects_v1::Request::SetRole { role } => {
-                let role = match role {
-                    WEnum::Value(ferese_surface_effects_v1::Role::Panel) => SemanticRole::Panel,
-                    WEnum::Value(ferese_surface_effects_v1::Role::PanelElevated) => SemanticRole::PanelElevated,
-                    WEnum::Value(ferese_surface_effects_v1::Role::Popover) => SemanticRole::Popover,
-                    WEnum::Value(ferese_surface_effects_v1::Role::Menu) => SemanticRole::Menu,
-                    WEnum::Value(ferese_surface_effects_v1::Role::Notification) => SemanticRole::Notification,
-                    WEnum::Value(ferese_surface_effects_v1::Role::Hud) => SemanticRole::Hud,
-                    WEnum::Value(ferese_surface_effects_v1::Role::Modal) => SemanticRole::Modal,
-                    WEnum::Unknown(_) | WEnum::Value(_) => return,
+                let Some(role) = decode_role(role) else {
+                    return;
                 };
                 if set_surface_role(&surface, Some(role)) {
                     crate::backends::direct::render_surface(state, &surface);
@@ -432,6 +480,19 @@ impl Dispatch<FereseSurfaceEffectsV1, SurfaceEffectsUserData> for Ferese {
     }
 }
 
+fn decode_role(role: WEnum<ferese_surface_effects_v1::Role>) -> Option<SemanticRole> {
+    Some(match role {
+        WEnum::Value(ferese_surface_effects_v1::Role::Panel) => SemanticRole::Panel,
+        WEnum::Value(ferese_surface_effects_v1::Role::PanelElevated) => SemanticRole::PanelElevated,
+        WEnum::Value(ferese_surface_effects_v1::Role::Popover) => SemanticRole::Popover,
+        WEnum::Value(ferese_surface_effects_v1::Role::Menu) => SemanticRole::Menu,
+        WEnum::Value(ferese_surface_effects_v1::Role::Notification) => SemanticRole::Notification,
+        WEnum::Value(ferese_surface_effects_v1::Role::Hud) => SemanticRole::Hud,
+        WEnum::Value(ferese_surface_effects_v1::Role::Modal) => SemanticRole::Modal,
+        WEnum::Unknown(_) | WEnum::Value(_) => return None,
+    })
+}
+
 fn set_surface_role(surface: &WlSurface, role: Option<SemanticRole>) -> bool {
     with_states(surface, |states| {
         states
@@ -448,6 +509,7 @@ fn detach(surface: &WlSurface) -> bool {
         };
         let role_changed = effects.set_role(None);
         effects.region_opacities.lock().unwrap().clear();
+        effects.pending.lock().unwrap().take();
         effects.dismissing.store(false, Ordering::Release);
         let mut opacity = effects.opacity.lock().unwrap();
         let opacity_changed = *opacity != 1000;
@@ -488,6 +550,38 @@ pub(crate) fn fade_dismissed_surface(surface: &WlSurface, opacity: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn presentation_waits_for_buffer_commit_and_keeps_dismissal_ownership() {
+        let state = SurfaceEffectsState::new();
+        let queue = |opacity| PendingPresentation {
+            role: SemanticRole::Popover,
+            regions: vec![[1.25, 2.5, 100.0, 80.0, 12.0]],
+            opacity,
+            region_opacities: vec![500],
+        };
+        *state.pending.lock().unwrap() = Some(queue(900));
+        assert_eq!(*state.opacity.lock().unwrap(), 1000);
+        assert!(state.regions.lock().unwrap().is_none());
+        assert_eq!(state.generation.load(Ordering::Acquire), 0);
+        // Several requests before one buffer commit present only the last.
+        *state.pending.lock().unwrap() = Some(queue(800));
+        state.commit_presentation();
+        assert_eq!(*state.opacity.lock().unwrap(), 800);
+        assert_eq!(state.regions.lock().unwrap().as_ref().unwrap()[0][0], 1.25);
+        assert_eq!(*state.region_opacities.lock().unwrap(), [500]);
+        assert_eq!(state.generation.load(Ordering::Acquire), 1);
+        state.commit_presentation();
+        assert_eq!(state.generation.load(Ordering::Acquire), 1);
+        state.dismissing.store(true, Ordering::Release);
+        *state.pending.lock().unwrap() = Some(queue(1000));
+        state.commit_presentation();
+        assert_eq!(
+            *state.opacity.lock().unwrap(),
+            800,
+            "client cannot restart compositor fade"
+        );
+    }
 
     #[test]
     fn region_opacities_validate_independent_fades() {

@@ -120,6 +120,7 @@ impl OpenMenu {
         super::EFFECT_FRAME_PENDING.store(false, Ordering::Relaxed);
     }
 
+    #[cfg(test)]
     pub fn progress(&self) -> f32 {
         self.motion.progress()
     }
@@ -138,8 +139,12 @@ impl FereseShell {
             |now| menu.motion.frame_active(now),
             |now| {
                 if let Some(effects) = &menu.effects {
-                    let _ = effects.set_regions(&menu.regions.lock().unwrap());
-                    let _ = effects.set_opacity(menu.motion.progress_at(now).clamp(0.0, 1.0));
+                    let _ = effects.set_presentation(
+                        &menu.regions.lock().unwrap(),
+                        menu.motion.progress_at(now),
+                        [],
+                        super::ferese_surface_effects_v1::Role::Popover,
+                    );
                 }
             },
             |now| {

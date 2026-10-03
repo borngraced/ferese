@@ -524,12 +524,14 @@ impl FereseShell {
                 if let Some(surface) = &self.notification_surface
                     && let Some(effects) = &surface.effects
                 {
-                    let _ = effects.set_regions(&surface.regions.lock().unwrap());
-                    let _ = effects.set_region_opacities(
+                    let _ = effects.set_presentation(
+                        &surface.regions.lock().unwrap(),
+                        1.0,
                         self.notifications
                             .popup_groups_at(now)
                             .iter()
                             .map(|(_, opacity, _)| *opacity),
+                        ferese_surface_effects_v1::Role::Popover,
                     );
                 }
             },
