@@ -29,6 +29,7 @@ Ferese combines a window manager and desktop shell with one configuration.
 - Desktop widgets, including a clock and sticky notes
 - Screenshots with annotation, screen sharing and built-in recording
 - A built-in lock screen and authentication dialogs
+- [Idle inhibition](docs/configuration.md#idle-inhibition) during fullscreen media playback, with rules for selected apps
 - Settings and Control Center with Wi-Fi, Bluetooth and audio controls
 
 ## How Ferese compares
@@ -74,7 +75,7 @@ Configure Ferese through **Control Center → Settings** or `~/.config/ferese/co
 Changes apply live. Invalid edits leave the last working configuration in place.
 
 The [configuration reference](docs/configuration.md) and [example
-config](packaging/config.kdl) cover everything from appearance and window layouts to
+config](packaging/config.kdl) cover appearance, window layouts,
 displays and startup apps.
 
 ## Default shortcuts

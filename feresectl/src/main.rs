@@ -177,6 +177,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<(String, Value),
         | "close"
         | "get-focused-window"
         | "get-windows"
+        | "get-idle-inhibition"
         | "get-workspaces"
         | "get-outputs"
         | "outputs"
@@ -219,7 +220,7 @@ fn socket_path() -> Result<PathBuf, io::Error> {
 }
 
 fn usage() -> String {
-    "usage: feresectl outputs\n       feresectl output-profiles\n       feresectl <output-confirm|output-revert>\n       feresectl output-layout <internal-only|external-only|extend|mirror>\n       feresectl toggle-display-mode\n       feresectl output-profile <name|auto>\n       feresectl output-internal <on|off>\n       feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl screenshot-window <window-id>\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl workspace-back-and-forth\n       feresectl <focus-last-window|focus-mru-next|focus-mru-previous>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview|toggle-keybinding-guide>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|reload-config>".to_owned()
+    "usage: feresectl outputs\n       feresectl output-profiles\n       feresectl <output-confirm|output-revert>\n       feresectl output-layout <internal-only|external-only|extend|mirror>\n       feresectl toggle-display-mode\n       feresectl output-profile <name|auto>\n       feresectl output-internal <on|off>\n       feresectl autostart\n       feresectl screenshot [--geometry \"x,y WxH\"]\n       feresectl screenshot-window <window-id>\n       feresectl <focus|move|resize> <direction>\n       feresectl <workspace|move-to-workspace> <index>\n       feresectl workspace-back-and-forth\n       feresectl <focus-last-window|focus-mru-next|focus-mru-previous>\n       feresectl <toggle-floating|toggle-maximized|toggle-fullscreen|toggle-layout|toggle-overview|toggle-keybinding-guide>\n       feresectl <cycle-column-width|center-column|consume|expel|close|exit|request-logout>\n       feresectl <get-focused-window|get-windows|get-workspaces|get-outputs|get-idle-inhibition|reload-config>".to_owned()
 }
 
 #[cfg(test)]
@@ -346,5 +347,7 @@ mod tests {
         assert!(parse_args(["focus".to_owned()]).is_err());
         assert!(parse_args(["reload-config".to_owned()]).is_ok());
         assert!(parse_args(["reload-config".to_owned(), "extra".to_owned()]).is_err());
+        assert!(parse_args(["get-idle-inhibition".to_owned()]).is_ok());
+        assert!(parse_args(["get-idle-inhibition".to_owned(), "extra".to_owned()]).is_err());
     }
 }

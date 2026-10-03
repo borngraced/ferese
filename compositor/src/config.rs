@@ -34,6 +34,8 @@ pub struct Config {
     #[serde(default)]
     lock_screen: crate::session_lock::IdleSettings,
     #[serde(default)]
+    idle_inhibit: crate::idle_inhibition::Settings,
+    #[serde(default)]
     desktop_widgets: ferese_config::desktop::DesktopWidgets,
     #[serde(default)]
     pub(crate) autostart: Vec<DaemonConfig>,
@@ -115,6 +117,7 @@ impl Config {
         let bindings = self.bindings(&input_settings)?;
         Ok(crate::RuntimeConfig {
             lock_idle: self.lock_screen.validate()?,
+            idle_inhibit: self.idle_inhibit,
             autostart: self.autostart.clone(),
             layout_mode: self.layout_mode(),
             workspace_auto_back_and_forth: self.workspaces.auto_back_and_forth,

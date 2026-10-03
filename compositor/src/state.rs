@@ -443,7 +443,7 @@ pub struct Ferese {
     pub(crate) input_settings: InputSettings,
     pub(crate) bindings: BindingSet,
     workspace_auto_back_and_forth: bool,
-    window_rules: Vec<WindowRule>,
+    pub(crate) window_rules: Vec<WindowRule>,
     pub(crate) theme_settings: ThemeSettings,
     pub(crate) inactive_dim: crate::config::InactiveDimSettings,
     animations_enabled: bool,
@@ -464,6 +464,9 @@ pub struct Ferese {
     pub intercepted_keys: HashSet<Keycode>,
     pub(crate) swipe: Swipe,
     pub idle_inhibitors: HashMap<WlSurface, usize>,
+    pub(crate) idle_inhibit: crate::idle_inhibition::Settings,
+    pub(crate) media_players: Vec<crate::idle_inhibition::media::Player>,
+    pub(crate) automatic_idle_inhibited: bool,
     pub active_shortcuts_inhibitor: Option<KeyboardShortcutsInhibitor>,
     pub direct_backend: Option<DirectBackendState>,
     _ipc_socket: Option<IpcSocketGuard>,
@@ -517,6 +520,7 @@ pub struct Ferese {
 #[derive(Clone)]
 pub struct RuntimeConfig {
     pub(crate) lock_idle: IdleSettings,
+    pub(crate) idle_inhibit: crate::idle_inhibition::Settings,
     pub(crate) autostart: Vec<DaemonConfig>,
     pub(crate) overview_font_family: String,
     pub(crate) wallpaper: WallpaperConfig,
@@ -701,6 +705,9 @@ impl Ferese {
             intercepted_keys: HashSet::new(),
             swipe: Swipe::default(),
             idle_inhibitors: HashMap::new(),
+            idle_inhibit: config.idle_inhibit,
+            media_players: Vec::new(),
+            automatic_idle_inhibited: false,
             active_shortcuts_inhibitor: None,
             direct_backend: None,
             _ipc_socket: None,
@@ -852,6 +859,8 @@ impl Ferese {
             self.portal_shortcuts.reconcile(&self.bindings, &self.input_settings);
         }
         let old_rules = std::mem::replace(&mut self.window_rules, config.window_rules);
+        let idle_policy_changed = self.idle_inhibit != config.idle_inhibit || old_rules != self.window_rules;
+        self.idle_inhibit = config.idle_inhibit;
         self.theme_settings = config.theme_settings;
         self.inactive_dim = config.inactive_dim;
         self.column_width_presets = config.column_width_presets;
@@ -883,6 +892,10 @@ impl Ferese {
         if old_rules != self.window_rules {
             self.refresh_capture_privacy();
             self.reapply_window_rules(&old_rules);
+        }
+
+        if idle_policy_changed {
+            self.refresh_idle_inhibition();
         }
 
         self.overview.set_font_family(config.overview_font_family);

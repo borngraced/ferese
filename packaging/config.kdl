@@ -197,6 +197,10 @@ lock-screen {
 // Install swayidle and test unlocking before enabling automatic locking.
 // autostart "swayidle" "-w" "timeout" "300" "ferese-lock" "before-sleep" "ferese-lock" "lock" "ferese-lock"
 
+// Fullscreen MPRIS playback keeps the session awake until paused or hidden.
+// idle-inhibit { fullscreen-playback #false; }
+// window-rule app-id="org.example.Presentation" idle-inhibit="visible"
+
 // Find display names with feresectl get-outputs, then adjust and uncomment.
 // output-profile "docked" {
 //     output "HDMI-A-1" scale=1.5 { position 0 0; }

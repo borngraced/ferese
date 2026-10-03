@@ -116,7 +116,7 @@ impl PortalSession {
         }
     }
 
-    fn idle_inhibited(&self) -> bool {
+    pub(crate) fn idle_inhibited(&self) -> bool {
         self.inhibitors.values().any(|inhibitor| inhibitor.flags & 8 != 0)
     }
 
@@ -234,21 +234,6 @@ impl PortalSession {
 }
 
 impl crate::Ferese {
-    pub(crate) fn refresh_idle_inhibition(&mut self) {
-        let eligible = if self.idle_inhibitors.is_empty() {
-            Default::default()
-        } else {
-            self.callback_outputs()
-        };
-
-        self.idle_notifier_state.set_is_inhibited(
-            self.idle_inhibitors
-                .keys()
-                .any(|surface| eligible.contains_key(&surface.into()))
-                || self.portal_session.idle_inhibited(),
-        );
-    }
-
     pub(crate) fn end_portal_session(&mut self) {
         let token = self.portal_session.query.as_ref().map(|query| query.token);
         let result =

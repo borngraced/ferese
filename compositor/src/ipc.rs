@@ -692,6 +692,17 @@ impl Ferese {
             "close" => self.close_focused_window(),
             "get-focused-window" => return Ok(self.focused_window_json()),
             "get-windows" => return Ok(self.windows_json()),
+            "get-idle-inhibition" => {
+                return Ok(json!({
+                    "inhibited": self.idle_notifier_state.is_inhibited(),
+                    "automatic": self.automatic_idle_inhibited,
+                    "fullscreen-playback": self.idle_inhibit.fullscreen_playback,
+                    "portal": self.portal_session.idle_inhibited(),
+                    "players": self.media_players.iter().map(|player| json!({
+                        "name": player.name, "desktop-entry": player.desktop_entry, "playing": player.playing,
+                    })).collect::<Vec<_>>(),
+                }));
+            }
             "get-keybindings" => {
                 let map = crate::config::physical_keymap(&self.input_settings).ok();
                 return Ok(json!(

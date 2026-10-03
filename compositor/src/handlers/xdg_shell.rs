@@ -36,6 +36,7 @@ impl XdgShellHandler for Ferese {
     fn title_changed(&mut self, surface: ToplevelSurface) {
         self.refresh_capture_privacy();
         if self.windows.refresh_metadata(surface.wl_surface()) {
+            self.refresh_idle_inhibition();
             self.send_shell_snapshots();
             for output in self.surface_outputs(surface.wl_surface()) {
                 self.defer_output_redraw(output);
@@ -46,6 +47,7 @@ impl XdgShellHandler for Ferese {
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
         self.refresh_capture_privacy();
         if self.windows.refresh_metadata(surface.wl_surface()) {
+            self.refresh_idle_inhibition();
             self.send_shell_snapshots();
             for output in self.surface_outputs(surface.wl_surface()) {
                 self.defer_output_redraw(output);
@@ -55,6 +57,7 @@ impl XdgShellHandler for Ferese {
 
     fn parent_changed(&mut self, surface: ToplevelSurface) {
         self.refresh_capture_privacy();
+        self.refresh_idle_inhibition();
         let Some(parent) = surface.parent() else {
             return;
         };

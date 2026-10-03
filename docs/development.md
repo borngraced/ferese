@@ -83,6 +83,18 @@ cargo test --locked -p ferese backends::direct::capture::tests -- --ignored
 cargo test --locked -p ferese mirrored_pixels_fit -- --ignored
 ```
 
+## Idle inhibition checks
+
+The playback test runs a fake MPRIS player on a private bus and opens a client in
+a temporary nested desktop. It checks pause/stop, workspace switching, window closure,
+player replacement and live rule changes. It needs a Wayland session,
+PyGObject, `dbus-run-session`, `cc` and `wayland-scanner`.
+
+```sh
+cargo build --release --locked -p ferese -p feresectl
+FERESE_TEST_IDLE_INHIBITION=1 FERESE_TEST_BINARY=target/release/ferese FERESE_TEST_CTL=target/release/feresectl python3 scripts/tests/test_idle_inhibition_isolated.py
+```
+
 ## Report a bug
 
 Include the commit or installed release, reproduction steps, backend (nested or

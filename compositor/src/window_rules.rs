@@ -11,6 +11,7 @@ pub(crate) struct WindowRuleConfig {
     pub height: Option<f64>,
     pub fullscreen: Option<bool>,
     pub block_out_from_screencasts: Option<bool>,
+    pub idle_inhibit: Option<crate::idle_inhibition::Mode>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -24,6 +25,13 @@ pub struct WindowRule {
     height: Option<f64>,
     fullscreen: Option<bool>,
     block_out_from_screencasts: Option<bool>,
+    idle_inhibit: Option<crate::idle_inhibition::Mode>,
+}
+
+impl WindowRule {
+    pub(crate) fn idle_policy(&self) -> Option<crate::idle_inhibition::Mode> {
+        self.idle_inhibit
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -34,6 +42,7 @@ pub struct WindowRuleResult {
     pub height: Option<f64>,
     pub fullscreen: Option<bool>,
     pub block_out_from_screencasts: Option<bool>,
+    pub idle_inhibit: Option<crate::idle_inhibition::Mode>,
 }
 
 /// Only changed matches should override an existing window's manual state.
@@ -42,9 +51,11 @@ pub(crate) fn live_result(
     mut new: WindowRuleResult,
     transient: bool,
 ) -> Option<WindowRuleResult> {
-    // Capture policy is resolved independently of placement at capture time.
+    // Capture and idle policies are reevaluated without changing placement.
     old.block_out_from_screencasts = None;
     new.block_out_from_screencasts = None;
+    old.idle_inhibit = None;
+    new.idle_inhibit = None;
     if old == new {
         return None;
     }
@@ -97,6 +108,7 @@ pub fn resolve(rules: &[WindowRule], app_id: Option<&str>, title: Option<&str>, 
         result.height = rule.height.or(result.height);
         result.fullscreen = rule.fullscreen.or(result.fullscreen);
         result.block_out_from_screencasts = rule.block_out_from_screencasts.or(result.block_out_from_screencasts);
+        result.idle_inhibit = rule.idle_inhibit.or(result.idle_inhibit);
     }
 
     result
@@ -137,6 +149,7 @@ fn validate_rule(index: usize, rule: &WindowRuleConfig) -> Result<WindowRule, St
         height,
         fullscreen: rule.fullscreen,
         block_out_from_screencasts: rule.block_out_from_screencasts,
+        idle_inhibit: rule.idle_inhibit,
     })
 }
 
@@ -171,7 +184,7 @@ pub(crate) fn is_native_dialog(app_id: Option<&str>) -> bool {
     )
 }
 
-fn normalize_app_id(value: &str) -> String {
+pub(crate) fn normalize_app_id(value: &str) -> String {
     value
         .trim()
         .strip_suffix(".desktop")
@@ -215,6 +228,7 @@ mod tests {
             height: None,
             fullscreen: None,
             block_out_from_screencasts: None,
+            idle_inhibit: None,
         }
     }
 
@@ -346,6 +360,7 @@ mod tests {
             height: None,
             fullscreen: None,
             block_out_from_screencasts: None,
+            idle_inhibit: None,
         };
         let invalid_size = WindowRuleConfig {
             width: Some(f64::NAN),

@@ -1656,6 +1656,7 @@ dependencies = [
  "ferese-layout",
  "ferese-protocols",
  "fontdb",
+ "futures-lite",
  "image",
  "jiff",
  "libc",

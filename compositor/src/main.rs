@@ -12,6 +12,7 @@ mod frame_scheduler;
 mod gestures;
 mod grabs;
 mod handlers;
+mod idle_inhibition;
 mod input;
 mod input_capture;
 mod ipc;
@@ -109,6 +110,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         });
     theme::init(&mut event_loop, &mut state, candidate)?;
     resume::init(&mut event_loop)?;
+    idle_inhibition::media::init(&mut event_loop)?;
     overview::init_font_loader(&mut event_loop, &mut state)?;
     backends::init(launch.backend, &mut event_loop, &mut state)?;
     info!(socket = ?state.socket_name, backend = ?launch.backend, "Ferese is accepting Wayland clients");
