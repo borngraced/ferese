@@ -164,6 +164,13 @@ impl FereseShell {
     }
 
     pub(super) fn handle_event(&mut self, event: Event, id: window::Id) -> Task<Message> {
+        if let Event::Mouse(cosmic::iced::mouse::Event::ButtonPressed(_)) = &event
+            && let Some(modal) = &mut self.system_modal
+            && modal.contains(id)
+        {
+            modal.focus_visible = false;
+        }
+
         if let Event::Mouse(mouse) = &event {
             if !self
                 .outputs

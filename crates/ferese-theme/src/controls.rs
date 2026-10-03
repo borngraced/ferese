@@ -9,11 +9,24 @@ pub fn surface(background: Color, radius: f32) -> theme::Container<'static> {
 }
 
 pub fn button_style(p: Palette, selected: bool) -> theme::Button {
-    styled_button(p, selected, false, 1.0)
+    button_style_with_focus(p, selected, true)
+}
+
+pub fn button_style_with_focus(p: Palette, selected: bool, focus_visible: bool) -> theme::Button {
+    styled_button(p, selected, false, 1.0, focus_visible)
 }
 
 /// Selection cards share native button states while revealing the modal material.
 pub fn material_button_style(p: Palette, selected: bool, material_opacity: f32) -> theme::Button {
+    material_button_style_with_focus(p, selected, material_opacity, true)
+}
+
+pub fn material_button_style_with_focus(
+    p: Palette,
+    selected: bool,
+    material_opacity: f32,
+    focus_visible: bool,
+) -> theme::Button {
     let opacity = if material_opacity.is_finite() {
         material_opacity.clamp(0.0, 1.0)
     } else {
@@ -26,7 +39,7 @@ pub fn material_button_style(p: Palette, selected: bool, material_opacity: f32) 
         1.0
     };
 
-    styled_button(p, selected, false, fill)
+    styled_button(p, selected, false, fill, focus_visible)
 }
 
 pub fn text_button<'a, M: Clone + 'a>(
@@ -82,7 +95,7 @@ pub(crate) fn switch_colors(palette: Palette, enabled: bool, hovered: bool) -> (
 }
 
 pub fn navigation_style(p: Palette, selected: bool) -> theme::Button {
-    styled_button(p, selected, true, 1.0)
+    styled_button(p, selected, true, 1.0, true)
 }
 
 pub fn settings_input(p: Palette) -> theme::TextInput {
@@ -128,7 +141,7 @@ pub fn select<'a, M: 'a>(
     }))
 }
 
-fn styled_button(p: Palette, selected: bool, navigation: bool, opacity: f32) -> theme::Button {
+fn styled_button(p: Palette, selected: bool, navigation: bool, opacity: f32, focus_visible: bool) -> theme::Button {
     let style = move |hover: bool, focused: bool| {
         let background = if selected {
             mix(p.sidebar, p.accent, if hover { 0.24 } else { 0.17 })
@@ -169,7 +182,7 @@ fn styled_button(p: Palette, selected: bool, navigation: bool, opacity: f32) -> 
             } else {
                 Color::TRANSPARENT
             },
-            outline_width: if focused { 2. } else { 0. },
+            outline_width: if focused && focus_visible { 2. } else { 0. },
             outline_color: p.accent,
             overlay: None,
             shadow_offset: Vector::ZERO,
@@ -349,6 +362,55 @@ pub fn filled_button(fill: Color, foreground: Color, radius: f32, opacity: f32) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hiding_modal_focus_preserves_button_borders_and_materials() {
+        use cosmic::widget::button::Catalog;
+
+        let palette = Palette::from_resolved(&ferese_config::theme::default_theme());
+        let theme = palette.native_theme();
+
+        for selected in [false, true] {
+            for opacity in [0.65, 1.0] {
+                let hidden = material_button_style_with_focus(palette, selected, opacity, false);
+                let visible = material_button_style_with_focus(palette, selected, opacity, true);
+
+                for (hidden, visible, resting) in [
+                    (
+                        theme.active(true, selected, &hidden),
+                        theme.active(true, selected, &visible),
+                        theme.active(false, selected, &visible),
+                    ),
+                    (
+                        theme.hovered(true, selected, &hidden),
+                        theme.hovered(true, selected, &visible),
+                        theme.hovered(false, selected, &visible),
+                    ),
+                    (
+                        theme.pressed(true, selected, &hidden),
+                        theme.pressed(true, selected, &visible),
+                        theme.pressed(false, selected, &visible),
+                    ),
+                ] {
+                    assert_eq!(hidden.outline_width, 0.0);
+                    assert_eq!(visible.outline_width, 2.0);
+                    assert_eq!(resting.outline_width, 0.0);
+                    assert_eq!(hidden.border_width, 1.0);
+                    assert_eq!(hidden.border_width, visible.border_width);
+                    assert_eq!(hidden.border_color, visible.border_color);
+                    assert_eq!(hidden.border_radius, visible.border_radius);
+                    assert_eq!(hidden.background, visible.background);
+                    assert_eq!(hidden.text_color, visible.text_color);
+                }
+            }
+
+            let hidden = button_style_with_focus(palette, selected, false);
+            let visible = button_style_with_focus(palette, selected, true);
+            assert_eq!(theme.active(true, selected, &hidden).outline_width, 0.0);
+            assert_eq!(theme.active(true, selected, &visible).outline_width, 2.0);
+            assert_eq!(theme.active(true, selected, &hidden).border_width, 1.0);
+        }
+    }
 
     #[test]
     fn authentication_button_does_not_reverse_enabled_and_disabled_text() {

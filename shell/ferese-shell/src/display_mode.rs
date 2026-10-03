@@ -391,6 +391,7 @@ impl FereseShell {
             f32::from(self.config.theme.surface_popover[3]) / 255.0
         };
         let model = &self.display_mode;
+        let focus_visible = self.system_modal.as_ref().is_some_and(|modal| modal.focus_visible);
         let pending = model.pending();
         let mut header = row![
             text("Display mode").size(17),
@@ -435,10 +436,11 @@ impl FereseShell {
                     .id(format!("ferese-display-mode-{}", mode.name()).into())
                     .width(Length::Fill)
                     .padding([14, 6])
-                    .class(ferese_theme::controls::material_button_style(
+                    .class(ferese_theme::controls::material_button_style_with_focus(
                         palette,
                         model.selected == mode,
                         material_opacity,
+                        focus_visible,
                     ))
                     .on_press_maybe(available.then_some(cosmic::Action::App(Message::SelectDisplayMode(mode)))),
             );
@@ -504,6 +506,11 @@ impl FereseShell {
                             palette,
                             false
                         )
+                        .class(ferese_theme::controls::button_style_with_focus(
+                            palette,
+                            false,
+                            focus_visible
+                        ))
                         .id("ferese-modal-cancel".into())
                         .on_press_maybe((!model.busy).then_some(cosmic::Action::App(cancel))),
                         ferese_theme::controls::text_button(
@@ -512,6 +519,11 @@ impl FereseShell {
                             palette,
                             true
                         )
+                        .class(ferese_theme::controls::button_style_with_focus(
+                            palette,
+                            true,
+                            focus_visible
+                        ))
                         .id("ferese-display-apply".into())
                         .on_press_maybe(can_apply.then_some(cosmic::Action::App(apply))),
                     ]
