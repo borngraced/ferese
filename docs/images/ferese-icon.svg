@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="314 307 640 640" role="img" aria-labelledby="title">
+  <title id="title">Ferese</title>
+  <defs>
+    <linearGradient id="upper" gradientUnits="userSpaceOnUse" x1="469" y1="533" x2="914" y2="142">
+      <stop stop-color="#2880fc"/>
+      <stop offset="1" stop-color="#89d5fb"/>
+    </linearGradient>
+    <linearGradient id="lower" gradientUnits="userSpaceOnUse" x1="353" y1="925" x2="766" y2="560">
+      <stop stop-color="#166afb"/>
+      <stop offset="1" stop-color="#6bbbfc"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#upper)" d="M674 329H904C911 329 915 333 913 341C891.5 467.1 790 468 787 468H674C604.7 468 595.1 533 558 533H479C471 533 466 528 469 518L482 469C501.6 401.6 572.9 329 674 329Z"/>
+  <path fill="url(#lower)" d="M615 560H756C763 560 767 565 765 573C751.9 699 645 699 642 699H601C541.4 699 498 743.1 498 801V900C498 917 488 926 476 926H363C357 926 354 921 354 915V802C354 668.7 484.4 560 615 560Z"/>
+</svg>

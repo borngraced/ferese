@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/ferese-lockup.svg" width="300" alt="Ferese">
+  <img src="docs/images/ferese-icon.svg" width="96" height="96" alt="Ferese">
 </p>
 
 <p align="center"><strong>A configurable Wayland desktop</strong></p>

@@ -5,7 +5,6 @@ on:
     paths:
       - "site/**"
       - "docs/**"
-      - "packaging/icons/ferese.svg"
       - "scripts/build-site.py"
       - ".github/workflows/pages.yml"
   workflow_dispatch:

@@ -80,18 +80,13 @@ dl {
   height: 88px;
   gap: 30px;
 }
-.wordmark {
-  font-size: 29px;
-  font-weight: 750;
-  letter-spacing: -1.4px;
+.brand {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
 }
-.wordmark svg {
-  width: 26px;
-  height: 26px;
-  fill: var(--blue);
+.brand-icon {
+  width: 32px;
+  height: 32px;
 }
 .site-header nav {
   display: flex;
@@ -758,12 +753,9 @@ kbd {
     height: 74px;
     gap: 18px;
   }
-  .wordmark {
-    font-size: 25px;
-    gap: 6px;
-  }
-  .wordmark svg {
-    width: 23px;
+  .brand-icon {
+    width: 28px;
+    height: 28px;
   }
   .site-header nav {
     gap: 18px;
@@ -1019,6 +1011,11 @@ kbd {
 .product-intro {
   text-align: center;
   padding-block: 48px 34px;
+}
+.intro-icon {
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 24px;
 }
 .product-tagline {
   font-size: 18px;
