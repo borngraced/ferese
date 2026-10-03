@@ -22,7 +22,7 @@
     DEALINGS IN THE SOFTWARE.
   </copyright>
 
-  <interface name="ferese_effects_manager_v1" version="3">
+  <interface name="ferese_effects_manager_v1" version="4">
     <description summary="assign semantic material roles to surfaces">
       This private global is visible only to clients granted the Ferese effects
       capability. Roles describe compositor-owned appearance policy and do not
@@ -48,7 +48,7 @@
     </enum>
   </interface>
 
-  <interface name="ferese_surface_effects_v1" version="3">
+  <interface name="ferese_surface_effects_v1" version="4">
     <description summary="semantic material role for one surface">
       The role affects only compositor rendering. It does not change surface
       geometry, input, focus, stacking, or the surface's Wayland role.
@@ -97,6 +97,15 @@
         Values above 1000 are clamped. Input and geometry remain unchanged.
       </description>
       <arg name="opacity" type="uint"/>
+    </request>
+    <request name="set_region_opacities" since="4">
+      <description summary="fade individual region materials and shadows">
+        An array of native-endian uint32 opacity values from 0 to 1000,
+        indexed in set_regions order. Content is not affected. Missing entries
+        use 1000. At most 32 entries are allowed; invalid arrays are ignored.
+        These values multiply the surface opacity and persist until replaced.
+      </description>
+      <arg name="opacities" type="array"/>
     </request>
   </interface>
 </protocol>

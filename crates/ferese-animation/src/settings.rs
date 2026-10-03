@@ -2,7 +2,7 @@ use crate::{CrossingPolicy, SpringConfig};
 
 /// One configuration contract for compositor and out-of-process shell motion.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MotionSettings {
     pub enabled: bool,
     pub reduced_motion: bool,
@@ -32,21 +32,17 @@ impl MotionSettings {
         if !self.speed.is_finite() || self.speed <= 0.0 {
             return Err("animation speed must be finite and positive".into());
         }
-        self.spring.resolve(SpringConfig::default())?;
+        self.spring_config()?;
         self.viewport_config()?;
         Ok(())
     }
 
+    pub fn spring_config(self) -> Result<SpringConfig, String> {
+        self.spring.resolve(240.0)
+    }
+
     pub fn viewport_config(self) -> Result<SpringConfig, String> {
-        let mut settings = self.viewport_spring;
-        if settings.duration_ms.is_none() && settings.damping.is_none() && settings.damping_ratio.is_none() {
-            settings.damping_ratio = Some(1.0);
-        }
-        settings.resolve(SpringConfig {
-            stiffness: 320.0,
-            damping: 2.0 * 320.0_f64.sqrt(),
-            ..SpringConfig::default()
-        })
+        self.viewport_spring.resolve(350.0)
     }
 
     /// Only small opacity changes should use a timed duration.
@@ -59,73 +55,50 @@ impl MotionSettings {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SpringSettings {
-    pub mass: Option<f64>,
-    pub stiffness: Option<f64>,
-    pub damping: Option<f64>,
-    pub damping_ratio: Option<f64>,
     pub duration_ms: Option<f64>,
-    pub bounce: Option<f64>,
+    pub bounce: f64,
     pub overshoot: bool,
 }
 
 impl SpringSettings {
-    pub fn resolve(self, base: SpringConfig) -> Result<SpringConfig, String> {
-        let positive = |value: f64| value.is_finite() && value > 0.0;
-        let mut config = SpringConfig {
-            mass: self.mass.unwrap_or(base.mass),
-            stiffness: self.stiffness.unwrap_or(base.stiffness),
-            damping: self.damping.unwrap_or(base.damping),
+    fn resolve(self, default_duration_ms: f64) -> Result<SpringConfig, String> {
+        let duration = self.duration_ms.unwrap_or(default_duration_ms);
+        if !duration.is_finite() || duration <= 0.0 {
+            return Err("spring duration-ms must be finite and positive".into());
+        }
+        if !self.bounce.is_finite() || self.bounce <= -1.0 || self.bounce >= 1.0 {
+            return Err("spring bounce must be between -1 and 1 (exclusive)".into());
+        }
+        if self.bounce > 0.0 && !self.overshoot {
+            return Err("positive spring bounce requires overshoot".into());
+        }
+        let ratio = if self.bounce >= 0.0 {
+            1.0 - self.bounce
+        } else {
+            1.0 / (1.0 + self.bounce)
+        };
+        let omega = std::f64::consts::TAU / (duration / 1000.0);
+        let config = SpringConfig {
+            mass: 1.0,
+            stiffness: omega * omega,
+            damping: 2.0 * omega * ratio,
             crossing: if self.overshoot {
                 CrossingPolicy::AllowOvershoot
             } else {
                 CrossingPolicy::NoCrossing
             },
-            ..base
+            ..SpringConfig::default()
         };
-        if !positive(config.mass) || !positive(config.stiffness) || !config.damping.is_finite() || config.damping < 0.0
+        // Guard derived values too: extreme finite inputs can overflow or
+        // underflow. Every accepted presentation spring must dissipate motion.
+        if !config.stiffness.is_finite()
+            || config.stiffness <= 0.0
+            || !config.damping.is_finite()
+            || config.damping <= 0.0
         {
-            return Err("spring mass/stiffness must be positive and damping nonnegative".into());
-        }
-        if let Some(duration) = self.duration_ms {
-            if self.stiffness.is_some() || self.damping.is_some() || self.damping_ratio.is_some() {
-                return Err("spring duration-ms cannot be combined with stiffness/damping/damping-ratio".into());
-            }
-            let bounce = self.bounce.unwrap_or(0.0);
-            if !positive(duration)
-                || !bounce.is_finite()
-                || (bounce <= -1.0 || bounce >= 1.0)
-                || (bounce > 0.0 && !self.overshoot)
-            {
-                return Err("spring duration-ms must be positive; bounce must be between -1 and 1 (exclusive), and positive bounce requires overshoot".into());
-            }
-            let ratio = if bounce >= 0.0 {
-                1.0 - bounce
-            } else {
-                1.0 / (1.0 + bounce)
-            };
-            let omega = std::f64::consts::TAU / (duration / 1000.0);
-            config.stiffness = config.mass * omega * omega;
-            config.damping = 2.0 * config.mass * omega * ratio;
-        } else {
-            if self.bounce.is_some() {
-                return Err("spring bounce requires duration-ms".into());
-            }
-            if let Some(ratio) = self.damping_ratio {
-                if self.damping.is_some() || !ratio.is_finite() || ratio < 0.0 {
-                    return Err("spring damping-ratio must be nonnegative and cannot be combined with damping".into());
-                }
-                config.damping = 2.0 * ratio * (config.mass * config.stiffness).sqrt();
-            }
-        }
-        if !positive(config.stiffness) || !config.damping.is_finite() {
-            return Err("spring coefficients overflow".into());
-        }
-        // Presentation lifetimes can depend on settlement. An undamped spring
-        // only settles when the first-crossing clamp is enabled.
-        if config.damping == 0.0 && config.crossing == CrossingPolicy::AllowOvershoot {
-            return Err("spring overshoot requires positive damping so motion can settle".into());
+            return Err("spring duration-ms/bounce produce out-of-range coefficients".into());
         }
         Ok(config)
     }
@@ -134,17 +107,76 @@ impl SpringSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
-    fn undamped_overshoot_is_rejected_for_both_motion_properties() {
+    fn defaults_are_critical_with_distinct_spatial_and_viewport_responses() {
+        let settings = MotionSettings::default();
+        for (spring, duration) in [
+            (settings.spring_config().unwrap(), 0.240),
+            (settings.viewport_config().unwrap(), 0.350),
+        ] {
+            assert_eq!(spring.mass, 1.0);
+            assert!((spring.damping / (2.0 * spring.stiffness.sqrt()) - 1.0).abs() < 1e-12);
+            assert!((std::f64::consts::TAU / spring.stiffness.sqrt() - duration).abs() < 1e-12);
+            assert_eq!(spring.crossing, CrossingPolicy::NoCrossing);
+        }
+        settings.validate().unwrap();
+    }
+
+    #[test]
+    fn perceptual_conversion_covers_under_critical_and_overdamping() {
+        for (bounce, ratio) in [(0.0, 1.0), (0.3, 0.7), (-0.5, 2.0)] {
+            let spring = SpringSettings {
+                duration_ms: Some(500.0),
+                bounce,
+                overshoot: bounce > 0.0,
+            }
+            .resolve(240.0)
+            .unwrap();
+            assert!((spring.stiffness - 157.913670417).abs() < 1e-8);
+            assert!((spring.damping / (2.0 * spring.stiffness.sqrt()) - ratio).abs() < 1e-10);
+            assert!((std::f64::consts::TAU * (spring.mass / spring.stiffness).sqrt() - 0.5).abs() < 1e-10);
+        }
+    }
+
+    #[test]
+    fn rejects_nonsettling_and_out_of_range_settings_for_both_properties() {
         for spring in [
             SpringSettings {
-                damping: Some(0.0),
+                bounce: 1.0,
                 overshoot: true,
                 ..Default::default()
             },
             SpringSettings {
-                damping_ratio: Some(0.0),
-                overshoot: true,
+                bounce: -1.0,
+                ..Default::default()
+            },
+            SpringSettings {
+                bounce: f64::NAN,
+                ..Default::default()
+            },
+            SpringSettings {
+                bounce: 0.2,
+                ..Default::default()
+            },
+            SpringSettings {
+                duration_ms: Some(0.0),
+                ..Default::default()
+            },
+            SpringSettings {
+                duration_ms: Some(-100.0),
+                ..Default::default()
+            },
+            SpringSettings {
+                duration_ms: Some(f64::INFINITY),
+                ..Default::default()
+            },
+            SpringSettings {
+                duration_ms: Some(f64::MIN_POSITIVE),
+                ..Default::default()
+            },
+            SpringSettings {
+                duration_ms: Some(f64::MAX),
                 ..Default::default()
             },
         ] {
@@ -165,64 +197,28 @@ mod tests {
                 .is_err()
             );
         }
-        assert!(
-            SpringSettings {
-                overshoot: true,
-                ..Default::default()
-            }
-            .resolve(SpringConfig {
-                damping: 0.0,
-                ..Default::default()
-            })
-            .is_err()
-        );
     }
 
     #[test]
-    fn undamped_motion_needs_the_crossing_clamp_to_settle() {
-        use crate::AnimatedValue;
-        let clamped = SpringSettings {
-            damping: Some(0.0),
+    fn accepted_bounce_retargets_and_settles() {
+        let spring = SpringSettings {
+            bounce: 0.3,
+            overshoot: true,
             ..Default::default()
         }
-        .resolve(SpringConfig::default())
+        .resolve(240.0)
         .unwrap();
-        let mut closing = AnimatedValue {
-            current: 1.0,
-            target: 0.0,
+        let mut motion = crate::AnimatedValue {
+            current: 0.0,
+            target: 1.0,
             velocity: 0.0,
         };
-        let mut free = closing;
-        for _ in 0..3600 {
-            let dt = std::time::Duration::from_secs_f64(1.0 / 60.0);
-            closing.advance(dt, clamped);
-            free.advance(
-                dt,
-                SpringConfig {
-                    crossing: CrossingPolicy::AllowOvershoot,
-                    ..clamped
-                },
-            );
-            assert!(free.current != free.target || free.velocity != 0.0);
-        }
-        assert_eq!(closing.current, closing.target);
-        assert_eq!(closing.velocity, 0.0);
-    }
-
-    #[test]
-    fn viewport_legacy_damping_tracks_overridden_coefficients() {
-        let settings = MotionSettings {
-            viewport_spring: SpringSettings {
-                mass: Some(2.0),
-                stiffness: Some(500.0),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let spring = settings.viewport_config().unwrap();
-        assert_eq!(spring.damping, 2.0 * 1000.0_f64.sqrt());
-        assert_eq!(spring.crossing, CrossingPolicy::NoCrossing);
-        assert!(settings.validate().is_ok());
+        motion.advance(std::time::Duration::from_millis(50), spring);
+        let before = (motion.current, motion.velocity);
+        motion.set_target(0.0);
+        assert_eq!((motion.current, motion.velocity), before);
+        motion.advance(std::time::Duration::from_secs(3), spring);
+        assert!(!motion.is_animating());
     }
 
     #[test]
@@ -248,51 +244,9 @@ mod tests {
             .is_zero()
         );
         assert!(MotionSettings { speed: 0.0, ..slow }.validate().is_err());
-    }
-    #[test]
-    fn perceptual_conversion_and_legacy_defaults() {
-        let base = SpringConfig::default();
-        assert_eq!(SpringSettings::default().resolve(base).unwrap(), base);
-        for (bounce, ratio) in [(0.0, 1.0), (0.3, 0.7), (-0.5, 2.0)] {
-            let spring = SpringSettings {
-                duration_ms: Some(500.0),
-                bounce: Some(bounce),
-                overshoot: bounce > 0.0,
-                ..Default::default()
-            }
-            .resolve(base)
-            .unwrap();
-            assert!((spring.stiffness - 157.913670417).abs() < 1e-8);
-            assert!((spring.damping / (2.0 * spring.stiffness.sqrt()) - ratio).abs() < 1e-10);
-            assert!((std::f64::consts::TAU * (spring.mass / spring.stiffness).sqrt() - 0.5).abs() < 1e-10);
-        }
-    }
-    #[test]
-    fn rejects_ambiguous_or_nonsettling_configuration() {
-        for settings in [
-            SpringSettings {
-                duration_ms: Some(300.0),
-                stiffness: Some(100.0),
-                ..Default::default()
-            },
-            SpringSettings {
-                duration_ms: Some(300.0),
-                bounce: Some(0.3),
-                ..Default::default()
-            },
-            SpringSettings {
-                duration_ms: Some(300.0),
-                bounce: Some(-1.0),
-                ..Default::default()
-            },
-            SpringSettings {
-                duration_ms: Some(300.0),
-                bounce: Some(1.0),
-                overshoot: true,
-                ..Default::default()
-            },
-        ] {
-            assert!(settings.resolve(SpringConfig::default()).is_err());
-        }
+        assert_eq!(
+            slow.spring_config().unwrap(),
+            MotionSettings::default().spring_config().unwrap()
+        );
     }
 }

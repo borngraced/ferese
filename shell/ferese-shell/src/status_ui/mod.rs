@@ -131,12 +131,31 @@ impl OpenMenu {
 
 impl FereseShell {
     fn view_status_menu(&self) -> Element<'_, cosmic::Action<Message>> {
+        let Some(menu) = &self.menu else { return text("").into() };
+        motion::frame_driven(
+            menu.motion.revision(),
+            |now| self.view_status_menu_at(now),
+            |now| menu.motion.frame_active(now),
+            |now| {
+                if let Some(effects) = &menu.effects {
+                    let _ = effects.set_regions(&menu.regions.lock().unwrap());
+                    let _ = effects.set_opacity(menu.motion.progress_at(now).clamp(0.0, 1.0));
+                }
+            },
+            |now| {
+                (menu.motion.closing() && !menu.motion.animating_at(now))
+                    .then_some(cosmic::Action::App(Message::AnimateMenu))
+            },
+        )
+    }
+
+    fn view_status_menu_at(&self, now: Instant) -> Element<'_, cosmic::Action<Message>> {
         let Some(menu) = &self.menu else {
             return text("").into();
         };
         if menu.kind == Menu::Notifications && self.notifications.ready {
             return cosmic::widget::autosize::autosize(
-                self.view_notifications(),
+                self.view_notifications_at(now),
                 cosmic::iced::advanced::widget::Id::new("ferese-notification-center"),
             )
             .limits(
@@ -229,7 +248,7 @@ impl FereseShell {
         cosmic::widget::autosize::autosize(
             super::motion::animated(
                 panel.into(),
-                menu.progress(),
+                menu.motion.progress_at(now),
                 menu.regions.clone(),
                 theme.material_radius,
             ),

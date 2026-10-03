@@ -76,7 +76,7 @@ impl RenderResources {
             .closing
             .iter()
             .filter(|window| window.output == id)
-            .map(|window| window.id)
+            .map(|window| window.presentation.id)
             .collect();
         self.closing.retain(|window| window.output != id);
         for id in removed {
@@ -139,7 +139,7 @@ impl RenderResources {
             .closing
             .iter()
             .filter(|window| &window.snapshot.context == context)
-            .map(|window| window.id)
+            .map(|window| window.presentation.id)
             .collect();
         self.closing.retain(|window| &window.snapshot.context != context);
         for id in removed {

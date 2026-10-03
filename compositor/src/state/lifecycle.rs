@@ -1,6 +1,4 @@
 use super::*;
-use ferese_animation::AnimatedRect;
-use smithay::backend::renderer::Texture;
 use smithay::wayland::compositor::{BufferAssignment, SurfaceAttributes};
 
 impl Ferese {
@@ -31,7 +29,7 @@ impl Ferese {
         let Some(&id) = self.windows.ids().get(window) else {
             return;
         };
-        if self.render.closing.iter().any(|window| window.id == id) || !self.window_content_ready(window) {
+        if self.render.closing.iter().any(|window| window.presentation.id == id) || !self.window_content_ready(window) {
             return;
         }
         let Some(output) = self
@@ -45,36 +43,19 @@ impl Ferese {
         let Some(output_id) = self.output_id(&output) else {
             return;
         };
-        let Some(rect) = self.presented_window_rect(id) else {
+        let Some(mut presentation) = self.current_window_presentation(id) else {
             return;
         };
         let record = self.windows.record(id).unwrap();
         let geometry = record.geometry.unwrap();
         let decorations = geometry.decorations.clamp(0.0, 1.0);
-        let focus = record.focus.as_ref().map_or(0.0, |focus| focus.current.clamp(0.0, 1.0));
         let dim = record.dimming.as_ref().map_or(0.0, |dim| dim.current);
-        let mut opacity = record.opening.unwrap_or_else(|| AnimatedValue::new(1.0));
-        opacity.set_target(0.0);
-        let mut bounds = AnimatedRect::new(rect);
-        bounds.velocity = self.overview.presented_velocity(id).unwrap_or(geometry.visual.velocity);
-        if !self.overview.is_presenting()
-            && let Some(slide) = self.workspace_slides.get(&output_id)
-            && let Some(workspace) = self.workspaces.workspace_for_window(id)
-            && let Some(item) = slide.items.iter().find(|item| item.workspace == workspace)
-            && let Some(area) = self.space.output_geometry(&output)
-        {
-            bounds.velocity.x += item.velocity.x * f64::from(area.size.w);
-            bounds.velocity.y += item.velocity.y * f64::from(area.size.h);
-        }
-        if let Some(opening) = record.opening {
-            bounds.velocity = crate::presentation::scaled_visual_velocity(
-                self.overview.presented_rect(id, geometry.visual.current),
-                bounds.velocity,
-                0.97 + 0.03 * opening.current,
-                0.03 * opening.velocity,
-            );
-        }
-        bounds.set_target(crate::presentation::scaled_visual_rect(rect, 0.98));
+        let handoff_size = (!presentation.scale_content).then(|| {
+            presentation
+                .native_size
+                .unwrap_or_else(|| ClientSize::from_rect(presentation.bounds.current))
+        });
+        presentation.close();
         let mut source_geometry = window.geometry();
         if !self.overview.is_presenting() {
             let size = ClientSize::from_rect(geometry.visual.current);
@@ -98,12 +79,7 @@ impl Ferese {
             .and_then(|index| order.get(index + 1))
             .copied();
         let used = self.render.snapshots().map(|snapshot| snapshot.bytes()).sum::<usize>()
-            + self
-                .render
-                .closing
-                .iter()
-                .map(|window| window.snapshot.bytes())
-                .sum::<usize>();
+            + self.render.closing.iter().map(|window| window.bytes()).sum::<usize>();
         let remaining = crate::presentation::SNAPSHOT_BUDGET.saturating_sub(used);
         let scale = output.current_scale().fractional_scale();
         let result = if let Some(backend) = &self.nested_backend {
@@ -125,7 +101,12 @@ impl Ferese {
         match result {
             Ok(Some(snapshot)) => {
                 tracing::debug!(?id, bytes = snapshot.bytes(), "retained close presentation");
-                let size = snapshot.texture.size();
+                let handoff = self
+                    .render
+                    .snapshot(&id)
+                    .filter(|old| old.context == snapshot.context && (old.scale - scale).abs() < 0.001)
+                    .cloned()
+                    .map(|old| (old, handoff_size));
                 let material = window.toplevel().and_then(|toplevel| {
                     let surface = toplevel.wl_surface();
                     let (role, generation) = crate::effects::surface_role(surface)?;
@@ -149,16 +130,13 @@ impl Ferese {
                     && (client.w < source_geometry.size.w || client.h < source_geometry.size.h))
                     .then_some(self.theme_settings.surface_base_color.0);
                 self.render.closing.push(crate::render::ClosedWindow {
-                    id,
+                    presentation,
                     output: output_id,
                     below,
-                    bounds,
-                    opacity,
                     snapshot,
-                    source: Rectangle::from_size((f64::from(size.w), f64::from(size.h)).into()),
+                    handoff,
                     radius,
                     shape: crate::render::window_corner_shape(window),
-                    focus,
                     decorations,
                     dim,
                     fill,

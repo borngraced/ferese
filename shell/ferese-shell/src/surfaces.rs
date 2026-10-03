@@ -481,6 +481,7 @@ pub(super) struct EffectsBinding {
     _queue: EventQueue<EffectsState>,
     regions: std::cell::RefCell<Option<Vec<[f32; 5]>>>,
     opacity: std::cell::Cell<Option<u32>>,
+    region_opacities: std::cell::RefCell<Vec<u32>>,
 }
 
 impl EffectsBinding {
@@ -504,7 +505,7 @@ impl EffectsBinding {
         let connection = Connection::from_backend(backend);
         let (globals, queue) = registry_queue_init::<EffectsState>(&connection)?;
         let qh = queue.handle();
-        let manager = globals.bind::<FereseEffectsManagerV1, _, _>(&qh, 3..=3, ())?;
+        let manager = globals.bind::<FereseEffectsManagerV1, _, _>(&qh, 4..=4, ())?;
         let effects = manager.get_surface_effects(surface, &qh, ());
 
         let opacity = (opacity.clamp(0.0, 1.0) * 1000.0).round() as u32;
@@ -523,7 +524,26 @@ impl EffectsBinding {
             _queue: queue,
             regions: Default::default(),
             opacity: std::cell::Cell::new(Some(opacity)),
+            region_opacities: Default::default(),
         })
+    }
+
+    pub(super) fn set_region_opacities(
+        &self,
+        values: impl IntoIterator<Item = f32>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let values: Vec<u32> = values
+            .into_iter()
+            .take(32)
+            .map(|value| (value.clamp(0.0, 1.0) * 1000.0).round() as u32)
+            .collect();
+        if *self.region_opacities.borrow() != values {
+            self.surface
+                .set_region_opacities(values.iter().flat_map(|value| value.to_ne_bytes()).collect());
+            self.connection.flush()?;
+            *self.region_opacities.borrow_mut() = values;
+        }
+        Ok(())
     }
 
     pub(super) fn set_regions(&self, regions: &[[f32; 5]]) -> Result<(), Box<dyn std::error::Error>> {

@@ -200,16 +200,25 @@ impl Ferese {
             if self.animations_enabled {
                 active_animation |= focus.advance(
                     if changed { Duration::ZERO } else { delta },
-                    SpringConfig {
-                        position_tolerance: 0.001,
-                        velocity_tolerance: 0.001,
-                        ..self.spring_config
-                    },
+                    crate::presentation::emphasis_spring(self.spring_config),
                 );
             } else {
                 focus.snap();
             }
             dim_changed |= previous != focus.current;
+            let shadow = record.shadow.get_or_insert_with(|| AnimatedValue::new(target));
+            let previous = shadow.current;
+            let changed = shadow.target != target;
+            shadow.set_target(target);
+            if self.animations_enabled {
+                active_animation |= shadow.advance(
+                    if changed { Duration::ZERO } else { delta },
+                    crate::presentation::shadow_spring(self.spring_config),
+                );
+            } else {
+                shadow.snap();
+            }
+            dim_changed |= previous != shadow.current;
         }
 
         for window in self.space.elements() {
@@ -255,7 +264,7 @@ impl Ferese {
             let active =
                 self.animations_enabled && !self.session_lock.active() && window.advance(delta, self.spring_config);
             if !active {
-                finished.push(window.id);
+                finished.push(window.presentation.id);
             }
             active_animation |= active;
             active
@@ -608,6 +617,7 @@ fn record_needs_tick(
     if record.resize.is_some()
         || record.opening.is_some()
         || record.focus.as_ref().is_none_or(|motion| motion.needs_update(focus))
+        || record.shadow.as_ref().is_none_or(|motion| motion.needs_update(focus))
     {
         return true;
     }
@@ -644,6 +654,7 @@ mod tests {
         WindowRecord {
             geometry: Some(geometry),
             focus: Some(AnimatedValue::new(1.0)),
+            shadow: Some(AnimatedValue::new(1.0)),
             dimming: Some(DimAnimation::new(0.0)),
             ..Default::default()
         }
@@ -662,6 +673,20 @@ mod tests {
         assert!(record_needs_tick(&record, 0.0, 0.0, || true));
         assert!(record_needs_tick(&record, 1.0, 0.15, || true));
         assert!(!record_needs_tick(&record, 1.0, 0.15, || false));
+    }
+
+    #[test]
+    fn shadow_keeps_ticks_until_it_settles_after_emphasis() {
+        let mut record = settled();
+        let shadow = record.shadow.as_mut().unwrap();
+        shadow.current = 0.9;
+        shadow.velocity = 0.2;
+        assert!(record_needs_tick(&record, 1.0, 0.0, || false));
+        record.shadow.as_mut().unwrap().advance(
+            Duration::from_secs(3),
+            crate::presentation::shadow_spring(SpringConfig::default()),
+        );
+        assert!(!record_needs_tick(&record, 1.0, 0.0, || false));
     }
 
     #[test]

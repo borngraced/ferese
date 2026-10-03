@@ -148,6 +148,9 @@ impl FereseShell {
     }
 
     pub(super) fn sync_notification_surface(&mut self) -> Task<Message> {
+        // Hidden toast surfaces receive no frame callbacks. Their closes have
+        // no visible transition to finish, so release them immediately.
+        self.notifications.tick();
         if self.notifications.ready {
             self.status.notifications = Some(status::Notifications {
                 count: self.notifications.unread(),
@@ -513,10 +516,36 @@ impl FereseShell {
     }
 
     pub(super) fn view_notifications(&self) -> Element<'_, cosmic::Action<Message>> {
+        motion::frame_driven(
+            self.notifications.motion_revision(),
+            |now| self.view_notifications_at(now),
+            |now| self.notifications.frame_active(now),
+            |now| {
+                if let Some(surface) = &self.notification_surface
+                    && let Some(effects) = &surface.effects
+                {
+                    let _ = effects.set_regions(&surface.regions.lock().unwrap());
+                    let _ = effects.set_region_opacities(
+                        self.notifications
+                            .popup_groups_at(now)
+                            .iter()
+                            .map(|(_, opacity, _)| *opacity),
+                    );
+                }
+            },
+            |now| {
+                self.notifications
+                    .has_finished_closes(now)
+                    .then_some(cosmic::Action::App(Message::NotificationTick))
+            },
+        )
+    }
+
+    pub(super) fn view_notifications_at(&self, now: std::time::Instant) -> Element<'_, cosmic::Action<Message>> {
         if self.notifications.history_open {
             let palette = self.config.theme;
             let surface = self.menu.as_ref();
-            let progress = surface.map_or(1.0, status_ui::OpenMenu::progress);
+            let progress = surface.map_or(1.0, |menu| menu.motion.progress_at(now));
             let opacity = 1.0;
             let color = move |rgba| color_with_opacity(rgba, opacity);
             let primary = color(palette.text_primary);
@@ -751,7 +780,7 @@ impl FereseShell {
             )
         } else {
             let mut cards = column([]).spacing(8);
-            for (notice, opacity, count) in self.notifications.popup_groups() {
+            for (notice, opacity, count) in self.notifications.popup_groups_at(now) {
                 cards = cards.push(self.notification_card(notice, opacity, false, count));
             }
             motion::animated(

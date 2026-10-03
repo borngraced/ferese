@@ -355,15 +355,6 @@ impl cosmic::Application for FereseShell {
                 control.subscription().map(|_| Message::ControlReady)
             }),
             ferese_theme_client::service::subscription().map(|snapshot| Message::ThemeChanged(Box::new(snapshot))),
-            if self
-                .system_modal
-                .as_ref()
-                .is_some_and(|modal| modal.motion.animating() || modal.motion.closing())
-            {
-                cosmic::iced::time::every(Duration::from_millis(16)).map(|_| Message::AnimatePower)
-            } else {
-                Subscription::none()
-            },
             self.notifications.subscription().map(Message::NotificationEvent),
             self.notifications
                 .tick_subscription()
@@ -399,45 +390,10 @@ impl cosmic::Application for FereseShell {
             } else {
                 Subscription::none()
             },
-            if self
-                .menu
-                .as_ref()
-                .is_some_and(|menu| menu.animating() || menu.motion.closing())
-            {
-                cosmic::iced::time::every(Duration::from_millis(16)).map(|_| Message::AnimateMenu)
-            } else {
-                Subscription::none()
-            },
         ])
     }
 
     fn update(&mut self, message: Self::Message) -> Task<Self::Message> {
-        if let Some(menu) = &self.menu
-            && let Some(effects) = &menu.effects
-        {
-            if let Err(error) = effects.set_opacity(menu.progress()) {
-                eprintln!("ferese-shell: could not update popup opacity: {error}");
-            }
-
-            let regions = menu.regions.lock().unwrap().clone();
-
-            if let Err(error) = effects.set_regions(&regions) {
-                eprintln!("ferese-shell: could not update card materials: {error}");
-            }
-        }
-
-        if let Some(surface) = &self.notification_surface
-            && let Some(effects) = &surface.effects
-        {
-            let regions = surface.regions.lock().unwrap().clone();
-
-            if let Err(error) = effects.set_regions(&regions) {
-                eprintln!("ferese-shell: could not update notification materials: {error}");
-            }
-        }
-
-        self.update_power_materials();
-
         match message {
             Message::ThemeChanged(snapshot) => {
                 let mut config = self.config.clone();

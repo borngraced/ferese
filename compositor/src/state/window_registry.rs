@@ -22,6 +22,7 @@ pub(crate) struct WindowRecord {
     pub metadata_revision: u64,
     pub resize: Option<ResizeTransaction>,
     pub focus: Option<AnimatedValue>,
+    pub shadow: Option<AnimatedValue>,
     pub dimming: Option<crate::dimming::DimAnimation>,
     pub opening: Option<AnimatedValue>,
     pub mapped_once: bool,

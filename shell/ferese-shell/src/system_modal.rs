@@ -468,7 +468,32 @@ impl FereseShell {
         let Some(surface) = modal.surfaces.iter().find(|surface| surface.id == id) else {
             return text("").into();
         };
-        let progress = modal.motion.progress();
+        motion::frame_driven(
+            modal.motion.revision(),
+            move |now| self.view_system_modal_at(id, now),
+            |now| modal.motion.frame_active(now),
+            |now| {
+                if let Some(effects) = &surface.effects {
+                    let _ = effects
+                        .set_material_regions(&surface.regions.lock().unwrap(), ferese_surface_effects_v1::Role::Modal);
+                    let _ = effects.set_opacity(modal.motion.progress_at(now).clamp(0.0, 1.0));
+                }
+            },
+            |now| {
+                (surface.primary && modal.motion.closing() && !modal.motion.animating_at(now))
+                    .then_some(cosmic::Action::App(Message::AnimatePower))
+            },
+        )
+    }
+
+    fn view_system_modal_at(&self, id: window::Id, now: Instant) -> Element<'_, cosmic::Action<Message>> {
+        let Some(modal) = &self.system_modal else {
+            return text("").into();
+        };
+        let Some(surface) = modal.surfaces.iter().find(|surface| surface.id == id) else {
+            return text("").into();
+        };
+        let progress = modal.motion.progress_at(now);
         let content: Element<'_, cosmic::Action<Message>> = if surface.primary {
             let theme = self.config.theme;
             let material = surface.effects.is_some();

@@ -72,8 +72,17 @@ class OverviewDamageTest(unittest.TestCase):
                 # The first report includes time before this call. The second
                 # covers a full five seconds of the requested stationary scene.
                 count = len(reports())
-                wait_for(lambda: len(reports()) >= count + 2)
-                return reports()[-1]
+                for attempt in range(3):
+                    wait_for(lambda: len(reports()) >= count + 2)
+                    lines = log_path.read_text().splitlines()
+                    boundaries = [index for index, line in enumerate(lines)
+                                  if "render performance" in line]
+                    interval = lines[boundaries[-2] + 1:boundaries[-1]]
+                    if not any("ferese::nested_input:" in line for line in interval):
+                        return reports()[-1]
+                    print("Discarding interval with host input; waiting for a quiet interval", flush=True)
+                    count = len(boundaries) - 1
+                self.fail("No input-free interval for the stationary overview check")
 
             def assert_quiet(label, report):
                 print(label + ":", report, flush=True)

@@ -330,22 +330,39 @@ impl Center {
         self.entries.iter().filter(|notice| notice.unread).count() as u32
     }
 
+    #[cfg(test)]
     pub fn visible(&self) -> impl Iterator<Item = (&Notice, f32)> {
+        self.visible_at(Instant::now())
+    }
+
+    fn visible_at(&self, now: Instant) -> impl Iterator<Item = (&Notice, f32)> {
         self.toasts.iter().rev().filter_map(move |toast| {
             let notice = self.entries.iter().find(|notice| notice.id == toast.id)?;
-            Some((notice, toast.motion.progress().clamp(0.0, 1.0)))
+            Some((notice, toast.motion.progress_at(now).clamp(0.0, 1.0)))
         })
     }
 
-    pub fn animating(&self) -> bool {
+    pub fn frame_active(&self, now: Instant) -> bool {
+        self.toasts.iter().any(|toast| toast.motion.frame_active(now))
+    }
+
+    pub fn has_finished_closes(&self, now: Instant) -> bool {
         self.toasts
             .iter()
-            .any(|toast| toast.closing.is_some() || toast.motion.animating())
+            .any(|toast| toast.closing.is_some() && !toast.motion.animating_at(now))
+    }
+
+    pub fn motion_revision(&self) -> Option<Instant> {
+        self.toasts.iter().filter_map(|toast| toast.motion.revision()).max()
     }
 
     pub fn popup_groups(&self) -> Vec<(&Notice, f32, usize)> {
+        self.popup_groups_at(Instant::now())
+    }
+
+    pub fn popup_groups_at(&self, now: Instant) -> Vec<(&Notice, f32, usize)> {
         let mut groups: Vec<(&Notice, f32, usize)> = Vec::new();
-        for (notice, opacity) in self.visible() {
+        for (notice, opacity) in self.visible_at(now) {
             if let Some(group) = groups.iter_mut().find(|(head, _, _)| head.app == notice.app) {
                 group.2 += 1;
             } else {
@@ -429,12 +446,12 @@ impl Center {
                 self.command(Command::Close(id, revision, reason));
             }
         }
-        if let Some(toast) = self.toasts.iter_mut().find(|toast| toast.id == id) {
-            if toast.closing.is_none() {
-                let now = Instant::now();
-                toast.closing = Some(now);
-                toast.motion.retarget(0.0, now);
-            }
+        if let Some(toast) = self.toasts.iter_mut().find(|toast| toast.id == id)
+            && toast.closing.is_none()
+        {
+            let now = Instant::now();
+            toast.closing = Some(now);
+            toast.motion.retarget(0.0, now);
         }
     }
 
@@ -551,10 +568,6 @@ impl Center {
     }
 
     pub fn tick_subscription(&self) -> cosmic::iced::Subscription<()> {
-        if self.animating() {
-            return cosmic::iced::time::every(Duration::from_millis(16)).map(|_| ());
-        }
-
         fn deadline_stream(deadline: &Instant) -> impl cosmic::iced::futures::Stream<Item = ()> + use<> {
             let deadline = *deadline;
             cosmic::iced::futures::stream::once(async move {
@@ -610,7 +623,7 @@ impl Center {
             self.close(id, 1);
         }
         self.toasts
-            .retain(|toast| toast.closing.is_none() || toast.motion.animating());
+            .retain(|toast| toast.closing.is_none() || (!self.history_open && toast.motion.animating()));
         let visible: HashSet<_> = self.toasts.iter().map(|toast| toast.id).collect();
         self.entries
             .retain(|notice| !notice.transient || notice.live || visible.contains(&notice.id));
@@ -662,6 +675,36 @@ mod tests {
             unread: true,
             received_at: Instant::now(),
         }
+    }
+
+    #[test]
+    fn hidden_toast_closes_do_not_wait_for_unavailable_frame_callbacks() {
+        let (mut center, _) = fixture();
+        center.receive(notice(1));
+        center.toasts.front_mut().unwrap().motion.begin(Instant::now());
+        center.history_open = true;
+        center.close(1, 2);
+        center.tick();
+        assert!(center.toasts.is_empty());
+        assert!(center.expiry_deadline().is_none());
+        assert!(!center.frame_active(Instant::now()));
+        assert_eq!(center.entries.len(), 1, "history retains the notice");
+    }
+
+    #[test]
+    fn closing_toast_can_finish_while_another_toast_is_still_moving() {
+        let (mut center, _) = fixture();
+        center.receive(notice(1));
+        let old = Instant::now() - Duration::from_secs(3);
+        center.toasts.front_mut().unwrap().motion.retarget(0.0, old);
+        center.toasts.front_mut().unwrap().closing = Some(old);
+        center.receive(notice(2));
+        let now = Instant::now();
+        assert!(center.frame_active(now));
+        assert!(center.has_finished_closes(now));
+        center.tick();
+        assert!(!center.has_finished_closes(Instant::now()));
+        assert_eq!(center.toasts.len(), 1);
     }
 
     #[test]

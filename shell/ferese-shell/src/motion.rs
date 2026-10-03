@@ -1,3 +1,6 @@
+mod frames;
+pub(crate) use frames::frame_driven;
+
 use cosmic::iced::advanced::{Clipboard, Layout, Renderer as _, Shell, Widget, layout, mouse, renderer, widget};
 use cosmic::iced::{Event, Length, Rectangle, Size, Transformation, Vector};
 use cosmic::{Element, Theme};
@@ -79,11 +82,7 @@ impl PopupMotion {
             value.snap();
             return value;
         }
-        let spring = self
-            .settings
-            .spring
-            .resolve(SpringConfig::default())
-            .expect("validated motion settings");
+        let spring = self.settings.spring_config().expect("validated motion settings");
         value.advance(
             now.saturating_duration_since(started).mul_f64(self.settings.speed),
             SpringConfig {
@@ -105,8 +104,17 @@ impl PopupMotion {
     pub(crate) fn closing(&self) -> bool {
         self.value.target == 0.0
     }
+    pub(crate) fn revision(&self) -> Option<std::time::Instant> {
+        self.started
+    }
+    pub(crate) fn frame_active(&self, now: std::time::Instant) -> bool {
+        self.started.is_some() && self.animating_at(now)
+    }
     pub(crate) fn animating(&self) -> bool {
-        let value = self.sample(std::time::Instant::now());
+        self.animating_at(std::time::Instant::now())
+    }
+    pub(crate) fn animating_at(&self, now: std::time::Instant) -> bool {
+        let value = self.sample(now);
         value.current != value.target || value.velocity != 0.0
     }
 
@@ -238,11 +246,14 @@ impl<M> Widget<M, Theme, cosmic::Renderer> for Hover<'_, M> {
         shell: &mut Shell<'_, M>,
         viewport: &Rectangle,
     ) {
-        let now = std::time::Instant::now();
+        let now = match event {
+            Event::Window(cosmic::iced::window::Event::RedrawRequested(at)) => *at,
+            _ => std::time::Instant::now(),
+        };
         let hovered = cursor.is_over(layout.bounds()) && cursor.is_over(*viewport);
         let state = tree.state.downcast_mut::<HoverState>();
         if state.advance(if hovered { 1.0 } else { 0.0 }, now, self.duration) {
-            shell.request_redraw_at(now + std::time::Duration::from_millis(16));
+            shell.request_redraw();
         }
         self.progress.set(state.current);
         self.content.as_widget_mut().update(
@@ -494,10 +505,12 @@ impl widget::Operation for CollectRegions {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn zero_damping_with_crossing_clamp_finishes_popup_close() {
+    fn duration_bounce_spring_finishes_popup_close() {
         let settings = super::Settings {
             spring: ferese_animation::SpringSettings {
-                damping: Some(0.0),
+                duration_ms: Some(240.0),
+                bounce: 0.3,
+                overshoot: true,
                 ..Default::default()
             },
             ..Default::default()

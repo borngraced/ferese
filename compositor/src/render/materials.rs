@@ -19,17 +19,27 @@ pub(super) fn append_material_surface(
             state.theme_settings.material_radius
         };
     let regions = crate::effects::surface_regions(surface);
+    let opacities = crate::effects::surface_region_opacities(surface);
     let targets: Vec<_> = match &regions {
-        None => vec![(geometry, RoundedRect::from_logical(geometry, scale, radius))],
+        None => vec![(geometry, RoundedRect::from_logical(geometry, scale, radius), 1.0)],
         Some(regions) => regions
             .iter()
-            .filter_map(|r| material_region_geometry(*r, geometry, content_origin, scale))
+            .enumerate()
+            .filter_map(|(index, r)| {
+                material_region_geometry(*r, geometry, content_origin, scale).map(|(rect, corners)| {
+                    (
+                        rect,
+                        corners,
+                        opacities.get(index).copied().unwrap_or(1000) as f32 / 1000.0,
+                    )
+                })
+            })
             .collect(),
     };
     let materials: Vec<_> = targets
         .iter()
         .enumerate()
-        .filter_map(|(index, (rect, corners))| {
+        .filter_map(|(index, (rect, corners, alpha))| {
             material_element(
                 state,
                 renderer,
@@ -40,7 +50,7 @@ pub(super) fn append_material_surface(
                     corners: *corners,
                     index,
                     capture_geometry: geometry,
-                    alpha: 1.0,
+                    alpha: *alpha,
                 },
             )
         })

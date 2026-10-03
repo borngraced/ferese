@@ -126,15 +126,15 @@ animations {
     speed 1.0
 
     spring {
-        mass 1.0
-        stiffness 700.0
-        damping 53.0
+        duration-ms 240.0
+        bounce 0.0
+        overshoot #false
     }
 
     viewport-spring {
-        mass 1.0
-        stiffness 320.0
-        damping-ratio 1.0
+        duration-ms 350.0
+        bounce 0.0
+        overshoot #false
     }
 }
 ```
@@ -147,25 +147,21 @@ You can omit either spring block to keep its defaults.
 | `animations.enabled` | boolean | `true` | Enable motion |
 | `animations.reduced-motion` | boolean | `false` | Disable animated motion |
 | `animations.speed` | number > 0 | `1` | Higher is faster; `0.75` is slower |
-| `animations.spring.mass` | number > 0 | `1` | Window-motion spring mass |
-| `animations.spring.stiffness` | number > 0 | `700` | Spring stiffness |
-| `animations.spring.damping` | number ≥ 0 | `53` | Spring damping |
-| `animations.viewport-spring.mass` | number > 0 | `1` | Scrolling spring mass |
-| `animations.viewport-spring.stiffness` | number > 0 | `320` | Scrolling stiffness |
-| `animations.viewport-spring.damping-ratio` | number ≥ 0 | `1` | `1` is critically damped; zero requires overshoot disabled |
+| `animations.spring.duration-ms` | number > 0 | `240` | Window and shell spring response |
+| `animations.viewport-spring.duration-ms` | number > 0 | `350` | Scrolling and workspace spring response |
 
-Both `spring` and `viewport-spring` also accept these keys:
+Both `spring` and `viewport-spring` accept these keys:
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `damping-ratio` | number ≥ 0 | Derived from coefficients for `spring`; `1` for `viewport-spring` | Alternative to `damping`; zero requires overshoot disabled |
-| `duration-ms` | number > 0 | Unset | Response parameter instead of stiffness/damping; not a completion deadline |
-| `bounce` | number strictly between −1 and 1 | `0` with `duration-ms` | Requires `duration-ms`; positive values also require overshoot |
-| `overshoot` | boolean | `false` | Allow target crossings for this spring; requires positive damping |
+| `duration-ms` | number > 0 | `240` or `350`, as above | Larger values give a slower response; not a completion deadline |
+| `bounce` | number strictly between −1 and 1 | `0` | Zero is critical damping; positive values require overshoot |
+| `overshoot` | boolean | `false` | Allow this spring to cross its target |
 
-`mass`, `stiffness` and `damping` are accepted in both blocks. The viewport's
-default damping ratio tracks changes to mass and stiffness unless you supply
-`damping`, `damping-ratio` or `duration-ms` explicitly.
+Use duration and bounce to configure spring physics. `mass`, `stiffness`,
+`damping` and `damping-ratio` are internal solver parameters, not configuration
+keys. Removed or misspelled animation keys are rejected. Invalid edits leave
+the last accepted configuration active.
 
 ### Speed and reduced motion
 
@@ -180,12 +176,24 @@ immediate. Reduced motion takes precedence over `enabled #true`; setting
 `speed 0` is invalid. These settings control Ferese's animations, not animations
 inside other applications.
 
+Shell animations sample motion on each surface's redraw, paced by its Wayland
+frame callbacks. They request animation frames only while moving.
+Menus, modals, notifications and hover fades use this path instead of a fixed
+16 ms animation timer. Clock, notification-expiry and service updates keep their
+own schedules.
+
 Overview can reverse while moving, and workspace changes slide in their navigation
 direction. Workspace and scrolling gestures carry their release velocity into
 the settling spring. Scrolling gestures resist at viewport limits and spring back.
 Window opening starts when content is available; closing waits for the application
 to unmap, then animates its retained image. Input and application close requests
 remain responsive while the animations finish.
+
+Live windows, overview thumbnails and retained images share a window identity
+and presentation state. Entering overview inherits the window's visible position
+and velocity, including motion from a workspace slide. Resize images use the same
+content mapping in overview and remain visible if the window closes during a resize.
+Content, clipping and borders use the same rounded rectangle at the output's scale.
 
 ### Spring tuning
 
@@ -197,45 +205,45 @@ Continuum shares the analytic spring solver and motion settings between the
 compositor and shell. Small opacity changes (hover, dimming, theme fades) may
 still use timed transitions.
 
-Spring settling time depends on distance, velocity and tolerances. In either
-spring block, you can use duration and bounce instead of stiffness and damping:
+Focus emphasis and shadows have separate spring responses. Emphasis uses 80% of
+the main spring's response time; shadows use 120%. These ratios preserve the
+configured damping ratio and overshoot policy, and follow `speed` and reduced
+motion. They are built-in tuning values, not additional configuration keys.
+Focused windows use the theme's full shadow. Unfocused shadows use 75% of its
+vertical offset, 90% of its blur radius and 80% of its opacity, with spring motion
+between those values. Shadow motion does not change the content or border geometry.
+
+Spring settling time depends on distance, velocity and tolerances. `duration-ms`
+controls the response, not a fixed completion deadline. Both default springs are
+critically damped; the viewport has a slower response than windows and shell popups.
+
+To opt into bounce for one spring:
 
 ```kdl
 animations {
     spring {
         duration-ms 300.0
-        bounce 0.0
+        bounce 0.2
+        overshoot #true
     }
 }
 ```
 
-`duration-ms` is a response parameter, not a fixed completion deadline. With
-`T = duration-ms / 1000`, Continuum uses `omega = 2*pi/T`,
-`stiffness = mass*omega^2` and `damping = 2*mass*omega*zeta`.
-`zeta = 1-bounce` for nonnegative bounce, otherwise `zeta = 1/(1+bounce)`.
 Bounce defaults to zero and must be strictly between -1 and 1. Positive bounce
-requires `overshoot #true` in that spring block. Do not combine `duration-ms`
-with `stiffness`, `damping` or `damping-ratio`; existing physical settings keep
-working. This conversion does not guarantee the same perceptual duration or
-settling time as Apple's springs.
+requires `overshoot #true` in that spring block. Negative bounce adds overdamping.
+Without overshoot, Ferese stops a spring at its first target crossing. Opacity
+remains bounded even when geometry can overshoot. Overshoot is never enabled globally.
 
-With the other parameters unchanged, higher stiffness makes motion faster and
-higher mass makes it slower. Damping controls how quickly velocity dies away.
-The default window spring is slightly overdamped, close to critical damping;
-the viewport spring is critically damped.
+For the solver, mass is fixed at `1`. With `T = duration-ms / 1000`, Continuum uses
+`omega = 2*pi/T`, `stiffness = omega^2` and `damping = 2*omega*zeta`.
+`zeta = 1-bounce` for nonnegative bounce, otherwise `zeta = 1/(1+bounce)`.
+This conversion does not guarantee the same perceptual duration or settling time
+as Apple's springs.
 
-For `viewport-spring`, `damping-ratio 1.0` is critical damping, values below `1`
-are underdamped and values above `1` are overdamped. Both spring blocks accept a
-damping ratio or a damping coefficient, but not both; critical damping is
-`damping = 2 * sqrt(stiffness * mass)`. Ferese stops spring animations
-at their first target crossing by default. `overshoot #true` allows that spring
-to move past its target; opacity remains bounded. Overshoot is never enabled globally.
-
-Mass, stiffness and speed must be finite and greater than zero.
-Damping coefficients and damping ratios may be zero only with overshoot disabled,
-so the first-crossing clamp can settle the animation. Overshoot requires positive
-damping; otherwise closing popups could wait indefinitely for settlement. Invalid edits leave
-the last accepted configuration active.
+Duration and speed must be finite and greater than zero. Bounce must be finite.
+Values that overflow or underflow the derived coefficients are rejected. The
+allowed bounce range keeps damping positive, so undamped oscillation cannot
+prevent popup cleanup.
 
 ## Appearance
 

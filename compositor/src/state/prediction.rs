@@ -12,15 +12,97 @@ pub(crate) struct FrameScene {
 
 pub(crate) struct WindowFrame {
     pub geometry: WindowGeometry,
-    pub rect: Rect,
-    pub scale_content: bool,
-    pub native_size: Option<ClientSize>,
-    pub alpha: f32,
-    pub focus: f64,
+    pub presentation: crate::presentation::WindowPresentation,
     pub dim: f64,
 }
 
 impl Ferese {
+    pub(crate) fn current_window_presentation(&self, id: WindowId) -> Option<crate::presentation::WindowPresentation> {
+        let geometry = *self.windows.geometry(&id)?;
+        Some(self.compose_window_presentation(
+            id,
+            geometry,
+            self.overview.motion(),
+            self.workspace_slide_offset(id),
+            Duration::ZERO,
+        ))
+    }
+
+    fn compose_window_presentation(
+        &self,
+        id: WindowId,
+        geometry: WindowGeometry,
+        overview: &crate::overview::OverviewMotion,
+        offset: (f64, f64),
+        delta: Duration,
+    ) -> crate::presentation::WindowPresentation {
+        let record = self.windows.record(id).expect("presentation has a window record");
+        let mut bounds = overview.presented_bounds(id, geometry.visual);
+        if !overview.is_presenting() {
+            bounds.current.x += offset.0;
+            bounds.current.y += offset.1;
+            if let Some(workspace) = self.workspaces.workspace_for_window(id)
+                && let Some(output_id) = self.output_workspaces.output_for_workspace(workspace)
+                && let Some(slide) = self.workspace_slides.get(&output_id)
+                && let Some(item) = slide.items.iter().find(|item| item.workspace == workspace)
+                && let Some(area) = self
+                    .outputs_by_id
+                    .get(&output_id)
+                    .and_then(|output| self.space.output_geometry(output))
+            {
+                let (_, velocity) = slide.sample(item, delta);
+                bounds.velocity.x += velocity.x * f64::from(area.size.w);
+                bounds.velocity.y += velocity.y * f64::from(area.size.h);
+            }
+        }
+        let focused = if self.overview.is_active() {
+            self.overview_selected(id)
+        } else {
+            self.focused_window == Some(id)
+        };
+        let mut opacity = record.opening.unwrap_or_else(|| AnimatedValue::new(1.0));
+        let mut emphasis = record
+            .focus
+            .unwrap_or_else(|| AnimatedValue::new(if focused { 1.0 } else { 0.0 }));
+        let mut shadow = record.shadow.unwrap_or(emphasis);
+        if !self.animations_enabled {
+            opacity.snap();
+            emphasis.snap();
+            shadow.snap();
+        } else if !delta.is_zero() {
+            opacity.advance(
+                delta,
+                SpringConfig {
+                    position_tolerance: 0.00001,
+                    velocity_tolerance: 0.00001,
+                    ..self.spring_config
+                },
+            );
+            emphasis.advance(delta, crate::presentation::emphasis_spring(self.spring_config));
+            shadow.advance(delta, crate::presentation::shadow_spring(self.spring_config));
+        }
+        let presence_scale = 0.97 + 0.03 * opacity.current;
+        let native_size =
+            (!overview.is_presenting() && presence_scale != 1.0).then(|| ClientSize::from_rect(bounds.current));
+        bounds.velocity = crate::presentation::scaled_visual_velocity(
+            bounds.current,
+            bounds.velocity,
+            presence_scale,
+            0.03 * opacity.velocity,
+        );
+        bounds.current = crate::presentation::scaled_visual_rect(bounds.current, presence_scale);
+        bounds.target = bounds.current;
+        crate::presentation::WindowPresentation {
+            id,
+            bounds,
+            opacity,
+            emphasis,
+            shadow,
+            scale_content: overview.is_presenting(),
+            native_size,
+        }
+    }
+
     fn output_window_records<'a>(
         &'a self,
         output: &'a Output,
@@ -58,6 +140,10 @@ impl Ferese {
                     .focus
                     .as_ref()
                     .is_some_and(|focus| focus.needs_update(if selected == Some(id) { 1.0 } else { 0.0 }))
+                    || record
+                        .shadow
+                        .as_ref()
+                        .is_some_and(|shadow| shadow.needs_update(if selected == Some(id) { 1.0 } else { 0.0 }))
                     || record.dimming.as_ref().is_some_and(|dim| {
                         dim.needs_update(crate::dimming::target(
                             self.inactive_dim,
@@ -105,6 +191,7 @@ impl Ferese {
                 || record.opening.is_some()
                 || self.render.snapshot(&id).is_some()
                 || record.focus.as_ref().is_some_and(|focus| focus.is_animating())
+                || record.shadow.as_ref().is_some_and(|shadow| shadow.is_animating())
                 || record.dimming.as_ref().is_some_and(|dim| dim.is_animating())
             {
                 return true;
@@ -178,74 +265,22 @@ impl Ferese {
                 )
             };
 
-            let mut rect = overview.presented_rect(id, geometry.visual.current);
-            if !overview.is_presenting() {
-                let (x, y) = self
-                    .workspaces
-                    .workspace_for_window(id)
-                    .and_then(|workspace| slide_offsets.get(&workspace).copied())
-                    .unwrap_or_default();
-                rect.x += x;
-                rect.y += y;
+            let offset = self
+                .workspaces
+                .workspace_for_window(id)
+                .and_then(|workspace| slide_offsets.get(&workspace).copied())
+                .unwrap_or_default();
+            let presentation = self.compose_window_presentation(id, geometry, &overview, offset, delta);
+            let mut dim = record.dimming.clone();
+            if let Some(dim) = &mut dim {
+                dim.predict(delta, self.inactive_dim.duration_ms);
             }
-
-            let mut opening = record.opening.unwrap_or_else(|| AnimatedValue::new(1.0));
-            if !self.animations_enabled {
-                opening.snap();
-            } else if !delta.is_zero() {
-                opening.advance(
-                    delta,
-                    SpringConfig {
-                        position_tolerance: 0.00001,
-                        velocity_tolerance: 0.00001,
-                        ..self.spring_config
-                    },
-                );
-            }
-            let focused = if self.overview.is_active() {
-                self.overview_selected(id)
-            } else {
-                self.focused_window == Some(id)
-            };
-
-            let sample_dim = |motion: Option<&DimAnimation>, fallback| {
-                let Some(mut motion) = motion.cloned() else {
-                    return fallback;
-                };
-
-                if !delta.is_zero() {
-                    motion.predict(delta, self.inactive_dim.duration_ms);
-                }
-
-                motion.current
-            };
-
-            let mut focus = record
-                .focus
-                .unwrap_or_else(|| AnimatedValue::new(if focused { 1.0 } else { 0.0 }));
-            if !delta.is_zero() {
-                focus.advance(
-                    delta,
-                    SpringConfig {
-                        position_tolerance: 0.001,
-                        velocity_tolerance: 0.001,
-                        ..self.spring_config
-                    },
-                );
-            }
-            let presence_scale = 0.97 + 0.03 * opening.current;
-            let native_size = (!overview.is_presenting() && presence_scale != 1.0).then(|| ClientSize::from_rect(rect));
-            let rect = crate::presentation::scaled_visual_rect(rect, presence_scale);
             windows.insert(
                 id,
                 WindowFrame {
                     geometry,
-                    rect,
-                    scale_content: overview.is_presenting(),
-                    native_size,
-                    alpha: opening.current.clamp(0.0, 1.0) as f32,
-                    focus: focus.current.clamp(0.0, 1.0),
-                    dim: sample_dim(record.dimming.as_ref(), 0.0),
+                    presentation,
+                    dim: dim.map_or(0.0, |dim| dim.current),
                 },
             );
         }
@@ -439,7 +474,9 @@ mod tests {
         assert_eq!(offsets[&to].0, 1440.0);
         assert_eq!(
             state.sample_frame(&output, Duration::from_millis(8)).windows[&id]
-                .rect
+                .presentation
+                .bounds
+                .current
                 .x,
             state.sample_frame(&output, Duration::from_millis(8)).windows[&id]
                 .geometry

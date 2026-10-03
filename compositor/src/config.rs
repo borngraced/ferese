@@ -357,12 +357,12 @@ pub(crate) fn config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn rejects_undamped_overshoot_before_publication() {
+    fn rejects_removed_physics_keys_before_publication() {
         for property in ["spring", "viewport-spring"] {
-            for coefficient in ["damping", "damping-ratio"] {
+            for coefficient in ["mass", "stiffness", "damping", "damping-ratio"] {
                 let source = format!("animations {{ {property} {{ {coefficient} 0; overshoot #true; }}; }}");
-                let error = Config::parse_source(&source).unwrap().runtime_config().err().unwrap().to_string();
-                assert!(error.contains("overshoot requires positive damping"), "{error}");
+                let error = Config::parse_source(&source).unwrap_err().to_string();
+                assert!(error.contains("unknown field"), "{error}");
             }
         }
     }
@@ -582,7 +582,7 @@ mod tests {
     #[test]
     fn parses_animation_policy_and_reduced_motion() {
         let config = parse(
-            "animations {\n    speed 1.5\n    reduced-motion #true\n    spring {\n        mass 2.0\n        stiffness 500.0\n        damping 40.0\n    }\n}\n",
+            "animations {\n    speed 1.5\n    reduced-motion #true\n    spring {\n        duration-ms 300.0\n        bounce 0.0\n    }\n}\n",
         );
 
         assert!(!config.animations_enabled());
@@ -590,9 +590,9 @@ mod tests {
         assert_eq!(
             config.spring_config().unwrap(),
             SpringConfig {
-                mass: 2.0,
-                stiffness: 500.0,
-                damping: 40.0,
+                mass: 1.0,
+                stiffness: (std::f64::consts::TAU / 0.3).powi(2),
+                damping: 2.0 * std::f64::consts::TAU / 0.3,
                 ..SpringConfig::default()
             }
         );
@@ -601,7 +601,7 @@ mod tests {
     #[test]
     fn rejects_invalid_animation_numbers() {
         let speed = parse("animations {\n    speed 0.0\n}\n");
-        let damping = parse("animations {\n    spring {\n        damping -1.0\n    }\n}\n");
+        let damping = parse("animations {\n    spring {\n        duration-ms -1.0\n    }\n}\n");
 
         assert!(speed.animation_speed().is_err());
         assert!(damping.spring_config().is_err());
@@ -1043,8 +1043,8 @@ mod tests {
         let spring = config.viewport_spring_config().unwrap();
 
         assert_eq!(spring.mass, 1.0);
-        assert_eq!(spring.stiffness, 320.0);
-        assert!((spring.damping - 35.777_087_64).abs() < 0.000_001);
+        assert!((spring.stiffness - (std::f64::consts::TAU / 0.350).powi(2)).abs() < 1e-9);
+        assert!((spring.damping - 2.0 * spring.stiffness.sqrt()).abs() < 1e-9);
     }
 
     #[test]

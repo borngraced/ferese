@@ -160,7 +160,8 @@ impl FocusSwipe {
         let distance = self.destination - self.start;
         // When both columns already fit, give bounded drag feedback and settle
         // back to the unchanged viewport after selecting the next window.
-        let distance = if distance.abs() < 0.001 {
+
+        if distance.abs() < 0.001 {
             if self.direction == Direction::Right {
                 64.0
             } else {
@@ -168,8 +169,7 @@ impl FocusSwipe {
             }
         } else {
             distance
-        };
-        distance
+        }
     }
 
     fn position(&self) -> f64 {
@@ -266,8 +266,12 @@ impl WorkspaceSlide {
     }
 
     fn position(&self, item: &WorkspaceSlideItem, delta: Duration) -> SlideOffset {
+        self.sample(item, delta).0
+    }
+
+    fn sample(&self, item: &WorkspaceSlideItem, delta: Duration) -> (SlideOffset, SlideOffset) {
         if let Some(progress) = self.held_progress {
-            return item.start.between(item.target, progress);
+            return (item.start.between(item.target, progress), item.velocity);
         }
         let mut x = AnimatedValue {
             current: item.start.x,
@@ -281,10 +285,16 @@ impl WorkspaceSlide {
         };
         x.advance(delta, self.spring);
         y.advance(delta, self.spring);
-        SlideOffset {
-            x: x.current,
-            y: y.current,
-        }
+        (
+            SlideOffset {
+                x: x.current,
+                y: y.current,
+            },
+            SlideOffset {
+                x: x.velocity,
+                y: y.velocity,
+            },
+        )
     }
 
     fn moving(&self) -> bool {
@@ -1105,6 +1115,27 @@ impl ClientData for ClientState {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn slide_item_sampling_matches_advance_without_mutating_the_slide() {
+        let mut slide = WorkspaceSlide::new(None, WorkspaceId(1), WorkspaceId(2), SwipeDirection::Up);
+        slide.advance(Duration::from_millis(30));
+        for held in [None, Some(0.35)] {
+            slide.held_progress = held;
+            for delta in [Duration::ZERO, Duration::from_millis(8), Duration::from_millis(400)] {
+                let before = (slide.items[0].start, slide.items[0].velocity);
+                let mut reference = slide.clone();
+                reference.advance(delta);
+                for (item, advanced) in slide.items.iter().zip(&reference.items) {
+                    let (position, velocity) = slide.sample(item, delta);
+                    let expected = held.map_or(advanced.start, |p| advanced.start.between(advanced.target, p));
+                    assert_eq!(position, expected);
+                    assert_eq!(velocity, advanced.velocity);
+                }
+                assert_eq!((slide.items[0].start, slide.items[0].velocity), before);
+            }
+        }
+    }
+
     #[test]
     fn workspace_reversal_keeps_position_and_velocity() {
         let from = WorkspaceId(1);

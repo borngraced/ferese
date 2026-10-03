@@ -359,18 +359,36 @@ impl OverviewState {
         true
     }
 
+    #[cfg(test)]
     pub(crate) fn presented_rect(&self, id: WindowId, normal: Rect) -> Rect {
         self.motion.presented_rect(id, normal)
     }
 
-    pub(crate) fn presented_velocity(&self, id: WindowId) -> Option<ferese_animation::RectVelocity> {
-        let velocity = self.motion.presentations.get(&id)?.velocity;
-        Some(ferese_animation::RectVelocity {
-            x: velocity.x * OVERVIEW_MOTION_SPEED,
-            y: velocity.y * OVERVIEW_MOTION_SPEED,
-            width: velocity.width * OVERVIEW_MOTION_SPEED,
-            height: velocity.height * OVERVIEW_MOTION_SPEED,
-        })
+    pub(crate) fn motion(&self) -> &OverviewMotion {
+        &self.motion
+    }
+
+    fn seed_presentations(&mut self, windows: impl IntoIterator<Item = crate::presentation::WindowPresentation>) {
+        for window in windows {
+            self.motion.presentations.entry(window.id).or_insert_with(|| {
+                // Opening scales the final presentation after overview. Remove
+                // it here so the same opening motion is not applied twice.
+                let scale = 0.97 + 0.03 * window.opacity.current;
+                let mut bounds = window.bounds;
+                bounds.velocity = crate::presentation::scaled_visual_velocity(
+                    bounds.current,
+                    bounds.velocity,
+                    1.0 / scale,
+                    -0.03 * window.opacity.velocity / (scale * scale),
+                );
+                bounds.current = crate::presentation::scaled_visual_rect(bounds.current, 1.0 / scale);
+                bounds.velocity.x /= OVERVIEW_MOTION_SPEED;
+                bounds.velocity.y /= OVERVIEW_MOTION_SPEED;
+                bounds.velocity.width /= OVERVIEW_MOTION_SPEED;
+                bounds.velocity.height /= OVERVIEW_MOTION_SPEED;
+                bounds
+            });
+        }
     }
 
     fn enter(
@@ -551,6 +569,12 @@ impl Ferese {
         self.advance_animations(std::time::Instant::now());
 
         if active {
+            let presentations = self
+                .windows
+                .ordered_ids()
+                .filter_map(|id| self.current_window_presentation(id))
+                .collect::<Vec<_>>();
+            self.overview.seed_presentations(presentations);
             if self.cancel_workspace_slides() {
                 self.relayout();
             }
@@ -640,19 +664,7 @@ impl Ferese {
     }
 
     pub(crate) fn presented_window_rect(&self, id: WindowId) -> Option<Rect> {
-        let normal = self.windows.geometry(&id)?.visual.current;
-        let mut presented = self.overview.presented_rect(id, normal);
-        if !self.overview.is_presenting() {
-            let (x, y) = self.workspace_slide_offset(id);
-            presented.x += x;
-            presented.y += y;
-        }
-        let record = self.windows.record(id)?;
-        let opening = record.opening.map_or(1.0, |value| value.current);
-        Some(crate::presentation::scaled_visual_rect(
-            presented,
-            0.97 + 0.03 * opening,
-        ))
+        Some(self.current_window_presentation(id)?.bounds.current)
     }
 
     pub(crate) fn inverse_presented_window_point(&self, id: WindowId, x: f64, y: f64) -> Option<(f64, f64)> {
@@ -1021,9 +1033,21 @@ impl OverviewMotion {
         self.opacity.current.clamp(0.0, 1.0) as f32
     }
 
+    pub(crate) fn presented_bounds(&self, id: WindowId, normal: AnimatedRect) -> AnimatedRect {
+        let Some(mut bounds) = self.presentations.get(&id).copied() else {
+            return normal;
+        };
+        bounds.velocity.x *= OVERVIEW_MOTION_SPEED;
+        bounds.velocity.y *= OVERVIEW_MOTION_SPEED;
+        bounds.velocity.width *= OVERVIEW_MOTION_SPEED;
+        bounds.velocity.height *= OVERVIEW_MOTION_SPEED;
+        bounds
+    }
+
+    #[cfg(test)]
     pub(crate) fn presented_rect(&self, id: WindowId, normal: Rect) -> Rect {
-        let preview = self.presentations.get(&id).map_or(normal, |p| p.current);
-        preview
+
+        self.presentations.get(&id).map_or(normal, |p| p.current)
     }
 
     pub(crate) fn advance(&mut self, delta: Duration, spring: SpringConfig, animations_enabled: bool) -> bool {
@@ -1066,6 +1090,57 @@ impl OverviewMotion {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overview_entry_inherits_visible_velocity_and_does_not_double_opening_scale() {
+        use crate::presentation::{WindowPresentation, scaled_visual_rect, scaled_visual_velocity};
+        use ferese_animation::RectVelocity;
+        let normal = Rect::new(20.25, -3.5, 640.0, 480.0);
+        let velocity = RectVelocity {
+            x: 300.0,
+            y: -50.0,
+            width: 25.0,
+            height: 8.0,
+        };
+        let opacity = AnimatedValue {
+            current: 0.5,
+            target: 1.0,
+            velocity: 0.8,
+        };
+        let scale = 0.97 + 0.03 * opacity.current;
+        let id = WindowId(1);
+        let presentation = WindowPresentation {
+            id,
+            bounds: AnimatedRect {
+                current: scaled_visual_rect(normal, scale),
+                target: normal,
+                velocity: scaled_visual_velocity(normal, velocity, scale, 0.03 * opacity.velocity),
+            },
+            opacity,
+            emphasis: AnimatedValue::new(1.0),
+            shadow: AnimatedValue::new(1.0),
+            scale_content: false,
+            native_size: None,
+        };
+        let mut overview = OverviewState::default();
+        overview.seed_presentations([presentation]);
+        overview.enter(
+            HashMap::from([(id, (normal, Rect::new(200.0, 100.0, 320.0, 240.0)))]),
+            Some(id),
+            true,
+        );
+        let sampled = overview.motion.presented_bounds(id, AnimatedRect::new(normal));
+        assert!((sampled.current.x - normal.x).abs() < 1e-10);
+        assert!((sampled.current.width - normal.width).abs() < 1e-10);
+        assert!((sampled.velocity.x - velocity.x).abs() < 1e-10);
+        assert!((sampled.velocity.width - velocity.width).abs() < 1e-10);
+        // Re-entering during dismissal must keep the current spring, not seed
+        // it from a stale desktop sample.
+        overview.exit(HashMap::from([(id, normal)]), true);
+        let before = overview.motion.presentations[&id];
+        overview.seed_presentations([presentation]);
+        assert_eq!(overview.motion.presentations[&id], before);
+    }
 
     #[test]
     fn tiny_overview_target_changes_still_get_a_settling_tick() {

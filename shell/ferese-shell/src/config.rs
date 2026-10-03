@@ -579,12 +579,12 @@ pub(crate) fn config_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn rejects_undamped_overshoot_before_publication() {
+    fn rejects_removed_physics_keys_before_publication() {
         for property in ["spring", "viewport-spring"] {
-            for coefficient in ["damping", "damping-ratio"] {
+            for coefficient in ["mass", "stiffness", "damping", "damping-ratio"] {
                 let source = format!("animations {{ {property} {{ {coefficient} 0; overshoot #true; }}; }}");
                 let error = parse_test_source(&source).unwrap_err().to_string();
-                assert!(error.contains("overshoot requires positive damping"), "{error}");
+                assert!(error.contains("unknown field"), "{error}");
             }
         }
     }

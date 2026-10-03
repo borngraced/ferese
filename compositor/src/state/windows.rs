@@ -495,12 +495,7 @@ impl Ferese {
         }
 
         let used: usize = self.render.snapshots().map(|snapshot| snapshot.bytes()).sum::<usize>()
-            + self
-                .render
-                .closing
-                .iter()
-                .map(|window| window.snapshot.bytes())
-                .sum::<usize>();
+            + self.render.closing.iter().map(|window| window.bytes()).sum::<usize>();
         let remaining = crate::presentation::SNAPSHOT_BUDGET.saturating_sub(used);
         let result = if let Some(backend) = &self.nested_backend {
             // Commit dispatch does not run inside the Winit event callback;

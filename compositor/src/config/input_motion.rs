@@ -52,10 +52,7 @@ impl Config {
     }
 
     pub fn spring_config(&self) -> Result<SpringConfig, ConfigError> {
-        self.animations
-            .spring
-            .resolve(SpringConfig::default())
-            .map_err(ConfigError::Binding)
+        self.animations.spring_config().map_err(ConfigError::Binding)
     }
 
     pub fn viewport_spring_config(&self) -> Result<SpringConfig, ConfigError> {

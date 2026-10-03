@@ -58,6 +58,7 @@ struct SurfaceEffectsState {
     role: Mutex<Option<SemanticRole>>,
     regions: Mutex<Option<Vec<[f64; 5]>>>,
     opacity: Mutex<u32>,
+    region_opacities: Mutex<Vec<u32>>,
     presentation_supported: AtomicBool,
     dismissing: AtomicBool,
 }
@@ -70,6 +71,7 @@ impl SurfaceEffectsState {
             role: Mutex::new(None),
             regions: Mutex::new(None),
             opacity: Mutex::new(1000),
+            region_opacities: Mutex::new(Vec::new()),
             presentation_supported: AtomicBool::new(false),
             dismissing: AtomicBool::new(false),
         }
@@ -101,7 +103,7 @@ impl SurfaceEffectsUserData {
 }
 
 pub(crate) fn init_global(display: &DisplayHandle) {
-    display.create_global::<Ferese, FereseEffectsManagerV1, _>(3, ());
+    display.create_global::<Ferese, FereseEffectsManagerV1, _>(4, ());
     display.create_global::<Ferese, FereseMaterialManagerV1, _>(1, ());
 }
 
@@ -193,6 +195,31 @@ pub(crate) fn surface_regions(surface: &WlSurface) -> Option<Vec<[f64; 5]>> {
             .unwrap()
             .clone()
     })
+}
+
+pub(crate) fn surface_region_opacities(surface: &WlSurface) -> Vec<u32> {
+    with_states(surface, |states| {
+        states
+            .data_map
+            .get::<SurfaceEffectsState>()
+            .map(|effects| effects.region_opacities.lock().unwrap().clone())
+            .unwrap_or_default()
+    })
+}
+
+fn decode_region_opacities(bytes: &[u8]) -> Option<Vec<u32>> {
+    if !bytes.len().is_multiple_of(4) || bytes.len() > 32 * 4 {
+        return None;
+    }
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|v| {
+            let value = u32::from_ne_bytes(*v);
+            (value <= 1000).then_some(value)
+        })
+        .collect()
 }
 
 fn decode_regions(bytes: &[u8]) -> Option<Vec<[f64; 5]>> {
@@ -339,6 +366,26 @@ impl Dispatch<FereseSurfaceEffectsV1, SurfaceEffectsUserData> for Ferese {
                     crate::backends::direct::render_surface(state, &surface);
                 }
             }
+            ferese_surface_effects_v1::Request::SetRegionOpacities { opacities } => {
+                let Some(opacities) = decode_region_opacities(&opacities) else {
+                    return;
+                };
+                let changed = with_states(&surface, |states| {
+                    let Some(effects) = states.data_map.get::<SurfaceEffectsState>() else {
+                        return false;
+                    };
+                    let mut old = effects.region_opacities.lock().unwrap();
+                    if *old == opacities {
+                        return false;
+                    }
+                    *old = opacities;
+                    effects.generation.fetch_add(1, Ordering::Release);
+                    true
+                });
+                if changed {
+                    crate::backends::direct::render_surface(state, &surface);
+                }
+            }
             ferese_surface_effects_v1::Request::SetRegions { regions } => {
                 let Some(regions) = decode_regions(&regions) else {
                     return;
@@ -400,6 +447,7 @@ fn detach(surface: &WlSurface) -> bool {
             return false;
         };
         let role_changed = effects.set_role(None);
+        effects.region_opacities.lock().unwrap().clear();
         effects.dismissing.store(false, Ordering::Release);
         let mut opacity = effects.opacity.lock().unwrap();
         let opacity_changed = *opacity != 1000;
@@ -440,6 +488,16 @@ pub(crate) fn fade_dismissed_surface(surface: &WlSurface, opacity: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn region_opacities_validate_independent_fades() {
+        let bytes: Vec<_> = [0u32, 500, 1000].into_iter().flat_map(u32::to_ne_bytes).collect();
+        assert_eq!(decode_region_opacities(&bytes), Some(vec![0, 500, 1000]));
+        assert_eq!(decode_region_opacities(&[]), Some(vec![]));
+        assert!(decode_region_opacities(&bytes[..11]).is_none());
+        assert!(decode_region_opacities(&1001u32.to_ne_bytes()).is_none());
+        assert!(decode_region_opacities(&vec![0; 33 * 4]).is_none());
+    }
 
     #[test]
     fn fractional_regions_validate_all_wire_values() {
