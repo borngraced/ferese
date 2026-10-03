@@ -112,7 +112,34 @@ the focused column. `paged` packs columns into viewport-sized pages: halves form
 form triples; mixed widths and client minimum sizes determine actual boundaries.
 Changing default width preserves manually resized columns.
 
-## Motion
+## Animations
+
+Set animation speed in Settings → Motion or edit the `animations` block in
+`~/.config/ferese/config.kdl`. Changes apply live. Start with `speed` if you only
+want faster or slower transitions; you do not need to change the springs.
+
+```kdl
+animations {
+    enabled #true
+    reduced-motion #false
+    speed 1.0
+
+    spring {
+        mass 1.0
+        stiffness 700.0
+        damping 53.0
+    }
+
+    viewport-spring {
+        mass 1.0
+        stiffness 320.0
+        damping-ratio 1.0
+    }
+}
+```
+
+This example uses the built-in defaults. The packaged config sets `speed 0.9`.
+You can omit either spring block to keep its defaults.
 
 | Section / key | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -125,6 +152,47 @@ Changing default width preserves manually resized columns.
 | `animations.viewport-spring.mass` | number > 0 | `1` | Scrolling spring mass |
 | `animations.viewport-spring.stiffness` | number > 0 | `320` | Scrolling stiffness |
 | `animations.viewport-spring.damping-ratio` | number > 0 | `1` | `1` is critically damped |
+
+### Speed and reduced motion
+
+`speed` changes window motion, scrolling, workspace transitions, overview,
+theme transitions and shell popup, notification and hover transitions. `0.5`
+gives an animation twice as much time; `2.0` gives it half as much. Overview
+uses 60% of this speed when opening or closing, including when selecting a
+window. There is no separate overview-speed setting.
+
+Set `reduced-motion #true` or `enabled #false` to make these transitions
+immediate. Reduced motion takes precedence over `enabled #true`; setting
+`speed 0` is invalid. These settings control Ferese's animations, not animations
+inside other applications.
+
+### Spring tuning
+
+`spring` controls window position and size motion, fullscreen/maximize zoom and
+overview entrance motion. `viewport-spring` controls the scrolling viewport and
+the column-width animation that runs with it. Shell popups and theme fades use
+timed transitions, so the spring parameters do not change their curves.
+
+Spring motion has no fixed duration. Its settling time depends on the distance
+to the target, current velocity and the spring parameters. The `animations`
+block has no settings for per-animation durations, custom curves or animation
+shaders.
+
+With the other parameters unchanged, higher stiffness makes motion faster and
+higher mass makes it slower. Damping controls how quickly velocity dies away.
+The default window spring is slightly overdamped, close to critical damping;
+the viewport spring is critically damped.
+
+For `viewport-spring`, `damping-ratio 1.0` is critical damping, values below `1`
+are underdamped and values above `1` are overdamped. The window spring uses a
+damping coefficient instead: critical damping is
+`damping = 2 * sqrt(stiffness * mass)`. Ferese stops spring animations
+at their first target crossing, so lowering damping does not make them bounce
+past the target.
+
+Mass, stiffness, damping ratio and speed must be finite and greater than zero.
+The window spring's damping coefficient may also be zero. Invalid edits leave
+the last accepted configuration active.
 
 ## Appearance
 
